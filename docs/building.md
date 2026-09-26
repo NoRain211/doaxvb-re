@@ -208,6 +208,44 @@ Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archive
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
 
+### Optional hardware ray-tracing smoke test
+
+The standalone DXR/DX11 test requires Windows, a recent Windows SDK, and DXC on
+`PATH` (or an explicit `-DRECOMP_DXC_EXECUTABLE=...` path to `dxc.exe`). It
+uses only synthetic geometry and does not change the game renderer. DX11
+remains the default renderer; DXR is optional.
+
+```powershell
+cmake -S recomp-runtime -B private/dxr-smoke -G "Visual Studio 17 2022" -A x64 -DRECOMP_BUILD_DXR_SMOKE_TEST=ON
+cmake --build private/dxr-smoke --config Release --target recomp_dxr_smoke_test
+ctest --test-dir private/dxr-smoke -C Release -L "dxr|dx11" -V
+```
+
+The three tests cover:
+
+- `recomp-runtime-dxr-smoke`: selects a hardware adapter with DXR 1.1 and
+  Shader Model 6.5, builds one triangle with two instances, and checks two
+  hits and two misses, including instance IDs and hit distances. It then
+  writes a shared RGBA texture through DXR and samples it in a DX11 pixel
+  shader on the same adapter. Two shared fences coordinate writes and reads.
+- `recomp-runtime-dx11-fallback`: runs the DX11 drawing path with DXR disabled.
+  This mode does not initialize D3D12 or create any D3D12 resources.
+- `recomp-runtime-dx11-warp-fallback`: runs the same DX11-only check using WARP,
+  Microsoft's software renderer.
+
+Each image test queues eight frames at each of two sizes (8x4 and 13x5),
+recreating textures between sizes. It verifies all 776 output pixels, including
+a changing frame marker to detect stale data. The interop handoff stays on the
+GPU; CPU readbacks only check snapshots after the frames complete. Rendering
+is offscreen, so this does not test a window or swap chain.
+
+Both debug layers are enabled when installed, and reported errors fail the
+tests. Each GPU wait is limited to 10 seconds; CTest limits each test to 30
+seconds. Without compatible DXR hardware, the DXR test exits with code 77,
+which CTest reports as skipped. The DX11 checks run independently. Passing
+proves synthetic ray queries, texture sharing, and explicit DX11-only modes;
+it does not establish game RTGI or automatic recovery from DXR device failure.
+
 ## Extract a user-owned ISO
 
 `ExtractIso.cmd` extracts one ISO to `private/imported-disc/disc`. Drop one ISO

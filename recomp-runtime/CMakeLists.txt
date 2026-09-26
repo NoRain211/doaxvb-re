@@ -663,6 +663,31 @@ if(RECOMP_PROGRAM_DIR)
     endif()
 endif()
 
+option(RECOMP_BUILD_DXR_SMOKE_TEST "Build the hardware DXR 1.1 smoke test" OFF)
+if(RECOMP_BUILD_DXR_SMOKE_TEST)
+    if(NOT WIN32)
+        message(FATAL_ERROR "The DXR smoke test requires Windows")
+    endif()
+    find_program(RECOMP_DXC_EXECUTABLE NAMES dxc REQUIRED)
+    set(_dxr_shader "${CMAKE_CURRENT_BINARY_DIR}/dxr_smoke_shader.h")
+    set(_dxr_image_shader "${CMAKE_CURRENT_BINARY_DIR}/dxr_image_shader.h")
+    add_custom_command(OUTPUT "${_dxr_shader}" "${_dxr_image_shader}"
+        COMMAND "${RECOMP_DXC_EXECUTABLE}" -T cs_6_5 -E main -WX -O3
+            -Fh "${_dxr_shader}" -Vn kDxrSmokeShader
+            -Fo "${CMAKE_CURRENT_BINARY_DIR}/dxr_smoke_shader.dxil"
+            "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_dxr_smoke_test.hlsl"
+        COMMAND "${RECOMP_DXC_EXECUTABLE}" -T cs_6_5 -E imageMain -WX -O3
+            -Fh "${_dxr_image_shader}" -Vn kDxrImageShader
+            -Fo "${CMAKE_CURRENT_BINARY_DIR}/dxr_image_shader.dxil"
+            "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_dxr_smoke_test.hlsl"
+        DEPENDS d3d12_dxr_smoke_test.hlsl "${RECOMP_DXC_EXECUTABLE}"
+        VERBATIM)
+    add_executable(recomp_dxr_smoke_test d3d12_dxr_smoke_test.cpp
+        "${_dxr_shader}" "${_dxr_image_shader}")
+    target_include_directories(recomp_dxr_smoke_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(recomp_dxr_smoke_test PRIVATE d3d11 d3d12 d3dcompiler dxgi)
+endif()
+
 if(WIN32)
     add_executable(recomp_texture_replacement_test
         texture_replacement_test.cpp d3d_presenter_capture.cpp
@@ -790,6 +815,15 @@ add_test(NAME recomp-runtime-pose-replay COMMAND recomp_d3d_pose_replay_test)
 add_test(NAME recomp-runtime-smooth-normals COMMAND recomp_d3d_smooth_normals_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
+if(TARGET recomp_dxr_smoke_test)
+    add_test(NAME recomp-runtime-dxr-smoke COMMAND recomp_dxr_smoke_test)
+    add_test(NAME recomp-runtime-dx11-fallback COMMAND recomp_dxr_smoke_test --dx11-only)
+    add_test(NAME recomp-runtime-dx11-warp-fallback COMMAND recomp_dxr_smoke_test --dx11-warp)
+    set_tests_properties(recomp-runtime-dxr-smoke PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 30 LABELS "gpu;dxr")
+    set_tests_properties(recomp-runtime-dx11-fallback recomp-runtime-dx11-warp-fallback
+        PROPERTIES TIMEOUT 30 LABELS "gpu;dx11")
+endif()
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
