@@ -8,20 +8,23 @@ Texture2D<float4> accumulatedGI : register(t6);
 Texture2D<float4> surfacePosition : register(t7);
 Texture2D<float4> surfaceNormal : register(t8);
 Texture2D<float4> previousNormal : register(t9);
-StructuredBuffer<float3> positions : register(t10);
-StructuredBuffer<uint> indices : register(t11);
-StructuredBuffer<float2> uvs : register(t12);
-StructuredBuffer<uint> triangles : register(t13);
+Texture2D<float4> surfaceMotion : register(t10);
+StructuredBuffer<float3> positions : register(t11);
+StructuredBuffer<uint> indices : register(t12);
+StructuredBuffer<float2> uvs : register(t13);
+StructuredBuffer<uint> triangles : register(t14);
 struct Material { uint slice; uint test; float alpha; float factor; };
-StructuredBuffer<Material> materials : register(t14);
-StructuredBuffer<float3> normals : register(t15);
-Texture2DArray<float> alphaImage : register(t16);
+StructuredBuffer<Material> materials : register(t15);
+StructuredBuffer<float3> normals : register(t16);
+StructuredBuffer<float3> motions : register(t17);
+Texture2DArray<float> alphaImage : register(t18);
 SamplerState alphaWrap : register(s0);
 RWTexture2D<float4> traceOutput : register(u0);
 RWTexture2D<float4> historyOutput : register(u1);
 RWTexture2D<float4> giOutput : register(u2);
 RWTexture2D<float4> positionOutput : register(u3);
 RWTexture2D<float4> normalOutput : register(u4);
+RWTexture2D<float4> motionOutput : register(u5);
 
 cbuffer Frame : register(b0) {
     row_major float4x4 inverseViewProjection;
@@ -128,7 +131,7 @@ bool alphaPass(uint primitive, float2 barycentrics)
         (func == 5 && alpha != ref) || (func == 6 && alpha >= ref);
 }
 
-void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal)
+void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal, inout float3 motion)
 {
     float2 uv = (float2(p) + 0.5) / size;
     float2 ndc = uv * float2(2, -2) + float2(-1, 1);
@@ -161,6 +164,8 @@ void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal
     if (!project(hit, viewProjection, hitUV, hitDepth) ||
         abs(hitDepth - depth) > max(4.0 / 16777215.0, 0.025 * (1 - depth))) return;
     world = hit;
+    float3 ma = motions[indices[first]], mb = motions[indices[first + 1]];
+    motion = ma + barycentrics.x * (mb - ma) + barycentrics.y * (motions[indices[first + 2]] - ma);
     float3 flat = normalize(cross(b - a, c - a));
     if (dot(flat, -ray.Direction) < 0) flat = -flat;
     // Interpolated vertex normals follow the game's own shading, so curved skin
@@ -180,9 +185,11 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
     float d = depthImage[p];
     positionOutput[p] = float4(0, 0, 0, 1);
     normalOutput[p] = 0;
+    motionOutput[p] = 0;
     if (d < 1) {
-        float3 world = worldPosition(p, d), n = normalAt(p);
-        primarySurface(p, d, world, n);
+        float3 world = worldPosition(p, d), n = normalAt(p), motion = 0;
+        primarySurface(p, d, world, n, motion);
+        motionOutput[p] = float4(motion, 0);
         float3 reconstructed = worldPosition(p, d);
         float pixelSize = max(length(worldPosition(bounded(p + int2(1, 0)), d) - reconstructed),
             length(worldPosition(bounded(p + int2(0, 1)), d) - reconstructed));
@@ -274,7 +281,8 @@ void temporalMain(uint3 thread : SV_DispatchThreadID)
     if (historyValid) {
         float2 uv;
         float oldDepth;
-        if (project(world, previousViewProjection, uv, oldDepth)) {
+        // Moving meshes reproject through their own motion as well as the camera's.
+        if (project(world - surfaceMotion[p].xyz, previousViewProjection, uv, oldDepth)) {
             int2 oldPixel = int2(uv * size);
             float4 oldPosition = previousPosition[oldPixel], oldNormal = previousNormal[oldPixel];
             // Depth/normal disagreement is disocclusion. World-position motion

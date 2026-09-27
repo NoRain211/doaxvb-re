@@ -106,6 +106,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     float program_mask_lod_bias;
     RecompD3dDirectionalLighting directional;
     const void *vertex_bytes;
+    /* Guest address of vertex_bytes; identifies the mesh across frames. */
+    uint32_t vertex_address;
     const void *index_bytes;
     /* World-view-projection rows, already composed by the adapter. */
     float transform[16];
