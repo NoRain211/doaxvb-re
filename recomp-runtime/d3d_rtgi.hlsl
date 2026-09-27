@@ -14,7 +14,8 @@ StructuredBuffer<float2> uvs : register(t12);
 StructuredBuffer<uint> triangles : register(t13);
 struct Material { uint slice; uint test; float alpha; float factor; };
 StructuredBuffer<Material> materials : register(t14);
-Texture2DArray<float> alphaImage : register(t15);
+StructuredBuffer<float3> normals : register(t15);
+Texture2DArray<float> alphaImage : register(t16);
 SamplerState alphaWrap : register(s0);
 RWTexture2D<float4> traceOutput : register(u0);
 RWTexture2D<float4> historyOutput : register(u1);
@@ -160,8 +161,14 @@ void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal
     if (!project(hit, viewProjection, hitUV, hitDepth) ||
         abs(hitDepth - depth) > max(4.0 / 16777215.0, 0.025 * (1 - depth))) return;
     world = hit;
-    normal = normalize(cross(b - a, c - a));
-    if (dot(normal, -ray.Direction) < 0) normal = -normal;
+    float3 flat = normalize(cross(b - a, c - a));
+    if (dot(flat, -ray.Direction) < 0) flat = -flat;
+    // Interpolated vertex normals follow the game's own shading, so curved skin
+    // and mesh joins stay smooth. Orient them by the face, not the view ray.
+    float3 na = normals[indices[first]], nb = normals[indices[first + 1]], nc = normals[indices[first + 2]];
+    float3 smooth = na + barycentrics.x * (nb - na) + barycentrics.y * (nc - na);
+    normal = dot(smooth, smooth) > 1e-8 ? normalize(smooth) : flat;
+    if (dot(normal, flat) < 0) normal = -normal;
 }
 
 [numthreads(8, 8, 1)]
