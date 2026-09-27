@@ -373,3 +373,12 @@ normals to avoid new seams between draw calls. The option is independent of pixe
 lighting and defaults off. A 32 MiB contents cache invalidates on vertex or
 index changes, including CPU animation. `RECOMP_PERF_COUNTER=1` reports cache
 hits, rebuilds and CPU time at shutdown. Vertex programs retain their inputs.
+Set `RECOMP_D3D_RTGI=1` for experimental ray-traced global illumination on a
+GPU with DXR 1.1. The build includes it when CMake finds DXC. It traces one
+bounce of diffuse light off the visible scene through a D3D12 device beside the
+D3D11 renderer; `RECOMP_D3D_RTGI_STRENGTH` (0 to 4, default 1) scales it.
+Set `RECOMP_D3D_RTGI_SPLIT=1` to leave the left half of the screen unlit for
+comparison. Bounced light comes only from surfaces visible on screen, and
+alpha-tested cutouts such as foliage block rays as solid triangles.
+Without DXR support, or in a build without DXC, the runner logs a
+`recomp rtgi:` line and renders with D3D11 alone.
