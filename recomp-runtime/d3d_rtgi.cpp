@@ -14,7 +14,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <map>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 #include "d3d_rtgi.h"
@@ -28,7 +30,7 @@ using DirectX::XMFLOAT2;
 using DirectX::XMFLOAT3;
 using DirectX::XMFLOAT4X4;
 
-constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 21;
+constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 24;
 constexpr uint32_t opaqueMaterial = UINT32_MAX;
 
 struct RtgiError { HRESULT result; const char *operation; };
@@ -50,7 +52,7 @@ struct RtgiSlot {
     ComPtr<ID3D12GraphicsCommandList4> commands;
     ComPtr<ID3D12DescriptorHeap> descriptors;
     ComPtr<ID3D12Resource> vertices, indices, instances, constants;
-    ComPtr<ID3D12Resource> uvs, triangles, materials, normals;
+    ComPtr<ID3D12Resource> uvs, triangles, materials, normals, motions;
     ComPtr<ID3D12Resource> bottom, top, scratch;
     UINT64 completion = 0;
 };
@@ -83,12 +85,17 @@ struct D3dRtgi {
     ComPtr<ID3D11SamplerState> linear;
     ComPtr<ID3D11BlendState> blend;
     ComPtr<ID3D11Buffer> constants11;
-    RtgiTexture depth, color, gi, raw, filtered, history[2], position[2], normal[2];
+    RtgiTexture depth, color, gi, raw, filtered, motion, history[2], position[2], normal[2];
     RtgiTexture alpha;
     RtgiAlphaSlice alphaCache[alphaSlices];
     RtgiSlot slots[3];
     std::vector<XMFLOAT3> positions;
     std::vector<XMFLOAT3> normals;  // skinned vertex normals; zero when the draw has none
+    // World motion since the previous frame, so moving meshes keep their GI history.
+    // A mesh is its guest vertex buffer, shape and order among same-buffer draws.
+    using MeshKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>;
+    std::vector<XMFLOAT3> motions, previousPositions;
+    std::map<MeshKey, size_t> meshes, previousMeshes;
     std::vector<uint32_t> indices;
     std::vector<XMFLOAT2> uvs;
     std::vector<uint32_t> triangles;
@@ -319,8 +326,8 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     sharedFence(r.done12, r.done11);
 
     D3D12_DESCRIPTOR_RANGE ranges[2]{};
-    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 16, 1, 0, 0};
-    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 16};
+    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18, 1, 0, 0};
+    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 6, 0, 0, 18};
     D3D12_ROOT_PARAMETER parameters[4]{};
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -369,6 +376,7 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     texture(r, r.gi, DXGI_FORMAT_R16G16B16A16_FLOAT, true, false);
     texture(r, r.raw, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
     texture(r, r.filtered, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
+    texture(r, r.motion, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
     // ponytail: 256-square alpha is enough for cutouts; raise the size if fine nets lose coverage.
     texture(r, r.alpha, DXGI_FORMAT_R8_UNORM, true, true, alphaSize, alphaSize, alphaSlices);
     for (UINT i = 0; i < alphaSlices; ++i) {
@@ -631,6 +639,21 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             r->uvs.resize(base);
             r->materials.resize(firstMaterial);
         }
+        if (contributed && draw.vertex_address) {
+            D3dRtgi::MeshKey key{draw.vertex_address, draw.vertex_count, draw.vertex_stride, 0};
+            while (r->meshes.count(key)) ++std::get<3>(key);
+            r->meshes[key] = base;
+            r->motions.resize(r->positions.size());
+            const auto previous = r->previousMeshes.find(key);
+            if (previous != r->previousMeshes.end() &&
+                previous->second + draw.vertex_count <= r->previousPositions.size()) {
+                for (uint32_t v = 0; v < draw.vertex_count; ++v) {
+                    const XMFLOAT3 &now = r->positions[base + v], &then = r->previousPositions[previous->second + v];
+                    r->motions[base + v] = {now.x - then.x, now.y - then.y, now.z - then.z};
+                }
+            }
+        }
+        r->motions.resize(r->positions.size());
         if (contributed > r->cameraTriangles) {
             r->cameraTriangles = contributed;
             std::memcpy(&r->camera, draw.view_projection, sizeof r->camera);
@@ -668,6 +691,7 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
 {
     upload(r, slot.vertices, r.positions.data(), r.positions.size() * sizeof(XMFLOAT3));
     upload(r, slot.normals, r.normals.data(), r.normals.size() * sizeof(XMFLOAT3));
+    upload(r, slot.motions, r.motions.data(), r.motions.size() * sizeof(XMFLOAT3));
     upload(r, slot.indices, r.indices.data(), r.indices.size() * sizeof(uint32_t));
     upload(r, slot.uvs, r.uvs.data(), r.uvs.size() * sizeof(XMFLOAT2));
     upload(r, slot.triangles, r.triangles.data(), r.triangles.size() * sizeof(uint32_t));
@@ -750,15 +774,16 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         r.history[previous].resource.Get(), r.position[previous].resource.Get(),
         r.raw.resource.Get(), r.history[current].resource.Get(),
         r.position[current].resource.Get(), r.normal[current].resource.Get(),
-        r.normal[previous].resource.Get()};
+        r.normal[previous].resource.Get(), r.motion.resource.Get()};
     ID3D12Resource *writes[] = {r.raw.resource.Get(), r.history[current].resource.Get(),
-        r.gi.resource.Get(), r.position[current].resource.Get(), r.normal[current].resource.Get()};
+        r.gi.resource.Get(), r.position[current].resource.Get(), r.normal[current].resource.Get(),
+        r.motion.resource.Get()};
     auto descriptor = slot.descriptors->GetCPUDescriptorHandleForHeapStart();
     const UINT stride = r.device12->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     ID3D12Resource *filterInputs[] = {writes[1], r.filtered.resource.Get(), writes[0], r.filtered.resource.Get()};
     ID3D12Resource *filterOutputs[] = {r.filtered.resource.Get(), writes[0], r.filtered.resource.Get(), writes[2]};
     for (unsigned pass = 0; pass < 4; ++pass) {
-        for (unsigned i = 0; i < 9; ++i) {
+        for (unsigned i = 0; i < 10; ++i) {
             auto *resource = i == 5 ? filterInputs[pass] : reads[i];
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
             view.Format = resource->GetDesc().Format;
@@ -769,12 +794,13 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
             descriptor.ptr += stride;
         }
         ID3D12Resource *geometry[] = {slot.vertices.Get(), slot.indices.Get(), slot.uvs.Get(),
-            slot.triangles.Get(), slot.materials.Get(), slot.normals.Get()};
+            slot.triangles.Get(), slot.materials.Get(), slot.normals.Get(), slot.motions.Get()};
         const UINT counts[] = {UINT(r.positions.size()), UINT(r.indices.size()), UINT(r.uvs.size()),
-            UINT(r.triangles.size()), UINT(std::max(size_t(1), r.materials.size())), UINT(r.normals.size())};
+            UINT(r.triangles.size()), UINT(std::max(size_t(1), r.materials.size())), UINT(r.normals.size()),
+            UINT(r.motions.size())};
         const UINT sizes[] = {sizeof(XMFLOAT3), sizeof(uint32_t), sizeof(XMFLOAT2),
-            sizeof(uint32_t), sizeof(RtgiMaterial), sizeof(XMFLOAT3)};
-        for (unsigned i = 0; i < 6; ++i) {
+            sizeof(uint32_t), sizeof(RtgiMaterial), sizeof(XMFLOAT3), sizeof(XMFLOAT3)};
+        for (unsigned i = 0; i < 7; ++i) {
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
             view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
             view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -791,7 +817,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         alpha.Texture2DArray.ArraySize = alphaSlices;
         r.device12->CreateShaderResourceView(r.alpha.resource.Get(), &alpha, descriptor);
         descriptor.ptr += stride;
-        for (unsigned i = 0; i < 5; ++i) {
+        for (unsigned i = 0; i < 6; ++i) {
             auto *resource = i == 2 ? filterOutputs[pass] : writes[i];
             D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
             view.Format = resource->GetDesc().Format;
@@ -807,7 +833,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
     for (unsigned i = 0; i < 4; ++i) transition(commands, reads[i], common, srv);
     transition(commands, reads[8], common, srv);
     transition(commands, r.alpha.resource.Get(), common, srv);
-    for (unsigned i : {0u, 1u, 3u, 4u}) transition(commands, writes[i], common, uav);
+    for (unsigned i : {0u, 1u, 3u, 4u, 5u}) transition(commands, writes[i], common, uav);
     commands->SetComputeRootSignature(r.root.Get());
     commands->SetDescriptorHeaps(1, slot.descriptors.GetAddressOf());
     commands->SetComputeRootShaderResourceView(0, slot.top->GetGPUVirtualAddress());
@@ -819,6 +845,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
     transition(commands, writes[0], uav, srv);
     transition(commands, writes[3], uav, srv);
     transition(commands, writes[4], uav, srv);
+    transition(commands, writes[5], uav, srv);
     commands->SetPipelineState(r.temporal.Get());
     commands->Dispatch(x, y, 1);
     transition(commands, writes[1], uav, srv);
@@ -920,6 +947,10 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
         catch (const std::exception &error) { fail(*r, error.what()); }
     }
     if (r) {
+        r->previousPositions.swap(r->positions);
+        r->previousMeshes.swap(r->meshes);
+        r->meshes.clear();
+        r->motions.clear();
         r->positions.clear();
         r->normals.clear();
         r->indices.clear();

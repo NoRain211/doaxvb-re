@@ -2053,6 +2053,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     command.data.draw.vertex_stride = result.plan.vertex_stride;
     command.data.draw.fvf = result.plan.fvf;
     command.data.draw.vertex_bytes = vertex_bytes;
+    command.data.draw.vertex_address = result.plan.vertex_data;
     command.data.draw.index_bytes = index_bytes;
     command.data.draw.has_transform = true;
     command.data.draw.has_reflection = reflective;
