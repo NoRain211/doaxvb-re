@@ -4,6 +4,9 @@
 #include "d3d_vertex_program.h"
 #include "texture_replacement.h"
 #include "d3d_smooth_normals.h"
+#ifdef RECOMP_RTGI
+#include "d3d_rtgi.h"
+#endif
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -551,6 +554,13 @@ struct RecompD3dPresenter {
     uint32_t msaa = 1u;         // RECOMP_D3D_MSAA: main target sample count
     float target_scale_x = 1.0f, target_scale_y = 1.0f; // bound target / guest size
     bool smaa = false;          // RECOMP_D3D_SMAA: post-process the output
+    bool rtgi_requested = false; // RECOMP_D3D_RTGI=1: ray-traced GI when available
+#ifdef RECOMP_RTGI
+    D3dRtgi *rtgi = nullptr;
+    bool rtgi_pending = false;  // 3D draws recorded since the last GI pass
+    bool rtgi_applied = false;  // GI already lit this frame; later draws skip it
+#endif
+    ID3D11ShaderResourceView *depth_sample = nullptr; // main depth, only for RTGI
     ID3D11VertexShader *smaa_vs[3]{};   // edges, weights, blend
     ID3D11PixelShader *smaa_ps[3]{};
     ID3D11ShaderResourceView *smaa_views[6]{}; // -, edges, area, search, weights, output
@@ -844,6 +854,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->draw_vertex_used = 0u;
     presenter->draw_index_used = 0u;
     presenter->draw_shared_ready = false;
+#ifdef RECOMP_RTGI
+    d3d_rtgi_destroy(presenter->rtgi);
+    presenter->rtgi = nullptr;
+#endif
+    releaseCom(presenter->depth_sample);
     releaseCom(presenter->depth_view);
     releaseCom(presenter->depth_texture);
     releaseCom(presenter->render_target_view);
@@ -1125,25 +1140,60 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         return result;
     }
 
-    D3D11_TEXTURE2D_DESC depth_desc{};
-    depth_desc.Width = mainWidth(presenter);
-    depth_desc.Height = mainHeight(presenter);
-    depth_desc.MipLevels = 1u;
-    depth_desc.ArraySize = 1u;
-    depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    depth_desc.SampleDesc.Count = presenter->msaa;
-    depth_desc.Usage = D3D11_USAGE_DEFAULT;
-    depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    result = presenter->device->CreateTexture2D(
-        &depth_desc, nullptr, &presenter->depth_texture);
+    /* RTGI reads the main depth, so it needs a typeless texture. Without RTGI,
+       or when that texture cannot be made, depth keeps its typed, depth-only form. */
+    for (const bool readable_depth : {presenter->rtgi_requested, false}) {
+        releaseCom(presenter->depth_sample);
+        releaseCom(presenter->depth_view);
+        releaseCom(presenter->depth_texture);
+        D3D11_TEXTURE2D_DESC depth_desc{};
+        depth_desc.Width = mainWidth(presenter);
+        depth_desc.Height = mainHeight(presenter);
+        depth_desc.MipLevels = 1u;
+        depth_desc.ArraySize = 1u;
+        depth_desc.Format = readable_depth
+            ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_desc.SampleDesc.Count = presenter->msaa;
+        depth_desc.Usage = D3D11_USAGE_DEFAULT;
+        depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL |
+            (readable_depth ? D3D11_BIND_SHADER_RESOURCE : 0u);
+        result = presenter->device->CreateTexture2D(
+            &depth_desc, nullptr, &presenter->depth_texture);
+        D3D11_DEPTH_STENCIL_VIEW_DESC depth_view_desc{};
+        depth_view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_view_desc.ViewDimension = presenter->msaa > 1u
+            ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (SUCCEEDED(result)) {
+            result = presenter->device->CreateDepthStencilView(
+                presenter->depth_texture, readable_depth ? &depth_view_desc : nullptr,
+                &presenter->depth_view);
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC sample_desc{};
+        sample_desc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        sample_desc.ViewDimension = presenter->msaa > 1u
+            ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
+        sample_desc.Texture2D.MipLevels = 1u; // Ignored for Texture2DMS.
+        if (SUCCEEDED(result) && readable_depth) {
+            result = presenter->device->CreateShaderResourceView(
+                presenter->depth_texture, &sample_desc, &presenter->depth_sample);
+        }
+        if (SUCCEEDED(result) || !readable_depth) break;
+        std::fprintf(stderr, "recomp rtgi: readable depth unavailable hr=0x%08lX\n",
+            static_cast<unsigned long>(result));
+    }
     if (FAILED(result)) {
         return result;
     }
-    result = presenter->device->CreateDepthStencilView(
-        presenter->depth_texture, nullptr, &presenter->depth_view);
-    if (FAILED(result)) {
-        return result;
+#ifdef RECOMP_RTGI
+    if (presenter->depth_sample != nullptr) {
+        presenter->rtgi = d3d_rtgi_create(
+            presenter->device, mainWidth(presenter), mainHeight(presenter));
+        if (presenter->rtgi != nullptr) {
+            std::fprintf(stderr, "recomp rtgi: enabled at %ux%u\n",
+                mainWidth(presenter), mainHeight(presenter));
+        }
     }
+#endif
 
     presenter->context->OMSetRenderTargets(
         1u, &presenter->render_target_view, presenter->depth_view);
@@ -3941,6 +3991,25 @@ void recordFrameStatistics(RecompD3dPresenter *presenter,
     presenter->last_stat_present = stats.PresentCount;
     presenter->last_stat_refresh = stats.PresentRefreshCount;
 }
+#ifdef RECOMP_RTGI
+/* Lights the frame's 3D scene once, before its screen-space UI. The GI pass
+   clears context state; every draw and clear rebinds what it uses. */
+void applyRtgi(RecompD3dPresenter *presenter)
+{
+    RecompD3dTextureDesc desc{};
+    desc.format_byte = 0x12u;
+    desc.linear = true;
+    desc.width = presenter->config.width;
+    desc.height = presenter->config.height;
+    ID3D11ShaderResourceView *color = lookupBackBufferTexture(presenter, desc);
+    if (color != nullptr) {
+        d3d_rtgi_apply(presenter->rtgi, presenter->context, presenter->render_target_view,
+            color, presenter->depth_sample, presenter->msaa);
+    }
+    presenter->rtgi_pending = false;
+    presenter->rtgi_applied = true;
+}
+#endif
 
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
@@ -3975,6 +4044,10 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
+#ifdef RECOMP_RTGI
+    if (presenter->rtgi_pending) applyRtgi(presenter);
+    presenter->rtgi_applied = false;
+#endif
     if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
             ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4193,6 +4266,14 @@ RecompD3dPresenterError d3d11_backend_create(
                 frequency.QuadPart);
         }
     }
+    const char *rtgi = std::getenv("RECOMP_D3D_RTGI");
+    created->rtgi_requested = rtgi != nullptr && std::strcmp(rtgi, "1") == 0;
+#ifndef RECOMP_RTGI
+    if (created->rtgi_requested) {
+        std::fprintf(stderr, "recomp rtgi: not built into this runner\n");
+        created->rtgi_requested = false;
+    }
+#endif
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);
@@ -4377,8 +4458,24 @@ RecompD3dPresenterError d3d11_backend_submit(
         presenter->sun.valid = false;
         presenter->sun.triangles = presenter->sun.epoch = 0;
         return submitPresent(presenter, command->data.present);
-    case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
-        return submitDraw(presenter, command->data.draw);
+    case RECOMP_D3D_PRESENTER_COMMAND_DRAW: {
+        const RecompD3dPresenterDrawCommand &draw = command->data.draw;
+#ifdef RECOMP_RTGI
+        RecompD3dVertexLayout layout{};
+        if (presenter->rtgi_pending && !draw.target.offscreen &&
+            recomp_d3d_fvf_layout(draw.fvf, &layout) && layout.pretransformed) {
+            applyRtgi(presenter);
+        }
+#endif
+        const RecompD3dPresenterError result = submitDraw(presenter, draw);
+#ifdef RECOMP_RTGI
+        if (result == RECOMP_D3D_PRESENTER_OK && presenter->rtgi != nullptr &&
+            !presenter->rtgi_applied && d3d_rtgi_add_draw(presenter->rtgi, draw)) {
+            presenter->rtgi_pending = true;
+        }
+#endif
+        return result;
+    }
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }

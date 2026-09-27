@@ -314,25 +314,26 @@ slot_trace_done:
 }
 
 /* Xbox blend modes 1/3/5 consume 1/2/3 explicit weights and the
-   remaining weight. The game's matrix table selects WORLD0..WORLD3. */
+   remaining weight. The game's matrix table selects WORLD0..WORLD3. Also
+   records the world and view-projection matrices for host ray tracing. */
 static bool compose_blend_transforms(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dVertexLayout layout;
-    float view[16], projection[16], view_projection[16];
+    float view[16], projection[16];
 
-    if (!recomp_d3d_fvf_layout(draw->fvf, &layout)) return false;
+    if (!recomp_d3d_fvf_layout(draw->fvf, &layout) ||
+        !read_transform(device, D3D_TRANSFORM_WORLD, draw->world[0]) ||
+        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
+    multiply_transform(view, projection, draw->view_projection);
     draw->blend_weight_count = 0u;
     if (layout.blend_weight_count == 0u ||
         *recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) == 0u) return true;
     draw->blend_weight_count = layout.blend_weight_count;
-    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u ||
-        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
-        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
-    multiply_transform(view, projection, view_projection);
+    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u) return false;
     for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
-        float world[16];
-        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, world)) return false;
-        multiply_transform(world, view_projection, draw->blend_transforms[i]);
+        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, draw->world[i + 1u])) return false;
+        multiply_transform(draw->world[i + 1u], draw->view_projection, draw->blend_transforms[i]);
     }
     return true;
 }
