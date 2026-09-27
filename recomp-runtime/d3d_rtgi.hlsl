@@ -10,6 +10,12 @@ Texture2D<float4> surfaceNormal : register(t8);
 Texture2D<float4> previousNormal : register(t9);
 StructuredBuffer<float3> positions : register(t10);
 StructuredBuffer<uint> indices : register(t11);
+StructuredBuffer<float2> uvs : register(t12);
+StructuredBuffer<uint> triangles : register(t13);
+struct Material { uint slice; uint test; float alpha; float factor; };
+StructuredBuffer<Material> materials : register(t14);
+Texture2DArray<float> alphaImage : register(t15);
+SamplerState alphaWrap : register(s0);
 RWTexture2D<float4> traceOutput : register(u0);
 RWTexture2D<float4> historyOutput : register(u1);
 RWTexture2D<float4> giOutput : register(u2);
@@ -30,6 +36,12 @@ cbuffer Frame : register(b0) {
 };
 
 cbuffer Filter : register(b1) { uint filterStep; };
+
+// World units are metres. The sky shell sits kilometres out; a body is ~1.7 m.
+// Decals, wet sand and shadow layers lie millimetres above the surface below
+// them; hits nearer than layerDistance are those layers, not occluders.
+static const float skyDistance = 200, contactDistance = 0.5, layerDistance = 0.05;
+static const float skyLevel = 0.5;
 
 float luminance(float3 color) { return dot(color, float3(0.2126, 0.7152, 0.0722)); }
 
@@ -88,6 +100,33 @@ bool depthAgrees(float a, float b)
     return b < 1 && abs(a - b) <= max(2e-5, 0.025 * (1 - a));
 }
 
+float alphaUV(float uv, uint mode)
+{
+    if (mode == 0) return uv;
+    if (mode == 1) uv = 1 - abs(2 * frac(uv * 0.5) - 1);
+    // Clamp to atlas texel centers so the wrap sampler cannot cross an edge.
+    return clamp(uv, 0.5 / 256, 1 - 0.5 / 256);
+}
+
+bool alphaPass(uint primitive, float2 barycentrics)
+{
+    uint index = triangles[primitive];
+    if (index == 0xffffffff) return true;
+    Material material = materials[index];
+    uint first = 3 * primitive;
+    float2 a = uvs[indices[first]], b = uvs[indices[first + 1]], c = uvs[indices[first + 2]];
+    float2 uv = a + barycentrics.x * (b - a) + barycentrics.y * (c - a);
+    uv = float2(alphaUV(uv.x, (material.test >> 11) & 3), alphaUV(uv.y, (material.test >> 13) & 3));
+    precise float alpha = alphaImage.SampleLevel(alphaWrap, float3(uv, material.slice), 0);
+    alpha = (material.test & (1u << 15)) ? material.alpha : alpha * material.alpha;
+    alpha = (material.test & (1u << 16)) ? material.factor : alpha * material.factor;
+    alpha = round(saturate(alpha) * 255);
+    uint func = material.test & 7, ref = (material.test >> 3) & 255;
+    return func == 7 || (func == 1 && alpha < ref) || (func == 2 && alpha == ref) ||
+        (func == 3 && alpha <= ref) || (func == 4 && alpha > ref) ||
+        (func == 5 && alpha != ref) || (func == 6 && alpha >= ref);
+}
+
 void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal)
 {
     float2 uv = (float2(p) + 0.5) / size;
@@ -102,9 +141,13 @@ void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal
     ray.Direction = normalize(midClip.xyz / midClip.w - nearPoint);
     ray.TMin = eyePosition.w != 0 ? length(nearPoint) : 0;
     ray.TMax = 1e7;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
     query.TraceRayInline(scene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {}
+    while (query.Proceed()) {
+        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+            alphaPass(query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics()))
+            query.CommitNonOpaqueTriangleHit();
+    }
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return;
     uint first = 3 * query.CommittedPrimitiveIndex();
     float3 a = positions[indices[first]], b = positions[indices[first + 1]], c = positions[indices[first + 2]];
@@ -138,7 +181,11 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
             length(worldPosition(bounded(p + int2(0, 1)), d) - reconstructed));
         positionOutput[p] = float4(world, d);
         normalOutput[p] = float4(n, pixelSize);
-        if (dot(n, n) < 0.5) { traceOutput[p] = 0; return; }
+        // The sky dome and far horizon keep the game's own shading.
+        if (dot(n, n) < 0.5 || length(world - worldPosition(p, 0)) > skyDistance) {
+            traceOutput[p] = 0;
+            return;
+        }
         uint seed = hash(thread.x + thread.y * size.x + hash(frameIndex));
         float2 random = float2(hash(seed), hash(seed ^ 0x9e3779b9)) / 4294967296.0;
         float radius = sqrt(random.x), angle = 6.28318530718 * random.y;
@@ -149,15 +196,24 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
         // Also covers sample-0 depth falling below the surface in the fallback.
         ray.Origin = world + n * max(0.0001, pixelSize * 0.5);
         ray.Direction = direction;
-        ray.TMin = 0;
+        ray.TMin = layerDistance;
         ray.TMax = 1e7;
-        RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+        // A ray leaving a surface inside an overlapping mesh, such as an arm at the
+        // elbow, sees only that mesh's back faces, which must not occlude it.
+        RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
         query.TraceRayInline(scene, RAY_FLAG_NONE, 0xff, ray);
-        while (query.Proceed()) {}
-        if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+        while (query.Proceed()) {
+            if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
+                alphaPass(query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics()))
+                query.CommitNonOpaqueTriangleHit();
+        }
+        // Signed change from open sky, which the game's ambient already lights.
+        // The sky dome and cloud cards write depth, so distant hits count as sky.
+        if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT && query.CommittedRayT() < skyDistance) {
             float3 hit = ray.Origin + direction * query.CommittedRayT();
             float2 uv;
             float hitDepth;
+            bool lit = false;
             if (project(hit, viewProjection, uv, hitDepth)) {
                 uint first = 3 * query.CommittedPrimitiveIndex();
                 float3 a = positions[indices[first]], b = positions[indices[first + 1]];
@@ -166,13 +222,15 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
                 // far side would otherwise borrow its lit near side's color.
                 bool seen = dot(hitNormal, unproject(uv, 0) - hit) * dot(hitNormal, direction) < 0;
                 int2 samplePixel = int2(uv * size);
-                if (seen && depthAgrees(hitDepth, depthImage[samplePixel]))
-                    radiance = colorImage[samplePixel].rgb;
+                if (seen && depthAgrees(hitDepth, depthImage[samplePixel])) {
+                    radiance = colorImage[samplePixel].rgb - skyLevel;
+                    lit = true;
+                }
             }
+            // A hidden occluder close by, such as a body over sand, blocks the sky.
+            if (!lit) radiance = -skyLevel * saturate(1 - query.CommittedRayT() / contactDistance);
         }
     }
-    // Bound a rare bright ray without changing its hue or the composite strength.
-    radiance *= min(1, 0.75 / max(luminance(radiance), 1e-6));
     traceOutput[p] = float4(radiance, d < 1 ? 1 : 0);
 }
 
@@ -204,7 +262,7 @@ void temporalMain(uint3 thread : SV_DispatchThreadID)
     }
     mean /= max(total, 1);
     float3 sigma = sqrt(max(0, secondMoment / max(total, 1) - mean * mean));
-    float3 low = max(0, mean - 2 * sigma), high = mean + 2 * sigma;
+    float3 low = mean - 2 * sigma, high = mean + 2 * sigma;
     float4 result = tracedGI[p];
     if (historyValid) {
         float2 uv;

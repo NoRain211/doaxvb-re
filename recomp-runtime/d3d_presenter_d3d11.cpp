@@ -3278,6 +3278,16 @@ RecompD3dPresenterError submitDraw(
     }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
     if (sun.casting) return RECOMP_D3D_PRESENTER_OK;
+#ifdef RECOMP_RTGI
+    /* Render-target and backbuffer views change within a frame, so their
+       draws trace as opaque. */
+    if (presenter->rtgi != nullptr && !presenter->rtgi_applied &&
+        d3d_rtgi_add_draw(presenter->rtgi, draw,
+            draw.texture_is_backbuffer || draw.texture.render_target ? nullptr : texture_view,
+            draw.has_alpha_mask && !draw.alpha_mask.render_target ? mask_view : nullptr)) {
+        presenter->rtgi_pending = true;
+    }
+#endif
     static const char *program_dump = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
     static unsigned program_dump_count = 0;
     if (draw.program_count && program_dump && program_dump_count < 2 &&
@@ -4467,14 +4477,7 @@ RecompD3dPresenterError d3d11_backend_submit(
             applyRtgi(presenter);
         }
 #endif
-        const RecompD3dPresenterError result = submitDraw(presenter, draw);
-#ifdef RECOMP_RTGI
-        if (result == RECOMP_D3D_PRESENTER_OK && presenter->rtgi != nullptr &&
-            !presenter->rtgi_applied && d3d_rtgi_add_draw(presenter->rtgi, draw)) {
-            presenter->rtgi_pending = true;
-        }
-#endif
-        return result;
+        return submitDraw(presenter, draw);
     }
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;

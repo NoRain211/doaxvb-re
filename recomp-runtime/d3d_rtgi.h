@@ -20,11 +20,18 @@ void d3d_rtgi_destroy(D3dRtgi *rtgi);
 /* Adds one draw to this frame's scene. Keeps only main-target, depth-writing,
    transformed triangle draws and copies what it needs before returning.
    Returns true when the draw joined the scene. */
-bool d3d_rtgi_add_draw(D3dRtgi *rtgi, const RecompD3dPresenterDrawCommand &draw);
+/* texture: the stage-0 view the D3D11 path sampled for this draw, or null when it
+   had none or the view holds render-target/backbuffer content. alphaMask: the
+   separate alpha-mask view when draw.has_alpha_mask, else null. RTGI keeps its own
+   references to views it still needs; callers keep ownership of theirs. With
+   null views, or alpha testing off, the draw's triangles are opaque. */
+bool d3d_rtgi_add_draw(D3dRtgi *rtgi, const RecompD3dPresenterDrawCommand &draw,
+    ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask);
 
-/* Traces the recorded scene and adds indirect light to target in place, per
-   sample: target = target * (1 + strength * gi). Sky pixels (depth 1) and
-   target alpha stay unchanged. The caller runs this before drawing the
+/* Traces the recorded scene and relights target in place, per sample:
+   target *= 1 + strength * gi, where gi is the signed change from open sky:
+   nearby occluders darken and lit surfaces bounce light. Sky pixels (depth 1)
+   and target alpha stay unchanged. The caller runs this before drawing the
    frame's screen-space UI so the UI is not lit.
    target: the main render target (B8G8R8A8_UNORM, width x height, may be
    multisampled).
