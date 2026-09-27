@@ -24,8 +24,12 @@
 #include "rtgi_spatial_shader.h"
 
 using Microsoft::WRL::ComPtr;
+using DirectX::XMFLOAT2;
 using DirectX::XMFLOAT3;
 using DirectX::XMFLOAT4X4;
+
+constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 20;
+constexpr uint32_t opaqueMaterial = UINT32_MAX;
 
 struct RtgiError { HRESULT result; const char *operation; };
 
@@ -46,9 +50,23 @@ struct RtgiSlot {
     ComPtr<ID3D12GraphicsCommandList4> commands;
     ComPtr<ID3D12DescriptorHeap> descriptors;
     ComPtr<ID3D12Resource> vertices, indices, instances, constants;
+    ComPtr<ID3D12Resource> uvs, triangles, materials;
     ComPtr<ID3D12Resource> bottom, top, scratch;
     UINT64 completion = 0;
 };
+
+struct RtgiAlphaSlice {
+    ComPtr<ID3D11ShaderResourceView> source;
+    ComPtr<ID3D11RenderTargetView> target;
+    UINT64 used = UINT64_MAX;
+    bool dirty = false, mutableSource = false;
+};
+
+struct RtgiMaterial {
+    uint32_t slice, test;
+    float alpha, factor;
+};
+static_assert(sizeof(RtgiMaterial) == 16, "HLSL material layout");
 
 struct D3dRtgi {
     ComPtr<ID3D11Device5> device11;
@@ -61,19 +79,26 @@ struct D3dRtgi {
     ComPtr<ID3D12PipelineState> trace, temporal, spatial;
     ComPtr<ID3D11VertexShader> fullscreen;
     ComPtr<ID3D11PixelShader> reduce[2], composite[2];
+    ComPtr<ID3D11PixelShader> copyAlpha;
     ComPtr<ID3D11SamplerState> linear;
     ComPtr<ID3D11BlendState> blend;
     ComPtr<ID3D11Buffer> constants11;
     RtgiTexture depth, color, gi, raw, filtered, history[2], position[2], normal[2];
+    RtgiTexture alpha;
+    RtgiAlphaSlice alphaCache[alphaSlices];
     RtgiSlot slots[3];
     std::vector<XMFLOAT3> positions;
     std::vector<uint32_t> indices;
+    std::vector<XMFLOAT2> uvs;
+    std::vector<uint32_t> triangles;
+    std::vector<RtgiMaterial> materials;
     XMFLOAT4X4 camera{}, previousCamera{};
     size_t cameraTriangles = 0;
     UINT width = 0, height = 0, halfWidth = 0, halfHeight = 0;
     UINT64 frame = 0, readyValue = 0, doneValue = 0;
+    UINT64 capture = 0;
     float strength = 1;
-    bool failed = false, historyValid = false;
+    bool failed = false, historyValid = false, alphaFullLogged = false;
 };
 
 static void fail(D3dRtgi &r, const char *operation, HRESULT result = E_FAIL)
@@ -132,15 +157,17 @@ static void upload(D3dRtgi &r, ComPtr<ID3D12Resource> &resource, const void *dat
     resource->Unmap(0, &written);
 }
 
-static void texture(D3dRtgi &r, RtgiTexture &t, DXGI_FORMAT format, bool shared, bool renderTarget)
+static void texture(D3dRtgi &r, RtgiTexture &t, DXGI_FORMAT format, bool shared, bool renderTarget,
+    UINT width = 0, UINT height = 0, UINT layers = 1)
 {
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = r.halfWidth;
-    desc.Height = r.halfHeight;
-    desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+    desc.Width = width ? width : r.halfWidth;
+    desc.Height = height ? height : r.halfHeight;
+    desc.DepthOrArraySize = UINT16(layers);
+    desc.MipLevels = desc.SampleDesc.Count = 1;
     desc.Format = format;
     desc.Flags = renderTarget ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET :
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -157,7 +184,7 @@ static void texture(D3dRtgi &r, RtgiTexture &t, DXGI_FORMAT format, bool shared,
     CloseHandle(handle);
     check(opened, "open shared texture in D3D11");
     check(r.device11->CreateShaderResourceView(t.imported.Get(), nullptr, &t.srv), "create shared SRV");
-    if (renderTarget)
+    if (renderTarget && layers == 1)
         check(r.device11->CreateRenderTargetView(t.imported.Get(), nullptr, &t.rtv), "create shared RTV");
 }
 
@@ -171,6 +198,7 @@ Texture2D<float> depthImage : register(t1);
 float readDepth(int2 p) { return depthImage.Load(int3(p, 0)); }
 #endif
 Texture2D<float4> giImage : register(t2);
+Texture2D<float> halfDepth : register(t3);
 SamplerState linearClamp : register(s0);
 cbuffer Frame : register(b0) { float2 fullSize; float strength; float split; };
 struct Vertex { float4 position : SV_Position; float2 uv : TEXCOORD0; };
@@ -180,6 +208,7 @@ Vertex vs(uint id : SV_VertexID) {
     v.position = float4(v.uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return v;
 }
+float alphaPS(Vertex v) : SV_Target { return colorImage.SampleLevel(linearClamp, v.uv, 0).a; }
 struct Reduced { float depth : SV_Target0; float4 color : SV_Target1; };
 Reduced reducePS(Vertex v) {
     int2 p = min(int2(v.uv * fullSize), int2(fullSize) - 1);
@@ -188,19 +217,50 @@ Reduced reducePS(Vertex v) {
     output.color = colorImage.Load(int3(p, 0));
     return output;
 }
-float4 compositePS(Vertex v, uint sampleIndex : SV_SampleIndex) : SV_Target {
+// Dual-source blend: target *= scale + add. Unchanged is exactly scale 1, add 0.
+struct Gain { float4 add : SV_Target0; float4 scale : SV_Target1; };
+Gain compositePS(Vertex v, uint sampleIndex : SV_SampleIndex) {
     int2 p = int2(v.position.xy);
 #if MULTISAMPLED
     float depth = depthImage.Load(p, sampleIndex);
 #else
     float depth = readDepth(p);
 #endif
-    if (depth >= 1 || v.uv.x < split) return 0;
-    // The 8-bit target cannot exceed white: fade the gain as the brightest
+    Gain gain = {float4(0, 0, 0, 0), float4(1, 1, 1, 1)};
+    if (depth >= 1 || v.uv.x < split) return gain;
+    // The 8-bit target cannot exceed white: fade brightening as the brightest
     // channel nears 1 so bright walls keep their texture and hue.
     float3 base = colorImage.SampleLevel(linearClamp, v.uv, 0).rgb;
     float headroom = saturate(1 - max(base.r, max(base.g, base.b)));
-    return float4(strength * headroom * giImage.SampleLevel(linearClamp, v.uv, 0).rgb, 0);
+    // Bilinear upsampling that skips half-resolution texels from another surface,
+    // so light behind a silhouette does not bleed across it.
+    float2 halfSize = ceil(fullSize * 0.5);
+    float2 at = v.uv * halfSize - 0.5;
+    int2 corner = int2(floor(at));
+    float2 f = at - corner;
+    float3 sum = 0;
+    float total = 0;
+    bool agrees = false;
+    // A half-resolution texel sits up to two pixels away, so allow the local
+    // depth slope over that distance on steep or grazing surfaces.
+    float tolerance = max(max(2e-5, 0.025 * (1 - depth)), 4 * (abs(ddx(depth)) + abs(ddy(depth))));
+    [unroll] for (int i = 0; i < 4; ++i) {
+        int2 offset = int2(i & 1, i >> 1);
+        int2 q = clamp(corner + offset, int2(0, 0), int2(halfSize) - 1);
+        float other = halfDepth.Load(int3(q, 0));
+        bool same = abs(other - depth) <= tolerance;
+        agrees = agrees || same;
+        float w = (offset.x ? f.x : 1 - f.x) * (offset.y ? f.y : 1 - f.y) * (same ? 1 : 1e-3);
+        sum += w * giImage.Load(int3(q, 0)).rgb;
+        total += w;
+    }
+    // A sliver narrower than a half-resolution texel has no light of its own;
+    // leaving it unchanged avoids a stepped halo of the surface behind it.
+    if (!agrees) return gain;
+    float3 change = strength * sum / max(total, 1e-6);
+    gain.add.rgb = saturate(change * headroom);
+    gain.scale.rgb = saturate(1 + min(change, 0));
+    return gain;
 }
 )";
 
@@ -258,8 +318,8 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     sharedFence(r.done12, r.done11);
 
     D3D12_DESCRIPTOR_RANGE ranges[2]{};
-    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 11, 1, 0, 0};
-    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 11};
+    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15, 1, 0, 0};
+    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 15};
     D3D12_ROOT_PARAMETER parameters[4]{};
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -270,6 +330,13 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     parameters[3].Constants = {1, 0, 1};
     rootDesc.NumParameters = 4;
     rootDesc.pParameters = parameters;
+    D3D12_STATIC_SAMPLER_DESC alphaSampler{};
+    alphaSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    alphaSampler.AddressU = alphaSampler.AddressV = alphaSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    alphaSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    alphaSampler.MaxLOD = D3D12_FLOAT32_MAX;
+    rootDesc.NumStaticSamplers = 1;
+    rootDesc.pStaticSamplers = &alphaSampler;
     ComPtr<ID3DBlob> blob, errors;
     check(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors),
         "serialize RTGI root signature");
@@ -292,7 +359,7 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
         check(slot.commands->Close(), "close initial command list");
         D3D12_DESCRIPTOR_HEAP_DESC desc{};
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = 4 * 16;
+        desc.NumDescriptors = 4 * frameDescriptors;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         check(r.device12->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&slot.descriptors)), "create frame descriptors");
     }
@@ -301,6 +368,17 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     texture(r, r.gi, DXGI_FORMAT_R16G16B16A16_FLOAT, true, false);
     texture(r, r.raw, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
     texture(r, r.filtered, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
+    // ponytail: 256-square alpha is enough for cutouts; raise the size if fine nets lose coverage.
+    texture(r, r.alpha, DXGI_FORMAT_R8_UNORM, true, true, alphaSize, alphaSize, alphaSlices);
+    for (UINT i = 0; i < alphaSlices; ++i) {
+        D3D11_RENDER_TARGET_VIEW_DESC view{};
+        view.Format = DXGI_FORMAT_R8_UNORM;
+        view.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+        view.Texture2DArray.FirstArraySlice = i;
+        view.Texture2DArray.ArraySize = 1;
+        check(device->CreateRenderTargetView(r.alpha.imported.Get(), &view,
+            &r.alphaCache[i].target), "create alpha slice target");
+    }
     for (unsigned i = 0; i < 2; ++i) {
         texture(r, r.history[i], DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
         texture(r, r.position[i], DXGI_FORMAT_R32G32B32A32_FLOAT, false, false);
@@ -309,6 +387,9 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     auto vs = compile11("vs", "vs_5_0", false);
     check(device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr,
         &r.fullscreen), "create fullscreen vertex shader");
+    auto alpha = compile11("alphaPS", "ps_5_0", false);
+    check(device->CreatePixelShader(alpha->GetBufferPointer(), alpha->GetBufferSize(), nullptr,
+        &r.copyAlpha), "create alpha copy shader");
     for (unsigned i = 0; i < 2; ++i) {
         auto reduce = compile11("reducePS", "ps_5_0", i != 0);
         auto composite = compile11("compositePS", "ps_5_0", i != 0);
@@ -335,7 +416,7 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     auto &target = blend.RenderTarget[0];
     target.BlendEnable = true;
     target.SrcBlend = D3D11_BLEND_DEST_COLOR;
-    target.DestBlend = D3D11_BLEND_ONE;
+    target.DestBlend = D3D11_BLEND_SRC1_COLOR;
     target.BlendOp = D3D11_BLEND_OP_ADD;
     target.SrcBlendAlpha = D3D11_BLEND_ZERO;
     target.DestBlendAlpha = D3D11_BLEND_ONE;
@@ -384,7 +465,44 @@ void d3d_rtgi_destroy(D3dRtgi *r)
     delete r;
 }
 
-bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw)
+static uint32_t alphaSlice(D3dRtgi &r, ID3D11ShaderResourceView *source)
+{
+    UINT oldest = alphaSlices;
+    for (UINT i = 0; i < alphaSlices; ++i) {
+        auto &slice = r.alphaCache[i];
+        if (slice.source.Get() == source) {
+            slice.used = r.capture;
+            slice.dirty |= slice.mutableSource;
+            return i;
+        }
+        if (slice.used != r.capture && (oldest == alphaSlices || !slice.source ||
+            (r.alphaCache[oldest].source && slice.used < r.alphaCache[oldest].used))) oldest = i;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+    source->GetDesc(&view);
+    if (view.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) return opaqueMaterial;
+    ComPtr<ID3D11Resource> resource;
+    ComPtr<ID3D11Texture2D> texture;
+    source->GetResource(&resource);
+    if (FAILED(resource.As(&texture))) return opaqueMaterial;
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    if (desc.BindFlags & D3D11_BIND_RENDER_TARGET) return opaqueMaterial;
+    if (oldest == alphaSlices) {
+        if (!r.alphaFullLogged) std::fprintf(stderr, "recomp rtgi: alpha cache full; excess draws trace opaque\n");
+        r.alphaFullLogged = true;
+        return opaqueMaterial;
+    }
+    auto &slice = r.alphaCache[oldest];
+    slice.source = source;
+    slice.used = r.capture;
+    slice.dirty = true;
+    slice.mutableSource = desc.Usage != D3D11_USAGE_IMMUTABLE;
+    return oldest;
+}
+
+bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
+    ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask)
 {
     // Vertex-program draws (water) move vertices in their program; WORLD alone would misplace them.
     if (!r || r->failed || !draw.has_transform || draw.target.offscreen || draw.program_count ||
@@ -396,8 +514,17 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw)
         draw.vertex_stride < 12 + 4 * layout.blend_weight_count ||
         uint64_t(r->positions.size()) + draw.vertex_count > UINT32_MAX) return false;
     for (float value : draw.view_projection) if (!std::isfinite(value)) return false;
-    const size_t base = r->positions.size(), firstIndex = r->indices.size();
+    const size_t base = r->positions.size(), firstIndex = r->indices.size(), firstMaterial = r->materials.size();
     try {
+        bool alphaTest = draw.depth.alpha_test_enable && texture &&
+            (!draw.has_alpha_mask || alphaMask) && layout.texcoord_count &&
+            uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
+            unsigned(draw.depth.alpha_func) < 8 && draw.depth.alpha_ref <= 255;
+        // ponytail: reflection and four-tap alpha need more than UV0; keep those draws opaque.
+        alphaTest &= !draw.has_reflection && !draw.four_tap_filter;
+        const auto &source = draw.has_alpha_mask ? draw.alpha_mask : draw.texture;
+        const XMFLOAT2 scale{source.linear && source.width ? 1.0f / source.width : 1.0f,
+            source.linear && source.height ? 1.0f / source.height : 1.0f};
         // ponytail: CPU skinning is sufficient here; move to compute above roughly 1M vertices/frame.
         for (uint32_t v = 0; v < draw.vertex_count; ++v) {
             const auto *bytes = static_cast<const unsigned char *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride;
@@ -416,9 +543,42 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw)
             }
             if (!std::isfinite(transformed.x) || !std::isfinite(transformed.y) || !std::isfinite(transformed.z)) {
                 r->positions.resize(base);
+                r->uvs.resize(base);
                 return false;
             }
             r->positions.push_back(transformed);
+            XMFLOAT2 uv{};
+            if (alphaTest) {
+                std::memcpy(&uv, bytes + layout.texcoord_offset, sizeof uv);
+                uv.x *= scale.x;
+                uv.y *= scale.y;
+                alphaTest = std::isfinite(uv.x) && std::isfinite(uv.y);
+            }
+            r->uvs.push_back(uv);
+        }
+        uint32_t material = opaqueMaterial;
+        if (alphaTest) {
+            RtgiMaterial value{opaqueMaterial, 0, 1, 1};
+            // ponytail: vertex diffuse alpha is 1; upload it if vertex-faded cutouts need tracing.
+            // The separate mask path bypasses material and texture-factor alpha in ps_main.
+            if (!draw.has_alpha_mask) {
+                value.alpha = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE
+                    ? 1.0f : draw.material_alpha;
+                if (draw.use_texture_factor || draw.modulate_texture_factor)
+                    value.factor = ((draw.texture_factor >> 24) & 255) / 255.0f;
+                if (draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE) value.test |= 1u << 15;
+                if (draw.use_texture_factor) value.test |= 1u << 16;
+            }
+            const auto address = [](uint32_t mode) { return mode == 2 ? 1u : mode == 3 || mode == 5 ? 2u : 0u; };
+            const UINT u = draw.has_alpha_mask ? 2 : address(draw.address_u);
+            const UINT v = draw.has_alpha_mask ? 2 : address(draw.address_v);
+            value.test |= UINT(draw.depth.alpha_func) | (draw.depth.alpha_ref << 3) | (u << 11) | (v << 13);
+            if (std::isfinite(value.alpha) && std::isfinite(value.factor))
+                value.slice = alphaSlice(*r, draw.has_alpha_mask ? alphaMask : texture);
+            if (value.slice != opaqueMaterial) {
+                material = UINT(r->materials.size());
+                r->materials.push_back(value);
+            }
         }
         const uint32_t triangles = std::min(draw.triangle_count,
             recomp_d3d_draw_triangle_count(draw.primitive_type, draw.index_count));
@@ -441,11 +601,23 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw)
             const auto pc = DirectX::XMLoadFloat3(&r->positions[base + c]);
             const auto area = DirectX::XMVector3Cross(DirectX::XMVectorSubtract(pb, pa), DirectX::XMVectorSubtract(pc, pa));
             if (!(DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(area)) > 0)) continue;
-            if (r->indices.size() > UINT32_MAX - 3) throw RtgiError{E_OUTOFMEMORY, "too many scene indices"};
+            if (r->indices.size() > UINT32_MAX - 6) throw RtgiError{E_OUTOFMEMORY, "too many scene indices"};
+            // Rays skip back faces, as DXR sees clockwise triangles from the front. Match
+            // the raster: CCW-front draws flip, and double-sided draws get both windings.
+            if (draw.cull_mode == RECOMP_D3D_CULL_CLOCKWISE) std::swap(b, c);
             r->indices.insert(r->indices.end(), {uint32_t(base + a), uint32_t(base + b), uint32_t(base + c)});
+            r->triangles.push_back(material);
+            if (draw.cull_mode == RECOMP_D3D_CULL_NONE) {
+                r->indices.insert(r->indices.end(), {uint32_t(base + a), uint32_t(base + c), uint32_t(base + b)});
+                r->triangles.push_back(material);
+            }
         }
         const size_t contributed = (r->indices.size() - firstIndex) / 3;
-        if (!contributed) r->positions.resize(base);
+        if (!contributed) {
+            r->positions.resize(base);
+            r->uvs.resize(base);
+            r->materials.resize(firstMaterial);
+        }
         if (contributed > r->cameraTriangles) {
             r->cameraTriangles = contributed;
             std::memcpy(&r->camera, draw.view_projection, sizeof r->camera);
@@ -454,7 +626,10 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw)
     } catch (const RtgiError &error) { fail(*r, error.operation, error.result); }
     catch (const std::exception &error) { fail(*r, error.what()); }
     r->positions.resize(base);
+    r->uvs.resize(base);
     r->indices.resize(firstIndex);
+    r->triangles.resize(firstIndex / 3);
+    r->materials.resize(firstMaterial);
     return false;
 }
 
@@ -479,9 +654,14 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
 {
     upload(r, slot.vertices, r.positions.data(), r.positions.size() * sizeof(XMFLOAT3));
     upload(r, slot.indices, r.indices.data(), r.indices.size() * sizeof(uint32_t));
+    upload(r, slot.uvs, r.uvs.data(), r.uvs.size() * sizeof(XMFLOAT2));
+    upload(r, slot.triangles, r.triangles.data(), r.triangles.size() * sizeof(uint32_t));
+    const RtgiMaterial empty{};
+    upload(r, slot.materials, r.materials.empty() ? &empty : r.materials.data(),
+        std::max(size_t(1), r.materials.size()) * sizeof(RtgiMaterial));
     D3D12_RAYTRACING_GEOMETRY_DESC geometry{};
     geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
     geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
     geometry.Triangles.VertexCount = UINT(r.positions.size());
     geometry.Triangles.VertexBuffer = {slot.vertices->GetGPUVirtualAddress(), sizeof(XMFLOAT3)};
@@ -573,10 +753,13 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
             r.device12->CreateShaderResourceView(resource, &view, descriptor);
             descriptor.ptr += stride;
         }
-        ID3D12Resource *geometry[] = {slot.vertices.Get(), slot.indices.Get()};
-        const UINT counts[] = {UINT(r.positions.size()), UINT(r.indices.size())};
-        const UINT sizes[] = {sizeof(XMFLOAT3), sizeof(uint32_t)};
-        for (unsigned i = 0; i < 2; ++i) {
+        ID3D12Resource *geometry[] = {slot.vertices.Get(), slot.indices.Get(), slot.uvs.Get(),
+            slot.triangles.Get(), slot.materials.Get()};
+        const UINT counts[] = {UINT(r.positions.size()), UINT(r.indices.size()), UINT(r.uvs.size()),
+            UINT(r.triangles.size()), UINT(std::max(size_t(1), r.materials.size()))};
+        const UINT sizes[] = {sizeof(XMFLOAT3), sizeof(uint32_t), sizeof(XMFLOAT2),
+            sizeof(uint32_t), sizeof(RtgiMaterial)};
+        for (unsigned i = 0; i < 5; ++i) {
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
             view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
             view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -585,6 +768,14 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
             r.device12->CreateShaderResourceView(geometry[i], &view, descriptor);
             descriptor.ptr += stride;
         }
+        D3D12_SHADER_RESOURCE_VIEW_DESC alpha{};
+        alpha.Format = DXGI_FORMAT_R8_UNORM;
+        alpha.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        alpha.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        alpha.Texture2DArray.MipLevels = 1;
+        alpha.Texture2DArray.ArraySize = alphaSlices;
+        r.device12->CreateShaderResourceView(r.alpha.resource.Get(), &alpha, descriptor);
+        descriptor.ptr += stride;
         for (unsigned i = 0; i < 5; ++i) {
             auto *resource = i == 2 ? filterOutputs[pass] : writes[i];
             D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
@@ -600,6 +791,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
     constexpr auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     for (unsigned i = 0; i < 4; ++i) transition(commands, reads[i], common, srv);
     transition(commands, reads[8], common, srv);
+    transition(commands, r.alpha.resource.Get(), common, srv);
     for (unsigned i : {0u, 1u, 3u, 4u}) transition(commands, writes[i], common, uav);
     commands->SetComputeRootSignature(r.root.Get());
     commands->SetDescriptorHeaps(1, slot.descriptors.GetAddressOf());
@@ -624,10 +816,11 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         commands->SetComputeRoot32BitConstant(3, 1u << pass, 0);
         commands->Dispatch(x, y, 1);
         transition(commands, filterOutputs[pass], uav, pass == 3 ? common : srv);
-        table.ptr += 16 * stride;
+        table.ptr += frameDescriptors * stride;
     }
     for (auto *resource : reads) transition(commands, resource, srv, common);
     transition(commands, r.filtered.resource.Get(), srv, common);
+    transition(commands, r.alpha.resource.Get(), srv, common);
 }
 
 static void fullscreen(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11PixelShader *shader,
@@ -673,6 +866,12 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
                 traceFrame(*r, slot, inverse);
                 check(slot.commands->Close(), "close frame commands");
 
+                for (auto &slice : r->alphaCache) {
+                    if (slice.used != r->capture || !slice.dirty) continue;
+                    fullscreen(*r, context, r->copyAlpha.Get(), alphaSize, alphaSize,
+                        slice.source.GetAddressOf(), 1, slice.target.GetAddressOf(), 1);
+                    slice.dirty = false;
+                }
                 ID3D11ShaderResourceView *inputs[] = {color, depth, r->gi.srv.Get()};
                 ID3D11RenderTargetView *targets[] = {r->depth.rtv.Get(), r->color.rtv.Get()};
                 fullscreen(*r, context, r->reduce[depthSamples > 1].Get(), r->halfWidth, r->halfHeight,
@@ -689,8 +888,9 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
                 check(r->context11->Wait(r->done11.Get(), doneValue), "D3D11 wait for GI");
                 // The reduced color stands in for the target, which cannot be read while bound.
                 inputs[0] = r->color.srv.Get();
+                ID3D11ShaderResourceView *compositeInputs[] = {inputs[0], inputs[1], inputs[2], r->depth.srv.Get()};
                 fullscreen(*r, context, r->composite[depthSamples > 1].Get(), r->width, r->height,
-                    inputs, 3, &target, 1, r->blend.Get());
+                    compositeInputs, 4, &target, 1, r->blend.Get());
                 check(r->context11->Signal(r->ready11.Get(), inputValue + 1), "signal GI consumed");
                 r->readyValue = inputValue + 1;
                 context->Flush();
@@ -707,6 +907,10 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
     if (r) {
         r->positions.clear();
         r->indices.clear();
+        r->uvs.clear();
+        r->triangles.clear();
+        r->materials.clear();
+        ++r->capture;
         r->cameraTriangles = 0;
         if (!applied) r->historyValid = false;
     }

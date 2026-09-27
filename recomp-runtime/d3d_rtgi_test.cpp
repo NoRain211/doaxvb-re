@@ -40,11 +40,12 @@ static void require(bool passed, const char *message)
 
 using Rtgi = std::unique_ptr<D3dRtgi, decltype(&d3d_rtgi_destroy)>;
 constexpr UINT width = 321, height = 241;
-struct Vertex { float x, y, z, weight; };
+struct Vertex { float x, y, z, weight, u, v; };
 struct Mesh {
     std::vector<Vertex> vertices;
     std::vector<uint16_t> indices;
     RecompD3dPresenterDrawCommand draw{};
+    ComPtr<ID3D11ShaderResourceView> texture;
     float color[4];
 };
 
@@ -64,7 +65,8 @@ static std::array<Mesh, 3> scene(bool baked)
         {12, 0, 5, 0.25f}, {0, 0, 5, 0.25f}};
     meshes[0].indices = baked ? std::vector<uint16_t>{0, 1, 2, 0, 2, 3} : std::vector<uint16_t>{0, 1, 2, 3};
     meshes[0].draw.primitive_type = baked ? 5 : 7;
-    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.35f;
+    // Positive bounce from the floor must leave the saturated wall unchanged.
+    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.65f;
     meshes[1].vertices = {{0, 0, -5, 0}, {0, 3, -5, 0}, {0, 0, 0, 0}, {0, 3, 0, 0}};
     meshes[1].indices = baked ? std::vector<uint16_t>{0, 1, 2, 2, 1, 3} : std::vector<uint16_t>{0, 1, 2, 3};
     meshes[1].draw.primitive_type = baked ? 5 : 6;
@@ -332,7 +334,7 @@ static void addScene(D3dRtgi *gi, std::array<Mesh, 3> &meshes, bool extras)
         mesh.draw.vertex_bytes = mesh.vertices.data();
         mesh.draw.index_bytes = mesh.indices.data();
         mesh.draw.index_count = UINT(mesh.indices.size());
-        require(d3d_rtgi_add_draw(gi, mesh.draw) == !mesh.indices.empty(), "add_draw acceptance mismatch");
+        require(d3d_rtgi_add_draw(gi, mesh.draw, mesh.texture.Get(), nullptr) == !mesh.indices.empty(), "add_draw acceptance mismatch");
     }
     if (!extras) return;
     // All these must be ignored, including their deliberately different camera.
@@ -341,26 +343,26 @@ static void addScene(D3dRtgi *gi, std::array<Mesh, 3> &meshes, bool extras)
     draw.world[1][12] = 4;
     draw.view_projection[12] += 100;
     draw.target.offscreen = true;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted offscreen draw");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted offscreen draw");
     draw.target.offscreen = false;
     draw.depth.depth_write_enable = false;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted non-depth-writing draw");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted non-depth-writing draw");
     draw.depth.depth_write_enable = true;
     draw.has_transform = false;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted untransformed draw");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted untransformed draw");
     draw.has_transform = true;
     draw.fvf = 0x004;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted pretransformed draw");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted pretransformed draw");
     draw.fvf = 0x006;
     draw.program_count = 1;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted vertex-program draw");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted vertex-program draw");
     draw.program_count = 0;
     draw.primitive_type = 4;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted non-triangle draw");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted non-triangle draw");
     draw.primitive_type = 5;
     const uint16_t invalid[] = {0, 1, 65000, 0, 0, 1};
     draw.index_bytes = invalid;
-    require(!d3d_rtgi_add_draw(gi, draw), "accepted invalid triangles");
+    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted invalid triangles");
 }
 
 static void apply(D3dRtgi *gi, Renderer &r)
@@ -457,8 +459,10 @@ static bool verifyHistory(Renderer &renderer)
     auto input = readback(renderer, renderer.colorSRV.Get());
     const auto moving = readTarget(renderer);
     const size_t nearPixel = pixelAt(1, 0, 1, camera(0.6f));
+    // The red wall brightens red and occludes green/blue after reprojection.
     bool passed = int(moving[nearPixel][2]) > input[nearPixel][2] + 4 &&
-        moving[nearPixel][1] == input[nearPixel][1];
+        int(moving[nearPixel][1]) < input[nearPixel][1] - 4 &&
+        int(moving[nearPixel][0]) < input[nearPixel][0] - 4;
     meshes[0].indices.clear();
     renderer.render(meshes);
     addScene(gi.get(), meshes, false);
@@ -496,29 +500,34 @@ static bool verifySamples(Renderer &renderer)
 
 static bool verifyBanding(Renderer &renderer)
 {
+    // Red radiance is now 1 - 0.5; double strength to retain the reference signal.
+    require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "3") == 0, "set banding strength");
     auto meshes = scene(true);
+    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.35f;
     // A shallow perspective view with a tiny near plane makes D24 steps large
     // compared with the floor's projected slope. The wall spans the full width
     // with no material or geometry boundaries inside the measured region.
-    meshes[0].vertices = {{-10000, 0, 100, 0}, {10000, 0, 100, 0},
-        {10000, 0, 950, 0}, {-10000, 0, 950, 0}};
-    meshes[1].vertices = {{-10000, 0, 950, 0}, {-10000, 1000, 950, 0},
-        {10000, 0, 950, 0}, {10000, 1000, 950, 0}};
+    // Scale scene and frustum together: retain D24 stress within skyDistance.
+    meshes[0].vertices = {{-1000, 0, 10, 0}, {1000, 0, 10, 0},
+        {1000, 0, 95, 0}, {-1000, 0, 95, 0}};
+    meshes[1].vertices = {{-1000, 0, 95, 0}, {-1000, 100, 95, 0},
+        {1000, 0, 95, 0}, {1000, 100, 95, 0}};
     meshes[2].indices.clear();
     XMFLOAT4X4 matrix;
-    const auto view = XMMatrixLookAtLH(XMVectorSet(0, 20, 0, 1),
-        XMVectorSet(0, 0, 1000, 1), XMVectorSet(0, 1, 0, 0));
+    const auto view = XMMatrixLookAtLH(XMVectorSet(0, 2, 0, 1),
+        XMVectorSet(0, 0, 100, 1), XMVectorSet(0, 1, 0, 0));
     XMStoreFloat4x4(&matrix, view *
-        XMMatrixPerspectiveFovLH(0.16f, float(width) / height, 0.0002f, 20000));
+        XMMatrixPerspectiveFovLH(0.16f, float(width) / height, 0.00002f, 2000));
     for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &matrix, sizeof matrix);
     renderer.render(meshes);
     const auto input = readTarget(renderer);
     const auto output = runFrames(renderer, meshes, false, 96);
-    XMStoreFloat4x4(&matrix, view * XMMatrixPerspectiveFovLH(0.16f, float(width) / height, 1, 20000));
+    XMStoreFloat4x4(&matrix, view * XMMatrixPerspectiveFovLH(0.16f, float(width) / height, 0.1f, 2000));
     for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &matrix, sizeof matrix);
     renderer.render(meshes);
     require(readTarget(renderer) == input, "near-plane reference changed raster color");
     const auto reference = runFrames(renderer, meshes, false, 96);
+    require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "1.5") == 0, "restore strength");
     double rowError = 0, stepError = 0, previousError = 0, gain = 0;
     unsigned rows = 0;
     // Stay inside the lit floor, excluding the wall seam and raster edges.
@@ -608,10 +617,14 @@ static double contribution(const std::array<uint8_t, 4> &input, const std::array
 static bool verifyMovingNoise(Renderer &r)
 {
     auto meshes = movingScene();
+    // White surroundings supply a positive signal without opposing RGB changes.
+    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 1;
+    meshes[1].color[1] = meshes[1].color[2] = 1;
     require(meshes[2].draw.triangle_count >= 200, "rounded fixture too small");
     Rtgi gi(d3d_rtgi_create(r.device, width, height), d3d_rtgi_destroy);
     require(bool(gi), "create moving noise module");
-    std::vector<double> previous(width * height, -1);
+    // -2 is outside the signed composite range, including complete occlusion.
+    std::vector<double> previous(width * height, -2);
     double spatial = 0, temporal = 0, gain = 0, temporalGain = 0;
     unsigned count = 0, temporalCount = 0;
     for (unsigned frame = 0; frame < 32; ++frame) {
@@ -621,7 +634,7 @@ static bool verifyMovingNoise(Renderer &r)
         addScene(gi.get(), meshes, false);
         apply(gi.get(), r);
         const auto output = readTarget(r);
-        std::vector<double> current(input.size(), -1);
+        std::vector<double> current(input.size(), -2);
         for (size_t p = 0; p < input.size(); ++p)
             if (input[p] == std::array<uint8_t, 4>{46, 61, 82, 255})
                 current[p] = contribution(input[p], output[p]);
@@ -631,27 +644,27 @@ static bool verifyMovingNoise(Renderer &r)
             bool interior = true;
             for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
                 const double value = current[size_t(int(y) + dy) * width + int(x) + dx];
-                interior &= value >= 0;
+                interior &= value != -2;
                 mean += value / 9;
             }
             if (!interior) continue;
             spatial += std::abs(current[p] - mean);
-            gain += current[p];
+            gain += std::abs(current[p]);
             ++count;
-            if (previous[p] >= 0) {
+            if (previous[p] != -2) {
                 temporal += std::abs(current[p] - previous[p]);
-                temporalGain += (current[p] + previous[p]) * 0.5;
+                temporalGain += (std::abs(current[p]) + std::abs(previous[p])) * 0.5;
                 ++temporalCount;
             }
         }
         previous = std::move(current);
     }
     require(count > 1000 && temporalCount > 1000 && gain / count > 0.025,
-        "moving noise fixture has no measurable bounce");
+        "moving noise fixture has no measurable change");
     spatial /= gain;
     temporal /= temporalGain;
     const bool passed = spatial < 0.02 && temporal < 0.09;
-    std::printf("%s RTGI %ux MSAA moving sphere: spatial=%.6f temporal=%.6f mean=%.6f pixels=%u (limits .02/.09)\n",
+    std::printf("%s RTGI %ux MSAA moving sphere: spatial=%.6f temporal=%.6f mean absolute change=%.6f pixels=%u (limits .02/.09)\n",
         passed ? "PASS" : "FAIL", r.samples, spatial, temporal, gain / count, count);
     return passed;
 }
@@ -660,10 +673,12 @@ static bool verifyFireflies(Renderer &r)
 {
     auto meshes = movingScene();
     meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.25f;
-    meshes[1].color[0] = meshes[1].color[1] = meshes[1].color[2] = 0.002f;
+    // Neutral sky-level surroundings leave the small white patch as the source.
+    meshes[1].color[0] = meshes[1].color[1] = meshes[1].color[2] = 0.5f;
     auto &patch = meshes[2];
-    patch.vertices = {{0.002f, 0.3f, -0.2f, 0}, {0.002f, 0.7f, -0.2f, 0},
-        {0.002f, 0.3f, 0.2f, 0}, {0.002f, 0.7f, 0.2f, 0}};
+    // Keep a rare source, but large enough for the halved radiance to exceed 1 LSB.
+    patch.vertices = {{0.002f, 0.3f, -0.4f, 0}, {0.002f, 1.1f, -0.4f, 0},
+        {0.002f, 0.3f, 0.4f, 0}, {0.002f, 1.1f, 0.4f, 0}};
     patch.indices = {0, 1, 2, 2, 1, 3};
     patch.draw.vertex_count = 4;
     patch.draw.triangle_count = 2;
@@ -679,11 +694,11 @@ static bool verifyFireflies(Renderer &r)
         addScene(gi.get(), meshes, false);
         apply(gi.get(), r);
         const auto output = readTarget(r);
-        std::vector<double> values(input.size(), -1);
+        std::vector<double> values(input.size(), -2);
         for (size_t p = 0; p < input.size(); ++p)
             if (input[p] == std::array<uint8_t, 4>{64, 64, 64, 255}) {
                 values[p] = contribution(input[p], output[p]);
-                total += values[p];
+                total += std::max(0.0, values[p]);
                 peak = std::max(peak, values[p]);
             }
         for (UINT y = 1; y + 1 < height; ++y) for (UINT x = 1; x + 1 < width; ++x) {
@@ -693,16 +708,99 @@ static bool verifyFireflies(Renderer &r)
             for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
                 if (!dx && !dy) continue;
                 const double value = values[size_t(int(y) + dy) * width + int(x) + dx];
-                interior &= value >= 0;
+                interior &= value != -2;
                 maximum = std::max(maximum, value);
             }
-            outliers += interior && values[p] > 0.03 && values[p] > 1.5 * maximum;
+            // A one-LSB rounding step can double a 1-LSB gain; require more than that.
+            outliers += interior && values[p] != -2 && values[p] > 0.03 &&
+                values[p] > 1.5 * maximum && values[p] - maximum > 1.0 / 64;
         }
     }
-    require(total > 1, "firefly fixture has no patch illumination");
-    const bool passed = outliers <= 2;
-    std::printf("%s RTGI %ux MSAA fireflies: isolated=%u peak=%.6f (limit 2 over 24 frames)\n",
-        passed ? "PASS" : "FAIL", r.samples, outliers, peak);
+    const bool passed = total > 1 && peak > 0.03 && outliers <= 2;
+    std::printf("%s RTGI %ux MSAA fireflies: isolated=%u peak=%.6f total=%.6f (limit 2 over 24 frames)\n",
+        passed ? "PASS" : "FAIL", r.samples, outliers, peak, total);
+    return passed;
+}
+
+static bool verifyOcclusion(Renderer &r)
+{
+    auto meshes = scene(true);
+    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.35f;
+    // The camera sees the white top; floor rays hit its hidden underside
+    // within the 0.5-unit contact falloff.
+    meshes[1].vertices = {{1, 0.2f, -2, 0}, {4, 0.2f, -2, 0},
+        {1, 0.2f, 2, 0}, {4, 0.2f, 2, 0}};
+    meshes[1].color[0] = meshes[1].color[1] = meshes[1].color[2] = 1;
+    meshes[2].indices.clear();
+    r.render(meshes);
+    const auto input = readTarget(r);
+    const auto output = runFrames(r, meshes, false, 24);
+    int minimum = 255, farError = 0;
+    // Floor under the occluder stays visible only within ~0.32 of its -z edge.
+    for (unsigned z = 0; z < 3; ++z) for (unsigned x = 0; x < 6; ++x) {
+        const size_t p = pixelAt(2 + x * 0.15f, 0, -1.96f + z * 0.06f, camera());
+        const size_t f = pixelAt(9 + x * 0.15f, 0, -1.96f + z * 0.06f, camera());
+        require(input[p] == std::array<uint8_t, 4>{89, 89, 89, 255}, "occlusion sample outside visible receiver");
+        require(input[f] == input[p], "occlusion control outside floor");
+        for (unsigned c = 0; c < 3; ++c)
+            minimum = std::min(minimum, int(input[p][c]) - output[p][c]);
+        for (unsigned c = 0; c < 4; ++c)
+            farError = std::max(farError, std::abs(int(input[f][c]) - output[f][c]));
+    }
+    const bool passed = minimum > 4 && farError <= 1;
+    std::printf("%s RTGI %ux MSAA hidden underside occlusion: minimum darkening=%d far error=%d (limits >4/1)\n",
+        passed ? "PASS" : "FAIL", r.samples, minimum, farError);
+    return passed;
+}
+
+static bool verifyCutouts(Renderer &r)
+{
+    auto meshes = scene(true);
+    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.35f;
+    auto &occluder = meshes[1];
+    occluder.vertices = {{1, 0.2f, -2, 0, 0, 0}, {10, 0.2f, -2, 0, 1, 0},
+        {1, 0.2f, 2, 0, 0, 1}, {10, 0.2f, 2, 0, 1, 1}};
+    occluder.color[0] = occluder.color[1] = occluder.color[2] = 1;
+    occluder.draw.fvf |= 0x100; // UV0 follows the unused blend weight.
+    occluder.draw.has_texture = true;
+    occluder.draw.depth.alpha_test_enable = true;
+    occluder.draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+    occluder.draw.depth.alpha_ref = 128;
+    meshes[2].indices.clear();
+    const uint32_t texels[] = {0xffffffff, 0x00ffffff};
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = 2;
+    desc.Height = desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA data{texels, sizeof texels, 0};
+    ComPtr<ID3D11Texture2D> texture;
+    check(r.device->CreateTexture2D(&desc, &data, &texture), "create cutout texture");
+    check(r.device->CreateShaderResourceView(texture.Get(), nullptr, &occluder.texture), "create cutout SRV");
+    r.render(meshes);
+    const auto input = readTarget(r);
+    const auto cutout = runFrames(r, meshes, false, 24);
+    occluder.draw.depth.alpha_test_enable = false;
+    r.render(meshes);
+    require(readTarget(r) == input, "alpha-test toggle changed raster color");
+    const auto solid = runFrames(r, meshes, false, 24);
+    int opaqueMinimum = 255, transparentError = 0, solidMinimum[2] = {255, 255};
+    // Both halves leave visible floor near -z; stay far from the alpha boundary.
+    for (unsigned half = 0; half < 2; ++half)
+        for (unsigned z = 0; z < 3; ++z) for (unsigned x = 0; x < 6; ++x) {
+            const size_t p = pixelAt(2 + half * 6 + x * 0.15f, 0, -1.96f + z * 0.06f, camera());
+            require(input[p] == std::array<uint8_t, 4>{89, 89, 89, 255}, "cutout sample outside visible receiver");
+            for (unsigned c = 0; c < 3; ++c) {
+                solidMinimum[half] = std::min(solidMinimum[half], int(input[p][c]) - solid[p][c]);
+                if (!half) opaqueMinimum = std::min(opaqueMinimum, int(input[p][c]) - cutout[p][c]);
+            }
+            if (half) for (unsigned c = 0; c < 4; ++c)
+                transparentError = std::max(transparentError, std::abs(int(input[p][c]) - cutout[p][c]));
+        }
+    const bool passed = opaqueMinimum > 4 && transparentError <= 1 && solidMinimum[0] > 4 && solidMinimum[1] > 4;
+    std::printf("%s RTGI %ux MSAA alpha cutouts: opaque darkening=%d transparent error=%d disabled darkening=%d/%d (limits >4/1/>4/>4)\n",
+        passed ? "PASS" : "FAIL", r.samples, opaqueMinimum, transparentError, solidMinimum[0], solidMinimum[1]);
     return passed;
 }
 
@@ -848,6 +946,8 @@ int main()
             passed = verifyBanding(renderer) && passed;
             passed = verifyMovingNoise(renderer) && passed;
             passed = verifyFireflies(renderer) && passed;
+            passed = verifyOcclusion(renderer) && passed;
+            passed = verifyCutouts(renderer) && passed;
         }
         passed = verifyGpuTime(device.Get(), context.Get()) && passed;
         passed = debugMessages(messages11.Get(), messages12.Get()) && passed;
