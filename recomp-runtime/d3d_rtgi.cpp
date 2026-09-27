@@ -28,7 +28,7 @@ using DirectX::XMFLOAT2;
 using DirectX::XMFLOAT3;
 using DirectX::XMFLOAT4X4;
 
-constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 20;
+constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 21;
 constexpr uint32_t opaqueMaterial = UINT32_MAX;
 
 struct RtgiError { HRESULT result; const char *operation; };
@@ -50,7 +50,7 @@ struct RtgiSlot {
     ComPtr<ID3D12GraphicsCommandList4> commands;
     ComPtr<ID3D12DescriptorHeap> descriptors;
     ComPtr<ID3D12Resource> vertices, indices, instances, constants;
-    ComPtr<ID3D12Resource> uvs, triangles, materials;
+    ComPtr<ID3D12Resource> uvs, triangles, materials, normals;
     ComPtr<ID3D12Resource> bottom, top, scratch;
     UINT64 completion = 0;
 };
@@ -88,6 +88,7 @@ struct D3dRtgi {
     RtgiAlphaSlice alphaCache[alphaSlices];
     RtgiSlot slots[3];
     std::vector<XMFLOAT3> positions;
+    std::vector<XMFLOAT3> normals;  // skinned vertex normals; zero when the draw has none
     std::vector<uint32_t> indices;
     std::vector<XMFLOAT2> uvs;
     std::vector<uint32_t> triangles;
@@ -318,8 +319,8 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     sharedFence(r.done12, r.done11);
 
     D3D12_DESCRIPTOR_RANGE ranges[2]{};
-    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15, 1, 0, 0};
-    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 15};
+    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 16, 1, 0, 0};
+    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 0, 0, 16};
     D3D12_ROOT_PARAMETER parameters[4]{};
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -531,7 +532,11 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             float p[3], weights[3]{};
             std::memcpy(p, bytes, sizeof p);
             std::memcpy(weights, bytes + 12, draw.blend_weight_count * sizeof(float));
-            XMFLOAT3 transformed{};
+            const bool hasNormal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
+                uint64_t(layout.normal_offset) + 12 <= draw.vertex_stride;
+            float n[3]{};
+            if (hasNormal) std::memcpy(n, bytes + layout.normal_offset, sizeof n);
+            XMFLOAT3 transformed{}, normal{};
             float remainder = 1;
             for (uint32_t i = 0; i <= draw.blend_weight_count; ++i) {
                 const float weight = i == draw.blend_weight_count ? remainder : weights[i];
@@ -540,13 +545,20 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                 transformed.x += weight * (p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12]);
                 transformed.y += weight * (p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13]);
                 transformed.z += weight * (p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14]);
+                // ponytail: the world 3x3 stands in for its inverse transpose; exact for rotation and uniform scale.
+                normal.x += weight * (n[0] * m[0] + n[1] * m[4] + n[2] * m[8]);
+                normal.y += weight * (n[0] * m[1] + n[1] * m[5] + n[2] * m[9]);
+                normal.z += weight * (n[0] * m[2] + n[1] * m[6] + n[2] * m[10]);
             }
             if (!std::isfinite(transformed.x) || !std::isfinite(transformed.y) || !std::isfinite(transformed.z)) {
                 r->positions.resize(base);
+                r->normals.resize(base);
                 r->uvs.resize(base);
                 return false;
             }
             r->positions.push_back(transformed);
+            if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) normal = {};
+            r->normals.push_back(normal);
             XMFLOAT2 uv{};
             if (alphaTest) {
                 std::memcpy(&uv, bytes + layout.texcoord_offset, sizeof uv);
@@ -615,6 +627,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         const size_t contributed = (r->indices.size() - firstIndex) / 3;
         if (!contributed) {
             r->positions.resize(base);
+            r->normals.resize(base);
             r->uvs.resize(base);
             r->materials.resize(firstMaterial);
         }
@@ -626,6 +639,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     } catch (const RtgiError &error) { fail(*r, error.operation, error.result); }
     catch (const std::exception &error) { fail(*r, error.what()); }
     r->positions.resize(base);
+    r->normals.resize(base);
     r->uvs.resize(base);
     r->indices.resize(firstIndex);
     r->triangles.resize(firstIndex / 3);
@@ -653,6 +667,7 @@ static void uavBarrier(ID3D12GraphicsCommandList *commands, ID3D12Resource *reso
 static void buildScene(D3dRtgi &r, RtgiSlot &slot)
 {
     upload(r, slot.vertices, r.positions.data(), r.positions.size() * sizeof(XMFLOAT3));
+    upload(r, slot.normals, r.normals.data(), r.normals.size() * sizeof(XMFLOAT3));
     upload(r, slot.indices, r.indices.data(), r.indices.size() * sizeof(uint32_t));
     upload(r, slot.uvs, r.uvs.data(), r.uvs.size() * sizeof(XMFLOAT2));
     upload(r, slot.triangles, r.triangles.data(), r.triangles.size() * sizeof(uint32_t));
@@ -754,12 +769,12 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
             descriptor.ptr += stride;
         }
         ID3D12Resource *geometry[] = {slot.vertices.Get(), slot.indices.Get(), slot.uvs.Get(),
-            slot.triangles.Get(), slot.materials.Get()};
+            slot.triangles.Get(), slot.materials.Get(), slot.normals.Get()};
         const UINT counts[] = {UINT(r.positions.size()), UINT(r.indices.size()), UINT(r.uvs.size()),
-            UINT(r.triangles.size()), UINT(std::max(size_t(1), r.materials.size()))};
+            UINT(r.triangles.size()), UINT(std::max(size_t(1), r.materials.size())), UINT(r.normals.size())};
         const UINT sizes[] = {sizeof(XMFLOAT3), sizeof(uint32_t), sizeof(XMFLOAT2),
-            sizeof(uint32_t), sizeof(RtgiMaterial)};
-        for (unsigned i = 0; i < 5; ++i) {
+            sizeof(uint32_t), sizeof(RtgiMaterial), sizeof(XMFLOAT3)};
+        for (unsigned i = 0; i < 6; ++i) {
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
             view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
             view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -906,6 +921,7 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
     }
     if (r) {
         r->positions.clear();
+        r->normals.clear();
         r->indices.clear();
         r->uvs.clear();
         r->triangles.clear();
