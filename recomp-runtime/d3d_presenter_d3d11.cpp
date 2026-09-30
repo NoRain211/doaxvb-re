@@ -3286,7 +3286,8 @@ RecompD3dPresenterError submitDraw(
     if (presenter->rtgi != nullptr && !presenter->rtgi_applied && !recomp_tuning.rtgi_off &&
         d3d_rtgi_add_draw(presenter->rtgi, draw,
             draw.texture_is_backbuffer || draw.texture.render_target ? nullptr : texture_view,
-            draw.has_alpha_mask && !draw.alpha_mask.render_target ? mask_view : nullptr)) {
+            draw.has_alpha_mask && !draw.alpha_mask.render_target ? mask_view : nullptr,
+            draw.plain_texture_material)) {
         presenter->rtgi_pending = true;
     }
 #endif

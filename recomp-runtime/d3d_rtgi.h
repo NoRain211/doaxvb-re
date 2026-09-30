@@ -26,9 +26,8 @@ void d3d_rtgi_destroy(D3dRtgi *rtgi);
    references to views it still needs; callers keep ownership of theirs. With
    null views, or alpha testing off, the draw's triangles are opaque. */
 /* colorMaterial opts into static single-texture modulation only after the caller
-   has ruled out original pixel shaders/unsupported combiners. The presenter
-   command currently lacks that classification, so production callers default
-   to contact fallback. RGB capture still excludes reflection, masks and RTs. */
+   has ruled out original pixel shaders/unsupported combiners; the presenter passes
+   draw.plain_texture_material. RGB capture still excludes reflection, masks and RTs. */
 bool d3d_rtgi_add_draw(D3dRtgi *rtgi, const RecompD3dPresenterDrawCommand &draw,
     ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask, bool colorMaterial = false);
 
