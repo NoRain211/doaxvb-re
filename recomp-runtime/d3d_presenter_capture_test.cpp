@@ -165,7 +165,14 @@ int main()
     value.data.draw.texture.format_byte = value.data.draw.alpha_mask.format_byte =
         value.data.draw.reflection_texture.format_byte = 0x12u;
     for (size_t i = 0u; i < sources.size(); ++i) value.data.draw.*fields[i] = sources[i].data();
+    value.data.draw.directional.world_transforms[3][14] = 12.0f;
+    value.data.draw.directional.positions[7][2] = 30.0f;
+    value.data.draw.directional.positions[7][3] = 1.0f;
+    value.data.draw.directional.attenuation[7][1] = 0.05f;
+    value.data.draw.directional.attenuation[7][3] = 100.0f;
+    const auto lighting = value.data.draw.directional;
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
+    value.data.draw.directional = {};
     value.data.draw.texture.format_byte = 0u; // swizzled: borrowed from guest RAM
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     for (auto field : fields) value.data.draw.*field = nullptr;
@@ -186,6 +193,7 @@ int main()
         CHECK(packet.command(5).data.draw.*fields[i] != sources[i].data());
         CHECK(packet.command(7).data.draw.*fields[i] == nullptr);
     }
+    CHECK(std::memcmp(&packet.command(5).data.draw.directional, &lighting, sizeof lighting) == 0);
     CHECK(packet.command(6).data.draw.texture_bytes == sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
     std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");

@@ -774,27 +774,39 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     memcpy(result.material_diffuse, mat, 16);
     for (uint32_t c=0; c<3; ++c)
         result.ambient_emissive[c] = mat[12+c] + mat[4+c] * ((ambient >> (16-8*c)) & 255u) / 255.0f;
-    /* ponytail: eight directional lights; point/spot and vertex-color sources retain their existing path. */
+    /* ponytail: eight directional/point lights; spot and vertex-color sources retain their existing path. */
     while (light) {
         if (result.count == 8) return;
         const uint8_t *bytes = guest_span(light, 0x90u);
         if (!bytes) return;
         uint32_t type, next; float data[36];
         memcpy(&type, bytes, 4); memcpy(data, bytes, sizeof data); memcpy(&next, bytes+0x8c, 4);
-        if (type != 3) return;
-        float length = data[16]*data[16]+data[17]*data[17]+data[18]*data[18];
-        if (!isfinite(length) || length <= 0) return;
-        length = sqrtf(length);
+        if (type != 1 && type != 3) return;
+        if (type == 1) {
+            if (!isfinite(data[19]) || data[19] < 0) return;
+            for (uint32_t c=0; c<3; ++c) {
+                if (!isfinite(data[13+c]) || !isfinite(data[21+c]) || data[21+c] < 0) return;
+                result.positions[result.count][c] = data[13+c];
+                result.attenuation[result.count][c] = data[21+c];
+            }
+            result.positions[result.count][3] = 1;
+            result.attenuation[result.count][3] = data[19];
+        } else {
+            float length = data[16]*data[16]+data[17]*data[17]+data[18]*data[18];
+            if (!isfinite(length) || length <= 0) return;
+            length = sqrtf(length);
+            for (uint32_t c=0; c<3; ++c)
+                result.directions[result.count][c] = -data[16+c]/length;
+        }
         for (uint32_t c=0; c<3; ++c) {
             if (!isfinite(data[1+c]) || !isfinite(data[9+c])) return;
-            result.directions[result.count][c] = -data[16+c]/length;
             result.colors[result.count][c] = data[1+c];
             result.ambient_emissive[c] += mat[4+c]*data[9+c];
         }
         ++result.count; light=next;
     }
     for (uint32_t i=0; i<=draw->blend_weight_count; ++i) {
-        float world[16];
+        float *world = result.world_transforms[i];
         if (!read_transform(device, D3D_TRANSFORM_WORLD+i, world) ||
             !recomp_d3d_normal_transform(world, result.normal_transforms[i])) return;
     }
