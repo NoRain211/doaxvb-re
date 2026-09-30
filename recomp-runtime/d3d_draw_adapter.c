@@ -989,6 +989,22 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
     }
     attach_fog(device, draw);
     attach_directional_lighting(device, draw);
+    {
+        const uint8_t *stage0 = guest_span(0x001f29b8u, 16u);
+        const uint8_t *stage1 = guest_span(0x001f2a38u, 4u);
+        const uint8_t *stage2 = guest_span(0x001f2ab8u, 4u);
+        const uint8_t *shader = guest_span(device + 0x370u, 4u);
+        if (stage0 && stage1 && stage2 && shader) {
+            uint32_t op[4], next, last, pixel_shader;
+            memcpy(op, stage0, sizeof op);
+            memcpy(&next, stage1, 4u); memcpy(&last, stage2, 4u);
+            memcpy(&pixel_shader, shader, 4u);
+            /* Xbox D3DTOP: 1 DISABLE, 4 MODULATE; D3DTA: 0 DIFFUSE, 2 TEXTURE. */
+            draw->plain_texture_material = pixel_shader == 0u &&
+                op[0] == 4u && op[2] == 2u && op[3] == 0u &&
+                (next == 1u || (draw->modulate_texture_factor && last == 1u));
+        }
+    }
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
     attach_backbuffer_texture(device, draw);
