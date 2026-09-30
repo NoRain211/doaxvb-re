@@ -47,6 +47,7 @@ struct Mesh {
     RecompD3dPresenterDrawCommand draw{};
     ComPtr<ID3D11ShaderResourceView> texture;
     float color[4];
+    bool colorMaterial = false;
 };
 
 static XMFLOAT4X4 camera(float shift = 0)
@@ -334,7 +335,7 @@ static void addScene(D3dRtgi *gi, std::array<Mesh, 3> &meshes, bool extras)
         mesh.draw.vertex_bytes = mesh.vertices.data();
         mesh.draw.index_bytes = mesh.indices.data();
         mesh.draw.index_count = UINT(mesh.indices.size());
-        require(d3d_rtgi_add_draw(gi, mesh.draw, mesh.texture.Get(), nullptr) == !mesh.indices.empty(), "add_draw acceptance mismatch");
+        require(d3d_rtgi_add_draw(gi, mesh.draw, mesh.texture.Get(), nullptr, mesh.colorMaterial) == !mesh.indices.empty(), "add_draw acceptance mismatch");
     }
     if (!extras) return;
     // All these must be ignored, including their deliberately different camera.
@@ -804,10 +805,139 @@ static bool verifyCutouts(Renderer &r)
     return passed;
 }
 
-static bool verifyGpuTime(ID3D11Device *device, ID3D11DeviceContext *context)
+// The wall is wholly outside this top-down camera, but its inward face is in
+// capture. Every floor sample is at least 1.5 units away (contact range is .5).
+static std::array<Mesh, 3> offscreenScene()
 {
-    Renderer r(device, context, 1, 1920, 1080);
-    auto meshes = movingScene();
+    auto meshes = scene(true);
+    meshes[0].vertices = {{-5, 0, -5, 0}, {5, 0, -5, 0}, {5, 0, 5, 0}, {-5, 0, 5, 0}};
+    meshes[0].color[0] = meshes[0].color[1] = meshes[0].color[2] = 0.5f;
+    auto &wall = meshes[1];
+    wall.vertices = {{-6, 0, -10, 0, 1.25f, 0}, {-6, 8, -10, 0, 1.75f, 0},
+        {-6, 0, 10, 0, 1.25f, 1}, {-6, 8, 10, 0, 1.75f, 1}};
+    wall.draw.fvf |= 0x100;
+    wall.draw.has_texture = true;
+    wall.draw.texture.linear = true;
+    wall.draw.texture.width = 2;
+    wall.draw.texture.height = 1;
+    wall.draw.address_u = wall.draw.address_v = 3;
+    wall.colorMaterial = true;
+    meshes[2].indices.clear();
+    XMFLOAT4X4 projection;
+    XMStoreFloat4x4(&projection, XMMatrixLookAtLH(XMVectorSet(0, 10, 0, 1),
+        XMVectorZero(), XMVectorSet(0, 0, 1, 0)) * XMMatrixOrthographicLH(10, 10, 0.1f, 60));
+    for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &projection, sizeof projection);
+    return meshes;
+}
+
+static ComPtr<ID3D11ShaderResourceView> colorTexture(ID3D11Device *device, uint32_t color)
+{
+    // A black first texel catches zeroed UVs and missing linear-coordinate scaling.
+    const uint32_t texels[] = {0xff000000, color};
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = 2;
+    desc.Height = desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA data{texels, sizeof texels, 0};
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> view;
+    check(device->CreateTexture2D(&desc, &data, &texture), "create bounce texture");
+    check(device->CreateShaderResourceView(texture.Get(), nullptr, &view), "create bounce SRV");
+    return view;
+}
+
+static bool verifyOffscreenColor(Renderer &r)
+{
+    auto meshes = offscreenScene();
+    auto &wall = meshes[1];
+    wall.texture = colorTexture(r.device, 0xffff0000);
+    r.render(meshes);
+    const auto input = readTarget(r);
+    const auto projection = XMLoadFloat4x4(reinterpret_cast<const XMFLOAT4X4 *>(wall.draw.view_projection));
+    for (const auto &v : wall.vertices) {
+        const auto clip = XMVector4Transform(XMVectorSet(v.x, v.y, v.z, 1), projection);
+        require(XMVectorGetX(clip) < -XMVectorGetW(clip), "wall is not outside camera view");
+    }
+    for (const auto &pixel : input)
+        require(pixel[0] >= 127 && pixel[0] <= 128 && pixel[0] == pixel[1] &&
+            pixel[1] == pixel[2] && pixel[3] == 255, "offscreen fixture lost neutral floor");
+    const auto red = runFrames(r, meshes, false, 32);
+    wall.texture = colorTexture(r.device, 0xff0000ff);
+    const auto blue = runFrames(r, meshes, false, 32);
+    wall.draw.texture.linear = false;
+    for (auto &v : wall.vertices) v.u *= 0.5f;
+    const auto normalized = runFrames(r, meshes, false, 32);
+    wall.draw.address_u = 1;
+    for (auto &v : wall.vertices) v.u += 1;
+    const auto wrapped = runFrames(r, meshes, false, 32);
+    wall.draw.address_u = 2;
+    for (auto &v : wall.vertices) v.u = 3 - v.u;
+    const auto mirrored = runFrames(r, meshes, false, 32);
+    wall.draw.address_u = 3;
+    for (auto &v : wall.vertices) v.u = 2 - v.u;
+    wall.draw.depth.alpha_test_enable = true;
+    wall.draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+    wall.draw.depth.alpha_ref = 128;
+    wall.texture = colorTexture(r.device, 0x000000ff);
+    const auto hole = runFrames(r, meshes, false, 32);
+    wall.texture = colorTexture(r.device, 0xff0000ff);
+    wall.draw.depth.alpha_test_enable = false;
+    wall.draw.zero_diffuse_rgb = true;
+    const auto unlit = runFrames(r, meshes, false, 32);
+    wall.draw.zero_diffuse_rgb = false;
+    wall.draw.modulate_texture_factor = true;
+    wall.draw.texture_factor = 0xff000000;
+    const auto tinted = runFrames(r, meshes, false, 32);
+    wall.draw.modulate_texture_factor = false;
+    wall.draw.four_tap_filter = true;
+    const auto unsupported = runFrames(r, meshes, false, 32);
+    wall.draw.four_tap_filter = false;
+    wall.colorMaterial = false;
+    const auto unclassified = runFrames(r, meshes, false, 32);
+    wall.indices.clear();
+    const auto absent = runFrames(r, meshes, false, 32);
+    double change[2][3]{};
+    unsigned count = 0;
+    int removedError = 0, fallbackError = 0, unlitHue = 0, tintError = 0, uvError = 0, holeError = 0;
+    int unlitDarkening = 255;
+    // Left floor strip x=-4.5..-2.5, away from image/filter boundaries.
+    for (UINT y = height / 4; y < 3 * height / 4; ++y)
+        for (UINT x = width / 20; x < width / 4; ++x) {
+            const size_t p = size_t(y) * width + x;
+            for (unsigned c = 0; c < 3; ++c) {
+                change[0][2 - c] += int(red[p][c]) - input[p][c];
+                change[1][2 - c] += int(blue[p][c]) - input[p][c];
+                removedError = std::max(removedError, std::abs(int(absent[p][c]) - input[p][c]));
+                fallbackError = std::max({fallbackError, std::abs(int(unsupported[p][c]) - input[p][c]),
+                    std::abs(int(unclassified[p][c]) - input[p][c])});
+                unlitHue = std::max(unlitHue, std::abs(int(unlit[p][c]) - unlit[p][0]));
+                tintError = std::max(tintError, std::abs(int(tinted[p][c]) - unlit[p][c]));
+                uvError = std::max({uvError, std::abs(int(normalized[p][c]) - blue[p][c]),
+                    std::abs(int(wrapped[p][c]) - blue[p][c]), std::abs(int(mirrored[p][c]) - blue[p][c])});
+                holeError = std::max(holeError, std::abs(int(hole[p][c]) - input[p][c]));
+                unlitDarkening = std::min(unlitDarkening, int(input[p][c]) - unlit[p][c]);
+            }
+            ++count;
+        }
+    for (auto &rgb : change) for (auto &channel : rgb) channel /= count;
+    const bool passed = change[0][0] > 2 && change[0][0] > change[0][2] + 5 &&
+        change[1][2] > 2 && change[1][2] > change[1][0] + 5 &&
+        removedError <= 1 && fallbackError <= 1 && unlitHue <= 1 && tintError <= 1 &&
+        uvError <= 1 && holeError <= 1 && unlitDarkening > 4;
+    std::printf("%s RTGI %ux MSAA offscreen texture bounce (32 frames): red RGB=(%.2f,%.2f,%.2f) "
+        "blue RGB=(%.2f,%.2f,%.2f) removed=%d unsupported=%d unlit hue=%d tint error=%d UV error=%d hole=%d dark=%d\n",
+        passed ? "PASS" : "FAIL", r.samples, change[0][0], change[0][1], change[0][2],
+        change[1][0], change[1][1], change[1][2], removedError, fallbackError, unlitHue, tintError,
+        uvError, holeError, unlitDarkening);
+    return passed;
+}
+
+static double gpuTime(Renderer &r, std::array<Mesh, 3> meshes, bool moving)
+{
+    auto *device = r.device;
+    auto *context = r.context;
     Rtgi gi(d3d_rtgi_create(device, r.width, r.height), d3d_rtgi_destroy);
     require(bool(gi), "create timing module");
     ComPtr<ID3D11Query> disjoint, begin, end;
@@ -818,7 +948,7 @@ static bool verifyGpuTime(ID3D11Device *device, ID3D11DeviceContext *context)
     check(device->CreateQuery(&desc, &end), "create end timestamp");
     std::vector<double> times;
     for (unsigned frame = 0; frame < 24; ++frame) {
-        moveSphere(meshes[2], frame);
+        if (moving) moveSphere(meshes[2], frame);
         r.render(meshes);
         addScene(gi.get(), meshes, false);
         context->Begin(disjoint.Get());
@@ -836,10 +966,25 @@ static bool verifyGpuTime(ID3D11Device *device, ID3D11DeviceContext *context)
         if (frame >= 16) times.push_back(1000.0 * (finish - start) / frequency.Frequency);
     }
     std::sort(times.begin(), times.end());
-    const double milliseconds = times[times.size() / 2];
+    return times[times.size() / 2];
+}
+
+static bool verifyGpuTime(ID3D11Device *device, ID3D11DeviceContext *context)
+{
+    Renderer r(device, context, 1, 1920, 1080);
+    const double milliseconds = gpuTime(r, movingScene(), true);
     const bool passed = milliseconds < 3.0;
     std::printf("%s RTGI whole apply 1920x1080 GPU=%.3f ms (median of 8, limit 3 ms)\n",
         passed ? "PASS" : "FAIL", milliseconds);
+    Renderer large(device, context, 1, 3840, 2160);
+    auto meshes = offscreenScene();
+    meshes[1].texture = colorTexture(device, 0xffff0000);
+    meshes[1].colorMaterial = false;
+    const double contact = gpuTime(large, meshes, false);
+    meshes[1].colorMaterial = true;
+    const double color = gpuTime(large, meshes, false);
+    std::printf("RTGI whole apply 3840x2160 1x MSAA GPU: contact=%.3f ms color=%.3f ms change=%+.1f%% "
+        "(median of 8 after 16 warmup frames, target <=10%%)\n", contact, color, 100 * (color / contact - 1));
     return passed;
 }
 
@@ -948,6 +1093,7 @@ int main()
             passed = verifyFireflies(renderer) && passed;
             passed = verifyOcclusion(renderer) && passed;
             passed = verifyCutouts(renderer) && passed;
+            passed = verifyOffscreenColor(renderer) && passed;
         }
         passed = verifyGpuTime(device.Get(), context.Get()) && passed;
         passed = debugMessages(messages11.Get(), messages12.Get()) && passed;

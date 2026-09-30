@@ -31,7 +31,7 @@ using DirectX::XMFLOAT2;
 using DirectX::XMFLOAT3;
 using DirectX::XMFLOAT4X4;
 
-constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 24;
+constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 26;
 constexpr uint32_t opaqueMaterial = UINT32_MAX;
 
 struct RtgiError { HRESULT result; const char *operation; };
@@ -53,12 +53,12 @@ struct RtgiSlot {
     ComPtr<ID3D12GraphicsCommandList4> commands;
     ComPtr<ID3D12DescriptorHeap> descriptors;
     ComPtr<ID3D12Resource> vertices, indices, instances, constants;
-    ComPtr<ID3D12Resource> uvs, triangles, materials, normals, motions;
+    ComPtr<ID3D12Resource> uvs, triangles, materials, normals, motions, tints;
     ComPtr<ID3D12Resource> bottom, top, scratch;
     UINT64 completion = 0;
 };
 
-struct RtgiAlphaSlice {
+struct RtgiCacheSlice {
     ComPtr<ID3D11ShaderResourceView> source;
     ComPtr<ID3D11RenderTargetView> target;
     UINT64 used = UINT64_MAX;
@@ -68,8 +68,9 @@ struct RtgiAlphaSlice {
 struct RtgiMaterial {
     uint32_t slice, test;
     float alpha, factor;
+    uint32_t colorSlice = opaqueMaterial;
 };
-static_assert(sizeof(RtgiMaterial) == 16, "HLSL material layout");
+static_assert(sizeof(RtgiMaterial) == 20, "HLSL material layout");
 
 struct D3dRtgi {
     ComPtr<ID3D11Device5> device11;
@@ -82,13 +83,13 @@ struct D3dRtgi {
     ComPtr<ID3D12PipelineState> trace, temporal, spatial;
     ComPtr<ID3D11VertexShader> fullscreen;
     ComPtr<ID3D11PixelShader> reduce[2], composite[2];
-    ComPtr<ID3D11PixelShader> copyAlpha;
+    ComPtr<ID3D11PixelShader> copyAlpha, copyColor;
     ComPtr<ID3D11SamplerState> linear;
     ComPtr<ID3D11BlendState> blend;
     ComPtr<ID3D11Buffer> constants11;
     RtgiTexture depth, color, gi, raw, filtered, motion, history[2], position[2], normal[2];
-    RtgiTexture alpha;
-    RtgiAlphaSlice alphaCache[alphaSlices];
+    RtgiTexture alpha, albedo;
+    RtgiCacheSlice alphaCache[alphaSlices], colorCache[alphaSlices];
     RtgiSlot slots[3];
     std::vector<XMFLOAT3> positions;
     std::vector<XMFLOAT3> normals;  // skinned vertex normals; zero when the draw has none
@@ -99,6 +100,7 @@ struct D3dRtgi {
     std::map<MeshKey, size_t> meshes, previousMeshes;
     std::vector<uint32_t> indices;
     std::vector<XMFLOAT2> uvs;
+    std::vector<XMFLOAT3> tints;
     std::vector<uint32_t> triangles;
     std::vector<RtgiMaterial> materials;
     XMFLOAT4X4 camera{}, previousCamera{};
@@ -107,7 +109,7 @@ struct D3dRtgi {
     UINT64 frame = 0, readyValue = 0, doneValue = 0;
     UINT64 capture = 0;
     float strength = 1;
-    bool failed = false, historyValid = false, alphaFullLogged = false;
+    bool failed = false, historyValid = false, alphaFullLogged = false, colorFullLogged = false;
 };
 
 static void fail(D3dRtgi &r, const char *operation, HRESULT result = E_FAIL)
@@ -217,6 +219,7 @@ Vertex vs(uint id : SV_VertexID) {
     v.position = float4(v.uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return v;
 }
+float4 colorPS(Vertex v) : SV_Target { return colorImage.SampleLevel(linearClamp, v.uv, 0); }
 float alphaPS(Vertex v) : SV_Target { return colorImage.SampleLevel(linearClamp, v.uv, 0).a; }
 struct Reduced { float depth : SV_Target0; float4 color : SV_Target1; };
 Reduced reducePS(Vertex v) {
@@ -327,8 +330,8 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     sharedFence(r.done12, r.done11);
 
     D3D12_DESCRIPTOR_RANGE ranges[2]{};
-    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18, 1, 0, 0};
-    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 6, 0, 0, 18};
+    ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20, 1, 0, 0};
+    ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 6, 0, 0, 20};
     D3D12_ROOT_PARAMETER parameters[4]{};
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -380,6 +383,8 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     texture(r, r.motion, DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
     // ponytail: 256-square alpha is enough for cutouts; raise the size if fine nets lose coverage.
     texture(r, r.alpha, DXGI_FORMAT_R8_UNORM, true, true, alphaSize, alphaSize, alphaSlices);
+    // ponytail: one 256-square mip is the color proxy; add mips if aliasing is visible.
+    texture(r, r.albedo, DXGI_FORMAT_R8G8B8A8_UNORM, true, true, alphaSize, alphaSize, alphaSlices);
     for (UINT i = 0; i < alphaSlices; ++i) {
         D3D11_RENDER_TARGET_VIEW_DESC view{};
         view.Format = DXGI_FORMAT_R8_UNORM;
@@ -388,6 +393,9 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
         view.Texture2DArray.ArraySize = 1;
         check(device->CreateRenderTargetView(r.alpha.imported.Get(), &view,
             &r.alphaCache[i].target), "create alpha slice target");
+        view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        check(device->CreateRenderTargetView(r.albedo.imported.Get(), &view,
+            &r.colorCache[i].target), "create color slice target");
     }
     for (unsigned i = 0; i < 2; ++i) {
         texture(r, r.history[i], DXGI_FORMAT_R16G16B16A16_FLOAT, false, false);
@@ -400,6 +408,9 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     auto alpha = compile11("alphaPS", "ps_5_0", false);
     check(device->CreatePixelShader(alpha->GetBufferPointer(), alpha->GetBufferSize(), nullptr,
         &r.copyAlpha), "create alpha copy shader");
+    auto color = compile11("colorPS", "ps_5_0", false);
+    check(device->CreatePixelShader(color->GetBufferPointer(), color->GetBufferSize(), nullptr,
+        &r.copyColor), "create color copy shader");
     for (unsigned i = 0; i < 2; ++i) {
         auto reduce = compile11("reducePS", "ps_5_0", i != 0);
         auto composite = compile11("compositePS", "ps_5_0", i != 0);
@@ -475,22 +486,28 @@ void d3d_rtgi_destroy(D3dRtgi *r)
     delete r;
 }
 
-static uint32_t alphaSlice(D3dRtgi &r, ID3D11ShaderResourceView *source)
+static uint32_t textureSlice(D3dRtgi &r, ID3D11ShaderResourceView *source, bool color)
 {
+    auto &cache = color ? r.colorCache : r.alphaCache;
     UINT oldest = alphaSlices;
     for (UINT i = 0; i < alphaSlices; ++i) {
-        auto &slice = r.alphaCache[i];
+        auto &slice = cache[i];
         if (slice.source.Get() == source) {
             slice.used = r.capture;
             slice.dirty |= slice.mutableSource;
             return i;
         }
         if (slice.used != r.capture && (oldest == alphaSlices || !slice.source ||
-            (r.alphaCache[oldest].source && slice.used < r.alphaCache[oldest].used))) oldest = i;
+            (cache[oldest].source && slice.used < cache[oldest].used))) oldest = i;
     }
     D3D11_SHADER_RESOURCE_VIEW_DESC view{};
     source->GetDesc(&view);
     if (view.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) return opaqueMaterial;
+    // Only display-domain color formats; never decode an sRGB view into this UNORM signal.
+    if (color && view.Format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+        view.Format != DXGI_FORMAT_B8G8R8A8_UNORM && view.Format != DXGI_FORMAT_B8G8R8X8_UNORM &&
+        view.Format != DXGI_FORMAT_BC1_UNORM && view.Format != DXGI_FORMAT_BC2_UNORM &&
+        view.Format != DXGI_FORMAT_BC3_UNORM) return opaqueMaterial;
     ComPtr<ID3D11Resource> resource;
     ComPtr<ID3D11Texture2D> texture;
     source->GetResource(&resource);
@@ -499,11 +516,13 @@ static uint32_t alphaSlice(D3dRtgi &r, ID3D11ShaderResourceView *source)
     texture->GetDesc(&desc);
     if (desc.BindFlags & D3D11_BIND_RENDER_TARGET) return opaqueMaterial;
     if (oldest == alphaSlices) {
-        if (!r.alphaFullLogged) std::fprintf(stderr, "recomp rtgi: alpha cache full; excess draws trace opaque\n");
-        r.alphaFullLogged = true;
+        bool &logged = color ? r.colorFullLogged : r.alphaFullLogged;
+        if (!logged) std::fprintf(stderr, "recomp rtgi: %s cache full; excess draws use %s\n",
+            color ? "color" : "alpha", color ? "contact fallback" : "opaque triangles");
+        logged = true;
         return opaqueMaterial;
     }
-    auto &slice = r.alphaCache[oldest];
+    auto &slice = cache[oldest];
     slice.source = source;
     slice.used = r.capture;
     slice.dirty = true;
@@ -512,7 +531,7 @@ static uint32_t alphaSlice(D3dRtgi &r, ID3D11ShaderResourceView *source)
 }
 
 bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
-    ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask)
+    ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask, bool colorMaterial)
 {
     // Vertex-program draws (water) move vertices in their program; WORLD alone would misplace them.
     if (!r || r->failed || !draw.has_transform || draw.target.offscreen || draw.program_count ||
@@ -530,6 +549,19 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             (!draw.has_alpha_mask || alphaMask) && layout.texcoord_count &&
             uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
             unsigned(draw.depth.alpha_func) < 8 && draw.depth.alpha_ref <= 255;
+        // The caller must classify the original stages/pixel shader, not just the host shader.
+        colorMaterial &= texture && draw.has_texture && layout.texcoord_count == 1 &&
+            uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
+            !draw.has_reflection && !draw.four_tap_filter && !draw.has_alpha_mask &&
+            !draw.use_texture_factor && !draw.blend.blend_enable && !draw.blend_weight_count &&
+            !draw.texture.render_target && !draw.texture_is_backbuffer &&
+            (!draw.texture.linear || (draw.texture.width && draw.texture.height)) &&
+            (!draw.directional.enabled || (draw.directional.count <= 8 &&
+                layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
+                uint64_t(layout.normal_offset) + 12 <= draw.vertex_stride &&
+                layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT)) &&
+            (layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT ||
+                uint64_t(layout.diffuse_offset) + 4 <= draw.vertex_stride);
         // ponytail: reflection and four-tap alpha need more than UV0; keep those draws opaque.
         alphaTest &= !draw.has_reflection && !draw.four_tap_filter;
         const auto &source = draw.has_alpha_mask ? draw.alpha_mask : draw.texture;
@@ -563,23 +595,65 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                 r->positions.resize(base);
                 r->normals.resize(base);
                 r->uvs.resize(base);
+                r->tints.resize(base);
                 return false;
             }
             r->positions.push_back(transformed);
             if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) normal = {};
             r->normals.push_back(normal);
             XMFLOAT2 uv{};
-            if (alphaTest) {
+            if (alphaTest || colorMaterial) {
                 std::memcpy(&uv, bytes + layout.texcoord_offset, sizeof uv);
                 uv.x *= scale.x;
                 uv.y *= scale.y;
-                alphaTest = std::isfinite(uv.x) && std::isfinite(uv.y);
+                const bool finite = std::isfinite(uv.x) && std::isfinite(uv.y);
+                alphaTest &= finite;
+                colorMaterial &= finite;
             }
             r->uvs.push_back(uv);
+            XMFLOAT3 tint{1, 1, 1};
+            if (colorMaterial) {
+                if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
+                    uint32_t diffuse;
+                    std::memcpy(&diffuse, bytes + layout.diffuse_offset, sizeof diffuse);
+                    tint = {((diffuse >> 16) & 255) / 255.0f,
+                        ((diffuse >> 8) & 255) / 255.0f, (diffuse & 255) / 255.0f};
+                } else if (draw.directional.enabled) {
+                    const auto &light = draw.directional;
+                    auto ln = DirectX::XMVector3TransformNormal(DirectX::XMLoadFloat3(
+                        reinterpret_cast<const XMFLOAT3 *>(n)), DirectX::XMLoadFloat4x4(
+                        reinterpret_cast<const XMFLOAT4X4 *>(light.normal_transforms[0])));
+                    if (light.normalize && DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(ln)) > 0)
+                        ln = DirectX::XMVector3Normalize(ln);
+                    auto rgb = DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.ambient_emissive));
+                    for (uint32_t i = 0; i < light.count; ++i) {
+                        const float lambert = std::max(0.0f, DirectX::XMVectorGetX(DirectX::XMVector3Dot(ln,
+                            DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.directions[i])))));
+                        const auto diffuse = DirectX::XMVectorMultiply(
+                            DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.material_diffuse)),
+                            DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.colors[i])));
+                        rgb = DirectX::XMVectorAdd(rgb, DirectX::XMVectorScale(diffuse, lambert));
+                    }
+                    DirectX::XMStoreFloat3(&tint, rgb);
+                }
+                colorMaterial &= std::isfinite(tint.x) && std::isfinite(tint.y) && std::isfinite(tint.z);
+                tint = {std::clamp(tint.x, 0.0f, 1.0f), std::clamp(tint.y, 0.0f, 1.0f), std::clamp(tint.z, 0.0f, 1.0f)};
+                if (draw.zero_diffuse_rgb) tint = {};
+                if (draw.modulate_texture_factor) {
+                    tint.x *= ((draw.texture_factor >> 16) & 255) / 255.0f;
+                    tint.y *= ((draw.texture_factor >> 8) & 255) / 255.0f;
+                    tint.z *= (draw.texture_factor & 255) / 255.0f;
+                }
+            }
+            r->tints.push_back(tint);
         }
         uint32_t material = opaqueMaterial;
+        RtgiMaterial value{opaqueMaterial, 0, 1, 1};
+        const auto address = [](uint32_t mode) { return mode == 2 ? 1u : mode == 3 || mode == 5 ? 2u : 0u; };
+        const UINT u = draw.has_alpha_mask ? 2 : address(draw.address_u);
+        const UINT v = draw.has_alpha_mask ? 2 : address(draw.address_v);
+        value.test = (u << 11) | (v << 13);
         if (alphaTest) {
-            RtgiMaterial value{opaqueMaterial, 0, 1, 1};
             // ponytail: vertex diffuse alpha is 1; upload it if vertex-faded cutouts need tracing.
             // The separate mask path bypasses material and texture-factor alpha in ps_main.
             if (!draw.has_alpha_mask) {
@@ -590,16 +664,16 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                 if (draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE) value.test |= 1u << 15;
                 if (draw.use_texture_factor) value.test |= 1u << 16;
             }
-            const auto address = [](uint32_t mode) { return mode == 2 ? 1u : mode == 3 || mode == 5 ? 2u : 0u; };
-            const UINT u = draw.has_alpha_mask ? 2 : address(draw.address_u);
-            const UINT v = draw.has_alpha_mask ? 2 : address(draw.address_v);
-            value.test |= UINT(draw.depth.alpha_func) | (draw.depth.alpha_ref << 3) | (u << 11) | (v << 13);
+            value.test |= UINT(draw.depth.alpha_func) | (draw.depth.alpha_ref << 3);
             if (std::isfinite(value.alpha) && std::isfinite(value.factor))
-                value.slice = alphaSlice(*r, draw.has_alpha_mask ? alphaMask : texture);
-            if (value.slice != opaqueMaterial) {
-                material = UINT(r->materials.size());
-                r->materials.push_back(value);
-            }
+                value.slice = textureSlice(*r, draw.has_alpha_mask ? alphaMask : texture, false);
+        }
+        // Border and mirror-once need different sampling; leave them unsupported for color.
+        if (colorMaterial && draw.address_u <= 3 && draw.address_v <= 3)
+            value.colorSlice = textureSlice(*r, texture, true);
+        if (value.slice != opaqueMaterial || value.colorSlice != opaqueMaterial) {
+            material = UINT(r->materials.size());
+            r->materials.push_back(value);
         }
         const uint32_t triangles = std::min(draw.triangle_count,
             recomp_d3d_draw_triangle_count(draw.primitive_type, draw.index_count));
@@ -638,6 +712,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             r->positions.resize(base);
             r->normals.resize(base);
             r->uvs.resize(base);
+            r->tints.resize(base);
             r->materials.resize(firstMaterial);
         }
         if (contributed && draw.vertex_address) {
@@ -665,6 +740,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     r->positions.resize(base);
     r->normals.resize(base);
     r->uvs.resize(base);
+    r->tints.resize(base);
     r->indices.resize(firstIndex);
     r->triangles.resize(firstIndex / 3);
     r->materials.resize(firstMaterial);
@@ -694,6 +770,7 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
     upload(r, slot.normals, r.normals.data(), r.normals.size() * sizeof(XMFLOAT3));
     upload(r, slot.motions, r.motions.data(), r.motions.size() * sizeof(XMFLOAT3));
     upload(r, slot.indices, r.indices.data(), r.indices.size() * sizeof(uint32_t));
+    upload(r, slot.tints, r.tints.data(), r.tints.size() * sizeof(XMFLOAT3));
     upload(r, slot.uvs, r.uvs.data(), r.uvs.size() * sizeof(XMFLOAT2));
     upload(r, slot.triangles, r.triangles.data(), r.triangles.size() * sizeof(uint32_t));
     const RtgiMaterial empty{};
@@ -818,6 +895,16 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         alpha.Texture2DArray.ArraySize = alphaSlices;
         r.device12->CreateShaderResourceView(r.alpha.resource.Get(), &alpha, descriptor);
         descriptor.ptr += stride;
+        alpha.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        r.device12->CreateShaderResourceView(r.albedo.resource.Get(), &alpha, descriptor);
+        descriptor.ptr += stride;
+        D3D12_SHADER_RESOURCE_VIEW_DESC tint{};
+        tint.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        tint.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        tint.Buffer.NumElements = UINT(r.tints.size());
+        tint.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+        r.device12->CreateShaderResourceView(slot.tints.Get(), &tint, descriptor);
+        descriptor.ptr += stride;
         for (unsigned i = 0; i < 6; ++i) {
             auto *resource = i == 2 ? filterOutputs[pass] : writes[i];
             D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
@@ -834,6 +921,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
     for (unsigned i = 0; i < 4; ++i) transition(commands, reads[i], common, srv);
     transition(commands, reads[8], common, srv);
     transition(commands, r.alpha.resource.Get(), common, srv);
+    transition(commands, r.albedo.resource.Get(), common, srv);
     for (unsigned i : {0u, 1u, 3u, 4u, 5u}) transition(commands, writes[i], common, uav);
     commands->SetComputeRootSignature(r.root.Get());
     commands->SetDescriptorHeaps(1, slot.descriptors.GetAddressOf());
@@ -864,6 +952,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
     for (auto *resource : reads) transition(commands, resource, srv, common);
     transition(commands, r.filtered.resource.Get(), srv, common);
     transition(commands, r.alpha.resource.Get(), srv, common);
+    transition(commands, r.albedo.resource.Get(), srv, common);
 }
 
 static void fullscreen(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11PixelShader *shader,
@@ -913,9 +1002,10 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
                 traceFrame(*r, slot, inverse);
                 check(slot.commands->Close(), "close frame commands");
 
-                for (auto &slice : r->alphaCache) {
+                for (bool color : {false, true}) for (UINT i = 0; i < alphaSlices; ++i) {
+                    auto &slice = color ? r->colorCache[i] : r->alphaCache[i];
                     if (slice.used != r->capture || !slice.dirty) continue;
-                    fullscreen(*r, context, r->copyAlpha.Get(), alphaSize, alphaSize,
+                    fullscreen(*r, context, color ? r->copyColor.Get() : r->copyAlpha.Get(), alphaSize, alphaSize,
                         slice.source.GetAddressOf(), 1, slice.target.GetAddressOf(), 1);
                     slice.dirty = false;
                 }
@@ -960,6 +1050,7 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
         r->normals.clear();
         r->indices.clear();
         r->uvs.clear();
+        r->tints.clear();
         r->triangles.clear();
         r->materials.clear();
         ++r->capture;
