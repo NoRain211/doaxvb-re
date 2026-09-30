@@ -442,11 +442,14 @@ static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
     }
     draw->texture = *desc;
     draw->has_texture = true;
-    /* D3D__TextureState[stage] starts with ADDRESSU, ADDRESSV. */
-    bytes = guest_span(0x001f2988u + stage * 0x80u, 8u);
+    /* Xbox texture states: ADDRESSU/V at 0/1, MAG/MIN/MIPFILTER at 3/4/5. */
+    bytes = guest_span(0x001f2988u + stage * 0x80u, 24u);
     if (bytes != NULL) {
         memcpy(&draw->address_u, bytes, sizeof draw->address_u);
         memcpy(&draw->address_v, bytes + 4u, sizeof draw->address_v);
+        uint32_t filters[3];
+        memcpy(filters, bytes + 12u, sizeof filters);
+        draw->linear_mip_filter = filters[0] == 2u && filters[1] == 2u && filters[2] == 2u;
     }
     if (!swizzled_byte_count(desc, &byte_count)) {
         /* A render target may have host-owned pixels without a CPU upload. */
