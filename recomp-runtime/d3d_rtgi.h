@@ -25,8 +25,12 @@ void d3d_rtgi_destroy(D3dRtgi *rtgi);
    separate alpha-mask view when draw.has_alpha_mask, else null. RTGI keeps its own
    references to views it still needs; callers keep ownership of theirs. With
    null views, or alpha testing off, the draw's triangles are opaque. */
+/* colorMaterial opts into static single-texture modulation only after the caller
+   has ruled out original pixel shaders/unsupported combiners. The presenter
+   command currently lacks that classification, so production callers default
+   to contact fallback. RGB capture still excludes reflection, masks and RTs. */
 bool d3d_rtgi_add_draw(D3dRtgi *rtgi, const RecompD3dPresenterDrawCommand &draw,
-    ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask);
+    ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask, bool colorMaterial = false);
 
 /* Traces the recorded scene and relights target in place, per sample:
    target *= 1 + strength * gi, where gi is the signed change from open sky:

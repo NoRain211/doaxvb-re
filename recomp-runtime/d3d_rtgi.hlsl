@@ -13,11 +13,13 @@ StructuredBuffer<float3> positions : register(t11);
 StructuredBuffer<uint> indices : register(t12);
 StructuredBuffer<float2> uvs : register(t13);
 StructuredBuffer<uint> triangles : register(t14);
-struct Material { uint slice; uint test; float alpha; float factor; };
+struct Material { uint slice; uint test; float alpha; float factor; uint colorSlice; };
 StructuredBuffer<Material> materials : register(t15);
 StructuredBuffer<float3> normals : register(t16);
 StructuredBuffer<float3> motions : register(t17);
 Texture2DArray<float> alphaImage : register(t18);
+Texture2DArray<float4> albedoImage : register(t19);
+StructuredBuffer<float3> tints : register(t20);
 SamplerState alphaWrap : register(s0);
 RWTexture2D<float4> traceOutput : register(u0);
 RWTexture2D<float4> historyOutput : register(u1);
@@ -117,6 +119,7 @@ bool alphaPass(uint primitive, float2 barycentrics)
     uint index = triangles[primitive];
     if (index == 0xffffffff) return true;
     Material material = materials[index];
+    if (material.slice == 0xffffffff) return true;
     uint first = 3 * primitive;
     float2 a = uvs[indices[first]], b = uvs[indices[first + 1]], c = uvs[indices[first + 2]];
     float2 uv = a + barycentrics.x * (b - a) + barycentrics.y * (c - a);
@@ -242,6 +245,21 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
                 int2 samplePixel = int2(uv * size);
                 if (seen && depthAgrees(hitDepth, depthImage[samplePixel])) {
                     radiance = colorImage[samplePixel].rgb - skyLevel;
+                    lit = true;
+                }
+            }
+            uint materialIndex = triangles[query.CommittedPrimitiveIndex()];
+            if (!lit && materialIndex != 0xffffffff) {
+                Material material = materials[materialIndex];
+                if (material.colorSlice != 0xffffffff) {
+                    uint first = 3 * query.CommittedPrimitiveIndex();
+                    uint a = indices[first], b = indices[first + 1], c = indices[first + 2];
+                    float2 barycentrics = query.CommittedTriangleBarycentrics();
+                    float2 hitUV = uvs[a] + barycentrics.x * (uvs[b] - uvs[a]) + barycentrics.y * (uvs[c] - uvs[a]);
+                    hitUV = float2(alphaUV(hitUV.x, (material.test >> 11) & 3),
+                        alphaUV(hitUV.y, (material.test >> 13) & 3));
+                    float3 tint = tints[a] + barycentrics.x * (tints[b] - tints[a]) + barycentrics.y * (tints[c] - tints[a]);
+                    radiance = albedoImage.SampleLevel(alphaWrap, float3(hitUV, material.colorSlice), 0).rgb * tint - skyLevel;
                     lit = true;
                 }
             }
