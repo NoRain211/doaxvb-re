@@ -131,7 +131,8 @@ bool alphaPass(uint primitive, float2 barycentrics)
         (func == 5 && alpha != ref) || (func == 6 && alpha >= ref);
 }
 
-void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal, inout float3 motion)
+// Returns false, leaving the depth-reconstructed inputs, when no recorded triangle matches.
+bool primarySurface(int2 p, float depth, inout float3 world, inout float3 normal, inout float3 motion)
 {
     float2 uv = (float2(p) + 0.5) / size;
     float2 ndc = uv * float2(2, -2) + float2(-1, 1);
@@ -152,7 +153,7 @@ void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal
             alphaPass(query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics()))
             query.CommitNonOpaqueTriangleHit();
     }
-    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return;
+    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return false;
     uint first = 3 * query.CommittedPrimitiveIndex();
     float3 a = positions[indices[first]], b = positions[indices[first + 1]], c = positions[indices[first + 2]];
     float2 barycentrics = query.CommittedTriangleBarycentrics();
@@ -162,7 +163,7 @@ void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal
     // Allow a few D24 steps and the small center/sample offset of reduction,
     // but do not substitute scene geometry behind an unrecorded raster draw.
     if (!project(hit, viewProjection, hitUV, hitDepth) ||
-        abs(hitDepth - depth) > max(4.0 / 16777215.0, 0.025 * (1 - depth))) return;
+        abs(hitDepth - depth) > max(4.0 / 16777215.0, 0.025 * (1 - depth))) return false;
     world = hit;
     float3 ma = motions[indices[first]], mb = motions[indices[first + 1]];
     motion = ma + barycentrics.x * (mb - ma) + barycentrics.y * (motions[indices[first + 2]] - ma);
@@ -174,6 +175,7 @@ void primarySurface(int2 p, float depth, inout float3 world, inout float3 normal
     float3 smooth = na + barycentrics.x * (nb - na) + barycentrics.y * (nc - na);
     normal = dot(smooth, smooth) > 1e-8 ? normalize(smooth) : flat;
     if (dot(normal, flat) < 0) normal = -normal;
+    return true;
 }
 
 [numthreads(8, 8, 1)]
@@ -188,7 +190,7 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
     motionOutput[p] = 0;
     if (d < 1) {
         float3 world = worldPosition(p, d), n = normalAt(p), motion = 0;
-        primarySurface(p, d, world, n, motion);
+        const bool exact = primarySurface(p, d, world, n, motion);
         motionOutput[p] = float4(motion, 0);
         float3 reconstructed = worldPosition(p, d);
         float pixelSize = max(length(worldPosition(bounded(p + int2(1, 0)), d) - reconstructed),
@@ -210,7 +212,9 @@ void traceMain(uint3 thread : SV_DispatchThreadID)
         // Also covers sample-0 depth falling below the surface in the fallback.
         ray.Origin = world + n * max(0.0001, pixelSize * 0.5);
         ray.Direction = direction;
-        ray.TMin = layerDistance;
+        /* A surface rebuilt from depth, such as unrecorded water, is only known to
+           within a few pixels; nearer hits are that surface and read as dark specks. */
+        ray.TMin = exact ? layerDistance : max(layerDistance, 4 * pixelSize);
         ray.TMax = 1e7;
         // A ray leaving a surface inside an overlapping mesh, such as an arm at the
         // elbow, sees only that mesh's back faces, which must not occlude it.
