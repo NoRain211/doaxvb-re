@@ -7,6 +7,7 @@
 #ifdef RECOMP_RTGI
 #include "d3d_rtgi.h"
 #endif
+#include "d3d_tuning.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -748,6 +749,7 @@ LRESULT CALLBACK presenterWindowProc(
         if (presenter != nullptr) {
             presenter->close_requested = true;
         }
+        recomp_tuning.paused = false;   // let a paused game reach its next present and exit
         DestroyWindow(window);
         return 0;
     }
@@ -3287,7 +3289,7 @@ RecompD3dPresenterError submitDraw(
 #ifdef RECOMP_RTGI
     /* Render-target and backbuffer views change within a frame, so their
        draws trace as opaque. */
-    if (presenter->rtgi != nullptr && !presenter->rtgi_applied &&
+    if (presenter->rtgi != nullptr && !presenter->rtgi_applied && !recomp_tuning.rtgi_off &&
         d3d_rtgi_add_draw(presenter->rtgi, draw,
             draw.texture_is_backbuffer || draw.texture.render_target ? nullptr : texture_view,
             draw.has_alpha_mask && !draw.alpha_mask.render_target ? mask_view : nullptr)) {
@@ -4161,8 +4163,16 @@ RecompD3dPresenterError submitPresent(
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
-            char title[96];
-            std::snprintf(title, sizeof title, "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
+            char title[128];
+            const int length = std::snprintf(title, sizeof title,
+                "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
+#ifdef RECOMP_RTGI
+            if (presenter->rtgi != nullptr) {
+                std::snprintf(title + length, sizeof title - length, " | RTGI %s %.2f%s",
+                    recomp_tuning.rtgi_off ? "off" : "on", recomp_tuning.rtgi_strength.load(),
+                    recomp_tuning.rtgi_split ? " split" : "");
+            }
+#endif
             SetWindowTextA(presenter->window, title);
             // A late frame took over 1.5x this second's average: visible judder.
             double max_ms = 0.0;

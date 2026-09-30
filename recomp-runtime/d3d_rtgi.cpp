@@ -21,6 +21,7 @@
 
 #include "d3d_rtgi.h"
 #include "d3d_draw_model.h"
+#include "d3d_tuning.h"
 #include "rtgi_trace_shader.h"
 #include "rtgi_temporal_shader.h"
 #include "rtgi_spatial_shader.h"
@@ -414,13 +415,13 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     check(device->CreateSamplerState(&sampler, &r.linear), "create bilinear sampler");
     D3D11_BUFFER_DESC constants{};
     constants.ByteWidth = 16;
-    constants.Usage = D3D11_USAGE_IMMUTABLE;
+    constants.Usage = D3D11_USAGE_DEFAULT;
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     // RECOMP_D3D_RTGI_SPLIT=1 leaves the left half unlit for side-by-side comparison.
     const char *split = std::getenv("RECOMP_D3D_RTGI_SPLIT");
-    const float values[] = {float(r.width), float(r.height), r.strength, split && *split == '1' ? 0.5f : 0.0f};
-    const D3D11_SUBRESOURCE_DATA data{values, 0, 0};
-    check(device->CreateBuffer(&constants, &data, &r.constants11), "create composite constants");
+    recomp_tuning.rtgi_strength = r.strength;
+    recomp_tuning.rtgi_split = split && *split == '1';
+    check(device->CreateBuffer(&constants, nullptr, &r.constants11), "create composite constants");
     D3D11_BLEND_DESC blend{};
     auto &target = blend.RenderTarget[0];
     target.BlendEnable = true;
@@ -900,6 +901,10 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
             bool invertible = DirectX::XMVectorGetX(determinant) != 0;
             for (const auto &row : inverse.m) for (float value : row) invertible &= std::isfinite(value);
             if (invertible) {
+                // Hotkeys can change these between frames.
+                const float values[] = {float(r->width), float(r->height),
+                    recomp_tuning.rtgi_strength.load(), recomp_tuning.rtgi_split ? 0.5f : 0.0f};
+                context->UpdateSubresource(r->constants11.Get(), 0, nullptr, values, 0, 0);
                 auto &slot = r->slots[r->frame % 3];
                 waitFence(*r, r->done12.Get(), slot.completion);
                 check(slot.allocator->Reset(), "reset frame allocator");
