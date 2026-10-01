@@ -117,7 +117,11 @@ static bool checkPixels(
         const auto *row = reinterpret_cast<const uint32_t *>(
             static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
         for (uint32_t x = 0u; x < 4u; ++x) {
-            if (row[x] != expected[x]) {
+            // Opaque main-target RGB may round to the adjacent byte after dithering.
+            bool matches = (row[x] >> 24) == (expected[x] >> 24);
+            for (unsigned shift : {0u, 8u, 16u})
+                matches &= std::abs(int((row[x] >> shift) & 255) - int((expected[x] >> shift) & 255)) <= 1;
+            if (!matches) {
                 std::fprintf(stderr,
                     "FAIL %s pixel=(%u,%u) got=%08x expected=%08x\n",
                     label, x, y, row[x], expected[x]);
@@ -2218,7 +2222,47 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     light.world_transforms[0][14]=-50; light.world_transforms[1][14]=30;
     if (!pixels("point light weighted world position uses remainder matrix",0xff402010)) return false;
     draw.blend_weight_count=0;
-    return pixels("point light disabled blending uses world zero",0xff1a0d06);
+    if (!pixels("point light disabled blending uses world zero",0xff1a0d06)) return false;
+
+    // Half-byte gray must cover both neighboring bytes without changing alpha.
+    const uint32_t gray = 0x80ffffff;
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices;
+    draw.texture.data += 4; draw.texture_bytes=&gray;
+    light={}; light.enabled=true;
+    for (unsigned c=0;c<3;++c) light.ambient_emissive[c]=0.5f;
+    for (unsigned mode=0;mode<3;++mode) {
+        draw.blend.blend_enable=mode==1;
+        draw.blend.src_factor=RECOMP_D3D_BLEND_ONE;
+        draw.blend.dst_factor=RECOMP_D3D_BLEND_ZERO;
+        draw.blend.op=RECOMP_D3D_BLEND_OP_ADD;
+        draw.target.offscreen=draw.target.no_depth=mode==2;
+        draw.target.color=draw.texture;
+        draw.target.color.data += 4;
+        draw.target.color.width=draw.target.color.height=4;
+        if (submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK) return false;
+        ID3D11RenderTargetView *target=nullptr;
+        ID3D11Resource *resource=nullptr;
+        presenter->context->OMGetRenderTargets(1,&target,nullptr);
+        target->GetResource(&resource);
+        presenter->context->CopyResource(readback,resource);
+        releaseCom(resource); releaseCom(target);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(presenter->context->Map(readback,0,D3D11_MAP_READ,0,&mapped))) return false;
+        unsigned low=0, high=0;
+        for (unsigned y=0;y<4;++y) for (unsigned x=0;x<4;++x) {
+            const auto pixel=reinterpret_cast<const uint32_t *>(
+                static_cast<const uint8_t *>(mapped.pData)+y*mapped.RowPitch)[x];
+            low += pixel==0x807f7f7f;
+            high += pixel==0x80808080;
+        }
+        presenter->context->Unmap(readback,0);
+        if (mode==0 ? low!=8 || high!=8 : high!=16) {
+            std::fprintf(stderr,"FAIL dither mode=%u low=%u high=%u\n",mode,low,high);
+            return false;
+        }
+    }
+    std::puts("PASS half-LSB dither, unchanged alpha, blended/offscreen bypass");
+    return true;
 }
 
 static bool testBackBufferMips(RecompD3dPresenter *presenter)

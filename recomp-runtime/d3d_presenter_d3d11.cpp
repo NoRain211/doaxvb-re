@@ -315,6 +315,13 @@ void buildDrawShaderSource(
         "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(depth);\n"
         "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
         "    }\n"
+        /* Dither before the first UNORM quantization; post-process input is already 8-bit. */
+        "    if (directional_flags.w > 0.5f) {\n"
+        "        uint2 p = (uint2)input.position.xy;\n"
+        "        uint b = ((p.x ^ p.y) & 1) * 8 + (p.y & 1) * 4\n"
+        "            + (((p.x ^ p.y) >> 1) & 1) * 2 + ((p.y >> 1) & 1);\n"
+        "        shaded.rgb += ((b + 0.5f) / 16.0f - 0.5f) / 255.0f;\n"
+        "    }\n"
         "    return shaded;\n"
         "}\n",
         kDrawShaderPrologue,
@@ -3118,6 +3125,9 @@ RecompD3dPresenterError submitDraw(
         fog[11] = fog_visualize ? 1.0f : 0.0f;
         std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
+    /* Spare directional_flags.w: dither only opaque writes to the main target. */
+    draw_constants[140 + 192 * 4 + 139] =
+        !draw.blend.blend_enable && !draw.target.offscreen ? 1.0f : 0.0f;
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     const bool alpha_to_coverage = !presenter->sun.casting && draw.depth.alpha_test_enable &&
         (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER ||
