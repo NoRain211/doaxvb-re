@@ -377,8 +377,10 @@ Set `RECOMP_D3D_RTGI=1` for experimental ray-traced global illumination on a
 GPU with DXR 1.1. The build includes it when CMake finds DXC. It traces one
 bounce of diffuse light off the visible scene through a D3D12 device beside the
 D3D11 renderer; `RECOMP_D3D_RTGI_STRENGTH` (0 to 4, default 1) scales it.
+`RECOMP_D3D_RTGI_HITCOLOR=0` disables hit-point texture color (default on),
+retaining the screen-space color and contact fallback.
 Set `RECOMP_D3D_RTGI_SPLIT=1` to leave the left half of the screen unlit for
-comparison. Bounced light comes only from surfaces visible on screen, and
-alpha-tested cutouts such as foliage block rays as solid triangles.
+comparison. Eligible static textured draws also supply off-screen bounce color;
+supported alpha-tested textures leave holes in the traced geometry.
 Without DXR support, or in a build without DXC, the runner logs a
 `recomp rtgi:` line and renders with D3D11 alone.

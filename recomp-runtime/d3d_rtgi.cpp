@@ -109,6 +109,7 @@ struct D3dRtgi {
     UINT64 frame = 0, readyValue = 0, doneValue = 0;
     UINT64 capture = 0;
     float strength = 1;
+    bool hitColor = true;
     bool failed = false, historyValid = false, alphaFullLogged = false, colorFullLogged = false;
 };
 
@@ -460,6 +461,8 @@ D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height)
             const float value = std::strtof(text, &end);
             if (end != text && *end == '\0' && std::isfinite(value)) r->strength = std::clamp(value, 0.0f, 4.0f);
         }
+        const char *hitColor = std::getenv("RECOMP_D3D_RTGI_HITCOLOR");
+        r->hitColor = !hitColor || std::strcmp(hitColor, "0") != 0;
         initialize(*r, device);
         return r.release();
     } catch (const RtgiError &error) {
@@ -550,7 +553,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
             unsigned(draw.depth.alpha_func) < 8 && draw.depth.alpha_ref <= 255;
         // The caller must classify the original stages/pixel shader, not just the host shader.
-        colorMaterial &= texture && draw.has_texture && layout.texcoord_count == 1 &&
+        colorMaterial &= r->hitColor && texture && draw.has_texture && layout.texcoord_count == 1 &&
             uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
             !draw.has_reflection && !draw.four_tap_filter && !draw.has_alpha_mask &&
             !draw.use_texture_factor && !draw.blend.blend_enable && !draw.blend_weight_count &&
