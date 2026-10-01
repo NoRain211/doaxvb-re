@@ -208,8 +208,8 @@ struct Renderer {
         for (auto &mesh : meshes) {
             if (mesh.indices.empty()) continue;
             std::vector<uint16_t> indices = mesh.indices;
-            if (mesh.draw.primitive_type == 6) indices = {0, 1, 2, 2, 1, 3};
-            if (mesh.draw.primitive_type == 7) indices = {0, 1, 2, 0, 2, 3};
+            if (mesh.draw.primitive_type == 6) indices = {indices[0], indices[1], indices[2], indices[2], indices[1], indices[3]};
+            if (mesh.draw.primitive_type == 7) indices = {indices[0], indices[1], indices[2], indices[0], indices[2], indices[3]};
             D3D11_BUFFER_DESC desc{};
             desc.Usage = D3D11_USAGE_IMMUTABLE;
             desc.ByteWidth = UINT(mesh.vertices.size() * sizeof(Vertex));
@@ -1098,6 +1098,15 @@ int main()
             auto input = readback(renderer, renderer.colorSRV.Get());
             auto output = runFrames(renderer, meshes, true);
             passed = verifyImage(input, output, samples, camera()) && passed;
+            auto ranged = scene(false);
+            for (auto &mesh : ranged) {
+                // Unreferenced NaNs must neither be transformed nor reject a valid draw.
+                mesh.vertices.insert(mesh.vertices.begin(), 512, Vertex{NAN, NAN, NAN});
+                for (auto &index : mesh.indices) index += 512;
+                mesh.draw.vertex_count = UINT(mesh.vertices.size());
+            }
+            require(runFrames(renderer, ranged, false) == output,
+                "indexed vertex range changed skinning/strip/fan output");
             auto baked = scene(true);
             const auto reference = runFrames(renderer, baked, false);
             unsigned difference = 0;

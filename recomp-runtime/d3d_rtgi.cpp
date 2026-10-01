@@ -95,7 +95,7 @@ struct D3dRtgi {
     std::vector<XMFLOAT3> normals;  // skinned vertex normals; zero when the draw has none
     // World motion since the previous frame, so moving meshes keep their GI history.
     // A mesh is its guest vertex buffer, shape and order among same-buffer draws.
-    using MeshKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>;
+    using MeshKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
     std::vector<XMFLOAT3> motions, previousPositions;
     std::map<MeshKey, size_t> meshes, previousMeshes;
     std::vector<uint32_t> indices;
@@ -546,6 +546,22 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         draw.vertex_stride < 12 + 4 * layout.blend_weight_count ||
         uint64_t(r->positions.size()) + draw.vertex_count > UINT32_MAX) return false;
     for (float value : draw.view_projection) if (!std::isfinite(value)) return false;
+    // Indexed draws often use a small range near the end of a shared vertex buffer.
+    // Do not skin or upload the unrelated prefix for every draw using that buffer.
+    auto indexAt = [&](uint32_t i) {
+        uint16_t index;
+        std::memcpy(&index, static_cast<const unsigned char *>(draw.index_bytes) + size_t(i) * 2, 2);
+        return uint32_t(index);
+    };
+    uint32_t firstVertex = draw.vertex_count, lastVertex = 0;
+    for (uint32_t i = 0; i < draw.index_count; ++i) {
+        const uint32_t index = indexAt(i);
+        if (index >= draw.vertex_count) continue;
+        firstVertex = std::min(firstVertex, index);
+        lastVertex = std::max(lastVertex, index);
+    }
+    if (firstVertex > lastVertex) return false;
+    const uint32_t vertexCount = lastVertex - firstVertex + 1;
     const size_t base = r->positions.size(), firstIndex = r->indices.size(), firstMaterial = r->materials.size();
     try {
         bool alphaTest = draw.depth.alpha_test_enable && texture &&
@@ -575,8 +591,8 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         const XMFLOAT2 scale{source.linear && source.width ? 1.0f / source.width : 1.0f,
             source.linear && source.height ? 1.0f / source.height : 1.0f};
         // ponytail: CPU skinning is sufficient here; move to compute above roughly 1M vertices/frame.
-        for (uint32_t v = 0; v < draw.vertex_count; ++v) {
-            const auto *bytes = static_cast<const unsigned char *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride;
+        for (uint32_t v = 0; v < vertexCount; ++v) {
+            const auto *bytes = static_cast<const unsigned char *>(draw.vertex_bytes) + size_t(v + firstVertex) * draw.vertex_stride;
             float p[3], weights[3]{};
             std::memcpy(p, bytes, sizeof p);
             std::memcpy(weights, bytes + 12, draw.blend_weight_count * sizeof(float));
@@ -684,11 +700,6 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         }
         const uint32_t triangles = std::min(draw.triangle_count,
             recomp_d3d_draw_triangle_count(draw.primitive_type, draw.index_count));
-        auto indexAt = [&](uint32_t i) {
-            uint16_t index;
-            std::memcpy(&index, static_cast<const unsigned char *>(draw.index_bytes) + size_t(i) * 2, 2);
-            return uint32_t(index);
-        };
         for (uint32_t t = 0; t < triangles; ++t) {
             uint32_t a, b, c;
             if (draw.primitive_type == 5) { a = indexAt(t * 3); b = indexAt(t * 3 + 1); c = indexAt(t * 3 + 2); }
@@ -698,6 +709,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             } else { a = indexAt(0); b = indexAt(t + 1); c = indexAt(t + 2); }
             if (a >= draw.vertex_count || b >= draw.vertex_count || c >= draw.vertex_count ||
                 a == b || b == c || a == c) continue;
+            a -= firstVertex; b -= firstVertex; c -= firstVertex;
             const auto pa = DirectX::XMLoadFloat3(&r->positions[base + a]);
             const auto pb = DirectX::XMLoadFloat3(&r->positions[base + b]);
             const auto pc = DirectX::XMLoadFloat3(&r->positions[base + c]);
@@ -723,14 +735,14 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             r->materials.resize(firstMaterial);
         }
         if (contributed && draw.vertex_address) {
-            D3dRtgi::MeshKey key{draw.vertex_address, draw.vertex_count, draw.vertex_stride, 0};
-            while (r->meshes.count(key)) ++std::get<3>(key);
+            D3dRtgi::MeshKey key{draw.vertex_address, vertexCount, draw.vertex_stride, firstVertex, 0};
+            while (r->meshes.count(key)) ++std::get<4>(key);
             r->meshes[key] = base;
             r->motions.resize(r->positions.size());
             const auto previous = r->previousMeshes.find(key);
             if (previous != r->previousMeshes.end() &&
-                previous->second + draw.vertex_count <= r->previousPositions.size()) {
-                for (uint32_t v = 0; v < draw.vertex_count; ++v) {
+                previous->second + vertexCount <= r->previousPositions.size()) {
+                for (uint32_t v = 0; v < vertexCount; ++v) {
                     const XMFLOAT3 &now = r->positions[base + v], &then = r->previousPositions[previous->second + v];
                     r->motions[base + v] = {now.x - then.x, now.y - then.y, now.z - then.z};
                 }
