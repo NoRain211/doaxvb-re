@@ -273,6 +273,18 @@ Gain compositePS(Vertex v, uint sampleIndex : SV_SampleIndex) {
     float3 change = strength * sum / max(total, 1e-6);
     gain.add.rgb = saturate(change * headroom);
     gain.scale.rgb = saturate(1 + min(change, 0));
+    // Relighting quantizes the main target again, after its original dither.
+    // Keep the noise fixed in screen space and preserve exactly unchanged pixels.
+    float3 multiplier = gain.add.rgb + gain.scale.rgb;
+    if (any(multiplier != 1)) {
+        uint2 pixel = uint2(p);
+        uint b = ((pixel.x ^ pixel.y) & 1) * 8 + (pixel.y & 1) * 4
+            + (((pixel.x ^ pixel.y) >> 1) & 1) * 2 + ((pixel.y >> 1) & 1);
+        float noise = ((b + 0.5) / 16 - 0.5) / 255;
+        multiplier = max(0, multiplier + noise / max(max(base.r, max(base.g, base.b)), 1.0 / 255));
+        gain.add.rgb = max(multiplier - 1, 0);
+        gain.scale.rgb = min(multiplier, 1);
+    }
     return gain;
 }
 )";
