@@ -500,6 +500,29 @@ static bool verifySamples(Renderer &renderer)
     return passed;
 }
 
+static bool verifyWeakLighting(Renderer &renderer)
+{
+    // Every undithered change is below half an output byte and would vanish.
+    require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "0.004") == 0, "set weak lighting");
+    auto meshes = scene(true);
+    renderer.render(meshes);
+    const auto input = readTarget(renderer);
+    const auto output = runFrames(renderer, meshes, false);
+    unsigned changed = 0, error = 0;
+    for (size_t p = 0; p < input.size(); ++p) {
+        require(input[p][3] == output[p][3], "dither changed alpha");
+        if (input[p] != std::array<uint8_t, 4>{166, 166, 166, 255}) continue;
+        changed += input[p] != output[p];
+        for (unsigned c = 0; c < 3; ++c)
+            error = std::max(error, unsigned(std::abs(int(input[p][c]) - output[p][c])));
+    }
+    require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "1.5") == 0, "restore strength");
+    const bool passed = changed > 100 && error == 1;
+    std::printf("%s RTGI %ux MSAA sub-byte lighting: changed=%u max byte error=%u\n",
+        passed ? "PASS" : "FAIL", renderer.samples, changed, error);
+    return passed;
+}
+
 static bool verifyBanding(Renderer &renderer)
 {
     // Red radiance is now 1 - 0.5; double strength to retain the reference signal.
@@ -640,18 +663,31 @@ static bool verifyMovingNoise(Renderer &r)
         for (size_t p = 0; p < input.size(); ++p)
             if (input[p] == std::array<uint8_t, 4>{46, 61, 82, 255})
                 current[p] = contribution(input[p], output[p]);
+        // Measure lighting over a complete dither tile. verifyWeakLighting bounds
+        // the intentional per-pixel grain to one byte and checks alpha separately.
+        auto spatialSignal = current;
+        for (UINT y = 0; y < height; ++y) for (UINT x = 0; x < width; ++x) {
+            double mean = 0;
+            bool interior = x + 3 < width && y + 3 < height;
+            if (interior) for (UINT dy = 0; dy < 4; ++dy) for (UINT dx = 0; dx < 4; ++dx) {
+                const double value = current[size_t(y + dy) * width + x + dx];
+                interior &= value != -2;
+                mean += value / 16;
+            }
+            spatialSignal[size_t(y) * width + x] = interior ? mean : -2;
+        }
         if (frame >= 24) for (UINT y = 1; y + 1 < height; ++y) for (UINT x = 1; x + 1 < width; ++x) {
             const size_t p = size_t(y) * width + x;
             double mean = 0;
             bool interior = true;
             for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
-                const double value = current[size_t(int(y) + dy) * width + int(x) + dx];
+                const double value = spatialSignal[size_t(int(y) + dy) * width + int(x) + dx];
                 interior &= value != -2;
                 mean += value / 9;
             }
             if (!interior) continue;
-            spatial += std::abs(current[p] - mean);
-            gain += std::abs(current[p]);
+            spatial += std::abs(spatialSignal[p] - mean);
+            gain += std::abs(spatialSignal[p]);
             ++count;
             if (previous[p] != -2) {
                 temporal += std::abs(current[p] - previous[p]);
@@ -1123,6 +1159,7 @@ int main()
             if (samples == 4) passed = verifySamples(renderer) && passed;
             require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "1.5") == 0, "restore strength");
             passed = verifyHistory(renderer) && passed;
+            passed = verifyWeakLighting(renderer) && passed;
             passed = verifyBanding(renderer) && passed;
             passed = verifyMovingNoise(renderer) && passed;
             passed = verifyFireflies(renderer) && passed;
