@@ -40,7 +40,8 @@ static void require(bool passed, const char *message)
 
 using Rtgi = std::unique_ptr<D3dRtgi, decltype(&d3d_rtgi_destroy)>;
 constexpr UINT width = 321, height = 241;
-struct Vertex { float x, y, z, weight, u, v; };
+// The last two floats also allow XYZ/normal/UV fixtures; raster uses position/weight only.
+struct Vertex { float x, y, z, weight, u, v, extraU, extraV; };
 struct Mesh {
     std::vector<Vertex> vertices;
     std::vector<uint16_t> indices;
@@ -866,6 +867,25 @@ static bool verifyOffscreenColor(Renderer &r)
     const auto red = runFrames(r, meshes, false, 32);
     wall.texture = colorTexture(r.device, 0xff0000ff);
     const auto blue = runFrames(r, meshes, false, 32);
+    const auto originalVertices = wall.vertices;
+    const auto originalFvf = wall.draw.fvf;
+    wall.draw.fvf = 0x112; // XYZ, normal, UV0.
+    for (auto &v : wall.vertices) {
+        v.extraU = v.u;
+        v.extraV = v.v;
+        v.weight = 1; v.u = v.v = 0; // Normal faces the floor.
+    }
+    auto &light = wall.draw.directional;
+    light.enabled = true;
+    light.count = 1;
+    light.normal_transforms[0][0] = light.normal_transforms[0][5] = light.normal_transforms[0][10] = 1;
+    light.ambient_emissive[0] = light.ambient_emissive[1] = light.ambient_emissive[2] = 1;
+    const auto directional = runFrames(r, meshes, false, 32);
+    light.positions[0][3] = 1;
+    const auto point = runFrames(r, meshes, false, 32);
+    light = {};
+    wall.draw.fvf = originalFvf;
+    wall.vertices = originalVertices;
     wall.draw.texture.linear = false;
     for (auto &v : wall.vertices) v.u *= 0.5f;
     const auto normalized = runFrames(r, meshes, false, 32);
@@ -901,7 +921,7 @@ static bool verifyOffscreenColor(Renderer &r)
     double change[2][3]{};
     unsigned count = 0;
     int removedError = 0, fallbackError = 0, unlitHue = 0, tintError = 0, uvError = 0, holeError = 0;
-    int unlitDarkening = 255;
+    int unlitDarkening = 255, directionalError = 0, pointError = 0;
     // Left floor strip x=-4.5..-2.5, away from image/filter boundaries.
     for (UINT y = height / 4; y < 3 * height / 4; ++y)
         for (UINT x = width / 20; x < width / 4; ++x) {
@@ -918,6 +938,8 @@ static bool verifyOffscreenColor(Renderer &r)
                     std::abs(int(wrapped[p][c]) - blue[p][c]), std::abs(int(mirrored[p][c]) - blue[p][c])});
                 holeError = std::max(holeError, std::abs(int(hole[p][c]) - input[p][c]));
                 unlitDarkening = std::min(unlitDarkening, int(input[p][c]) - unlit[p][c]);
+                directionalError = std::max(directionalError, std::abs(int(directional[p][c]) - blue[p][c]));
+                pointError = std::max(pointError, std::abs(int(point[p][c]) - input[p][c]));
             }
             ++count;
         }
@@ -925,12 +947,12 @@ static bool verifyOffscreenColor(Renderer &r)
     const bool passed = change[0][0] > 2 && change[0][0] > change[0][2] + 5 &&
         change[1][2] > 2 && change[1][2] > change[1][0] + 5 &&
         removedError <= 1 && fallbackError <= 1 && unlitHue <= 1 && tintError <= 1 &&
-        uvError <= 1 && holeError <= 1 && unlitDarkening > 4;
+        uvError <= 1 && holeError <= 1 && unlitDarkening > 4 && directionalError <= 1 && pointError <= 1;
     std::printf("%s RTGI %ux MSAA offscreen texture bounce (32 frames): red RGB=(%.2f,%.2f,%.2f) "
-        "blue RGB=(%.2f,%.2f,%.2f) removed=%d unsupported=%d unlit hue=%d tint error=%d UV error=%d hole=%d dark=%d\n",
+        "blue RGB=(%.2f,%.2f,%.2f) removed=%d unsupported=%d unlit hue=%d tint error=%d UV error=%d hole=%d dark=%d directional=%d point fallback=%d\n",
         passed ? "PASS" : "FAIL", r.samples, change[0][0], change[0][1], change[0][2],
         change[1][0], change[1][1], change[1][2], removedError, fallbackError, unlitHue, tintError,
-        uvError, holeError, unlitDarkening);
+        uvError, holeError, unlitDarkening, directionalError, pointError);
     return passed;
 }
 

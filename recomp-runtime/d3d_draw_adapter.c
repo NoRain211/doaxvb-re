@@ -994,13 +994,17 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
         const uint8_t *stage1 = guest_span(0x001f2a38u, 4u);
         const uint8_t *stage2 = guest_span(0x001f2ab8u, 4u);
         const uint8_t *shader = guest_span(device + 0x370u, 4u);
-        if (stage0 && stage1 && stage2 && shader) {
-            uint32_t op[4], next, last, pixel_shader;
+        const uint8_t *lighting_state = guest_span(0x001f2d20u, 4u);
+        if (stage0 && stage1 && stage2 && shader && lighting_state) {
+            uint32_t op[4], next, last, pixel_shader, lighting;
             memcpy(op, stage0, sizeof op);
             memcpy(&next, stage1, 4u); memcpy(&last, stage2, 4u);
             memcpy(&pixel_shader, shader, 4u);
+            memcpy(&lighting, lighting_state, 4u);
+            /* Enabled but uncaptured lighting is not a white diffuse term. */
+            const bool known_diffuse = !lighting || draw->directional.enabled || draw->zero_diffuse_rgb;
             /* Xbox D3DTOP: 1 DISABLE, 4 MODULATE; D3DTA: 0 DIFFUSE, 2 TEXTURE. */
-            draw->plain_texture_material = pixel_shader == 0u &&
+            draw->plain_texture_material = pixel_shader == 0u && known_diffuse &&
                 op[0] == 4u && op[2] == 2u && op[3] == 0u &&
                 (next == 1u || (draw->modulate_texture_factor && last == 1u));
         }
