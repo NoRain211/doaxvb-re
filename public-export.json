@@ -124,6 +124,10 @@
   ],
   "byte_literal_exceptions": [
     {
+      "sha256": "4765463d844a412639298ff7ed691726722db592ea5bee51f7586bc575fa5ed0",
+      "reason": "Synthetic DXT3 fixture: 0/85/170/255 alpha ramp per row, RGB565 endpoints and zero selectors for the alpha-to-coverage test in d3d_presenter_d3d11_test.cpp."
+    },
+    {
       "sha256": "649c5b82067b429cdbd2ad9709a090db5dbaae0bb32dc1a7b00b01479efc37ed",
       "reason": "Synthetic DXT3 fixture: repeated alpha nibbles, RGB565 red endpoint and zero color selectors in d3d_presenter_d3d11_test.cpp."
     },
