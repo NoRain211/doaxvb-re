@@ -867,6 +867,9 @@ static bool verifyOffscreenColor(Renderer &r)
     const auto red = runFrames(r, meshes, false, 32);
     wall.texture = colorTexture(r.device, 0xff0000ff);
     const auto blue = runFrames(r, meshes, false, 32);
+    _putenv_s("RECOMP_D3D_RTGI_HITCOLOR", "0");
+    const auto disabled = runFrames(r, meshes, false, 32);
+    _putenv_s("RECOMP_D3D_RTGI_HITCOLOR", "");
     const auto originalVertices = wall.vertices;
     const auto originalFvf = wall.draw.fvf;
     wall.draw.fvf = 0x112; // XYZ, normal, UV0.
@@ -916,6 +919,7 @@ static bool verifyOffscreenColor(Renderer &r)
     wall.draw.four_tap_filter = false;
     wall.colorMaterial = false;
     const auto unclassified = runFrames(r, meshes, false, 32);
+    require(disabled == unclassified, "disabled hit color differs from contact fallback");
     wall.indices.clear();
     const auto absent = runFrames(r, meshes, false, 32);
     double change[2][3]{};
