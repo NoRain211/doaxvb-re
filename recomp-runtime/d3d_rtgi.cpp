@@ -562,6 +562,10 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                 layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT)) &&
             (layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT ||
                 uint64_t(layout.diffuse_offset) + 4 <= draw.vertex_stride);
+        // The presenter also admits point lights; this proxy evaluates only directional lights.
+        if (colorMaterial && draw.directional.enabled)
+            for (uint32_t i = 0; i < draw.directional.count; ++i)
+                colorMaterial &= draw.directional.positions[i][3] == 0;
         // ponytail: reflection and four-tap alpha need more than UV0; keep those draws opaque.
         alphaTest &= !draw.has_reflection && !draw.four_tap_filter;
         const auto &source = draw.has_alpha_mask ? draw.alpha_mask : draw.texture;
