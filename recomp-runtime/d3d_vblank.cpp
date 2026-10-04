@@ -6,24 +6,48 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 namespace {
 using Clock = std::chrono::steady_clock;
 Clock::time_point last_vblank;
 HANDLE high_resolution_timer;
-// ponytail: the supported progressive NTSC mode; other video modes need their rate.
-constexpr auto interval = std::chrono::nanoseconds(1000000000 / 60);
+// The rate override is a timing experiment, not a gameplay-speed correction.
+std::chrono::nanoseconds interval(1000000000 / 60);
+Clock::time_point probe_start;
+unsigned probe_waits;
+bool probe_enabled;
 constexpr auto spin_window = std::chrono::microseconds(500);
 }
 
 void recomp_d3d_vblank_reset(void)
 {
+    const char *rate = std::getenv("RECOMP_GUEST_VBLANK_HZ");
+    probe_enabled = rate != nullptr &&
+        (std::strcmp(rate, "60") == 0 || std::strcmp(rate, "120") == 0);
+    const unsigned hz = probe_enabled && std::strcmp(rate, "120") == 0 ? 120 : 60;
+    interval = std::chrono::nanoseconds(1000000000 / hz);
     last_vblank = Clock::now();
+    probe_start = last_vblank;
+    probe_waits = 0;
+    if (probe_enabled) {
+        std::fprintf(stderr, "recomp vblank probe: hz=%u; elapsed starts at reset\n", hz);
+    } else if (rate != nullptr) {
+        std::fprintf(stderr, "recomp vblank probe: expected 60 or 120; using 60 Hz\n");
+    }
 }
 
 void recomp_d3d_wait_vblank(void)
 {
+    if (probe_enabled && (++probe_waits == 1 || probe_waits % 300 == 0)) {
+        const double elapsed = std::chrono::duration<double>(
+            Clock::now() - probe_start).count();
+        std::fprintf(stderr, "recomp vblank probe: wait=%u elapsed_s=%.6f\n",
+            probe_waits, elapsed);
+    }
     // Late frames discard timing debt instead of running catch-up updates.
     last_vblank = std::max(last_vblank + interval, Clock::now());
     if (high_resolution_timer == nullptr) {
