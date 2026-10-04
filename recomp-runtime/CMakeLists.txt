@@ -572,6 +572,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
         d3d_texture_model.c
@@ -675,6 +676,7 @@ if(WIN32)
         ../xbe/sha.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_draw_model.c
         d3d_render_state_model.c
         d3d_texture_model.c)
@@ -697,6 +699,7 @@ if(WIN32)
         texture_replacement.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_draw_model.c
         d3d_render_state_model.c
         d3d_texture_model.c)
@@ -741,6 +744,8 @@ if(WIN32)
     target_link_libraries(recomp_sha_test PRIVATE bcrypt)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
+add_executable(recomp_d3d_smooth_normals_test
+    d3d_smooth_normals.cpp d3d_smooth_normals_test.cpp)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
@@ -782,6 +787,7 @@ add_test(NAME recomp-runtime-unlock-swimsuits COMMAND recomp_unlock_swimsuits_te
 add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
 add_test(NAME recomp-runtime-animation-pose COMMAND recomp_animation_pose_test)
 add_test(NAME recomp-runtime-pose-replay COMMAND recomp_d3d_pose_replay_test)
+add_test(NAME recomp-runtime-smooth-normals COMMAND recomp_d3d_smooth_normals_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
