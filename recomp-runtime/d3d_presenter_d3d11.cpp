@@ -1955,7 +1955,7 @@ void copyGuestBuffer(RecompD3dPresenter *presenter, ID3D11Resource *target)
     presenter->render_target_view->GetResource(&source);
     if (presenter->msaa > 1u) presenter->context->ResolveSubresource(
         target, 0u, source, 0u, DXGI_FORMAT_B8G8R8A8_UNORM);
-    else presenter->context->CopyResource(target, source);
+    else presenter->context->CopySubresourceRegion(target, 0u, 0u, 0u, 0u, source, 0u, nullptr);
     releaseCom(source);
 }
 
@@ -1973,14 +1973,20 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
         presenter->render_target_view == nullptr) return nullptr;
 
     if (presenter->back_buffer_copy == nullptr) {
+        /* An upscaled copy keeps mips so a guest downsample (the 256x256
+           depth-of-field source) averages its footprint like the Xbox did. */
+        const bool mips = presenter->scale != 1.0f;
         D3D11_TEXTURE2D_DESC texture_desc{};
         texture_desc.Width = mainWidth(presenter);
         texture_desc.Height = mainHeight(presenter);
-        texture_desc.MipLevels = texture_desc.ArraySize = 1u;
+        texture_desc.MipLevels = mips ? 0u : 1u;
+        texture_desc.ArraySize = 1u;
         texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         texture_desc.SampleDesc.Count = 1u;
         texture_desc.Usage = D3D11_USAGE_DEFAULT;
-        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+            (mips ? D3D11_BIND_RENDER_TARGET : 0u);
+        texture_desc.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0u;
         HRESULT result = presenter->device->CreateTexture2D(
             &texture_desc, nullptr, &presenter->back_buffer_copy);
         if (SUCCEEDED(result)) {
@@ -2054,7 +2060,14 @@ ID3D11ShaderResourceView *lookupTexture(
             desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
     }
 
-    if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
+    if (draw.texture_is_backbuffer) {
+        ID3D11ShaderResourceView *view = lookupBackBufferTexture(presenter, desc);
+        /* Only a draw into a smaller offscreen target minifies; 1:1 reads skip it. */
+        if (view != nullptr && presenter->scale != 1.0f && draw.target.offscreen) {
+            presenter->context->GenerateMips(view);
+        }
+        return view;
+    }
 
     if (palettized && (draw.palette_bytes == nullptr ||
         draw.palette_byte_count != kPaletteBytes)) {
