@@ -3,6 +3,7 @@
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 #include "texture_replacement.h"
+#include "d3d_smooth_normals.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -25,6 +26,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <list>
 #include <string>
 
 #include "d3d_sun_shadow.h"
@@ -399,6 +401,22 @@ void releaseCom(T *&object)
    Revisit the bound if another scene exceeds it and causes compilation churn. */
 constexpr uint32_t kDrawPipelineSlots = 16u;
 
+struct SmoothNormalsEntry {
+    std::vector<uint8_t> source, vertices;
+    std::vector<uint16_t> indices;
+    uint32_t fvf, stride, primitive;
+    std::list<uint64_t>::iterator recent;
+    size_t bytes() const { return source.size()+vertices.size()+indices.size()*2u; }
+};
+
+struct SmoothNormalsCache {
+    std::unordered_map<uint64_t, SmoothNormalsEntry> entries;
+    std::list<uint64_t> order;
+    size_t bytes = 0;
+    uint64_t hits = 0, misses = 0;
+    double total_ms = 0, rebuild_ms = 0, max_rebuild_ms = 0;
+};
+
 struct DrawPipeline {
     uint32_t fvf;
     uint32_t program_count;
@@ -565,6 +583,8 @@ struct RecompD3dPresenter {
     ID3D11Buffer *draw_index_buffer = nullptr;
     ID3D11Buffer *draw_constant_buffer = nullptr;
     ID3D11RasterizerState *draw_rasterizer_states[3] = {};
+    SmoothNormalsCache smooth_normals;
+    std::vector<uint8_t> smooth_vertex_scratch;
     UINT draw_vertex_capacity = 0u;
     UINT draw_index_capacity = 0u;
     UINT draw_vertex_used = 0u;
@@ -2696,6 +2716,116 @@ ID3D11BlendState *lookupBlendState(
     return state;
 }
 
+// Hash every byte: CPU-skinned streams and in-place buffer rewrites must miss.
+uint64_t normalFingerprint(const void *source, size_t size, uint64_t hash)
+{
+    const auto *bytes = static_cast<const uint8_t *>(source);
+    while (size >= 8u) {
+        uint64_t word;
+        std::memcpy(&word, bytes, 8u);
+        hash = (hash ^ word) * 0x100000001b3ull;
+        bytes += 8u;
+        size -= 8u;
+    }
+    while (size--) hash = (hash ^ *bytes++) * 0x100000001b3ull;
+    return hash;
+}
+
+bool smoothNormalsEnabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("RECOMP_D3D_SMOOTH_NORMALS");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+const void *smoothNormalVertices(RecompD3dPresenter *presenter,
+    const RecompD3dPresenterDrawCommand &draw, const RecompD3dVertexLayout &layout,
+    bool enabled = smoothNormalsEnabled())
+{
+    if (!enabled || !draw.directional.enabled || draw.program_count || layout.pretransformed ||
+        layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
+        draw.primitive_type < 5u || draw.primitive_type > 7u) return draw.vertex_bytes;
+
+    static const bool measure = std::getenv("RECOMP_PERF_COUNTER") != nullptr;
+    const auto start = measure ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    auto &cache = presenter->smooth_normals;
+    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
+    uint32_t first = UINT32_MAX, last = 0;
+    for (uint32_t i=0; i<draw.index_count; ++i) {
+        first = (std::min)(first, uint32_t(indices[i]));
+        last = (std::max)(last, uint32_t(indices[i]));
+    }
+    if (last >= draw.vertex_count) return draw.vertex_bytes;
+    // Index buffers often select only the tail of a shared vertex buffer.
+    // Unreferenced prefixes must not consume the cache or invalidate on animation.
+    const uint32_t count = last-first+1u;
+    const auto *source = static_cast<const uint8_t *>(draw.vertex_bytes)+size_t(first)*draw.vertex_stride;
+    const size_t size = size_t(count)*draw.vertex_stride;
+    const size_t index_size = size_t(draw.index_count)*2u;
+    const uint32_t shape[] = {draw.fvf, draw.vertex_stride, draw.primitive_type, count, draw.index_count, first};
+    uint64_t key = normalFingerprint(shape, sizeof shape, 0xcbf29ce484222325ull);
+    key = normalFingerprint(source, size, key);
+    key = normalFingerprint(draw.index_bytes, index_size, key);
+    auto found = cache.entries.find(key);
+    const void *result = draw.vertex_bytes;
+    if (found != cache.entries.end() && found->second.fvf == draw.fvf &&
+        found->second.stride == draw.vertex_stride && found->second.primitive == draw.primitive_type &&
+        found->second.source.size() == size && found->second.indices.size()*2u == index_size &&
+        !std::memcmp(found->second.source.data(), source, size) &&
+        !std::memcmp(found->second.indices.data(), draw.index_bytes, index_size)) {
+        ++cache.hits;
+        cache.order.splice(cache.order.end(), cache.order, found->second.recent);
+        result = found->second.vertices.data();
+    } else {
+        ++cache.misses;
+        const auto rebuild_start = measure ? std::chrono::steady_clock::now() : start;
+        auto vertices = recomp_d3d_smooth_normals(source, count, draw.vertex_stride,
+            layout, indices, draw.index_count, draw.primitive_type, first);
+        if (measure) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-rebuild_start).count();
+            cache.rebuild_ms += ms;
+            cache.max_rebuild_ms = (std::max)(cache.max_rebuild_ms, ms);
+        }
+        // Leave room for a full scene plus changing animation buffers.
+        constexpr size_t budget = 32u*1024u*1024u;
+        const size_t cost = size*2u+index_size;
+        if (!vertices.empty() && cost <= budget) {
+            // A hash collision is a miss, never permission to reuse other geometry.
+            if (found != cache.entries.end()) {
+                cache.bytes -= found->second.bytes();
+                cache.order.erase(found->second.recent);
+                cache.entries.erase(found);
+            }
+            while (!cache.order.empty() && (cache.bytes+cost > budget || cache.order.size() >= 1024u)) {
+                auto oldest = cache.entries.find(cache.order.front());
+                cache.bytes -= oldest->second.bytes();
+                cache.entries.erase(oldest);
+                cache.order.pop_front();
+            }
+            SmoothNormalsEntry entry{{source, source+size}, std::move(vertices),
+                {indices, indices+draw.index_count}, draw.fvf, draw.vertex_stride, draw.primitive_type};
+            auto inserted = cache.entries.emplace(key, std::move(entry));
+            cache.order.push_back(key);
+            inserted.first->second.recent = --cache.order.end();
+            cache.bytes += cost;
+            result = inserted.first->second.vertices.data();
+        }
+    }
+    if (result != draw.vertex_bytes && (first || count != draw.vertex_count)) {
+        // Keep the original index base. No draw reads the unused scratch prefix.
+        auto &scratch = presenter->smooth_vertex_scratch;
+        const size_t full_size = size_t(draw.vertex_count)*draw.vertex_stride;
+        if (scratch.size()<full_size) scratch.resize(full_size);
+        std::memcpy(scratch.data()+size_t(first)*draw.vertex_stride, result, size);
+        result = scratch.data();
+    }
+    if (measure) cache.total_ms += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now()-start).count();
+    return result;
+}
+
 RecompD3dPresenterError submitDraw(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
@@ -2774,7 +2904,7 @@ RecompD3dPresenterError submitDraw(
     UINT vertex_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_vertex_buffer,
             presenter->draw_vertex_capacity, presenter->draw_vertex_used,
-            draw.vertex_bytes, vertex_size, D3D11_BIND_VERTEX_BUFFER, vertex_offset)) {
+            smoothNormalVertices(presenter, draw, layout), vertex_size, D3D11_BIND_VERTEX_BUFFER, vertex_offset)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
@@ -4343,6 +4473,12 @@ RecompD3dPresenterError d3d11_backend_destroy(
     destroyed->precompile_stop = true;
     if (destroyed->precompile.joinable()) destroyed->precompile.join();
     releasePresenter(destroyed);
+    if (std::getenv("RECOMP_PERF_COUNTER") && destroyed->smooth_normals.misses) {
+        const auto &s = destroyed->smooth_normals;
+        std::fprintf(stderr, "recomp smooth normals: hits=%llu misses=%llu total_ms=%.3f rebuild_ms=%.3f max_rebuild_ms=%.3f cache_bytes=%zu presents=%u\n",
+            static_cast<unsigned long long>(s.hits), static_cast<unsigned long long>(s.misses),
+            s.total_ms, s.rebuild_ms, s.max_rebuild_ms, s.bytes, destroyed->present_count);
+    }
     delete destroyed;
     return RECOMP_D3D_PRESENTER_OK;
 }
