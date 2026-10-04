@@ -3235,6 +3235,23 @@ static bool testSunShadow(unsigned samples)
 
 int main()
 {
+    for (const bool sun : {false, true}) {
+        for (const uint32_t fvf : kBootDrawFvfs) {
+            RecompD3dVertexLayout layout;
+            std::string source;
+            bool compiled = drawShaderSource(fvf, DrawPipeline{}, layout, source, true, sun, true);
+            for (const bool vertex : {true, false}) {
+                ID3DBlob *blob = nullptr;
+                compiled = compiled && compileDrawShader(source.c_str(),
+                    vertex ? "vs_main" : "ps_main", vertex ? "vs_4_0" : "ps_4_0", &blob);
+                releaseCom(blob);
+            }
+            if (!compiled) {
+                std::fprintf(stderr, "FAIL per-pixel lighting shader fvf=0x%x sun=%d\n", fvf, sun);
+                return 1;
+            }
+        }
+    }
 #ifdef _MSC_VER
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     for (int report : {_CRT_ERROR, _CRT_ASSERT}) {
