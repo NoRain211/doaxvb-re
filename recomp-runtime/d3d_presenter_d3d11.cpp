@@ -1520,12 +1520,22 @@ bool compileDrawShader(
     return SUCCEEDED(result);
 }
 
+bool pixelLightingEnabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("RECOMP_D3D_PIXEL_LIGHTING");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 /* Builds the HLSL for one FVF, plus its vertex program when it has one. */
 bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source, bool explicit_coverage = true, bool sun_shadow = false)
+    std::string &compiled_source, bool explicit_coverage = true, bool sun_shadow = false,
+    bool pixel_lighting = pixelLightingEnabled())
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
@@ -1562,7 +1572,8 @@ bool drawShaderSource(
         fog += "    if (fog_flags.y > 0.5f) output.fog_depth = abs(output.position.z / output.position.w);\n";
     }
     compiled_source.insert(compiled_source.find("    return output;"), fog);
-    if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
+    if (!pipeline.program_count &&
+        layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
             "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n"
@@ -1580,7 +1591,8 @@ bool drawShaderSource(
                 "world_pos += remainder * mul(float4(input.position,1),light_world["+
                 std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
         }
-        lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
+        const std::string evaluate =
+            "float3 evaluateLighting(float3 n, float3 world_pos) {\n"
             "        float3 rgb=directional_base.rgb;\n"
             "        for (uint i=0; i<(uint)directional_flags.z; ++i) {\n"
             "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
@@ -1593,8 +1605,36 @@ bool drawShaderSource(
             "            }\n"
             "            rgb += (directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) + light_ambient[i].rgb) * atten;\n"
             "        }\n"
-            "        output.color.rgb=saturate(rgb);\n"
-            "    }\n";
+            "        return saturate(rgb);\n"
+            "}\n";
+        const auto vertex = compiled_source.find("VSOut vs_main(");
+        if (vertex == std::string::npos) return false;
+        compiled_source.insert(vertex, evaluate);
+        // Sun shadows anchor on this line; it exists in both lighting modes.
+        lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
+        if (pixel_lighting) {
+            // TEXCOORD6..10 belong to fog and sun shadows.
+            compiled_source.insert(compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {"),
+                "\n    float3 light_position : TEXCOORD11;\n    float4 light_normal : TEXCOORD12;\n");
+            // Initialize unlit draws too; their existing color path stays intact.
+            lighting.insert(0, "    output.light_position = 0; output.light_normal = 0;\n");
+            lighting += "        output.light_position = world_pos;\n"
+                "        output.light_normal = float4(n, length(n));\n";
+            const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+            const auto sample = compiled_source.find(pixel);
+            if (sample == std::string::npos) return false;
+            // Preserve magnitude when NORMALIZENORMALS is off, including flat lighting.
+            compiled_source.insert(sample + pixel.size(),
+                "\n    if (directional_flags.x > 0.5f) {\n"
+                "        float3 n = input.light_normal.xyz;\n"
+                "        if (dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
+                "        if (directional_flags.y < 0.5f) n *= input.light_normal.w;\n"
+                "        input.color.rgb = evaluateLighting(n, input.light_position);\n"
+                "    }\n");
+        } else {
+            lighting += "        output.color.rgb = evaluateLighting(n, world_pos);\n";
+        }
+        lighting += "    }\n";
         const auto uv = compiled_source.find("    output.texcoord =");
         if (uv == std::string::npos) return false;
         compiled_source.insert(uv, lighting);
