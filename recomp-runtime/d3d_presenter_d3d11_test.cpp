@@ -2020,8 +2020,65 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testReplacementFormats()
+{
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() /
+        ("recomp-texture-formats-" + std::to_string(GetCurrentProcessId()));
+    _putenv_s("RECOMP_TEXTURE_DUMP", "1");
+    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
+    RecompD3dPresenter presenter{};
+    _putenv_s("RECOMP_TEXTURE_DUMP", "");
+    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", "");
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+        &level, 1, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    bool passed = true;
+    for (uint32_t format : {RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8, RECOMP_D3D_TEXTURE_FORMAT_P8,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT1, RECOMP_D3D_TEXTURE_FORMAT_DXT3,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT5, RECOMP_D3D_TEXTURE_FORMAT_A8}) {
+        RecompD3dPresenterDrawCommand draw{};
+        const uint32_t bits = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ? 32 :
+            format == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 4 : 8;
+        draw.texture = {format, bits, false, false, false, 64, 64, 0, 0x900000u, 2};
+        // This descriptor flag means format capability, not rendered content.
+        draw.texture.render_target = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+        std::vector<uint8_t> bytes(recomp_d3d_texture_mip_span(&draw.texture), 0);
+        uint8_t palette[1024]{};
+        draw.texture_bytes = bytes.data(); draw.texture_byte_count = static_cast<uint32_t>(bytes.size());
+        draw.palette_bytes = palette; draw.palette_byte_count = sizeof palette;
+        auto *original = lookupTexture(&presenter, draw);
+        TextureIdentity identity;
+        identity.assign(draw);
+        passed &= original != nullptr;
+        const auto original_key = identity.key;
+        draw.texture.data += 0x10000u;
+        passed &= lookupTexture(&presenter, draw) != nullptr;
+        identity.assign(draw);
+        passed &= identity.key == original_key;
+        presenter.replacements.finishFrame(presenter.device, presenter.context, format);
+        passed &= fs::exists(root / "dump" / (original_key + ".png"));
+        bytes[11] = 1;
+        passed &= lookupTexture(&presenter, draw) != nullptr;
+        auto range = presenter.texture_index.equal_range(draw.texture.data);
+        bool changed = false;
+        for (auto it = range.first; it != range.second; ++it) {
+            const auto &entry = presenter.textures[it->second];
+            if (entry.format_byte == format) changed |= entry.identity.key != original_key;
+        }
+        passed &= changed;
+        presenter.replacements.finishFrame(presenter.device, presenter.context, format + 1);
+    }
+    releaseGraphics(&presenter);
+    std::error_code error;
+    fs::remove_all(root, error);
+    std::printf("%s replacement capture for six static formats on FL10\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main()
 {
+    if (!testReplacementFormats()) return 1;
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;

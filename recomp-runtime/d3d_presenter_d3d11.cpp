@@ -1,6 +1,7 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
 #include "d3d_vertex_program.h"
+#include "texture_replacement.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -348,6 +349,7 @@ struct TextureEntry {
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     uint64_t fingerprint;
+    TextureIdentity identity;
     ID3D11ShaderResourceView *view;
 };
 
@@ -449,6 +451,8 @@ struct RecompD3dPresenter {
     uint32_t next_blend_state_slot = 0u;
     std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
     std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
+    TextureReplacements replacements;
+    size_t texture_identity_bytes = 0;
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
@@ -523,6 +527,14 @@ LRESULT CALLBACK presenterWindowProc(
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
+    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30))) {
+        auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (presenter && presenter->replacements.enabled()) {
+            presenter->replacements.request((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+            return 0;
+        }
+    }
     if (message == WM_CLOSE) {
         auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
             GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -554,6 +566,7 @@ void releaseSmaa(RecompD3dPresenter *presenter)
 
 void releaseGraphics(RecompD3dPresenter *presenter)
 {
+    presenter->replacements.clear();
     if (presenter->context != nullptr) {
         presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
         presenter->context->ClearState();
@@ -598,8 +611,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         TextureEntry &entry = presenter->textures[i];
 
         releaseCom(entry.view);
+        entry.identity = {};
         entry.used = false;
     }
+    presenter->texture_identity_bytes = 0;
     presenter->texture_index.clear();
     presenter->texture_count = 0u;
     presenter->next_texture_slot = 0u;
@@ -1949,6 +1964,9 @@ ID3D11SamplerState *lookupDrawSampler(
 
 void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 {
+    auto &identity = presenter->textures[slot].identity;
+    presenter->texture_identity_bytes -= identity.bytes.size();
+    identity = {};
     const auto range = presenter->texture_index.equal_range(presenter->textures[slot].data);
     for (auto it = range.first; it != range.second; ++it) {
         if (it->second == slot) {
@@ -1995,6 +2013,9 @@ ID3D11ShaderResourceView *lookupTexture(
             draw.texture_byte_count)) {
         return nullptr;
     }
+    const bool replaceable = presenter->replacements.enabled() && !desc.linear &&
+        !desc.depth && draw.texture_bytes &&
+        draw.texture_byte_count == recomp_d3d_texture_mip_span(&desc);
     const auto cached = presenter->texture_index.equal_range(desc.data);
     const bool fingerprinted = !linear_bgra && draw.texture_bytes != nullptr;
     const uint64_t fingerprint = fingerprinted
@@ -2005,7 +2026,8 @@ ID3D11ShaderResourceView *lookupTexture(
         if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
-            if (fingerprinted && entry.fingerprint != fingerprint) {
+            if (fingerprinted && (entry.fingerprint != fingerprint ||
+                (replaceable && !entry.identity.key.empty() && !entry.identity.matches(draw)))) {
                 static unsigned reported;
                 if (reported < 32u) {
                     ++reported;
@@ -2024,7 +2046,7 @@ ID3D11ShaderResourceView *lookupTexture(
                     resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
                 releaseCom(resource);
             }
-            return entry.view;
+            return replaceable ? presenter->replacements.lookup(entry.identity.key, entry.view) : entry.view;
         }
     }
     const DXGI_FORMAT format = linear_bgra
@@ -2132,6 +2154,14 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.fingerprint = fingerprint;
+    presenter->texture_identity_bytes -= entry.identity.bytes.size();
+    entry.identity = {};
+    if (replaceable && presenter->texture_identity_bytes + draw.texture_byte_count +
+        kPaletteBytes <= 128u * 1024u * 1024u) {
+        try { entry.identity.assign(draw); }
+        catch (const std::exception &) { entry.identity = {}; }
+    }
+    presenter->texture_identity_bytes += entry.identity.bytes.size();
     entry.view = view;
     try {
         presenter->texture_index.emplace(desc.data, slot);
@@ -2140,7 +2170,7 @@ ID3D11ShaderResourceView *lookupTexture(
         entry.used = false;
         return nullptr;
     }
-    return view;
+    return replaceable ? presenter->replacements.lookup(entry.identity.key, view) : view;
 }
 
 ID3D11BlendState *lookupBlendState(
@@ -3066,6 +3096,7 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    presenter->replacements.finishFrame(presenter->device, presenter->context, presenter->present_count);
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
         // The first Present lands before the sampled window opens.
