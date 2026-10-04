@@ -1364,6 +1364,66 @@ static int testTextureCache(RecompD3dPresenter *presenter, uint32_t &detail)
     return 0;
 }
 
+static bool testFog(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t specular; };
+    Vertex vertices[] = {{0,0,0.25f,0.5f,0x80000000u}, {4,0,0.25f,0.5f,0x80000000u},
+        {0,4,0.25f,0.5f,0x80000000u}, {4,4,0.25f,0.5f,0x80000000u}};
+    const uint16_t indices[] = {0,1,2,3};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x084u; // XYZRHW | SPECULAR
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4;
+    draw.triangle_count = 2;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    draw.blend.color_write_mask = 15;
+    draw.use_texture_factor = true;
+    draw.texture_factor = 0x80ffffffu;
+    draw.fog.enabled = true;
+    draw.fog.color = 0x000000ffu; // Fog alpha must not replace source alpha.
+    draw.fog.end = 4;
+    const RecompD3dPresenterClearCommand clear = {true, false, false, 0x00ff0000u, 1, 0};
+    const struct { uint32_t mode; float density; const char *label; } cases[] = {
+        {0,0,"RHW vertex fog uses specular alpha"},
+        {1,0.25541281f,"EXP uses reciprocal RHW"},
+        {2,0.35736033f,"EXP2 uses reciprocal RHW"},
+        {3,0,"linear uses reciprocal RHW, not screen Z"},
+    };
+    for (const auto &test : cases) {
+        draw.fog.mode = test.mode;
+        draw.fog.density = test.density;
+        // Keep exponential results away from a half-byte quantization boundary.
+        const uint32_t pixel = test.mode == 1 || test.mode == 2 ? 0x809999ffu : 0x808080ffu;
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter, color, readback, test.label, expected)) return false;
+    }
+    draw.fog.enabled = false;
+    const uint32_t unfogged[] = {0x80ffffffu,0x80ffffffu,0x80ffffffu,0x80ffffffu};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "disabled fog preserves RGB and alpha", unfogged)) return false;
+    draw.fog.enabled = true;
+    draw.fog.end = 2;
+    draw.blend.blend_enable = true;
+    draw.blend.src_factor = draw.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+    const uint32_t additive[] = {0x80ff00ffu,0x80ff00ffu,0x80ff00ffu,0x80ff00ffu};
+    if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "additive draw fogs to fog color before blending", additive)) return false;
+    draw.blend.blend_enable = false;
+    draw.fog_z = true;
+    draw.fog.end = 0.5f;
+    const uint32_t zfog[] = {0x808080ffu,0x808080ffu,0x808080ffu,0x808080ffu};
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+        checkPixels(presenter, color, readback, "affine fog uses screen Z", zfog);
+}
+
 static bool testVertexBlending(
     RecompD3dPresenter *presenter, ID3D11Texture2D *color, ID3D11Texture2D *readback)
 {
@@ -2082,6 +2142,7 @@ int main()
     if (status == 0 && !testAlphaRendering(&presenter, color, readback)) {
         status = 60;
     }
+    if (status == 0 && !testFog(&presenter, color, readback)) status = 82;
     if (status == 0 && !testVertexBlending(&presenter, color, readback)) status = 80;
     if (status == 0 && !testLinearTextureUpdates(&presenter, readback)) status = 88;
     if (status == 0 && !testDrawPipelineEviction(&presenter)) status = 89;
