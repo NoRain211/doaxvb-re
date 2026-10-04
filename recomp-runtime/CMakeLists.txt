@@ -452,6 +452,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_presenter_capture.cpp
         d3d_presenter_thread.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
         d3d_texture_model.c
@@ -529,6 +530,7 @@ if(WIN32)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
@@ -539,6 +541,7 @@ if(WIN32)
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
@@ -548,6 +551,9 @@ if(WIN32)
     target_link_libraries(recomp_input_host_test PRIVATE user32)
     recomp_use_sdl3(recomp_input_host_test)
 endif()
+
+add_executable(recomp_d3d_smooth_normals_test
+    d3d_smooth_normals.cpp d3d_smooth_normals_test.cpp)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
@@ -560,6 +566,7 @@ add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
 
 include(CTest)
+add_test(NAME recomp-runtime-smooth-normals COMMAND recomp_d3d_smooth_normals_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)

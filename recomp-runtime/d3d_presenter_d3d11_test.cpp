@@ -2081,8 +2081,39 @@ static bool testPixelLightingShaders()
     return true;
 }
 
+static bool testNormalCacheSpans()
+{
+    RecompD3dPresenter presenter{};
+    float vertices[5][8]{};
+    for (unsigned i=0; i<5; ++i) {
+        vertices[i][0]=float(i); vertices[i][1]=float(i&1u); vertices[i][5]=1;
+    }
+    uint16_t indices[] = {1,2,3};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.vertex_bytes=vertices; draw.vertex_count=5; draw.vertex_stride=32;
+    draw.index_bytes=indices; draw.index_count=3; draw.primitive_type=5;
+    draw.fvf=0x112; draw.directional.enabled=true;
+    RecompD3dVertexLayout layout;
+    if (!recomp_d3d_fvf_layout(draw.fvf, &layout)) return false;
+    const auto upload = [&] {
+        return static_cast<const uint8_t *>(smoothNormalVertices(&presenter, draw, layout, true));
+    };
+    if (std::memcmp(upload()+32, vertices[1], 96)) return false;
+    vertices[0][0]=42; vertices[4][0]=99; // Unreferenced animation cannot invalidate the span.
+    if (std::memcmp(upload()+32, vertices[1], 96) || presenter.smooth_normals.hits!=1) return false;
+    vertices[2][6]=0.75f; // A referenced UV edit must survive a normal-cache lookup.
+    if (std::memcmp(upload()+32, vertices[1], 96) || presenter.smooth_normals.misses!=2) return false;
+    indices[0]=0; indices[1]=1; indices[2]=2; // Unused tail still needs a full upload allocation.
+    const auto *tail = upload();
+    if (tail!=presenter.smooth_vertex_scratch.data() ||
+        presenter.smooth_vertex_scratch.size()<sizeof vertices || std::memcmp(tail, vertices, 96)) return false;
+    draw.program_count=1;
+    return upload()==draw.vertex_bytes;
+}
+
 int main()
 {
+    if (!testNormalCacheSpans()) { std::fprintf(stderr, "FAIL normal cache spans\n"); return 1; }
     if (!testPixelLightingShaders()) return 1;
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");

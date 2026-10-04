@@ -238,3 +238,13 @@ The default remains per vertex. This smooths interpolated normals without
 changing the light or material values; point attenuation and RGB clamping also
 move to the pixel. Unlit, pretransformed, vertex-color and vertex-program draws
 keep their existing paths. Specular and vertex-color lighting remain unsupported.
+
+Set `RECOMP_D3D_SMOOTH_NORMALS=1` to rebuild area-weighted normals on lit
+indexed fixed-function triangles before upload. Positions within 0.0001 guest
+units share contributions when their original normals are within 60 degrees
+and their skin weights match. UV seams can smooth within a draw; separate
+draws and hard edges stay separate. Incomplete mesh boundaries retain authored
+normals to avoid new seams between draw calls. The option is independent of pixel
+lighting and defaults off. A 32 MiB contents cache invalidates on vertex or
+index changes, including CPU animation. `RECOMP_PERF_COUNTER=1` reports cache
+hits, rebuilds and CPU time at shutdown. Vertex programs retain their inputs.
