@@ -231,3 +231,10 @@ Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
 Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
 supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.
+
+Set `RECOMP_D3D_PIXEL_LIGHTING=1` before launch to evaluate the admitted
+fixed-function directional/point diffuse and ambient lighting per pixel.
+The default remains per vertex. This smooths interpolated normals without
+changing the light or material values; point attenuation and RGB clamping also
+move to the pixel. Unlit, pretransformed, vertex-color and vertex-program draws
+keep their existing paths. Specular and vertex-color lighting remain unsupported.

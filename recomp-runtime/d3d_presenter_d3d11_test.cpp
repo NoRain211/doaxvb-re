@@ -1951,6 +1951,9 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
             checkPixels(presenter,color,readback,label,expected);
     };
     if (!pixels("directional diffuse plus ambient and material",0xff402010)) return false;
+    light.normalize=false;
+    if (!pixels("flat normal magnitude with normalization disabled",0xff30180c)) return false;
+    light.normalize=true;
     light.directions[0][0]=-1;
     if (!pixels("back-facing normal gets ambient only",0xff201008)) return false;
     world[0]=-2;
@@ -2060,8 +2063,27 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testPixelLightingShaders()
+{
+    const DrawPipeline pipeline{};
+    for (const uint32_t fvf : kBootDrawFvfs) {
+        RecompD3dVertexLayout layout;
+        std::string source;
+        if (!drawShaderSource(fvf, pipeline, layout, source, true)) return false;
+        for (const bool vertex : {true, false}) {
+            ID3DBlob *blob = nullptr;
+            const bool compiled = compileDrawShader(source.c_str(),
+                vertex ? "vs_main" : "ps_main", vertex ? "vs_4_0" : "ps_4_0", &blob);
+            releaseCom(blob);
+            if (!compiled) return false;
+        }
+    }
+    return true;
+}
+
 int main()
 {
+    if (!testPixelLightingShaders()) return 1;
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;
@@ -2090,9 +2112,10 @@ int main()
     }
     RecompD3dPresenter presenter{};
     D3D_FEATURE_LEVEL feature_level{};
+    const D3D_FEATURE_LEVEL requested_level = D3D_FEATURE_LEVEL_10_0;
     HRESULT result = D3D11CreateDevice(
         nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0u, D3D11_SDK_VERSION,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, &requested_level, 1u, D3D11_SDK_VERSION,
         &presenter.device, &feature_level, &presenter.context);
     if (FAILED(result)) {
         return finish(&presenter, 10, static_cast<uint32_t>(result));
