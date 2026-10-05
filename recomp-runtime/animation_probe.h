@@ -3,6 +3,7 @@
 
 #include "runtime.h"
 
+void recomp_animation_probe_finish_split(void);
 unsigned recomp_animation_probe_object_bone(uint32_t object, unsigned actor, uint32_t *record);
 RecompFunction recomp_animation_probe_lookup_manual(uint32_t address);
 void recomp_animation_probe_capture_frame(uint32_t frame);

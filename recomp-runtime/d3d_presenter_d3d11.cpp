@@ -396,6 +396,16 @@ struct DepthTargetEntry {
 
 } // namespace
 
+struct DumpTextureRelease {
+    void operator()(ID3D11Texture2D *texture) const { if (texture) texture->Release(); }
+};
+struct DeferredFrameDump {
+    std::unique_ptr<ID3D11Texture2D, DumpTextureRelease> texture;
+    std::string path;
+    unsigned present;
+    ULONGLONG captured_ms;
+};
+
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
     DWORD owner_thread = 0;
@@ -473,6 +483,7 @@ struct RecompD3dPresenter {
     std::vector<double> present_gaps;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
+    std::vector<DeferredFrameDump> deferred_dumps;
     uint32_t replay_verify_frame = 0;
     bool replay_verify_second = false;
     std::vector<uint8_t> replay_reference;
@@ -2628,6 +2639,62 @@ bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
     return true;
 }
 
+void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
+    const char *path, unsigned present_count, ULONGLONG captured_ms)
+{
+    D3D11_TEXTURE2D_DESC desc{};
+    staging->GetDesc(&desc);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (SUCCEEDED(presenter->context->Map(
+            staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
+        const unsigned width = desc.Width;
+        const unsigned height = desc.Height;
+        const unsigned row_bytes = width * 3u;
+        const unsigned padded = (row_bytes + 3u) & ~3u;
+        const unsigned image_bytes = padded * height;
+
+        if (FILE *file = std::fopen(path, "wb")) {
+            unsigned char header[54] = {0};
+            const unsigned total = 54u + image_bytes;
+
+            header[0] = 'B'; header[1] = 'M';
+            std::memcpy(header + 2, &total, 4);
+            const unsigned offset = 54u;
+            std::memcpy(header + 10, &offset, 4);
+            const unsigned info_size = 40u;
+            std::memcpy(header + 14, &info_size, 4);
+            std::memcpy(header + 18, &width, 4);
+            std::memcpy(header + 22, &height, 4);
+            const unsigned short planes = 1u;
+            std::memcpy(header + 26, &planes, 2);
+            const unsigned short bpp = 24u;
+            std::memcpy(header + 28, &bpp, 2);
+            std::memcpy(header + 34, &image_bytes, 4);
+            std::fwrite(header, 1, sizeof header, file);
+
+            /* Write a whole row: per-pixel stdio locking stalls capture replay. */
+            std::vector<unsigned char> bmp_row(padded, 0);
+            for (unsigned y = 0u; y < height; ++y) {
+                const unsigned char *row =
+                    static_cast<const unsigned char *>(mapped.pData) +
+                    static_cast<size_t>(height - 1u - y) * mapped.RowPitch;
+                for (unsigned x = 0u; x < width; ++x) {
+                    /* Back buffer is B8G8R8A8, which already matches BMP order. */
+                    std::memcpy(bmp_row.data()+x*3u, row+x*4u, 3u);
+                }
+                std::fwrite(bmp_row.data(), 1, padded, file);
+            }
+            std::fclose(file);
+            std::fprintf(
+                stderr,
+                "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u captured_ms=%llu\n",
+                path, width, height,
+                static_cast<unsigned>(present_count), static_cast<unsigned long long>(captured_ms));
+        }
+        presenter->context->Unmap(staging, 0u);
+    }
+}
+
 /* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
    INTERVAL_MS optionally spaces captures in host time. Capture stays inside
    the renderer, without cross-process window painting or missed-frame bursts. */
@@ -2646,6 +2713,10 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
         : 1u;
     if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
+        // Flush on the following frame so every captured frame was presented first.
+        for (const auto &dump : presenter->deferred_dumps)
+            writeFrameDump(presenter, dump.texture.get(), dump.path.c_str(), dump.present, dump.captured_ms);
+        presenter->deferred_dumps.clear();
         return;
     }
     const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
@@ -2695,62 +2766,17 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     }
     presenter->context->CopyResource(staging, back_buffer);
 
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (SUCCEEDED(presenter->context->Map(
-            staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
-        const unsigned width = desc.Width;
-        const unsigned height = desc.Height;
-        const unsigned row_bytes = width * 3u;
-        const unsigned padded = (row_bytes + 3u) & ~3u;
-        const unsigned image_bytes = padded * height;
-
-        if (FILE *file = std::fopen(path, "wb")) {
-            unsigned char header[54] = {0};
-            const unsigned total = 54u + image_bytes;
-
-            header[0] = 'B'; header[1] = 'M';
-            std::memcpy(header + 2, &total, 4);
-            const unsigned offset = 54u;
-            std::memcpy(header + 10, &offset, 4);
-            const unsigned info_size = 40u;
-            std::memcpy(header + 14, &info_size, 4);
-            std::memcpy(header + 18, &width, 4);
-            std::memcpy(header + 22, &height, 4);
-            const unsigned short planes = 1u;
-            std::memcpy(header + 26, &planes, 2);
-            const unsigned short bpp = 24u;
-            std::memcpy(header + 28, &bpp, 2);
-            std::memcpy(header + 34, &image_bytes, 4);
-            std::fwrite(header, 1, sizeof header, file);
-
-            /* BMP rows run bottom-up. */
-            for (unsigned y = 0u; y < height; ++y) {
-                const unsigned char *row =
-                    static_cast<const unsigned char *>(mapped.pData) +
-                    static_cast<size_t>(height - 1u - y) * mapped.RowPitch;
-                unsigned written = 0u;
-
-                for (unsigned x = 0u; x < width; ++x) {
-                    /* Back buffer is B8G8R8A8, which already matches BMP order. */
-                    std::fwrite(row + x * 4u, 1, 3, file);
-                    written += 3u;
-                }
-                const unsigned char pad[3] = {0, 0, 0};
-                if (padded > written) {
-                    std::fwrite(pad, 1, padded - written, file);
-                }
-            }
-            std::fclose(file);
-            std::fprintf(
-                stderr,
-                "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u\n",
-                path, width, height,
-                static_cast<unsigned>(present_count));
-        }
-        presenter->context->Unmap(staging, 0u);
-    }
-    staging->Release();
     back_buffer->Release();
+    std::unique_ptr<ID3D11Texture2D, DumpTextureRelease> owned(staging);
+    const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+    if (defer && std::strcmp(defer, "1") == 0) {
+        // Bound this diagnostic to 300 4K frames (about 10 GiB of readback memory).
+        if (count > 300 || uint64_t(desc.Width)*desc.Height*4*count > 12ull*1024*1024*1024) {
+            std::fprintf(stderr, "recomp frame dump: deferred capture exceeds memory bound\n");
+            return;
+        }
+        presenter->deferred_dumps.push_back({std::move(owned), path, present_count, GetTickCount64()});
+    } else writeFrameDump(presenter, owned.get(), path, present_count, GetTickCount64());
     presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
 }
 

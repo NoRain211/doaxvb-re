@@ -61,5 +61,10 @@ int main(void)
     CHECK(memcmp(&input,&unchanged,sizeof input)==0);
     CHECK(recomp_animation_visual_sample(&input,0,bones));CHECK(memcmp(bones,input.endpoints[0],sizeof bones)==0);
     CHECK(!recomp_animation_visual_sample(&input,NAN,bones));CHECK(memcmp(bones,input.endpoints[0],sizeof bones)==0);
+    input.net_displacement[0]=.2f; input.net_displacement[1]=-.6f;
+    float old_z;
+    CHECK(recomp_animation_visual_sample(&unchanged,.37f,bones)); old_z=bones[3].m[14];
+    CHECK(recomp_animation_visual_sample(&input,.37f,bones));
+    CHECK(fabsf(bones[3].m[14]-old_z+.096f)<1e-6f);
     puts("Split arbitrary rate/fraction, camera, ball, immutable pose and validation tests passed");return 0;
 }

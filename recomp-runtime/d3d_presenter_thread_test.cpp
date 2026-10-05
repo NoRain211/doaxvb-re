@@ -123,6 +123,46 @@ static bool testCapturedDraw()
     return passed;
 }
 
+static bool testDeferredDump()
+{
+    char directory[MAX_PATH], prefix[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, directory) || !GetTempFileNameA(directory, "hfr", 0, prefix)) return false;
+    DeleteFileA(prefix);
+    RecompD3dPresenter *presenter = nullptr;
+    if (!expect("create deferred dump", recomp_d3d_presenter_create(&config, &presenter))) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", prefix);
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_COUNT", "3");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_AT", "1");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "1");
+    const uint32_t colors[] = {0xff000000u, 0xffff0000u, 0xff00ff00u, 0xff0000ffu};
+    bool passed = true;
+    for (unsigned i = 0; i < 4 && passed; ++i) {
+        auto command = clearCommand(); command.data.clear.color = colors[i];
+        passed &= expect("deferred clear", recomp_d3d_presenter_submit(presenter, &command));
+        command = {}; command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+        command.data.present = {5u, i+1};
+        passed &= expect("deferred present", recomp_d3d_presenter_submit(presenter, &command));
+    }
+    passed &= destroy(presenter);
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_COUNT", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_AT", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "");
+    for (unsigned i = 0; i < 3; ++i) {
+        char path[MAX_PATH+16]; std::snprintf(path, sizeof path, "%s.%03u.bmp", prefix, i);
+        FILE *file = std::fopen(path, "rb");
+        unsigned char pixel[3]{};
+        bool read = file && std::fseek(file, 54, SEEK_SET) == 0 && std::fread(pixel, 1, 3, file) == 3;
+        if (file) std::fclose(file);
+        DeleteFileA(path);
+        passed &= read && pixel[0] == (colors[i]&255) && pixel[1] == ((colors[i]>>8)&255) &&
+            pixel[2] == ((colors[i]>>16)&255);
+    }
+    if (passed) std::puts("PASS deferred readbacks preserve three distinct presented colors");
+    else std::fprintf(stderr, "FAIL deferred frame ownership/order\n");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -159,7 +199,7 @@ int main()
     _putenv_s("RECOMP_REPLAY_VERIFY_AT", "1");
     bool captured = testCapturedDraw();
     _putenv_s("RECOMP_REPLAY_VERIFY_AT", "");
-    if (!captured || !testClose(false) || !testClose(true)) return 1;
+    if (!captured || !testDeferredDump() || !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }

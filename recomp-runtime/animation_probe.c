@@ -300,6 +300,7 @@ static void fractional_sample(void) { note(1); sub_000AEEF0(); }
 static void blend_pose(void) { note(2); sub_000AF5C0(); }
 static void build_palette(void)
 {
+    recomp_animation_probe_finish_split();
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     uint32_t bank = *recomp_memory_u32(recomp_runtime.registers.esp+4u);
     uint32_t offset_address = recomp_runtime.registers.edi;
@@ -393,6 +394,7 @@ static void build_camera(void)
 
 static void bind_rigid_pose(void)
 {
+    recomp_animation_probe_finish_split();
     recomp_animation_split_rigid();
     if (!experiment_ready || recomp_d3d_frame_adapter_swap_counter() != experiment_frame()) return;
     uint32_t context = recomp_runtime.registers.ebx;
@@ -673,6 +675,38 @@ void *recomp_animation_probe_pose_vertices(const struct RecompD3dPresenterDrawCo
 #else
     (void)draw;
     return NULL;
+#endif
+}
+
+/* AE4A0 applies net contact after B01E0: a common world-Z shift to all bones.
+   Capture that completed 60 Hz physics result, without rerunning collision.
+   Any other post-solve deformation must be understood before replay accepts it. */
+void recomp_animation_probe_finish_split(void)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    static uint32_t finished[4];
+    if (!recomp_animation_split_enabled()) return;
+    uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    for (unsigned actor = 0; actor < 4; ++actor) {
+        if (!solved_valid[actor] || solved_frame[actor] != frame || finished[actor] == frame) continue;
+        const PoseCapture *capture = split_captures+actor;
+        RecompBoneMatrix final[32];
+        recomp_guest_load(final, 0x004d3650u+actor*0x800u, sizeof final);
+        float displacement = final[0].m[14]-capture->bones_after[0][14];
+        for (unsigned bone = 0; bone < 32; ++bone) {
+            for (unsigned component = 0; component < 16; ++component) {
+                if (component != 14 && memcmp(&final[bone].m[component],
+                    &capture->bones_after[bone][component], sizeof(float)))
+                    recomp_stop(1, "split:unknown-post-solve-transform");
+            }
+            float expected = capture->bones_after[bone][14]+displacement;
+            if (!isfinite(displacement) || fabsf(expected-final[bone].m[14]) > 1e-5f)
+                recomp_stop(1, "split:nonuniform-net-displacement");
+            solved_bones[actor][bone].m[14] += displacement;
+        }
+        recomp_animation_split_finish(actor, frame, displacement, solved_bones[actor]);
+        finished[actor] = frame;
+    }
 #endif
 }
 
