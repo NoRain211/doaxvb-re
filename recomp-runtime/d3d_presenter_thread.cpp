@@ -45,6 +45,8 @@ struct PresenterThread {
     bool pacing = false;
     double split_rate = 0, split_next = 0;
     uint32_t split_first_frame = 0;
+    bool split_trace = false;
+    unsigned split_presents = 0, split_camera_draws = 0, split_pose_draws = 0;
     double last_frame_ms = 0.0;
     double frame_max_ms = 0.0;
     double queue_wait_ms = 0.0, seal_ms = 0.0, add_ms = 0.0, status_ms = 0.0;
@@ -118,6 +120,8 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                 draw = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
                 if (fraction >= 0 && draw && command.data.draw.split_pose) {
                     const auto *split = static_cast<const RecompSplitDraw *>(command.data.draw.split_pose);
+                    thread.split_camera_draws += split->camera;
+                    thread.split_pose_draws += split->pose;
                     const RecompBoneMatrix *bones = nullptr;
                     if (split->pose) {
                         if (split->actor >= 4) { fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return; }
@@ -275,8 +279,13 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 fraction_min = (std::min)(fraction_min, fraction);
                 fraction_max = (std::max)(fraction_max, fraction);
                 double draw_start = clock_ms();
+                thread.split_camera_draws = thread.split_pose_draws = 0;
                 execute(thread, backend, *packet, -1, fraction);
                 render_work += clock_ms()-draw_start; ++render_presents;
+                if (thread.split_trace) std::fprintf(stderr,
+                    "recomp split present: n=%u frame=%u ms=%.3f fraction=%.4f camera_draws=%u pose_draws=%u\n",
+                    thread.split_presents, frame, draw_start, fraction, thread.split_camera_draws, thread.split_pose_draws);
+                ++thread.split_presents;
                 presented = true;
                 thread.split_next += 1000.0/thread.split_rate;
                 // Do not submit bursts of expired presents when the GPU is late.
@@ -416,6 +425,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     try {
         thread = std::make_unique<PresenterThread>();
         thread->split_rate = recomp_split_rate(std::getenv("RECOMP_SPLIT_RATE"));
+        thread->split_trace = std::getenv("RECOMP_SPLIT_TRACE") != nullptr;
         if (thread->split_rate) thread->split_timer = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
         if (thread->split_rate) std::fprintf(stderr, "recomp split rate: target=%.6g gameplay=60 visual_delay_ticks=1\n", thread->split_rate);

@@ -16,10 +16,18 @@ bool recomp_animation_split_enabled(void)
     return enabled != 0;
 }
 
+static bool split_trace(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("RECOMP_SPLIT_TRACE") != NULL;
+    return enabled != 0;
+}
+
 #ifdef RECOMP_FULL_PROGRAM
 static RecompVisualPose pairs[4];
 static uint32_t frames[4];
 static bool ready[4];
+static float actor_motion[4][2];
 typedef struct SplitBinding {
     uint32_t object, actor, joint, count;
     uint8_t recipe[16];
@@ -34,7 +42,8 @@ typedef struct CameraPair {
     float view[16], projection[16];
     uint8_t flags[16];
     uint32_t frame;
-    bool ready;
+    bool continuous, ready;
+    float motion[2];
 } CameraPair;
 static CameraPair cameras[5];
 
@@ -77,8 +86,20 @@ void recomp_animation_split_finish(unsigned actor, uint32_t frame, float displac
 {
 #ifdef RECOMP_FULL_PROGRAM
     if (actor >= 4 || frames[actor] != frame) return;
+    float motion[2];
+    recomp_split_bone_motion(&pairs[actor].endpoints[0][0], &bones[0], motion);
+    bool consecutive = ready[actor];
+    bool teleport = consecutive &&
+        (recomp_split_discontinuity(actor_motion[actor][0], motion[0], 0.02f) ||
+         recomp_split_discontinuity(actor_motion[actor][1], motion[1], 2.0f));
+    if (teleport) ready[actor] = false;
+    // Compare the next tick with this real step, even after a jump.
+    actor_motion[actor][0] = consecutive ? motion[0] : 0;
+    actor_motion[actor][1] = consecutive ? motion[1] : 0;
     pairs[actor].net_displacement[1] = displacement;
     memcpy(pairs[actor].endpoints[1], bones, sizeof pairs[actor].endpoints[1]);
+    if (split_trace()) fprintf(stderr, "recomp split actor: frame=%u actor=%u ready=%d teleport=%d step=%.6g turn=%.6g root=%.6g,%.6g,%.6g\n",
+        frame, actor, ready[actor], teleport, motion[0], motion[1], bones[0].m[12], bones[0].m[13], bones[0].m[14]);
 #else
     (void)actor; (void)frame; (void)displacement; (void)bones;
 #endif
@@ -133,7 +154,9 @@ void recomp_animation_split_camera(uint32_t address)
     uint8_t flags[16];
     recomp_guest_load(flags, address+0xad0, sizeof flags);
     if (camera->frame != frame) {
-        camera->ready = camera->frame+1 == frame && memcmp(flags, camera->flags, sizeof flags) == 0;
+        if (camera->continuous) recomp_split_camera_motion(camera->inputs, camera->motion);
+        else camera->motion[0] = camera->motion[1] = 0;
+        camera->continuous = camera->frame+1 == frame && memcmp(flags, camera->flags, sizeof flags) == 0;
         camera->inputs[0] = camera->inputs[1];
         camera->frame = frame;
     }
@@ -147,8 +170,14 @@ void recomp_animation_split_camera(uint32_t address)
     recomp_guest_load(camera->view, address+0x50, 64);
     recomp_guest_load(camera->projection, address+0x90, 64);
     input->aspect = camera->projection[5]*input->scale_x/(camera->projection[0]*input->scale_y);
+    float motion[2];
+    recomp_split_camera_motion(camera->inputs, motion);
+    bool cut = camera->continuous &&
+        (recomp_split_discontinuity(camera->motion[0], motion[0], 0.01f) ||
+         recomp_split_discontinuity(camera->motion[1], motion[1], 0.5f));
+    camera->ready = camera->continuous && !cut;
     float view[16], projection[16];
-    if (!recomp_animation_camera(input, view, projection)) { camera->ready = false; return; }
+    if (!recomp_animation_camera(input, view, projection)) { camera->ready = camera->continuous = false; return; }
     float error = 0;
     for (unsigned i = 0; i < 16; ++i) {
         error = fmaxf(error, fabsf(view[i]-camera->view[i]));
@@ -158,6 +187,9 @@ void recomp_animation_split_camera(uint32_t address)
         fprintf(stderr, "recomp split camera mismatch: frame=%u slot=%u error=%.9g roll=%.9g eye=%.9g,%.9g,%.9g target=%.9g,%.9g,%.9g\n", frame, slot, error, input->roll, input->eye[0], input->eye[1], input->eye[2], input->target[0], input->target[1], input->target[2]);
         recomp_stop(1, "split:camera-mismatch");
     }
+    if (split_trace()) fprintf(stderr, "recomp split camera: frame=%u slot=%u ready=%d cut=%d step=%.6g turn=%.6g eye=%.6g,%.6g,%.6g target=%.6g,%.6g,%.6g fov=%.6g\n",
+        frame, slot, camera->ready, cut, motion[0], motion[1], input->eye[0], input->eye[1], input->eye[2],
+        input->target[0], input->target[1], input->target[2], input->fov);
 #else
     (void)address;
 #endif
@@ -247,6 +279,14 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
         for (unsigned i = 0; i < 16; ++i) error = fmaxf(error, fabsf(expected[i]-worlds[0][i]));
         // Historical trail draws share the mesh. Only the current ball matches.
         if (error > 0.0001f) split->ball = 0;
+        float older[3], previous = 0, step = 0;
+        recomp_guest_load(older, 0x00a17718u+((latest+6)&7)*0x24u, 12);
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            float a = split->ball_position[0][axis]-older[axis], b = split->ball_position[1][axis]-split->ball_position[0][axis];
+            previous += a*a; step += b*b;
+        }
+        // A served or reset ball jumps; show that tick unblended.
+        if (recomp_split_discontinuity(sqrtf(previous), sqrtf(step), 0.05f)) split->ball = 0;
     }
     if (found) {
         memcpy(split->recipe, found->recipe, sizeof split->recipe);

@@ -32,6 +32,13 @@ typedef struct RecompSplitDraw {
 extern "C" {
 #endif
 double recomp_split_rate(const char *text);
+/* True when a one-tick step is far larger than the previous tick's step:
+   a camera cut, teleport or respawn. Such a tick is shown unblended. */
+bool recomp_split_discontinuity(float previous, float step, float floor);
+/* Eye/target step relative to view distance, and view direction change in degrees. */
+void recomp_split_camera_motion(const RecompVisualCamera pair[2], float motion[2]);
+/* Translation distance and rotation angle in degrees between two bone matrices. */
+void recomp_split_bone_motion(const RecompBoneMatrix *from, const RecompBoneMatrix *to, float motion[2]);
 void recomp_split_ball_matrix(const RecompSplitDraw *split, float fraction, float output[16]);
 bool recomp_d3d_split_draw(const RecompD3dPresenterDrawCommand *source,
     float fraction, const RecompBoneMatrix bones[32], void *vertices,

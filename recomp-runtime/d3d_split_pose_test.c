@@ -11,12 +11,16 @@ int main(void)
     CHECK(recomp_split_rate("119.88") == 119.88);
     CHECK(recomp_split_rate(NULL)==0 && recomp_split_rate("1")==0 && recomp_split_rate("nan")==0);
     CHECK(recomp_split_rate("120junk")==0 && recomp_split_rate("0")==0);
+    CHECK(!recomp_split_discontinuity(.21f,.13f,.01f) && !recomp_split_discontinuity(0,.07f,.01f));
+    CHECK(recomp_split_discontinuity(.0015f,6.2f,.01f) && recomp_split_discontinuity(0,NAN,.01f));
     RecompVisualCamera camera[2] = {0};
     camera[0].eye[2] = 5; camera[0].fov = 1;
     camera[0].near_z = .1f; camera[0].far_z = 100;
     camera[0].scale_x=camera[0].scale_y=camera[0].scale_z=1; camera[0].aspect=2;
     camera[1]=camera[0]; camera[1].eye[0]=4; camera[1].target[0]=4;
     float view[16],projection[16];
+    float motion[2]; recomp_split_camera_motion(camera,motion);
+    CHECK(fabsf(motion[0]-.8f)<1e-6f && motion[1]==0);
     CHECK(recomp_animation_camera_sample(camera,.37f,view,projection));
     CHECK(fabsf(view[12]+1.48f)<1e-6f && fabsf(view[14]-5)<1e-6f);
     CHECK(fabsf(projection[0]*2-projection[5])<1e-6f && projection[11]==1);
