@@ -185,6 +185,7 @@ add_executable(recomp_runtime_test
     animation_palette.c
     animation_skeleton.c
     animation_pose.c
+    animation_seam.c
     save_adapter.c
     ohci_model.c
     ohci_model_test.c
@@ -453,6 +454,7 @@ if(RECOMP_PROGRAM_DIR)
         animation_palette.c
         animation_skeleton.c
         animation_pose.c
+        animation_seam.c
         save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
@@ -714,3 +716,9 @@ endif()
 
 add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp)
 add_test(NAME recomp-runtime-controller-settings COMMAND recomp_controller_settings_test)
+
+add_executable(recomp_animation_seam_test animation_seam.c animation_seam_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_seam_test PRIVATE m)
+endif()
+add_test(NAME recomp-runtime-animation-seam COMMAND recomp_animation_seam_test)

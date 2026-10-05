@@ -156,6 +156,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     RecompD3dPresenterTarget target;
     /* Optional immutable RecompD3dPoseReplay, copied during submit. */
     const void *pose_replay;
+    /* Optional contiguous diagnostic vertex samples, owned with the packet. */
+    const void *pose_vertex_bytes;
 } RecompD3dPresenterDrawCommand;
 
 typedef struct RecompD3dPresenterCommand {

@@ -1287,6 +1287,7 @@ static void capture_draw(
 
 void recomp_d3d_draw_adapter_capture_present(uint32_t present, uint32_t presenter_error)
 {
+    if (present) recomp_animation_probe_capture_frame(present-1);
     if (!capture_open(present, 0u)) return;
     fprintf(draw_capture.file,
         "{\"kind\":\"end\",\"present\":%u,\"present_error\":%u,\"rows\":%u,"
@@ -1417,6 +1418,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     RecompD3dDrawResult result;
     RecompD3dPresenterCommand command = {0};
     RecompD3dPoseReplay pose_replay;
+    void *pose_vertices = NULL;
     const uint8_t *index_bytes;
     const uint8_t *vertex_bytes;
     uint32_t vertex_span;
@@ -1907,7 +1909,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "render-target";
         goto finished;
     }
-    if (command.data.draw.program_count == 0 && getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL) {
+    if (command.data.draw.program_count == 0 && (getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
+        getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL)) {
         float worlds[4][16];
         unsigned count = command.data.draw.blend_weight_count+1;
         bool readable = count <= 4;
@@ -1918,6 +1921,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
             read_transform(device, D3D_TRANSFORM_VIEW, pose_replay.view) &&
             read_transform(device, D3D_TRANSFORM_PROJECTION, pose_replay.projection))
             command.data.draw.pose_replay = &pose_replay;
+        pose_vertices = recomp_animation_probe_pose_vertices(&command.data.draw);
+        command.data.draw.pose_vertex_bytes = pose_vertices;
     }
     capture_command = &command.data.draw;
 
@@ -1933,6 +1938,7 @@ finished:
     if (decline != NULL) report_decline(decline);
     capture_draw(device, primitive_type, index_count, index_data, &result,
         capture_command, decline != NULL ? decline : "accepted");
+    free(pose_vertices);
 }
 
 static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *draw)

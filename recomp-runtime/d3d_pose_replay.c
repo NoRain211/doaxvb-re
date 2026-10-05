@@ -17,13 +17,16 @@ static void multiply(const float a[16], const float b[16], float out[16])
 bool recomp_d3d_pose_replay_draw(const RecompD3dPresenterDrawCommand *source,
     unsigned phase, RecompD3dPresenterDrawCommand *output)
 {
-    if (!source || !output || !source->pose_replay || phase > 2 || source->program_count != 0 ||
+    if (!source || !output || !source->pose_replay || phase >= RECOMP_POSE_REPLAY_SAMPLES || source->program_count != 0 ||
         !source->has_transform)
         return false;
     const RecompD3dPoseReplay *pose = source->pose_replay;
     if (pose->count == 0 || pose->count > 4 || pose->count != source->blend_weight_count+1)
         return false;
     RecompD3dPresenterDrawCommand result = *source;
+    if (source->pose_vertex_bytes)
+        result.vertex_bytes = (const uint8_t *)source->pose_vertex_bytes +
+            (size_t)phase*source->vertex_count*source->vertex_stride;
     float world_view[16], view_projection[16];
     for (unsigned i = 0; i < pose->count; ++i)
         for (unsigned j = 0; j < 16; ++j)

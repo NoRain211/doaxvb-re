@@ -19,7 +19,7 @@ int main(void)
     pose.count = 2;
     identity(pose.view); identity(pose.projection);
     pose.view[13] = 3; pose.projection[0] = 2;
-    for (unsigned phase = 0; phase < 3; ++phase)
+    for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase)
         for (unsigned i = 0; i < 2; ++i) {
             identity(pose.palettes[phase][i]);
             pose.palettes[phase][i][12] = (float)(phase+i);
@@ -32,7 +32,7 @@ int main(void)
     source.has_reflection = true;
     source.directional.enabled = true;
     RecompD3dPresenterDrawCommand before = source;
-    for (unsigned phase = 0; phase < 3; ++phase) {
+    for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
         CHECK(recomp_d3d_pose_replay_draw(&source, phase, &result));
         CHECK(result.transform[12] == phase*2 && result.transform[13] == 3);
         CHECK(result.blend_transforms[0][12] == (phase+1)*2);
@@ -42,6 +42,13 @@ int main(void)
         CHECK(result.reflection_normal[10] == 1);
         CHECK(result.vertex_bytes == vertices);
         CHECK(memcmp(&source, &before, sizeof source) == 0);
+    }
+    float sampled_vertices[RECOMP_POSE_REPLAY_SAMPLES][3] = {{0}};
+    source.pose_vertex_bytes = sampled_vertices;
+    source.vertex_count = 1; source.vertex_stride = 3*sizeof(float);
+    for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
+        CHECK(recomp_d3d_pose_replay_draw(&source, phase, &result));
+        CHECK(result.vertex_bytes == sampled_vertices[phase]);
     }
     RecompD3dPresenterDrawCommand saved = result;
     source.program_count = 1;

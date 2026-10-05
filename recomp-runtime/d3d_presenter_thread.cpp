@@ -233,7 +233,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             if (released) {
                 std::fprintf(stderr, "recomp pose experiment: frame=%u rejected=resource-release\n", frame);
                 execute(thread, backend, *packet);
-            } else for (int phase = 0; phase < 3; ++phase) {
+            } else for (int phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
                 std::fprintf(stderr, "recomp pose experiment: frame=%u phase=%d draws=%u bytes=%llu\n",
                     frame, phase, draws, static_cast<unsigned long long>(packet->bytes()));
                 execute(thread, backend, *packet, phase);
