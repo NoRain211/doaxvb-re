@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include "runtime.h"
 #include "apu_model.h"
 #include "fiber_adapter.h"
@@ -12,6 +16,9 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <execinfo.h>
+#include <dlfcn.h>
 #endif
 
 RecompRuntime recomp_runtime;
@@ -125,6 +132,19 @@ static void fail_memory_access(uint32_t guest_address, size_t width)
         for (USHORT i = 0u; i < count; ++i) {
             fprintf(stderr, "[DEBUG-r501-fault] frame=%u pc=%p\n",
                 (unsigned)i, frames[i]);
+        }
+    }
+#else
+    if (getenv("RECOMP_FAULT_TRACE") != NULL) {
+        void *frames[32];
+        int count = backtrace(frames, 32);
+        for (int i = 0; i < count; ++i) {
+            Dl_info symbol = {0};
+            dladdr(frames[i], &symbol);
+            fprintf(stderr, "[DEBUG-r501-fault] frame=%u pc=%p symbol=%s module=%s\n",
+                (unsigned)i, frames[i],
+                symbol.dli_sname != NULL ? symbol.dli_sname : "<unresolved>",
+                symbol.dli_fname != NULL ? symbol.dli_fname : "<unresolved>");
         }
     }
 #endif

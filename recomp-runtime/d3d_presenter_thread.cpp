@@ -1,8 +1,10 @@
 #include "d3d_presenter_capture.h"
 #include "d3d_presenter_d3d11_backend.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <condition_variable>
@@ -20,11 +22,13 @@
 namespace {
 
 struct PresenterThread {
-    DWORD owner_thread = GetCurrentThreadId();
+    std::thread::id owner_thread = std::this_thread::get_id();
     std::thread worker;
     std::mutex mutex;
     std::condition_variable changed;
+#ifdef _WIN32
     HANDLE wake = nullptr;
+#endif
     D3dCapturePacket packets[3];
     unsigned open = 0;
     unsigned front = 0;
@@ -40,9 +44,11 @@ struct PresenterThread {
     double last_frame_ms = 0.0;
     double frame_max_ms = 0.0;
     double queue_wait_ms = 0.0;
-    ULONGLONG pacing_start = 0u;
+    uint64_t pacing_start = 0u;
 
+#ifdef _WIN32
     ~PresenterThread() { if (wake != nullptr) CloseHandle(wake); }
+#endif
 };
 
 PresenterThread *active_thread;
@@ -53,7 +59,7 @@ RecompD3dPresenterError validate(RecompD3dPresenter *presenter)
         presenter != reinterpret_cast<RecompD3dPresenter *>(active_thread)) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
     }
-    return GetCurrentThreadId() == active_thread->owner_thread
+    return std::this_thread::get_id() == active_thread->owner_thread
         ? RECOMP_D3D_PRESENTER_OK : RECOMP_D3D_PRESENTER_WRONG_THREAD;
 }
 
@@ -75,6 +81,7 @@ void fail(PresenterThread &thread, RecompD3dPresenterError error)
 
 void pump(PresenterThread &thread)
 {
+#ifdef _WIN32
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0u, 0u, PM_REMOVE)) {
         if (message.message == WM_QUIT) {
@@ -87,6 +94,9 @@ void pump(PresenterThread &thread)
             fail(thread, RECOMP_D3D_PRESENTER_CLOSED);
         }
     }
+#else
+    fail(thread, d3d11_backend_pump_events());
+#endif
 }
 
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
@@ -128,7 +138,9 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
 
 void run(PresenterThread &thread, RecompD3dPresenterConfig config)
 {
+#ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#endif
     RecompD3dPresenter *backend = nullptr;
     RecompD3dPresenterError created;
     try {
@@ -156,10 +168,17 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             else if (thread.shutdown) break;
         }
         if (packet == nullptr) {
+#ifdef _WIN32
             if (MsgWaitForMultipleObjects(1, &thread.wake, FALSE,
                     INFINITE, QS_ALLINPUT) == WAIT_FAILED) {
                 fail(thread, RECOMP_D3D_PRESENTER_HOST_FAILURE);
             }
+#else
+            std::unique_lock<std::mutex> lock(thread.mutex);
+            thread.changed.wait_for(lock, std::chrono::milliseconds(8), [&] {
+                return thread.pending != 0 || thread.shutdown;
+            });
+#endif
             continue;
         }
         execute(thread, backend, *packet);
@@ -191,7 +210,11 @@ void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_m
     }
     thread.last_frame_ms = wait_end_ms;
     thread.queue_wait_ms += wait_end_ms - wait_start_ms;
-    const ULONGLONG now = GetTickCount64();
+#ifdef _WIN32
+    const uint64_t now = GetTickCount64();
+#else
+    const uint64_t now = static_cast<uint64_t>(clock_ms());
+#endif
     if (thread.pacing_start == 0u) thread.pacing_start = now;
     if (now - thread.pacing_start < 1000u) return;
     std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f\n",
@@ -215,7 +238,11 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     thread.open = (thread.open + 1) % 3;
     ++thread.pending;
     lock.unlock();
+#ifdef _WIN32
     SetEvent(thread.wake);
+#else
+    thread.changed.notify_all();
+#endif
     return RECOMP_D3D_PRESENTER_OK;
 }
 
@@ -238,8 +265,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         thread = std::make_unique<PresenterThread>();
         const char *performance = std::getenv("RECOMP_PERF_COUNTER");
         thread->pacing = performance != nullptr && std::strcmp(performance, "1") == 0;
+#ifdef _WIN32
         thread->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (thread->wake == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+#endif
         thread->worker = std::thread(run, std::ref(*thread), *config);
     } catch (const std::bad_alloc &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
@@ -296,7 +325,11 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presen
         std::lock_guard<std::mutex> lock(thread.mutex);
         thread.shutdown = true;
     }
+#ifdef _WIN32
     SetEvent(thread.wake);
+#else
+    thread.changed.notify_all();
+#endif
     thread.worker.join();
     // A close already reached the owner through PRESENT; report other pending work errors.
     const auto pending = thread.status == RECOMP_D3D_PRESENTER_CLOSED
@@ -316,7 +349,7 @@ void recomp_d3d_presenter_set_immediate_present(bool enabled)
 
 void recomp_d3d_presenter_report_draw_textures()
 {
-    if (active_thread == nullptr || GetCurrentThreadId() != active_thread->owner_thread) return;
+    if (active_thread == nullptr || std::this_thread::get_id() != active_thread->owner_thread) return;
     auto &thread = *active_thread;
     if (status(thread) == RECOMP_D3D_PRESENTER_OK) {
         fail(thread, thread.packets[thread.open].addReport());

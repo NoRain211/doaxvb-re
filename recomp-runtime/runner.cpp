@@ -39,6 +39,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <signal.h>
+#endif
+
+#if !defined(_WIN32) && defined(RECOMP_FULL_PROGRAM)
+extern "C" void recomp_d3d_frame_adapter_request_console_break(void);
 #endif
 
 namespace {
@@ -53,6 +59,11 @@ BOOL WINAPI handleConsoleControl(DWORD event)
     }
     recomp_d3d_frame_adapter_request_console_break();
     return TRUE;
+}
+#elif defined(RECOMP_FULL_PROGRAM)
+void handleConsoleSignal(int)
+{
+    recomp_d3d_frame_adapter_request_console_break();
 }
 #endif
 
@@ -752,6 +763,17 @@ std::vector<AnalogPulse> inputAnalogPulses;
     if (!SetConsoleCtrlHandler(handleConsoleControl, TRUE)) {
         std::cerr << "recomp runner: console handler installation failed: "
                   << GetLastError() << '\n';
+        return 1;
+    }
+#elif defined(RECOMP_FULL_PROGRAM)
+    struct sigaction action{};
+    action.sa_handler = handleConsoleSignal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    if (sigaction(SIGINT, &action, nullptr) != 0 ||
+        sigaction(SIGTERM, &action, nullptr) != 0) {
+        std::cerr << "recomp runner: signal handler installation failed: "
+                  << std::strerror(errno) << '\n';
         return 1;
     }
 #endif

@@ -1,8 +1,13 @@
 #include "d3d_presenter.h"
 #include "d3d_draw_model.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <SDL3/SDL.h>
+#endif
+#include <chrono>
 
 #include <cstdio>
 #include <cstring>
@@ -47,6 +52,7 @@ static bool destroy(RecompD3dPresenter *&presenter)
     return passed && presenter == nullptr;
 }
 
+#ifdef _WIN32
 static HWND presenterWindow()
 {
     HWND window = nullptr;
@@ -58,6 +64,8 @@ static HWND presenterWindow()
     }
     return nullptr;
 }
+
+#endif
 
 static bool testTicks()
 {
@@ -126,6 +134,7 @@ static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
     if (!expect("create close", recomp_d3d_presenter_create(&config, &presenter))) return false;
+#ifdef _WIN32
     const HWND window = presenterWindow();
     bool passed = window != nullptr;
     DWORD owner = GetWindowThreadProcessId(window, nullptr);
@@ -136,6 +145,20 @@ static bool testClose(bool idle)
         while (IsWindow(window) && GetTickCount64() < deadline) Sleep(1);
         passed = !IsWindow(window);
     }
+#else
+    SDL_Event event{};
+    event.type = SDL_EVENT_QUIT;
+    bool passed = SDL_PushEvent(&event);
+    if (passed && idle) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (recomp_d3d_presenter_submit(presenter, nullptr) == RECOMP_D3D_PRESENTER_INVALID_ARGUMENT &&
+            std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        passed = expect("idle event pump", recomp_d3d_presenter_submit(presenter, nullptr),
+            RECOMP_D3D_PRESENTER_CLOSED);
+    }
+#endif
     RecompD3dPresenterError error = RECOMP_D3D_PRESENTER_OK;
     uint32_t ticks = 0;
     while (passed && error == RECOMP_D3D_PRESENTER_OK && ticks < 600) {
@@ -146,8 +169,10 @@ static bool testClose(bool idle)
         RECOMP_D3D_PRESENTER_CLOSED);
     passed &= destroy(presenter);
     if (passed) std::printf("PASS %s close ticks=%u\n", idle ? "idle" : "queued", ticks);
+#ifdef _WIN32
     else std::fprintf(stderr, "FAIL close idle=%d window=%p owner=%lu\n", idle,
         static_cast<void *>(window), owner);
+#endif
     return passed;
 }
 

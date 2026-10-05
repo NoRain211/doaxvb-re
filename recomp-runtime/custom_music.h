@@ -27,7 +27,8 @@ typedef struct RecompMusicDecoder RecompMusicDecoder;
 /* Runtime thread only. Scan once at startup; folder is the private UserMusic
    folder, created when missing.
    Originals are opened read-only. No encoded or decoded cache is written.
-   Without Media Foundation (Windows N editions) the catalog stays empty.
+   Windows uses Media Foundation; without it (Windows N editions), the catalog
+   stays empty. Linux uses the pinned miniaudio WAV/MP3/FLAC decoders.
    Close every decoder before recomp_music_shutdown. */
 void recomp_music_initialize(const char *folder);
 void recomp_music_shutdown(void);
@@ -35,7 +36,8 @@ uint32_t recomp_music_count(void);
 /* Sum of every track's duration in milliseconds, saturated. */
 uint32_t recomp_music_duration(void);
 const RecompMusicTrack *recomp_music_track(uint32_t index);
-/* NULL when id is not in the catalog. */
+/* Native wide path (UTF-16 on Windows, UTF-32 on Linux).
+   NULL when id is not in the catalog. */
 const wchar_t *recomp_music_path(uint32_t id);
 RecompMusicDecoder *recomp_music_open(uint32_t id);
 void recomp_music_close(RecompMusicDecoder *decoder);

@@ -6,12 +6,23 @@ extern "C" {
 void recomp_test_heap_reset(uint32_t cursor, int fail_after);
 }
 
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <wrl/client.h>
+#else
+#include <cerrno>
+#include <codecvt>
+#include <locale>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char **environ;
+#endif
+#include <chrono>
 
 #include <cmath>
 #include <cstdio>
@@ -39,7 +50,9 @@ extern "C" void sub_001880D0(void) { kernel_return_caller_cleanup(0u); }
 extern "C" void sub_0018D270(void) { ++originals; kernel_return_caller_cleanup(0u); }
 
 namespace fs = std::filesystem;
+#ifdef _WIN32
 using Microsoft::WRL::ComPtr;
+#endif
 namespace {
 constexpr uint32_t kSecondBytes = RECOMP_MUSIC_RATE * RECOMP_MUSIC_FRAME_BYTES;
 constexpr uint32_t kPacket = 8192;
@@ -74,7 +87,12 @@ bool last_error(uint32_t expected) { return !guest_errors.empty() && guest_error
 // including when a check throws.
 struct TempRoot {
     fs::path path = fs::temp_directory_path() / ("doaxbv-music-test-" +
+#ifdef _WIN32
         std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+#else
+        std::to_string(getpid()) + "-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+#endif
     ~TempRoot()
     {
         recomp_soundtrack_shutdown();
@@ -162,6 +180,7 @@ Bytes wave_48k_mono()
     return bytes;
 }
 
+#ifdef _WIN32
 // Encodes pcm with a Windows encoder. False when this Windows has none for
 // the format; the caller then skips that format and says so.
 bool encode(const fs::path &path, const GUID &subtype, const Bytes &pcm)
@@ -214,6 +233,45 @@ bool encode(const fs::path &path, const GUID &subtype, const Bytes &pcm)
             path.extension().c_str(), static_cast<unsigned long>(hr));
     }
     return SUCCEEDED(hr);
+}
+
+#else
+// Match the Windows test's optional encoders; decoding itself needs no ffmpeg.
+enum TestCodec { MFAudioFormat_FLAC, MFAudioFormat_MP3 };
+bool encode(const fs::path &path, TestCodec codec, const Bytes &pcm)
+{
+    const auto raw = path.string() + ".pcm";
+    write(raw, pcm);
+    const auto output = path.string();
+    const char *args[] = {"ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+        "-f", "s16le", "-ar", "44100", "-ac", "2", "-i", raw.c_str(),
+        "-c:a", codec == MFAudioFormat_FLAC ? "flac" : "libmp3lame", output.c_str(), nullptr};
+    pid_t pid;
+    int status = 0;
+    const int error = posix_spawnp(&pid, "ffmpeg", nullptr, nullptr,
+        const_cast<char **>(args), environ);
+    pid_t waited = -1;
+    if (!error) {
+        do { waited = waitpid(pid, &status, 0); } while (waited == -1 && errno == EINTR);
+    }
+    fs::remove(raw);
+    const bool ok = !error && waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (!ok) {
+        fs::remove(path);
+        std::printf("custom music: ffmpeg encoder unavailable for %s; format skipped\n",
+            path.extension().c_str());
+    }
+    return ok;
+}
+#endif
+
+fs::path music_path(uint32_t id)
+{
+#ifdef _WIN32
+    return recomp_music_path(id);
+#else
+    return std::wstring_convert<std::codecvt_utf8<wchar_t>>().to_bytes(recomp_music_path(id));
+#endif
 }
 
 uint32_t call(uint32_t address, std::initializer_list<uint32_t> args, bool caller_cleanup = false)
@@ -289,14 +347,14 @@ void check_enumeration()
 void check_track(uint32_t index, const Bytes *exact_pcm)
 {
     const RecompMusicTrack track = *recomp_music_track(index);
-    const fs::path path = recomp_music_path(track.id);
+    const fs::path path = music_path(track.id);
     // MP3 frames pad the end and resampling filters shift it; both are near 1 s.
     const bool approximate = path.extension() == ".mp3" || path.stem() == "d-48k-mono";
     Guest guest;
     check(call(0x1824df, {1, index, 0x5100, 0x5104, 0x5200, 33}) == 1 &&
         *recomp_memory_u32(0x5100) == track.id &&
         *recomp_memory_u32(0x5104) == track.duration_ms, "song info");
-    check(path.stem().wstring() == reinterpret_cast<const wchar_t *>(recomp_memory(0x5200, 64)),
+    check(path.stem().u16string() == reinterpret_cast<const char16_t *>(recomp_memory(0x5200, 64)),
         "song name is the filename stem");
     const auto file = call(0x182708, {track.id, 1});
     check(file != UINT32_MAX, "selected original file opened");
@@ -360,13 +418,14 @@ void check_track(uint32_t index, const Bytes *exact_pcm)
     std::memcpy(recomp_memory(0x5700, sizeof packet), packet, sizeof packet);
     check(call(0x2194b0, {object, 0, 0x5700}) != 0 && *recomp_memory_u32(0x5600) == 0,
         "released decoder cannot produce packets");
-    std::printf("custom music: %ls duration_ms=%u bytes=%zu\n", path.filename().c_str(),
+    std::printf("custom music: %s duration_ms=%u bytes=%zu\n", path.filename().u8string().c_str(),
         track.duration_ms, song.size());
 }
 } // namespace
 
 extern "C" int recomp_custom_music_test(void)
 {
+#ifdef _WIN32
     if (!LoadLibraryW(L"mfplat.dll") || !LoadLibraryW(L"mfreadwrite.dll") ||
             FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
         std::printf("custom music: Media Foundation unavailable; skipped\n");
@@ -377,6 +436,7 @@ extern "C" int recomp_custom_music_test(void)
         CoUninitialize();
         return 77;
     }
+#endif
     int result = EXIT_FAILURE;
     try {
         TempRoot root;
@@ -384,7 +444,7 @@ extern "C" int recomp_custom_music_test(void)
         check(fs::create_directories(folder), "new test directory");
         const auto folder_name = folder.string();
         const Bytes pcm = tone(440), pcm_wave = wave(pcm, false);
-        write(folder / L"z-\u97f3.wav", pcm_wave);
+        write(folder / fs::u8path(u8"z-\u97f3.wav"), pcm_wave);
         write(folder / "broken.mp3", {1, 2, 3});
         recomp_music_initialize(folder_name.c_str());
         check(recomp_music_count() == 1, "malformed file skipped");
@@ -404,13 +464,13 @@ extern "C" int recomp_custom_music_test(void)
         check(recomp_music_duration() == total, "soundtrack duration");
         check_enumeration();
         for (uint32_t index = 0; index < count; ++index) {
-            const fs::path name = recomp_music_path(recomp_music_track(index)->id);
-            const bool exact = name.extension() == ".flac" || name.filename() == L"z-\u97f3.wav";
+            const fs::path name = music_path(recomp_music_track(index)->id);
+            const bool exact = name.extension() == ".flac" || name.filename() == fs::u8path(u8"z-\u97f3.wav");
             check_track(index, exact ? &pcm : nullptr);
         }
         recomp_music_shutdown();
 
-        std::ifstream original(folder / L"z-\u97f3.wav", std::ios::binary);
+        std::ifstream original(folder / fs::u8path(u8"z-\u97f3.wav"), std::ios::binary);
         const Bytes after((std::istreambuf_iterator<char>(original)), {});
         original.close();
         check(after == pcm_wave, "original file unchanged");
@@ -419,11 +479,28 @@ extern "C" int recomp_custom_music_test(void)
         check(recomp_music_count() == 0 && !recomp_music_open(stable_id), "removed and empty library");
         Guest guest;
         check(call(0x182430, {0x5000}) == UINT32_MAX && last_error(18), "empty library has no soundtrack");
+
+        const auto long_name = fs::path(std::u16string(30, u'a') + u"\U0001f3b5.wav");
+        write(folder / "Case.WAV", pcm_wave);
+        write(folder / long_name, pcm_wave);
+#ifndef _WIN32
+        write(folder / std::string("invalid-\xff.wav"), pcm_wave);
+#endif
+        recomp_music_initialize(folder_name.c_str());
+        check(recomp_music_count() == 2, "UTF-8 filenames scanned independently");
+        check(recomp_music_track(1)->id == 0x74546187u, "folded UTF-16 song ID matches Windows");
+        const auto *long_track = recomp_music_track(0);
+        check(long_track->name[29] == u'a' && long_track->name[30] == 0,
+            "name truncation does not split a surrogate pair");
+        Decoder unicode(recomp_music_open(long_track->id), recomp_music_close);
+        check(unicode && read_all(unicode.get()) == pcm, "supplementary Unicode path opens");
         result = EXIT_SUCCESS;
     } catch (const std::exception &error) {
         std::fprintf(stderr, "custom music test: %s\n", error.what());
     }
+#ifdef _WIN32
     MFShutdown();
     CoUninitialize();
+#endif
     return result;
 }

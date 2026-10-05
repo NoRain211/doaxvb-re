@@ -5,6 +5,8 @@
 #include <fstream>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include "host_file_posix.h"
 #endif
 
 namespace fs = std::filesystem;
@@ -51,8 +53,7 @@ bool recomp_controller_settings_save(const char *root, const uint8_t modes[4])
 #ifdef _WIN32
         return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 #else
-        fs::rename(temporary, path);
-        return true;
+        return recomp_posix_replace(temporary.c_str(), path.c_str()) != 0;
 #endif
     } catch (...) { return false; }
 }

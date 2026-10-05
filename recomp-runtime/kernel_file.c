@@ -4,6 +4,7 @@
 #include "device_model.h"
 #include "symbolic_link_model.h"
 #include "save_transaction.h"
+#include "stop_report.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "fiber_adapter.h"
 #endif
@@ -14,7 +15,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "host_file_posix.h"
+#include <unistd.h>
+#endif
 
 static const uint32_t RECOMP_STATUS_SUCCESS = 0x00000000u;
 static const uint32_t RECOMP_STATUS_INVALID_HANDLE = 0xc0000008u;
@@ -1936,7 +1942,11 @@ static void bridge_nt_write_file(void)
     if (interrupt_after_write) {
         fprintf(stderr, "recomp save fault: interrupt after write=%u\n", save_write_number);
         fflush(stderr);
+#ifdef _WIN32
         TerminateProcess(GetCurrentProcess(), 92u);
+#else
+        _exit(92);
+#endif
         abort();
     }
 

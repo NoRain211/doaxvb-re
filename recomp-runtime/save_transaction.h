@@ -9,8 +9,11 @@ extern "C" {
 #endif
 
 /* Recover before guest startup. Protects process interruption, not power loss.
-   On Windows, hold exclusive ownership through save-undo-v1/lock until exit
-   or reinitialization. The reserved lock file is empty and persists on disk.
+   Hold exclusive ownership (Windows handle or POSIX flock) through the
+   save-undo-v1/lock file until exit or reinitialization. The reserved lock
+   file is empty and persists on disk. POSIX recovery needs user xattrs and
+   preserves mode, access/write times, and guest creation/change times;
+   other xattrs and ACLs are not journaled.
    Callers must close UDATA handles before ending an operation or recovering. */
 bool recomp_save_initialize(const char *disc_root);
 bool recomp_save_begin(uint32_t owner);

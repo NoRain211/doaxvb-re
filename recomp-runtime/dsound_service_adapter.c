@@ -1,3 +1,7 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "dsound_service_adapter.h"
 #include "xbox_memory_layout.h"
 #include "stop_report.h"
@@ -12,6 +16,9 @@
 #include <windows.h>
 #else
 #include <time.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <errno.h>
 #endif
 
 enum {
@@ -72,8 +79,12 @@ static volatile DWORD clock_owner;
     (AcquireSRWLockExclusive(&clock_lock), clock_owner = GetCurrentThreadId())
 #define UNLOCK_CLOCKS() (clock_owner = 0u, ReleaseSRWLockExclusive(&clock_lock))
 #else
-#define LOCK_CLOCKS() ((void)0)
-#define UNLOCK_CLOCKS() ((void)0)
+static pthread_mutex_t clock_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local bool owns_clock_lock;
+#define LOCK_CLOCKS() \
+    (pthread_mutex_lock(&clock_lock), owns_clock_lock = true)
+#define UNLOCK_CLOCKS() \
+    (owns_clock_lock = false, pthread_mutex_unlock(&clock_lock))
 #endif
 
 static void retire_buffer(BufferClock *clock)
@@ -147,7 +158,7 @@ static uint64_t buffer_now_ms(void)
     return GetTickCount64();
 #else
     struct timespec now;
-    timespec_get(&now, TIME_UTC);
+    clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 #endif
 }
@@ -594,6 +605,47 @@ static void start_output_pump(void)
         atexit(stop_output_pump);
     }
 }
+#elif defined(RECOMP_FULL_PROGRAM)
+static atomic_bool output_pump_stop;
+static pthread_t output_pump;
+static bool output_pump_started;
+
+static void *output_pump_loop(void *unused)
+{
+    (void)unused;
+    while (!atomic_load_explicit(&output_pump_stop, memory_order_relaxed)) {
+        struct timespec delay = {0, 5000000};
+        while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
+        LOCK_CLOCKS();
+        uint64_t now = buffer_now_ms();
+        for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
+            if (buffer_clocks[i].address != 0u) pump_buffer(&buffer_clocks[i], now);
+        }
+        UNLOCK_CLOCKS();
+    }
+    return NULL;
+}
+
+static void stop_output_pump(void)
+{
+    atomic_store_explicit(&output_pump_stop, true, memory_order_relaxed);
+    /* Match the Windows exit path: do not join while owning the pump's lock. */
+    if (!owns_clock_lock && !pthread_equal(pthread_self(), output_pump)) {
+        pthread_join(output_pump, NULL);
+    }
+}
+
+static void start_output_pump(void)
+{
+    if (output_pump_started || !recomp_audio_output_enabled()) return;
+    int error = pthread_create(&output_pump, NULL, output_pump_loop, NULL);
+    if (error != 0) {
+        fprintf(stderr, "recomp audio: output pump failed: %s\n", strerror(error));
+        return;
+    }
+    output_pump_started = true;
+    atexit(stop_output_pump);
+}
 #endif
 
 static void recomp_dsound_create_adapter(void)
@@ -627,7 +679,7 @@ static void recomp_dsound_create_adapter(void)
     if (result == RECOMP_DSOUND_OK) {
         write_created_objects(&dsound_service_model);
         *recomp_memory_u32(output_address) = public_device;
-#if defined(RECOMP_FULL_PROGRAM) && defined(_WIN32)
+#ifdef RECOMP_FULL_PROGRAM
         start_output_pump();
 #endif
     } else if (resources.manager != 0u &&

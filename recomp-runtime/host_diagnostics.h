@@ -5,7 +5,8 @@
 extern "C" {
 #endif
 
-/* Windows unhandled exceptions emit host-crash events in Release and Debug.
+/* Windows unhandled exceptions and POSIX fatal signals emit host-crash events.
+   POSIX unwinding is best effort; fatal signals bypass runtime-stop expectations.
    Debug additionally logs observed exceptions (terminal=unknown) and continuing
    CRT runtime checks (terminal=false); neither alone establishes a crash. */
 void recomp_install_host_diagnostics(void);

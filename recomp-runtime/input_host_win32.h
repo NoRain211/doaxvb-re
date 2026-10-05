@@ -9,6 +9,12 @@
 extern "C" {
 #endif
 
+#ifndef _WIN32
+/* Call on the SDL main thread after pumping events, and after window teardown.
+   The guest thread consumes an atomic keyboard/focus snapshot. */
+void recomp_input_host_capture_keyboard(void);
+#endif
+
 bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad);
 
 void recomp_input_host_set_vibration(

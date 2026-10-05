@@ -1422,6 +1422,7 @@ static bool testVertexBlending(
     return true;
 }
 
+#ifdef _WIN32
 static LRESULT CALLBACK closeOnShowWindowProc(
     HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
@@ -1430,6 +1431,8 @@ static LRESULT CALLBACK closeOnShowWindowProc(
     }
     return presenterWindowProc(window, message, wparam, lparam);
 }
+
+#endif
 
 /* Regression for the portrait-support pipeline-capacity bug: the real r353
    stream creates eight distinct FVF layouts with 0x244 displacing 0x118. The
@@ -1440,7 +1443,7 @@ static bool testDrawPipelineEviction(
 {
     RecompD3dPresenter presenter{};
     presenter.config = borrowed->config;
-    presenter.owner_thread = GetCurrentThreadId();
+    presenter.owner_thread = std::this_thread::get_id();
     presenter.device = borrowed->device;
     presenter.device->AddRef();
     presenter.context = borrowed->context;
@@ -1515,6 +1518,7 @@ static bool testDrawPipelineEviction(
 
 static bool testWindowClose(RecompD3dPresenter *warp)
 {
+#ifdef _WIN32
     IDXGIDevice *dxgi_device = nullptr;
     IDXGIAdapter *adapter = nullptr;
     IDXGIFactory *factory = nullptr;
@@ -1532,7 +1536,7 @@ static bool testWindowClose(RecompD3dPresenter *warp)
         presenter.config.width = 320u;
         presenter.config.height = 240u;
         presenter.widescreen = scenario == 1u;
-        presenter.owner_thread = GetCurrentThreadId();
+        presenter.owner_thread = std::this_thread::get_id();
         presenter.device = warp->device;
         presenter.device->AddRef();
         presenter.context = warp->context;
@@ -1600,6 +1604,48 @@ static bool testWindowClose(RecompD3dPresenter *warp)
     releaseCom(factory);
     if (passed) std::printf("PASS window close before/after present, unexpected loss/quit\n");
     return passed;
+#else
+    (void)warp;
+    RecompD3dPresenterConfig config = {320, 240,
+        RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+    RecompD3dPresenter *presenter = nullptr;
+    if (d3d11_backend_create(&config, &presenter) != RECOMP_D3D_PRESENTER_OK) return false;
+    bool passed = true;
+    const auto check = [&](const char *label, bool ok) {
+        if (!ok) std::fprintf(stderr, "FAIL SDL %s: %s\n", label, SDL_GetError());
+        passed &= ok;
+    };
+    check("first present", submitPresent(presenter, {5, 1}) == RECOMP_D3D_PRESENTER_OK);
+    check("resize request", SDL_SetWindowSize(presenter->window, 640, 480));
+    check("resize sync", SDL_SyncWindow(presenter->window));
+    check("resized present", submitPresent(presenter, {5, 2}) == RECOMP_D3D_PRESENTER_OK);
+    DXGI_SWAP_CHAIN_DESC desc{};
+    check("swapchain descriptor", SUCCEEDED(presenter->swap_chain->GetDesc(&desc)));
+    check("guest target dimensions", desc.BufferDesc.Width == config.width &&
+        desc.BufferDesc.Height == config.height);
+    SDL_Event event{};
+    event.type = SDL_EVENT_KEY_DOWN;
+    event.key.windowID = SDL_GetWindowID(presenter->window);
+    event.key.key = SDLK_RETURN;
+    event.key.mod = SDL_KMOD_ALT;
+    check("enter fullscreen event", SDL_PushEvent(&event));
+    check("enter fullscreen pump", d3d11_backend_pump_events() == RECOMP_D3D_PRESENTER_OK);
+    check("enter fullscreen sync", SDL_SyncWindow(presenter->window));
+    check("fullscreen flag", (SDL_GetWindowFlags(presenter->window) & SDL_WINDOW_FULLSCREEN) != 0);
+    check("leave fullscreen event", SDL_PushEvent(&event));
+    check("leave fullscreen pump", d3d11_backend_pump_events() == RECOMP_D3D_PRESENTER_OK);
+    check("leave fullscreen sync", SDL_SyncWindow(presenter->window));
+    check("windowed flag", (SDL_GetWindowFlags(presenter->window) & SDL_WINDOW_FULLSCREEN) == 0);
+    event = {};
+    event.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+    event.window.windowID = SDL_GetWindowID(presenter->window);
+    check("close event", SDL_PushEvent(&event));
+    check("closed status", submitPresent(presenter, {5, 3}) == RECOMP_D3D_PRESENTER_CLOSED);
+    check("destroy", d3d11_backend_destroy(&presenter) == RECOMP_D3D_PRESENTER_OK);
+    if (passed) std::puts("PASS SDL resize, fullscreen toggle and window close");
+    return passed;
+#endif
 }
 
 static bool testWidescreenClientWidth()
@@ -1616,7 +1662,7 @@ static bool testWidescreenClientWidth()
 static bool testTargetLifetimes(
     RecompD3dPresenter *presenter, ID3D11Texture2D *readback)
 {
-    presenter->owner_thread = GetCurrentThreadId();
+    presenter->owner_thread = std::this_thread::get_id();
     active_presenter = presenter;
     RecompD3dPresenterClearCommand clear{};
     clear.clear_color = true;
@@ -2020,8 +2066,44 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
-int main()
+static bool testShaderCompilation()
 {
+    for (const uint32_t fvf : {0x104u, 0x144u, 0x112u, 0x142u, 0x404u, 0x244u, 0x11au, 0x116u, 0x118u}) {
+        DrawPipeline draw{};
+        draw.fvf = fvf;
+        RecompD3dVertexLayout layout{};
+        std::string source;
+        if (!drawShaderSource(fvf, draw, layout, source)) return false;
+        ID3DBlob *vertex = nullptr, *pixel = nullptr;
+        const bool passed = compileDrawShader(source.c_str(), "vs_main", "vs_4_0", &vertex) &&
+            compileDrawShader(source.c_str(), "ps_main", "ps_4_0", &pixel);
+        releaseCom(vertex);
+        releaseCom(pixel);
+        if (!passed) return false;
+    }
+    std::puts("PASS runtime draw shader compilation");
+    return true;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && std::strcmp(argv[1], "--shaders-only") == 0) {
+        RecompD3dPresenter presenter{};
+        presenter.config = {1280, 720, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+            RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+        if (!testShaderCompilation()) return 1;
+#ifdef RECOMP_SMAA
+        if (!createSmaa(&presenter, true)) return 1;
+        std::puts("PASS six SMAA ultra vertex/pixel shaders");
+#else
+        std::fprintf(stderr, "FAIL shader check requires SMAA sources\n");
+        return 1;
+#endif
+        return 0;
+    }
+#ifndef _WIN32
+    if (setenv("DXVK_WSI_DRIVER", "SDL3", 1) != 0) return 1;
+#endif
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;
@@ -2038,7 +2120,7 @@ int main()
         return 1;
     }
 
-    ULONGLONG next_dump = 0u;
+    uint64_t next_dump = 0u;
     if (!frameDumpDue(100u, 10000u, next_dump) || next_dump != 10100u ||
         frameDumpDue(10099u, 10000u, next_dump) ||
         !frameDumpDue(10100u, 10000u, next_dump) || next_dump != 20100u ||
@@ -2051,7 +2133,13 @@ int main()
     RecompD3dPresenter presenter{};
     D3D_FEATURE_LEVEL feature_level{};
     HRESULT result = D3D11CreateDevice(
-        nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+        nullptr,
+#ifdef _WIN32
+        D3D_DRIVER_TYPE_WARP,
+#else
+        D3D_DRIVER_TYPE_HARDWARE,
+#endif
+        nullptr,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0u, D3D11_SDK_VERSION,
         &presenter.device, &feature_level, &presenter.context);
     if (FAILED(result)) {

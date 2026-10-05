@@ -1,5 +1,7 @@
 #include "d3d_creation_model.h"
 
+#include <stddef.h>
+
 void recomp_d3d_creation_reset(RecompD3dCreationModel *model)
 {
     if (model != NULL) {

@@ -38,6 +38,52 @@ LONG CALLBACK reportUnhandledException(EXCEPTION_POINTERS *info)
 }
 #endif
 
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#include <execinfo.h>
+#include <initializer_list>
+
+namespace {
+alignas(16) unsigned char signal_stack[64 * 1024];
+
+void reportFatalSignal(int signal, siginfo_t *, void *)
+{
+    /* Write the classification before unwinding: symbol lookup is best effort
+       in a damaged process and must not hide the terminal event. */
+    static const char event[] =
+        "recomp host: event=host-crash kind=unhandled-signal expectation_applied=false\n";
+    (void)write(STDERR_FILENO, event, sizeof event - 1u);
+    void *frames[32];
+    const int count = backtrace(frames, 32);
+    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+    _exit(128 + signal);
+}
+
+void installSignalDiagnostics()
+{
+    /* Load the unwinder before a signal can interrupt allocator initialization. */
+    void *frame;
+    backtrace(&frame, 1);
+    stack_t stack{};
+    stack.ss_sp = signal_stack;
+    stack.ss_size = sizeof signal_stack;
+    if (sigaltstack(&stack, nullptr) != 0) {
+        std::perror("recomp host: sigaltstack");
+    }
+    struct sigaction action{};
+    action.sa_sigaction = reportFatalSignal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+    for (int signal : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) {
+        if (sigaction(signal, &action, nullptr) != 0) {
+            std::perror("recomp host: sigaction");
+        }
+    }
+}
+}
+#endif
+
 #if defined(_MSC_VER) && defined(_DEBUG)
 
 #include "runtime.h"
@@ -215,6 +261,8 @@ void recomp_install_host_diagnostics(void)
     bufferStderr();
 #ifdef _WIN32
     SetUnhandledExceptionFilter(reportUnhandledException);
+#else
+    installSignalDiagnostics();
 #endif
 }
 

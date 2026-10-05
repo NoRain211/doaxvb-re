@@ -1,9 +1,21 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "kernel_abi.h"
 #include "save_transaction.h"
 
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "host_file_posix.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#endif
 
 enum {
     TEST_BASE = 0x2b000000u,
@@ -177,12 +189,18 @@ int recomp_kernel_file_save_test(void)
     uint32_t status, handle;
     int passed = 1;
 
+#ifdef _WIN32
     if (GetTempPathA(sizeof temporary, temporary) == 0u ||
         GetTempFileNameA(temporary, "rsv", 0u, root) == 0u ||
         strlen(root) > MAX_PATH - 100u || !DeleteFileA(root) ||
         !CreateDirectoryA(root, NULL)) {
         return expect("temporary storage directory", 0);
     }
+#else
+    (void)temporary;
+    strcpy(root, "/tmp/recomp-kernel-save-XXXXXX");
+    if (mkdtemp(root) == NULL) return expect("temporary storage directory", 0);
+#endif
     snprintf(live, sizeof live, "%s\\.recomp-storage\\partition1\\UDATA", root);
     snprintf(path, sizeof path, "%s\\profile.dat", live);
     memset(memory, 0, sizeof memory);
@@ -206,6 +224,48 @@ int recomp_kernel_file_save_test(void)
         args[5] = 0x90020u;
         passed &= expect("closed dismount handle rejected", invoke(200u, args, 10u, &passed) == 0xc0000008u);
     }
+#ifndef _WIN32
+    {
+        char mixed[MAX_PATH], asset[MAX_PATH], resolved[MAX_PATH];
+        snprintf(mixed, sizeof mixed, "%s/MixedAssets", root);
+        snprintf(asset, sizeof asset, "%s/Texture.BIN", mixed);
+        passed &= expect("create mixed-case directory", mkdir(mixed, 0700) == 0);
+        FILE *file = fopen(asset, "wb");
+        passed &= expect("create mixed-case asset", file != NULL);
+        if (file) { fputs("asset", file); fclose(file); }
+        status = open_existing("D:\\MIXEDASSETS\\texture.bin", GENERIC_READ, 7u, 0u, 0u, &passed);
+        passed &= expect("guest opens each component case-insensitively", status == 0u);
+        if (!status) passed &= close_file(*recomp_memory_u32(TEST_HANDLE), &passed);
+        snprintf(resolved, sizeof resolved, "%s/mixedassets/TEXTURE.bin", root);
+        passed &= expect("case-insensitive read", file_equals(resolved, "asset"));
+        WIN32_FIND_DATAA found;
+        snprintf(resolved, sizeof resolved, "%s/mixedassets/*", root);
+        HANDLE search = FindFirstFileA(resolved, &found);
+        int found_asset = 0;
+        if (search != INVALID_HANDLE_VALUE) {
+            do {
+                if (strcmp(found.cFileName, "Texture.BIN") == 0 && found.nFileSizeLow == 5u)
+                    found_asset = 1;
+            } while (FindNextFileA(search, &found));
+            FindClose(search);
+        }
+        passed &= expect("enumeration preserves disk case", found_asset);
+        char alias[MAX_PATH];
+        snprintf(alias, sizeof alias, "%s/texture.bin", mixed);
+        file = fopen(alias, "wb");
+        if (file) fclose(file);
+        passed &= expect("case collisions fail closed",
+            !recomp_posix_resolve_path(asset, resolved, sizeof resolved));
+        unlink(alias);
+        snprintf(alias, sizeof alias, "%s/linked", mixed);
+        passed &= expect("make symlink fixture", symlink(asset, alias) == 0);
+        passed &= expect("symlink resolution rejected",
+            !recomp_posix_resolve_path(alias, resolved, sizeof resolved));
+        unlink(alias);
+        unlink(asset);
+        rmdir(mixed);
+    }
+#endif
     passed &= expect("begin complete write", recomp_save_begin(0u));
     passed &= expect("owner active", recomp_save_active(0u) && recomp_save_pending());
     handle = create_file(guest_file, GENERIC_READ | GENERIC_WRITE, 3u, &status, &passed);
@@ -456,10 +516,18 @@ int recomp_kernel_file_save_test(void)
             passed &= expect("write before metadata open failure",
                 status == 0u && write_file(handle, "zz", 2u, &passed) == 0u);
             passed &= close_file(handle, &passed);
+#ifdef _WIN32
             HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            passed &= expect("open native sharing blocker",
-                blocker != INVALID_HANDLE_VALUE);
+#else
+            status = open_existing(guest_file, GENERIC_READ, 0u, 0u, 0u, &passed);
+            uint32_t blocker = *recomp_memory_u32(TEST_HANDLE);
+#endif
+#ifdef _WIN32
+            passed &= expect("open native sharing blocker", blocker != INVALID_HANDLE_VALUE);
+#else
+            passed &= expect("open guest sharing blocker", status == 0u && blocker != 0u);
+#endif
             /* Attribute access alone is exempt from native sharing restrictions. */
             set_path(i == 0u ? guest_file : "\\Device\\Harddisk0\\partition1\\UDATA\\missing.dat");
             const uint32_t open_args[] = {TEST_HANDLE, rights[i], TEST_ATTRIBUTES,
@@ -469,7 +537,11 @@ int recomp_kernel_file_save_test(void)
             status = api == 0u ? invoke(202u, open_args, 6u, &passed)
                                : invoke(190u, create_args, 9u, &passed);
             passed &= expect("metadata open failure returned", status != 0u);
+#ifdef _WIN32
             if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+#else
+            if (blocker != 0u) passed &= close_file(blocker, &passed);
+#endif
             passed &= expect("metadata open failure aborts success end",
                 !recomp_save_end(0u, true));
             passed &= expect("metadata open failure rolls back earlier write",
@@ -479,15 +551,25 @@ int recomp_kernel_file_save_test(void)
     {
         /* A blocked existing file must not become a placeholder handle. */
         passed &= expect("begin blocked open-if delete", recomp_save_begin(0u));
+#ifdef _WIN32
         HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+#else
+        status = open_existing(guest_file, GENERIC_READ, 0u, 0u, 0u, &passed);
+        uint32_t blocker = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open guest sharing blocker", status == 0u && blocker != 0u);
+#endif
         const uint32_t args[] = {TEST_HANDLE, DELETE, TEST_ATTRIBUTES,
             TEST_IOSB, 0u, 0u, 7u, 3u, 0u};
         set_path(guest_file);
         status = invoke(190u, args, 9u, &passed);
         passed &= expect("blocked open-if delete reports sharing violation",
             status == 0xc0000043u);
+#ifdef _WIN32
         if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+#else
+        if (blocker != 0u) passed &= close_file(blocker, &passed);
+#endif
         passed &= expect("blocked open-if delete aborts save", !recomp_save_end(0u, true));
         passed &= expect("blocked open-if delete keeps file", file_equals(path, "abXY"));
     }
@@ -496,6 +578,7 @@ int recomp_kernel_file_save_test(void)
     handle = create_file(guest_file, GENERIC_READ | GENERIC_WRITE, 1u, &status, &passed);
     passed &= expect("open for locked write", status == 0u && handle != 0u);
     {
+#ifdef _WIN32
         HANDLE blocker = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         int locked = blocker != INVALID_HANDLE_VALUE && LockFile(blocker, 0u, 0u, 4u, 0u);
@@ -507,6 +590,17 @@ int recomp_kernel_file_save_test(void)
             recomp_save_note_failure(0u);
         }
         if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+#else
+        struct rlimit original, limited;
+        passed &= expect("read file-size limit", getrlimit(RLIMIT_FSIZE, &original) == 0);
+        limited = original;
+        limited.rlim_cur = 0;
+        void (*previous)(int) = signal(SIGXFSZ, SIG_IGN);
+        passed &= expect("limit writes", setrlimit(RLIMIT_FSIZE, &limited) == 0);
+        passed &= expect("POSIX write failure", write_file(handle, "NOPE", 4u, &passed) != 0u);
+        passed &= expect("restore file-size limit", setrlimit(RLIMIT_FSIZE, &original) == 0);
+        signal(SIGXFSZ, previous);
+#endif
     }
     passed &= close_file(handle, &passed);
     passed &= expect("failed write aborts", !recomp_save_end(0u, true));
@@ -677,12 +771,22 @@ int recomp_kernel_file_save_test(void)
         passed &= expect("folder open on a file reports not a directory",
             status == 0xc0000103u && *recomp_memory_u32(TEST_HANDLE) == 0u);
 
+#ifdef _WIN32
         HANDLE blocker = CreateFileA(path, GENERIC_READ, 0, NULL,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+#else
+        status = open_existing(guest_file, GENERIC_READ, 0u, 0u, 0u, &passed);
+        uint32_t blocker = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open guest sharing blocker", status == 0u && blocker != 0u);
+#endif
         status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\profile.dat", GENERIC_WRITE, 7u, 0u, 0u, &passed);
         passed &= expect("blocked write open reports sharing violation",
             status == 0xc0000043u && *recomp_memory_u32(TEST_HANDLE) == 0u);
+#ifdef _WIN32
         if (blocker != INVALID_HANDLE_VALUE) CloseHandle(blocker);
+#else
+        if (blocker != 0u) passed &= close_file(blocker, &passed);
+#endif
     }
     handle = open_for_delete(
         "\\Device\\Harddisk0\\partition1\\UDATA\\delete.dat",

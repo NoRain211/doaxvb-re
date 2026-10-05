@@ -64,3 +64,48 @@ jobs:
             throw "configure accepted a generated source with the wrong receipt hash"
           }
           exit 0
+
+  linux-runtime-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build SDL3 for public runtime tests
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-3.4.16.tar.gz \
+            --output "$RUNNER_TEMP/SDL3.tar.gz"
+          echo "7322236cd12090c3eb40b9728be4d49c76f66ad17d04369584d4ecad5cf77c68  $RUNNER_TEMP/SDL3.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/SDL3.tar.gz" -C "$RUNNER_TEMP"
+          cmake -S "$RUNNER_TEMP/SDL3-3.4.16" -B "$RUNNER_TEMP/sdl-build" \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/sdl" -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_UNIX_CONSOLE_BUILD=ON
+          cmake --build "$RUNNER_TEMP/sdl-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/sdl-build"
+      - name: Configure public runtime tests
+        run: >-
+          cmake -S recomp-runtime -B build/linux
+          -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl"
+      - name: Build public runtime tests
+        run: cmake --build build/linux --parallel 2
+      - name: Run public runtime tests
+        run: ctest --test-dir build/linux --output-on-failure
+      - name: Prove authentication fails closed
+        run: |
+          source="$PWD/recomp-runtime/runtime_public_fixture.c"
+          if cmake -S recomp-runtime -B build/linux-missing-hash \
+              -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl" \
+              -DRECOMP_FUNCTION_SOURCE="$source" > missing-hash.log 2>&1; then
+            cat missing-hash.log
+            exit 1
+          fi
+          grep -q "must be supplied together" missing-hash.log
+          if cmake -S recomp-runtime -B build/linux-wrong-hash \
+              -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl" \
+              -DRECOMP_FUNCTION_SOURCE="$source" \
+              -DRECOMP_FUNCTION_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+              > wrong-hash.log 2>&1; then
+            cat wrong-hash.log
+            exit 1
+          fi
+          grep -q "does not match the authenticated receipt" wrong-hash.log

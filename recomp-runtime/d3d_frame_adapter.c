@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <stdatomic.h>
 #endif
 
 enum {
@@ -35,6 +37,14 @@ static volatile LONG console_break_requested;
 void recomp_d3d_frame_adapter_request_console_break(void)
 {
     InterlockedExchange(&console_break_requested, 1);
+}
+#else
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "signal flag must be lock-free");
+static atomic_int console_break_requested;
+
+void recomp_d3d_frame_adapter_request_console_break(void)
+{
+    atomic_store_explicit(&console_break_requested, 1, memory_order_relaxed);
 }
 #endif
 
@@ -374,13 +384,15 @@ void recomp_d3d_swap_adapter(void)
     }
 
 #ifdef _WIN32
-    if (InterlockedCompareExchange(&console_break_requested, 0, 0) != 0 &&
-        !recomp_save_pending()) {
+    const bool requested = InterlockedCompareExchange(&console_break_requested, 0, 0) != 0;
+#else
+    const bool requested = atomic_load_explicit(&console_break_requested, memory_order_relaxed) != 0;
+#endif
+    if (requested && !recomp_save_pending()) {
         recomp_d3d_frame_adapter_reset();
         fprintf(stderr, "recomp runner: console break; exiting normally\n");
         recomp_stop(0, "host-console-break");
     }
-#endif
 
     *recomp_memory_u32(frame_device_address + 0x2c10u) =
         result.command.data.present.swap_counter;

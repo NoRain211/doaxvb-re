@@ -1,5 +1,7 @@
 #include "d3d_render_state_model.h"
 
+#include <stddef.h>
+
 enum {
     D3D_SIMPLE_COMMAND_BASE = 0x00040000u,
     D3D_SIMPLE_METHOD_MASK = 0x00001ffcu,

@@ -2,12 +2,18 @@
 #include "d3d_draw_model.h"
 #include "d3d_vertex_program.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <SDL3/SDL.h>
+#include "input_host_win32.h"
+#include <sys/stat.h>
+#endif
 
 #include <d3d11.h>
 #include <dxgi.h>
-#include <d3dcompiler.h>
+#include "d3d_shader_compile.h"
 
 #include <cmath>
 #include <algorithm>
@@ -20,6 +26,7 @@
 #include <new>
 #include <memory>
 #include <thread>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -27,23 +34,44 @@
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
 #include "SearchTex.h"
-static const char kSmaaSource[] = {
+static const unsigned char kSmaaSource[] = {
 #include "smaa_hlsl.inc"
 };
 #endif
 
 namespace {
 
+#ifdef _WIN32
 constexpr wchar_t kWindowClassName[] = L"DOAXBVRecompPresenterWindow";
 constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
+#endif
+
+uint64_t presenterTicks()
+{
+#ifdef _WIN32
+    return GetTickCount64();
+#else
+    return SDL_GetTicks();
+#endif
+}
+
+bool captureTriggerExists(const char *path)
+{
+#ifdef _WIN32
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat info;
+    return path != nullptr && stat(path, &info) == 0;
+#endif
+}
 
 struct FrameRateCounter {
-    ULONGLONG start_ms = 0;
+    uint64_t start_ms = 0;
     uint32_t frames = 0;
     bool started = false;
 };
 
-bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, double &ms)
+bool sampleFrameRate(FrameRateCounter &counter, uint64_t now, double &fps, double &ms)
 {
     if (!counter.started) {
         counter.started = true;
@@ -51,7 +79,7 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
         return false;
     }
     ++counter.frames;
-    const ULONGLONG elapsed = now - counter.start_ms;
+    const uint64_t elapsed = now - counter.start_ms;
     if (elapsed < 1000u) return false;
     fps = counter.frames * 1000.0 / elapsed;
     ms = static_cast<double>(elapsed) / counter.frames;
@@ -269,11 +297,13 @@ void buildDrawShaderSource(
         has_diffuse ? "*=" : "=");
 }
 
+#ifdef _WIN32
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
     WPARAM wparam,
     LPARAM lparam);
+#endif
 
 template <typename T>
 void releaseCom(T *&object)
@@ -398,10 +428,15 @@ struct DepthTargetEntry {
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
-    DWORD owner_thread = 0;
+    std::thread::id owner_thread{};
+#ifdef _WIN32
     HINSTANCE instance = nullptr;
     bool owns_window_class = false;
     HWND window = nullptr;
+#else
+    SDL_Window *window = nullptr;
+    bool video_initialized = false;
+#endif
     bool close_requested = false;
     bool widescreen = false;
     float scale = 1.0f;         // RECOMP_D3D_SCALE: main target height multiplier
@@ -473,7 +508,7 @@ struct RecompD3dPresenter {
     std::vector<double> present_gaps;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
-    ULONGLONG next_frame_dump_ms = 0u;
+    uint64_t next_frame_dump_ms = 0u;
 };
 
 namespace {
@@ -508,10 +543,17 @@ uint32_t mainWidth(const RecompD3dPresenter *presenter)
 /* Beyond the screen the swap chain downsamples into a screen-sized window. */
 uint32_t windowHeight(const RecompD3dPresenter *presenter)
 {
-    return presenter->scale == 1.0f ? presenter->config.height : (std::min)(
-        mainHeight(presenter), static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
+#ifdef _WIN32
+    const uint32_t screen_height = static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN));
+#else
+    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+    const uint32_t screen_height = mode ? static_cast<uint32_t>(mode->h) : mainHeight(presenter);
+#endif
+    return presenter->scale == 1.0f ? presenter->config.height :
+        (std::min)(mainHeight(presenter), screen_height);
 }
 
+#ifdef _WIN32
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
@@ -534,6 +576,8 @@ LRESULT CALLBACK presenterWindowProc(
     }
     return DefWindowProcW(window, message, wparam, lparam);
 }
+
+#endif
 
 bool configSupported(const RecompD3dPresenterConfig &config)
 {
@@ -637,6 +681,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
 void releasePresenter(RecompD3dPresenter *presenter)
 {
     releaseGraphics(presenter);
+#ifdef _WIN32
     if (presenter->window != nullptr && IsWindow(presenter->window)) {
         DestroyWindow(presenter->window);
     }
@@ -645,10 +690,20 @@ void releasePresenter(RecompD3dPresenter *presenter)
         UnregisterClassW(kWindowClassName, presenter->instance);
         presenter->owns_window_class = false;
     }
+#else
+    SDL_DestroyWindow(presenter->window);
+    presenter->window = nullptr;
+    recomp_input_host_capture_keyboard();
+    if (presenter->video_initialized) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        presenter->video_initialized = false;
+    }
+#endif
 }
 
 bool createWindow(RecompD3dPresenter *presenter)
 {
+#ifdef _WIN32
     WNDCLASSEXW window_class{};
     const uint32_t client_width = presentClientWidth(presenter, windowHeight(presenter));
     RECT window_rect = {
@@ -707,6 +762,24 @@ bool createWindow(RecompD3dPresenter *presenter)
             static_cast<LONG>(client_width) &&
         client_rect.bottom - client_rect.top ==
             static_cast<LONG>(windowHeight(presenter));
+#else
+    // DXVK Native interprets OutputWindow using the selected WSI driver.
+    if (setenv("DXVK_WSI_DRIVER", "SDL3", 1) != 0) return false;
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+        std::fprintf(stderr, "recomp d3d presenter: SDL video: %s\n", SDL_GetError());
+        return false;
+    }
+    presenter->video_initialized = true;
+    SDL_WindowFlags flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN;
+    if (presenter->scale > 1.0f) flags |= SDL_WINDOW_BORDERLESS;
+    presenter->window = SDL_CreateWindow("DOAXBV Recomp",
+        presentClientWidth(presenter, windowHeight(presenter)), windowHeight(presenter), flags);
+    if (presenter->window == nullptr) {
+        std::fprintf(stderr, "recomp d3d presenter: SDL window: %s\n", SDL_GetError());
+        return false;
+    }
+    return true;
+#endif
 }
 
 HRESULT createDeviceWithDriver(
@@ -730,7 +803,7 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swap_chain_desc.BufferCount = immediate_present ? 1u : 2u;
-    swap_chain_desc.OutputWindow = presenter->window;
+    swap_chain_desc.OutputWindow = reinterpret_cast<HWND>(presenter->window);
     swap_chain_desc.Windowed = TRUE;
     swap_chain_desc.SwapEffect = immediate_present
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -1171,7 +1244,7 @@ bool compileDrawShader(
     }
 
     ID3DBlob *errors = nullptr;
-    const HRESULT result = D3DCompile(
+    const HRESULT result = recompCompileShader(
         source,
         std::strlen(source),
         nullptr,
@@ -1275,8 +1348,10 @@ constexpr uint32_t kBootDrawFvfs[] = {
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
 void precompileDrawShaders(const std::atomic<bool> *stop)
 {
+#ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-    const ULONGLONG start = GetTickCount64();
+#endif
+    const uint64_t start = presenterTicks();
     static const DrawPipeline no_program{};
     uint32_t compiled = 0u;
     try {
@@ -1297,7 +1372,7 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
         return;  // Remaining shaders compile on first use.
     }
     std::fprintf(stderr, "recomp d3d presenter: precompiled %u draw shaders in %llu ms\n",
-        compiled, static_cast<unsigned long long>(GetTickCount64() - start));
+        compiled, static_cast<unsigned long long>(presenterTicks() - start));
 }
 
 /* Builds the shader pair and input layout for one FVF from its decoded
@@ -1829,7 +1904,7 @@ void dumpProgramTexture(RecompD3dPresenter *presenter,
     static unsigned captured = 0;
     const unsigned bit = 1u << index;
     if (!prefix || !trigger || (captured & bit) ||
-        GetFileAttributesA(trigger) == INVALID_FILE_ATTRIBUTES || !view) return;
+        !captureTriggerExists(trigger) || !view) return;
     captured |= bit;
     ID3D11Resource *resource = nullptr;
     ID3D11Texture2D *texture = nullptr, *staging = nullptr;
@@ -2491,7 +2566,7 @@ RecompD3dPresenterError submitDraw(
     static unsigned program_dump_count = 0;
     if (draw.program_count && program_dump && program_dump_count < 2 &&
         std::getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER") &&
-        GetFileAttributesA(std::getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER")) != INVALID_FILE_ATTRIBUTES) {
+        captureTriggerExists(std::getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER"))) {
         ++program_dump_count;
         std::fprintf(stderr, "recomp program viewport: mask=%u c58=%g,%g,%g c59=%g,%g,%g\n",
             draw.program_alpha_mask ? 1u:0u, draw.program_constants[58][0],
@@ -2604,6 +2679,7 @@ RecompD3dPresenterError submitDraw(
 
 bool pumpMessages()
 {
+#ifdef _WIN32
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0u, 0u, PM_REMOVE)) {
         if (message.message == WM_QUIT) {
@@ -2613,9 +2689,34 @@ bool pumpMessages()
         DispatchMessageW(&message);
     }
     return true;
+#else
+    // DXVK scales the fixed guest backbuffer to the current SDL drawable size;
+    // resizing the window must not change the guest target dimensions.
+    SDL_PumpEvents();
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        auto *presenter = active_presenter;
+        if (!presenter) continue;
+        if (event.type == SDL_EVENT_QUIT ||
+            (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+             event.window.windowID == SDL_GetWindowID(presenter->window))) {
+            presenter->close_requested = true;
+            SDL_HideWindow(presenter->window);
+        } else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+            event.key.windowID == SDL_GetWindowID(presenter->window) &&
+            event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)) {
+            const bool fullscreen = (SDL_GetWindowFlags(presenter->window) & SDL_WINDOW_FULLSCREEN) != 0;
+            if (!SDL_SetWindowFullscreen(presenter->window, !fullscreen)) {
+                std::fprintf(stderr, "recomp d3d presenter: fullscreen: %s\n", SDL_GetError());
+            }
+        }
+    }
+    recomp_input_host_capture_keyboard();
+    return true;
+#endif
 }
 
-bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
+bool frameDumpDue(uint64_t now, unsigned interval_ms, uint64_t &next)
 {
     if (interval_ms != 0u && now < next) {
         return false;
@@ -2657,7 +2758,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     const unsigned interval_ms = interval_text != nullptr
         ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
         : 0u;
-    if (!frameDumpDue(GetTickCount64(), interval_ms,
+    if (!frameDumpDue(presenterTicks(), interval_ms,
             presenter->next_frame_dump_ms)) {
         return;
     }
@@ -2748,7 +2849,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     }
     staging->Release();
     back_buffer->Release();
-    presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
+    presenter->next_frame_dump_ms = presenterTicks() + interval_ms;
 }
 
 RecompD3dPresenterError submitGamma(
@@ -2774,9 +2875,9 @@ RecompD3dPresenterError submitGamma(
             " uint3 i = (uint3)(saturate(c.rgb) * 255 + 0.5);\n"
             " return float4(ramp[i.r].r,ramp[i.g].g,ramp[i.b].b,c.a); }\n";
         ID3DBlob *vertex = nullptr, *pixel = nullptr;
-        HRESULT result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+        HRESULT result = recompCompileShader(shader, sizeof shader - 1u, nullptr,
             nullptr, nullptr, "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
-        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u,
+        if (SUCCEEDED(result)) result = recompCompileShader(shader, sizeof shader - 1u,
             nullptr, nullptr, nullptr, "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
         if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
             vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr,
@@ -2805,7 +2906,7 @@ RecompD3dPresenterError submitGamma(
 }
 
 /* SMAA 1x (iryoku/smaa, ultra preset) on the final resolved image. */
-bool createSmaa(RecompD3dPresenter *presenter)
+bool createSmaa(RecompD3dPresenter *presenter, bool compile_only = false)
 {
 #ifdef RECOMP_SMAA
     static const char prefix[] =
@@ -2847,34 +2948,35 @@ bool createSmaa(RecompD3dPresenter *presenter)
         width, height, width, height);
     const D3D_SHADER_MACRO macros[] = {{"SMAA_RT_METRICS", metrics}, {nullptr, nullptr}};
     std::string source = prefix;
-    source.append(kSmaaSource, sizeof kSmaaSource);
+    source.append(reinterpret_cast<const char *>(kSmaaSource), sizeof kSmaaSource);
     source += suffix;
     static const char *const entries[3][2] = {
         {"edgeVS", "edgePS"}, {"weightVS", "weightPS"}, {"blendVS", "blendPS"}};
     HRESULT result = S_OK;
     for (unsigned pass = 0u; pass < 3u && SUCCEEDED(result); ++pass) {
         ID3DBlob *vertex = nullptr, *pixel = nullptr, *errors = nullptr;
-        result = D3DCompile(source.data(), source.size(), "SMAA.hlsl", macros, nullptr,
+        result = recompCompileShader(source.data(), source.size(), "SMAA.hlsl", macros, nullptr,
             entries[pass][0], "vs_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0u, &vertex, &errors);
         if (SUCCEEDED(result)) {
             releaseCom(errors);
-            result = D3DCompile(source.data(), source.size(), "SMAA.hlsl", macros, nullptr,
+            result = recompCompileShader(source.data(), source.size(), "SMAA.hlsl", macros, nullptr,
                 entries[pass][1], "ps_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0u, &pixel, &errors);
         }
         if (FAILED(result) && errors != nullptr) {
             std::fprintf(stderr, "recomp d3d presenter: smaa compile: %s\n",
                 static_cast<const char *>(errors->GetBufferPointer()));
         }
-        if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
+        if (SUCCEEDED(result) && !compile_only) result = presenter->device->CreateVertexShader(
             vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr,
             &presenter->smaa_vs[pass]);
-        if (SUCCEEDED(result)) result = presenter->device->CreatePixelShader(
+        if (SUCCEEDED(result) && !compile_only) result = presenter->device->CreatePixelShader(
             pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr,
             &presenter->smaa_ps[pass]);
         releaseCom(vertex);
         releaseCom(pixel);
         releaseCom(errors);
     }
+    if (compile_only) return SUCCEEDED(result);
     const struct { UINT width, height; DXGI_FORMAT format; const void *data; UINT pitch; }
         textures[5] = {
             {width, height, DXGI_FORMAT_R8G8_UNORM, nullptr, 0u},
@@ -3020,6 +3122,7 @@ RecompD3dPresenterError submitPresent(
         if (pumped && presenter->close_requested) {
             return RECOMP_D3D_PRESENTER_CLOSED;
         }
+#ifdef _WIN32
         if (!pumped || !IsWindow(presenter->window)) {
             std::fprintf(
                 stderr,
@@ -3033,6 +3136,9 @@ RecompD3dPresenterError submitPresent(
                 GetLastError());
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
+#else
+        if (!pumped || !presenter->window) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+#endif
     }
 
     /* SyncInterval, not the flag, is what paces a present. Passing 0 here
@@ -3078,11 +3184,15 @@ RecompD3dPresenterError submitPresent(
         }
         presenter->last_present_ms = present_end_ms;
         double fps, frame_ms;
-        const ULONGLONG now = GetTickCount64();
+        const uint64_t now = presenterTicks();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
             char title[96];
             std::snprintf(title, sizeof title, "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
+#ifdef _WIN32
             SetWindowTextA(presenter->window, title);
+#else
+            SDL_SetWindowTitle(presenter->window, title);
+#endif
             // A late frame took over 1.5x this second's average: visible judder.
             double max_ms = 0.0;
             unsigned late = 0u;
@@ -3106,6 +3216,7 @@ RecompD3dPresenterError submitPresent(
        what this program actually rendered. Opt-in, and off by default. */
 
     if (!presenter->first_present_reported) {
+#ifdef _WIN32
         ShowWindow(presenter->window, SW_SHOW);
         UpdateWindow(presenter->window);
         if (!pumpMessages()) {
@@ -3134,6 +3245,17 @@ RecompD3dPresenterError submitPresent(
             static_cast<unsigned long>(presenter->create_result),
             static_cast<unsigned long>(present_result),
             static_cast<unsigned>(presenter->present_count));
+#else
+        if (!SDL_ShowWindow(presenter->window) || !pumpMessages()) {
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+        if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
+        int width = 0, height = 0;
+        SDL_GetWindowSizeInPixels(presenter->window, &width, &height);
+        std::fprintf(stderr,
+            "recomp d3d presenter: first-present SDL window=%p client=%dx%d count=%u\n",
+            static_cast<void *>(presenter->window), width, height, presenter->present_count);
+#endif
         presenter->first_present_reported = true;
     }
     return RECOMP_D3D_PRESENTER_OK;
@@ -3172,7 +3294,7 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
-    created->owner_thread = GetCurrentThreadId();
+    created->owner_thread = std::this_thread::get_id();
     if (!createWindow(created)) {
         releasePresenter(created);
         delete created;
@@ -3202,7 +3324,7 @@ RecompD3dPresenterError d3d11_backend_submit(
     if (presenter == nullptr || presenter != active_presenter) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
     }
-    if (GetCurrentThreadId() != presenter->owner_thread) {
+    if (std::this_thread::get_id() != presenter->owner_thread) {
         return RECOMP_D3D_PRESENTER_WRONG_THREAD;
     }
     if (command == nullptr) {
@@ -3229,7 +3351,7 @@ RecompD3dPresenterError d3d11_backend_release_memory(
     if (presenter == nullptr || presenter != active_presenter) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
     }
-    if (GetCurrentThreadId() != presenter->owner_thread) {
+    if (std::this_thread::get_id() != presenter->owner_thread) {
         return RECOMP_D3D_PRESENTER_WRONG_THREAD;
     }
     if (base >= 0x80000000u && base < 0x84000000u) base -= 0x80000000u;
@@ -3296,7 +3418,7 @@ RecompD3dPresenterError d3d11_backend_destroy(
     if (*presenter == nullptr || *presenter != active_presenter) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
     }
-    if (GetCurrentThreadId() != (*presenter)->owner_thread) {
+    if (std::this_thread::get_id() != (*presenter)->owner_thread) {
         return RECOMP_D3D_PRESENTER_WRONG_THREAD;
     }
 
@@ -3339,3 +3461,15 @@ void d3d11_backend_report_draw_textures(void)
         draw_texture_tally.untextured,
         active_presenter != nullptr ? active_presenter->texture_count : 0u);
 }
+
+#ifndef _WIN32
+RecompD3dPresenterError d3d11_backend_pump_events()
+{
+    if (!active_presenter) return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
+    if (std::this_thread::get_id() != active_presenter->owner_thread) {
+        return RECOMP_D3D_PRESENTER_WRONG_THREAD;
+    }
+    if (!pumpMessages()) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    return active_presenter->close_requested ? RECOMP_D3D_PRESENTER_CLOSED : RECOMP_D3D_PRESENTER_OK;
+}
+#endif

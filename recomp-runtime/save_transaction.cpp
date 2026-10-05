@@ -13,6 +13,14 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include "host_file_posix.h"
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/xattr.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -31,7 +39,14 @@ static_assert(sizeof legacy_version == sizeof version, "markers share one size")
 /* v2 adds attributes; v3 adds the change time. */
 const char undo_magic_v1[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '1'};
 const char undo_magic_v2[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '2'};
+#ifdef _WIN32
 const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '3'};
+#else
+/* POSIX images have UTF-8 names, native modes and nanosecond Unix times. */
+const char undo_magic[8] = {'r', 's', 'u', 'n', 'd', 'o', 'p', '1'};
+const char undo_magic_v3[8] = {'r', 's', 'u', 'n', 'd', 'o', '0', '3'};
+int journal_lock = -1;
+#endif
 constexpr size_t undo_header = sizeof undo_magic + sizeof(uint64_t);
 #ifdef _WIN32
 HANDLE journal_lock = INVALID_HANDLE_VALUE;
@@ -53,6 +68,9 @@ struct Node {
     bool directory;
     uint32_t attributes;
     std::string_view data;
+#ifndef _WIN32
+    bool posix_metadata;
+#endif
 };
 
 void require(bool condition)
@@ -115,6 +133,13 @@ void remove_tree(const fs::path &path)
         }
     };
     if (exists_plain(path)) clear_readonly(clear_readonly, path);
+#else
+    auto make_writable = [&](auto &&self, const fs::path &entry) -> void {
+        if (!fs::is_directory(entry)) return;
+        fs::permissions(entry, fs::perms::owner_all, fs::perm_options::add);
+        for (const auto &child : fs::directory_iterator(entry)) self(self, child.path());
+    };
+    if (exists_plain(path)) make_writable(make_writable, path);
 #endif
     fs::remove_all(path);
 }
@@ -139,6 +164,7 @@ void remove_file(const fs::path &path)
     }
 #else
     require(fs::remove(path));
+    require(recomp_posix_sync_directory(path.parent_path().c_str()));
 #endif
 }
 
@@ -148,6 +174,14 @@ void write_file(const fs::path &path, std::string_view data)
     stream.write(data.data(), static_cast<std::streamsize>(data.size()));
     stream.close();
     require(!stream.fail());
+#ifndef _WIN32
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    require(fd >= 0);
+    const bool synced = fsync(fd) == 0;
+    const bool closed = close(fd) == 0;
+    require(synced && closed);
+    require(recomp_posix_sync_directory(path.parent_path().c_str()));
+#endif
 }
 
 std::string read_file(const fs::path &path)
@@ -192,6 +226,14 @@ void put(std::string &out, std::string_view bytes)
     out.append(bytes);
 }
 
+#ifndef _WIN32
+void require_xattrs(const fs::path &path)
+{
+    const ssize_t size = getxattr(path.c_str(), "user.recomp.file-v1", nullptr, 0);
+    require(size >= 0 || errno == ENODATA);
+}
+#endif
+
 void save_node(std::string &out, const fs::path &path, const fs::path &relative)
 {
     Times times{};
@@ -212,10 +254,25 @@ void save_node(std::string &out, const fs::path &path, const fs::path &relative)
     times = {uint64_t(info.CreationTime.QuadPart), uint64_t(info.LastAccessTime.QuadPart),
         uint64_t(info.LastWriteTime.QuadPart), uint64_t(info.ChangeTime.QuadPart)};
 #else
-    const auto status = fs::symlink_status(path);
-    require(fs::is_directory(status) || fs::is_regular_file(status));
-    const bool directory = fs::is_directory(status);
-    times.write = static_cast<uint64_t>(fs::last_write_time(path).time_since_epoch().count());
+    struct stat status{};
+    require(lstat(path.c_str(), &status) == 0);
+    require(S_ISDIR(status.st_mode) || S_ISREG(status.st_mode));
+    const bool directory = S_ISDIR(status.st_mode);
+    require_xattrs(path);
+    /* The undo image stores bytes, not sparse allocation extents. */
+    require(directory || uint64_t(status.st_blocks) * 512u >= uint64_t(status.st_size));
+    HANDLE handle = CreateFileA(path.c_str(), FILE_READ_ATTRIBUTES, 7, nullptr,
+        OPEN_EXISTING, 0, nullptr);
+    require(handle != INVALID_HANDLE_VALUE);
+    FILE_BASIC_INFO info{};
+    const bool queried = GetFileInformationByHandleEx(handle, FileBasicInfo, &info, sizeof info);
+    const bool closed = CloseHandle(handle);
+    require(queried && closed);
+    saved_attributes = info.FileAttributes | (uint32_t(status.st_mode & 0777) << 16);
+    times = {uint64_t(info.CreationTime.QuadPart),
+        uint64_t(status.st_atim.tv_sec) * 1000000000u + status.st_atim.tv_nsec,
+        uint64_t(status.st_mtim.tv_sec) * 1000000000u + status.st_mtim.tv_nsec,
+        uint64_t(info.ChangeTime.QuadPart)};
 #endif
     out += directory ? 'D' : 'F';
     put(out, times.creation);
@@ -234,8 +291,21 @@ void save_node(std::string &out, const fs::path &path, const fs::path &relative)
         save_node(out, entry.path(), relative / entry.path().filename());
 }
 
+#ifndef _WIN32
+void resolve_live()
+{
+    char resolved[4096];
+    require(recomp_posix_resolve_path(live.c_str(), resolved, sizeof resolved));
+    live = resolved;
+}
+#endif
+
 std::string snapshot_live()
 {
+#ifndef _WIN32
+    resolve_live();
+    require_xattrs(storage);
+#endif
     std::string out(undo_magic, sizeof undo_magic);
     put(out, uint64_t(0));
     if (exists_plain(live)) {
@@ -285,8 +355,30 @@ void set_metadata(const Node &node)
     bool closed = CloseHandle(handle) != 0;
     require(copied && closed);
 #else
-    fs::last_write_time(node.path, fs::file_time_type(
-        fs::file_time_type::duration(static_cast<int64_t>(node.times.write))));
+    if (!node.posix_metadata) {
+        fs::last_write_time(node.path, fs::file_time_type(
+            fs::file_time_type::duration(static_cast<int64_t>(node.times.write))));
+        return;
+    }
+    HANDLE handle = CreateFileA(node.path.c_str(), FILE_WRITE_ATTRIBUTES, 7, nullptr,
+        OPEN_EXISTING, 0, nullptr);
+    require(handle != INVALID_HANDLE_VALUE);
+    FILE_BASIC_INFO info{};
+    info.CreationTime.QuadPart = node.times.creation;
+    info.ChangeTime.QuadPart = node.times.change;
+    info.FileAttributes = node.attributes & 0xffffu;
+    const bool copied = SetFileInformationByHandle(handle, FileBasicInfo, &info, sizeof info);
+    const bool closed = CloseHandle(handle);
+    require(copied && closed);
+    const auto stamp = [](uint64_t value) {
+        const int64_t ns = static_cast<int64_t>(value);
+        timespec result{ns / 1000000000, ns % 1000000000};
+        if (result.tv_nsec < 0) { --result.tv_sec; result.tv_nsec += 1000000000; }
+        return result;
+    };
+    const timespec times[2] = {stamp(node.times.access), stamp(node.times.write)};
+    require(utimensat(AT_FDCWD, node.path.c_str(), times, AT_SYMLINK_NOFOLLOW) == 0);
+    require(chmod(node.path.c_str(), node.attributes >> 16) == 0);
 #endif
 }
 
@@ -296,6 +388,8 @@ fs::path::string_type name_key(const fs::path &path)
     auto key = path.lexically_normal().native();
 #ifdef _WIN32
     if (!key.empty()) CharUpperBuffW(key.data(), static_cast<DWORD>(key.size()));
+#else
+    for (char &c : key) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
 #endif
     return key;
 }
@@ -304,14 +398,24 @@ fs::path::string_type name_key(const fs::path &path)
    or rewriting repeats this from the same image. */
 void restore(std::string_view image)
 {
+#ifndef _WIN32
+    resolve_live();
+#endif
     Reader in{image};
     std::vector<Node> nodes;
-    const bool has_change = std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0;
+    const bool has_change = std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0
+#ifndef _WIN32
+        || std::memcmp(image.data(), undo_magic_v3, sizeof undo_magic_v3) == 0
+#endif
+        ;
     const bool has_attributes = has_change ||
         std::memcmp(image.data(), undo_magic_v2, sizeof undo_magic_v2) == 0;
     std::set<fs::path::string_type> seen, directories;
     while (in.at != image.size()) {
         Node node{};
+#ifndef _WIN32
+        node.posix_metadata = std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0;
+#endif
         const char kind = in.take(1)[0];
         require(kind == 'D' || kind == 'F');
         node.directory = kind == 'D';
@@ -325,12 +429,17 @@ void restore(std::string_view image)
             node.attributes = static_cast<uint32_t>(attributes);
 #ifdef _WIN32
             require((node.attributes & unsupported_attributes) == 0u);
+#else
+            if (node.posix_metadata) require((node.attributes & ~0x01ff00b7u) == 0);
 #endif
         }
         const auto name = in.take(in.number());
         require(name.size() % sizeof(fs::path::value_type) == 0);
         fs::path::string_type native(name.size() / sizeof(fs::path::value_type), 0);
         std::memcpy(native.data(), name.data(), name.size());
+#ifndef _WIN32
+        require(native.find('\0') == std::string::npos && native.find('\\') == std::string::npos);
+#endif
         const fs::path relative(native);
         require(nodes.empty() ? relative.empty() && node.directory
                               : !relative.empty() && !relative.has_root_path());
@@ -369,7 +478,11 @@ void recover()
     if (image.size() >= sizeof undo_magic) {
         require(std::memcmp(image.data(), undo_magic, sizeof undo_magic) == 0 ||
             std::memcmp(image.data(), undo_magic_v2, sizeof undo_magic_v2) == 0 ||
-            std::memcmp(image.data(), undo_magic_v1, sizeof undo_magic_v1) == 0);
+            std::memcmp(image.data(), undo_magic_v1, sizeof undo_magic_v1) == 0
+#ifndef _WIN32
+            || std::memcmp(image.data(), undo_magic_v3, sizeof undo_magic_v3) == 0
+#endif
+            );
     }
     uint64_t size = 0;
     if (image.size() >= undo_header) std::memcpy(&size, image.data() + sizeof undo_magic, sizeof size);
@@ -417,6 +530,8 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         CloseHandle(journal_lock);
         journal_lock = INVALID_HANDLE_VALUE;
     }
+#else
+    if (journal_lock >= 0) { close(journal_lock); journal_lock = -1; }
 #endif
     ready = false;
     depth = 0;
@@ -428,6 +543,13 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         require(exists_plain(root) && fs::is_directory(root));
         storage = root / ".recomp-storage";
         live = storage / "partition1" / "UDATA";
+#ifndef _WIN32
+        char resolved[4096];
+        require(recomp_posix_resolve_path(live.c_str(), resolved, sizeof resolved));
+        live = resolved;
+        require(recomp_posix_resolve_path(storage.c_str(), resolved, sizeof resolved));
+        storage = resolved;
+#endif
         journal = storage / "save-undo-v1";
         undo = journal / "undo";
         check_parents(storage);
@@ -447,6 +569,14 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         require(GetFileInformationByHandle(journal_lock, &lock_info) != 0);
         require((lock_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0);
         require(lock_info.nFileSizeHigh == 0 && lock_info.nFileSizeLow == 0);
+#else
+        const auto lock_path = journal / "lock";
+        journal_lock = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        require(journal_lock >= 0);
+        require(flock(journal_lock, LOCK_EX | LOCK_NB) == 0);
+        struct stat lock_info{};
+        require(fstat(journal_lock, &lock_info) == 0);
+        require(S_ISREG(lock_info.st_mode) && lock_info.st_size == 0);
 #endif
         if (created) {
             write_file(journal / "version", version);
@@ -456,7 +586,12 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         if (upgrade_version) {
             /* Keep the v1 marker valid until the same-directory rename. */
             write_file(journal / "version.tmp", version);
+#ifdef _WIN32
             fs::rename(journal / "version.tmp", journal / "version");
+#else
+            require(recomp_posix_replace((journal / "version.tmp").c_str(),
+                (journal / "version").c_str()));
+#endif
         }
         check_tree(live);
         ready = true;
@@ -468,6 +603,8 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
             CloseHandle(journal_lock);
             journal_lock = INVALID_HANDLE_VALUE;
         }
+#else
+        if (journal_lock >= 0) { close(journal_lock); journal_lock = -1; }
 #endif
         return false;
     }
@@ -506,6 +643,9 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
         if (failed) {
             recover();
         } else {
+#ifndef _WIN32
+            resolve_live();
+#endif
             check_tree(live);
             remove_file(undo);
         }

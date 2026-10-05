@@ -13,6 +13,11 @@
 #include <string>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -92,6 +97,11 @@ int main()
         FILE_ATTRIBUTE_NORMAL, nullptr);
     assert(competing == INVALID_HANDLE_VALUE);
     assert(GetLastError() == ERROR_SHARING_VIOLATION);
+#else
+    int competing = open((journal / "lock").c_str(), O_RDWR | O_CLOEXEC);
+    assert(competing >= 0);
+    assert(flock(competing, LOCK_EX | LOCK_NB) != 0);
+    assert(close(competing) == 0);
 #endif
     assert(!recomp_save_pending());
     assert(recomp_save_begin(7));
@@ -188,6 +198,14 @@ int main()
     assert(get(payload) == "interrupted operation");
     assert(fs::is_regular_file(journal / "undo"));
     assert(CloseHandle(competing) != 0);
+#else
+    assert(!recomp_save_initialize(nullptr));
+    competing = open((journal / "lock").c_str(), O_RDWR | O_CLOEXEC);
+    assert(competing >= 0 && flock(competing, LOCK_EX | LOCK_NB) == 0);
+    assert(!recomp_save_initialize(root_name.c_str()));
+    assert(get(payload) == "interrupted operation");
+    assert(fs::is_regular_file(journal / "undo"));
+    assert(close(competing) == 0);
 #endif
     /* Reinitialization models a fresh process: volatile ownership is lost. */
     assert(recomp_save_initialize(root_name.c_str()));
@@ -303,6 +321,16 @@ int main()
     assert(recomp_save_initialize(root_name.c_str()));
 #endif
 
+#ifndef _WIN32
+    const auto sparse = live / "sparse";
+    put(sparse, "");
+    fs::resize_file(sparse, 1024 * 1024);
+    assert(!recomp_save_begin(7));
+    assert(!fs::exists(journal / "undo"));
+    fs::remove(sparse);
+    assert(recomp_save_initialize(root_name.c_str()));
+#endif
+
     const auto outside = root / "outside";
     put(outside / "untouched", "outside data");
 #ifdef _WIN32
@@ -361,6 +389,26 @@ int main()
     assert(CloseHandle(blocker));
     assert(recomp_save_initialize(root_name.c_str()));
     assert(get(payload) == "delete released");
+#endif
+#ifndef _WIN32
+    /* A differently cased store must be the same tree the guest opens. */
+    fs::rename(live, live.parent_path() / "udata");
+    const auto lower_payload = live.parent_path() / "udata" / "title" / "profile" / "payload";
+    assert(recomp_save_initialize(root_name.c_str()));
+    const timespec stamps[2] = {{1700000000, 123456789}, {1700000001, 987654321}};
+    assert(utimensat(AT_FDCWD, lower_payload.c_str(), stamps, 0) == 0);
+    assert(chmod(lower_payload.c_str(), 0640) == 0);
+    assert(recomp_save_begin(7));
+    put(lower_payload, "partial POSIX save");
+    assert(chmod(lower_payload.c_str(), 0400) == 0);
+    assert(!recomp_save_end(7, false));
+    struct stat restored{};
+    assert(stat(lower_payload.c_str(), &restored) == 0);
+    assert((restored.st_mode & 0777) == 0640);
+    assert(restored.st_atim.tv_sec == stamps[0].tv_sec && restored.st_atim.tv_nsec == stamps[0].tv_nsec);
+    assert(restored.st_mtim.tv_sec == stamps[1].tv_sec && restored.st_mtim.tv_nsec == stamps[1].tv_nsec);
+    assert(get(lower_payload) == "last generation");
+    assert(!fs::exists(live));
 #endif
     /* Release the lifetime lock before removing this disposable fixture. */
     assert(!recomp_save_initialize(nullptr));

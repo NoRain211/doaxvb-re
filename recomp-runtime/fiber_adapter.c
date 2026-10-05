@@ -4,8 +4,12 @@
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <ucontext.h>
+#endif
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -27,7 +31,7 @@ typedef struct RecompHostFiber {
     uint32_t guest_stack_size;
     uint32_t entry;
     uint64_t switch_count;
-    LPVOID native_fiber;
+    void *native_fiber;
 } RecompHostFiber;
 
 static RecompFiberModel fiber_model;
@@ -88,7 +92,7 @@ static RecompHostFiber *host_fiber_find(uint32_t guest_handle)
 
 static RecompHostFiber *host_fiber_add(
     uint32_t guest_handle,
-    LPVOID native_fiber)
+    void *native_fiber)
 {
     if (native_fiber == NULL || host_fiber_find(guest_handle) != NULL) {
         return NULL;
@@ -106,7 +110,11 @@ static RecompHostFiber *host_fiber_add(
     return NULL;
 }
 
+#ifdef _WIN32
 static VOID WINAPI fiber_entry(void *parameter)
+#else
+static void fiber_entry(void *parameter)
+#endif
 {
     RecompHostFiber *host = parameter;
     RecompFiber *fiber = recomp_fiber_find(&fiber_model, host->guest_handle);
@@ -124,6 +132,49 @@ static VOID WINAPI fiber_entry(void *parameter)
     fail_fiber("entry-returned", host->guest_handle);
 }
 
+#ifndef _WIN32
+typedef struct NativeFiber {
+    ucontext_t context;
+    void *stack;
+} NativeFiber;
+
+static void posix_fiber_entry(int slot)
+{
+    fiber_entry(&host_fibers[slot]);
+}
+
+static NativeFiber *create_native_fiber(RecompHostFiber *host)
+{
+    NativeFiber *native = calloc(1u, sizeof *native);
+    if (native == NULL) return NULL;
+    if (getcontext(&native->context) != 0) {
+        free(native);
+        return NULL;
+    }
+    if (host != NULL) {
+        native->stack = malloc(NATIVE_FIBER_STACK_RESERVE);
+        if (native->stack == NULL) {
+            free(native);
+            return NULL;
+        }
+        native->context.uc_stack.ss_sp = native->stack;
+        native->context.uc_stack.ss_size = NATIVE_FIBER_STACK_RESERVE;
+        native->context.uc_link = NULL;
+        /* makecontext arguments are ints; pass a slot, never a host pointer. */
+        makecontext(&native->context, (void (*)(void))posix_fiber_entry,
+            1, (int)(host - host_fibers));
+    }
+    return native;
+}
+
+static void delete_native_fiber(void *pointer)
+{
+    NativeFiber *native = pointer;
+    free(native->stack);
+    free(native);
+}
+#endif
+
 void recomp_fiber_adapter_reset(void)
 {
     if (converted_thread && current_host_fiber != NULL &&
@@ -132,10 +183,18 @@ void recomp_fiber_adapter_reset(void)
             RecompHostFiber *host = &host_fibers[i];
 
             if (host->active && host != current_host_fiber) {
+#ifdef _WIN32
                 DeleteFiber(host->native_fiber);
+#else
+                delete_native_fiber(host->native_fiber);
+#endif
             }
         }
+#ifdef _WIN32
         (void)ConvertFiberToThread();
+#else
+        delete_native_fiber(current_host_fiber->native_fiber);
+#endif
     }
     recomp_fiber_model_reset(&fiber_model);
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
@@ -175,14 +234,18 @@ static void convert_thread_to_fiber_adapter(void)
     uint32_t fiber_data = stack_argument(entry_esp, 0u);
     uint32_t guest_handle = main_fiber_handle();
     RecompRegisters registers = recomp_runtime.registers;
-    LPVOID native_fiber;
+    void *native_fiber;
     RecompFiber *fiber;
     RecompHostFiber *host;
 
     if (converted_thread || current_host_fiber != NULL) {
         fail_fiber("duplicate-convert", guest_handle);
     }
+#ifdef _WIN32
     native_fiber = ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH);
+#else
+    native_fiber = create_native_fiber(NULL);
+#endif
     if (native_fiber == NULL) {
         fail_fiber("convert-failed", guest_handle);
     }
@@ -222,7 +285,7 @@ static void create_fiber_adapter(void)
     RecompRegisters registers = {0};
     RecompFiber *fiber;
     RecompHostFiber *host;
-    LPVOID native_fiber;
+    void *native_fiber;
 
     if (!converted_thread || entry == 0u) {
         fail_fiber("create-context", entry);
@@ -273,12 +336,16 @@ static void create_fiber_adapter(void)
     if (fiber == NULL) {
         fail_fiber("create-state", guest_handle);
     }
+#ifdef _WIN32
     native_fiber = CreateFiberEx(
         0u,
         NATIVE_FIBER_STACK_RESERVE,
         FIBER_FLAG_FLOAT_SWITCH,
         fiber_entry,
         host);
+#else
+    native_fiber = create_native_fiber(host);
+#endif
     if (native_fiber == NULL) {
         fail_fiber("create-host", guest_handle);
     }
@@ -615,7 +682,14 @@ static void switch_to_fiber_adapter(void)
     *recomp_memory_u32(0u) = target->exception_list;
     publish_current_fiber(target_handle);
     current_host_fiber = target_host;
+#ifdef _WIN32
     SwitchToFiber(target_host->native_fiber);
+#else
+    if (swapcontext(&((NativeFiber *)outgoing_host->native_fiber)->context,
+            &((NativeFiber *)target_host->native_fiber)->context) != 0) {
+        fail_fiber("switch-host", target_handle);
+    }
+#endif
 
     if (current_host_fiber != outgoing_host ||
         fiber_model.current_handle != outgoing->guest_handle) {
@@ -638,7 +712,11 @@ static void delete_fiber_adapter(void)
     }
     stack_base = host->guest_stack_base;
     stack_size = host->guest_stack_size;
+#ifdef _WIN32
     DeleteFiber(host->native_fiber);
+#else
+    delete_native_fiber(host->native_fiber);
+#endif
     /* The guest allocator is monotonic. Keep one stack per host slot so a
        delete/create cycle reuses its address instead of exhausting the heap. */
     *host = (RecompHostFiber){

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -79,7 +80,9 @@ def build(args, verify_parity=True, lifter_revision=None):
         import capstone
     except ImportError as error:
         raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
-    if not args.generate_only:
+    # ponytail: on Linux, CMake itself reports a missing compiler or dependency; no preflight probe.
+    windows = os.name == "nt"
+    if not args.generate_only and windows:
         instance = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
@@ -148,20 +151,24 @@ def build(args, verify_parity=True, lifter_revision=None):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
-        receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
-                       configuration="Release", build_parallelism=2)
-        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
-                     "-G", "Visual Studio 17 2022", "-A", "x64",
-                     f"-DCMAKE_GENERATOR_INSTANCE={instance}",
-                     f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
+        receipt.update(cmake_generator="Visual Studio 17 2022" if windows else "default",
+                       platform="x64", configuration="Release", build_parallelism=2)
+        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output]
+        if windows:
+            configure += ["-G", "Visual Studio 17 2022", "-A", "x64",
+                          f"-DCMAKE_GENERATOR_INSTANCE={instance}"]
+        else:
+            configure.append("-DCMAKE_BUILD_TYPE=Release")
+        configure += [f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
         icon = ROOT / "private/doaxbv.ico"
         if icon.is_file():
             configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
-        command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
-                 "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
-        runner = output / "Release/recomp_program_runner.exe"
+        build_command = ["cmake", "--build", output, "--config", "Release", "--parallel", "2",
+                         "--target", "recomp_program_runner"]
+        command(build_command + (["--", "/nodeReuse:false"] if windows else []), ROOT, work / "build.log")
+        runner = output / ("Release/recomp_program_runner.exe" if windows else "recomp_program_runner")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work

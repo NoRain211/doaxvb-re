@@ -21,11 +21,41 @@ if(WIN32)
         URL_HASH SHA256=1a784cb2a5c64d56fe7a62090fe9d242d9865f235e4ea9678f1a6ba4e693e7de)
     FetchContent_MakeAvailable(SDL3)
     find_package(SDL3 3.4 CONFIG REQUIRED PATHS "${sdl3_SOURCE_DIR}/cmake" NO_DEFAULT_PATH)
-    function(recomp_use_sdl3 target)
-        target_link_libraries(${target} PRIVATE SDL3::SDL3)
+else()
+    find_package(SDL3 3.4 CONFIG REQUIRED)
+    find_package(Threads REQUIRED)
+    link_libraries(Threads::Threads ${CMAKE_DL_LIBS} m)
+endif()
+
+function(recomp_use_sdl3 target)
+    target_link_libraries(${target} PRIVATE SDL3::SDL3)
+    if(WIN32)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
-    endfunction()
+    endif()
+endfunction()
+
+if(WIN32)
+    set(_recomp_custom_music_source custom_music.cpp)
+    set(_recomp_audio_output_source audio_output_xaudio2.cpp)
+else()
+    set(_recomp_custom_music_source custom_music_posix.cpp)
+    set(_recomp_audio_output_source audio_output_sdl.cpp)
+    set(_recomp_host_file_sources host_file_posix.c)
+    # DXVK Native and vkd3d-shader back the Linux presenter; see docs/linux.md.
+    find_package(PkgConfig)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(RECOMP_DXVK IMPORTED_TARGET dxvk-d3d11 dxvk-dxgi)
+        pkg_check_modules(RECOMP_VKD3D IMPORTED_TARGET "libvkd3d-shader>=1.17")
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(miniaudio
+        URL https://raw.githubusercontent.com/mackron/miniaudio/f40cf03f80cdb7e741d43e53b7e706e8c1394bcf/miniaudio.h
+        URL_HASH SHA256=7e4f3f13c8fe66df2080ac3dd12a89193e3c2463cb7f067c798abd7331cd8ee6
+        DOWNLOAD_NO_EXTRACT TRUE)
+    FetchContent_MakeAvailable(miniaudio)
+    set_source_files_properties(custom_music_posix.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${miniaudio_SOURCE_DIR}")
 endif()
 
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
@@ -148,7 +178,7 @@ add_executable(recomp_runtime_test
     dsound_service_model.c
     dsound_service_adapter.c
     dsound_service_adapter_test.c
-    custom_music.cpp
+    ${_recomp_custom_music_source}
     soundtrack_adapter.c
     custom_music_test.cpp
     movie_color_model.c
@@ -187,6 +217,7 @@ add_executable(recomp_runtime_test
     kernel_memory.c
     kernel_memory_test.c
     kernel_file.c
+    ${_recomp_host_file_sources}
     kernel_file_save_test.c
     save_transaction.cpp
     kernel_rtl.c
@@ -203,8 +234,10 @@ target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 # Media Foundation is delay-loaded: Windows N editions and Server without the
 # Media Foundation feature lack it, and custom music then stays disabled.
-set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
-set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+if(WIN32)
+    set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
+    set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+endif()
 target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
 target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
 target_compile_definitions(recomp_runtime_test PRIVATE
@@ -276,6 +309,7 @@ if(RECOMP_ENTRY_SOURCE)
         kernel_device.c
         kernel_interrupt.c
         kernel_file.c
+        ${_recomp_host_file_sources}
         save_transaction.cpp
         kernel_memory.c
         kernel_rtl.c
@@ -291,7 +325,9 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    if(WIN32)
+        target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    endif()
 endif()
 
 if(RECOMP_PROGRAM_DIR)
@@ -463,8 +499,8 @@ if(RECOMP_PROGRAM_DIR)
         xbox_adpcm.c
         dsound_service_model.c
         dsound_service_adapter.c
-        audio_output_xaudio2.cpp
-        custom_music.cpp
+        ${_recomp_audio_output_source}
+        ${_recomp_custom_music_source}
         soundtrack_adapter.c
         movie_color_model.c
         cri_service_model.c
@@ -490,6 +526,7 @@ if(RECOMP_PROGRAM_DIR)
         kernel_device.c
         kernel_interrupt.c
         kernel_file.c
+        ${_recomp_host_file_sources}
         save_transaction.cpp
         kernel_memory.c
         kernel_rtl.c
@@ -508,16 +545,26 @@ if(RECOMP_PROGRAM_DIR)
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
-    target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
     if(WIN32)
-        recomp_use_sdl3(recomp_program_runner)
+        target_link_libraries(recomp_program_runner PRIVATE
+            bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+        target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+    else()
+        if(NOT RECOMP_DXVK_FOUND OR NOT RECOMP_VKD3D_FOUND)
+            message(FATAL_ERROR
+                "The Linux runner needs DXVK Native and vkd3d-shader >= 1.17; see docs/linux.md")
+        endif()
+        target_sources(recomp_program_runner PRIVATE d3d_shader_compile.cpp)
+        target_link_libraries(recomp_program_runner PRIVATE
+            PkgConfig::RECOMP_DXVK PkgConfig::RECOMP_VKD3D)
+        # Lets dladdr name runner functions in crash reports.
+        set_property(TARGET recomp_program_runner PROPERTY ENABLE_EXPORTS ON)
     endif()
+    recomp_use_sdl3(recomp_program_runner)
 
     # The binary .ico stays out of git; see docs/building.md.
     set(RECOMP_APP_ICON "" CACHE FILEPATH "Optional .ico embedded as the runner icon")
-    if(RECOMP_APP_ICON)
+    if(WIN32 AND RECOMP_APP_ICON)
         file(TO_CMAKE_PATH "${RECOMP_APP_ICON}" app_icon)
         file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc"
             CONTENT "1 ICON \"${app_icon}\"\n")
@@ -525,14 +572,12 @@ if(RECOMP_PROGRAM_DIR)
     endif()
 endif()
 
-if(WIN32)
+if(WIN32 OR (RECOMP_DXVK_FOUND AND RECOMP_VKD3D_FOUND))
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
-    target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
-        d3d11 d3dcompiler dxgi user32)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         d3d_presenter_thread.cpp
@@ -541,31 +586,56 @@ if(WIN32)
         d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
-    target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
-        d3d11 d3dcompiler dxgi user32)
-    add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
-    add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
-    target_link_libraries(recomp_input_host_test PRIVATE user32)
-    recomp_use_sdl3(recomp_input_host_test)
+    foreach(target IN ITEMS recomp_d3d_presenter_d3d11_test recomp_d3d_presenter_thread_test)
+        if(WIN32)
+            target_link_libraries(${target} PRIVATE d3d11 d3dcompiler dxgi user32)
+        else()
+            target_sources(${target} PRIVATE d3d_shader_compile.cpp input_host_win32.c)
+            target_link_libraries(${target} PRIVATE PkgConfig::RECOMP_DXVK PkgConfig::RECOMP_VKD3D)
+            recomp_use_sdl3(${target})
+        endif()
+    endforeach()
 endif()
+
+if(WIN32)
+    add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
+else()
+    add_executable(recomp_audio_output_sdl_test audio_output_sdl_test.cpp)
+    recomp_use_sdl3(recomp_audio_output_sdl_test)
+endif()
+
+add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
+if(WIN32)
+    target_link_libraries(recomp_input_host_test PRIVATE user32)
+endif()
+recomp_use_sdl3(recomp_input_host_test)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
 
 add_executable(recomp_save_transaction_test
-    save_transaction.cpp save_transaction_test.cpp)
+    save_transaction.cpp save_transaction_test.cpp ${_recomp_host_file_sources})
 
 add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 
 add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
 
+add_executable(recomp_xbe_sha_test ../xbe/sha_test.cpp ../xbe/sha.cpp)
+if(WIN32)
+    target_link_libraries(recomp_xbe_sha_test PRIVATE bcrypt)
+endif()
+
 include(CTest)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
+add_test(NAME recomp-xbe-sha COMMAND recomp_xbe_sha_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
+endif()
+if(TARGET recomp_audio_output_sdl_test)
+    add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_sdl_test)
 endif()
 if(TARGET recomp_input_host_test)
     add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
@@ -618,20 +688,24 @@ if(TARGET recomp_d3d_presenter_d3d11_test)
         COMMAND recomp_d3d_presenter_thread_test)
 endif()
 
-if(MSVC)
+if(MSVC OR NOT WIN32)
     add_executable(recomp_stop_report_test
         stop_report_test.cpp stop_report.c host_diagnostics.cpp)
-    target_link_libraries(recomp_stop_report_test PRIVATE dbghelp)
+    if(WIN32)
+        target_link_libraries(recomp_stop_report_test PRIVATE dbghelp)
+    endif()
     set(_stop_report_check
         "${CMAKE_CURRENT_BINARY_DIR}/check-stop-report-$<CONFIG>.cmake")
     file(GENERATE OUTPUT "${_stop_report_check}" CONTENT [=[
+# The checks compare against quoted literals such as "error", which is also a variable name.
+cmake_policy(SET CMP0054 NEW)
 foreach(mode IN ITEMS normal mismatch expected-error error boundary handled crash)
     set(log "${CMAKE_CURRENT_LIST_DIR}/stop-report-${mode}.log")
     file(REMOVE "${log}")
     execute_process(COMMAND "$<TARGET_FILE:recomp_stop_report_test>" "${mode}" "${log}"
         RESULT_VARIABLE result ERROR_VARIABLE error TIMEOUT 10)
     if(mode STREQUAL "crash")
-        if(result STREQUAL "0" OR NOT error MATCHES "event=host-crash kind=unhandled-exception"
+        if(result STREQUAL "0" OR NOT error MATCHES "event=host-crash kind=unhandled-$<IF:$<PLATFORM_ID:Windows>,exception,signal>"
                 OR error MATCHES "event=runtime-stop" OR EXISTS "${log}")
             message(FATAL_ERROR "${mode}: exit=${result}, diagnostic=${error}")
         endif()
@@ -667,7 +741,8 @@ foreach(mode IN ITEMS normal mismatch expected-error error boundary handled cras
             endif()
         endforeach()
     endforeach()
-    if(mode STREQUAL "handled" AND "$<CONFIG>" STREQUAL "Debug"
+    if(mode STREQUAL "handled" AND "$<PLATFORM_ID>" STREQUAL "Windows"
+            AND "$<CONFIG>" STREQUAL "Debug"
             AND NOT error MATCHES "event=exception-observed terminal=unknown")
         message(FATAL_ERROR "handled exception observation missing: ${error}")
     endif()
@@ -677,5 +752,6 @@ endforeach()
         COMMAND "${CMAKE_COMMAND}" -P "${_stop_report_check}")
 endif()
 
-add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp)
+add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp
+    ${_recomp_host_file_sources})
 add_test(NAME recomp-runtime-controller-settings COMMAND recomp_controller_settings_test)

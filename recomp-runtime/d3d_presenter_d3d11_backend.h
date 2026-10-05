@@ -13,4 +13,9 @@ RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);
 void d3d11_backend_set_immediate_present(bool enabled);
 void d3d11_backend_report_draw_textures();
 
+#ifndef _WIN32
+/* Called on the window/render thread, including while the queue is idle. */
+RecompD3dPresenterError d3d11_backend_pump_events();
+#endif
+
 #endif
