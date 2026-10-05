@@ -108,9 +108,14 @@ static void scene_fiber(void)
     call(0x000a4e00u);
     for (;;) {
         set_byte(0x004d6fc0u, byte(0x005dece0u));
-        for (unsigned i = 0; i < 4; ++i) set_byte(0x004d704cu + i * 188u, 0);
+        /* Per-actor event bytes last one authored tick. Clearing them on a
+           held pass would hide an event raised this tick from owners whose
+           tick work falls on that pass. */
+        if (recomp_game_authored_pass())
+            for (unsigned i = 0; i < 4; ++i) set_byte(0x004d704cu + i * 188u, 0);
         next_frame();
         call(0x000a5030u);
+        recomp_game_tick_input_scene_copied();
         if (scalar(0x005ded50u) != scalar(0x005ded58u)) {
             const float speed = scalar(0x005decf0u) * scalar(0x005ded50u);
             set_scalar(0x005ded58u, scalar(0x005ded50u));
@@ -188,7 +193,11 @@ static void scenario_fiber(void)
     call(0x00097eb0u);
     for (;;) {
         next_frame();
-        if (whole_tick(&phase, steps)) scenario_tick();
+        if (whole_tick(&phase, steps)) {
+            const bool input = recomp_game_tick_scope_begin();
+            scenario_tick();
+            recomp_game_tick_scope_end(input);
+        }
     }
 }
 

@@ -3,6 +3,92 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## M4: menus and a served point at 120 Hz (2026-10-05)
+
+A scripted Exhibition route now reaches a real match at 120 Hz: title,
+Start, the menus, character selection, the match introduction, a serve and
+a full rally that ends in a point. Before this change the 120 Hz route ran
+the menus at double speed and missed menu inputs.
+
+The route uses poll-indexed inputs. Input polls happen once per authored
+tick at every rate, so both rates receive each press on the same game tick.
+Live host input stays disabled.
+
+Four owners changed:
+
+- **UI frame owner `0x0008A970`.** It still advanced once per present. Above
+  60 Hz it now runs only on the pass that polls input. Its draws are recorded
+  (`game_frame_replay.c`, through a draw observer in the draw adapter) and
+  resubmitted on held passes, so menus keep their authored speed and still
+  appear in every present.
+- **Tick scope for once-per-tick work.** Counted fiber sleeps in the
+  scheduler and the hand scenario tick run inside
+  `recomp_game_tick_scope_begin/end`. The scope multiplies the per-pass step
+  scalar `0x004D6FC4` back to a whole tick. On a held pass it also swaps in
+  the tick's input records (`0x005F3088`, 5 x 44 bytes) and the scene
+  fiber's copy (`0x004D9540`, 4 x 44 bytes). Each tick's input edges are
+  therefore seen exactly once, whichever pass the fiber resumes on.
+- **Clip end.** `game_actor.c` tests the clip end only at the start of a
+  tick. Testing it on every substep started the next clip one substep early.
+- **Per-actor event bytes.** `0x004D704C + 188 * actor` are cleared only on
+  the authored pass, so an event raised on either pass lasts its whole tick.
+
+At 60 Hz every pass is authored and none of these paths changes behavior.
+M1 and M2 hold on this tree. Equal-game-time captures against the 60 Hz
+reference differ in 0.00%, 0.01% and 0.36% of pixels by more than 8 at
+Swaps 300, 3000 and 5400. Two 120 s real-paced 120 Hz runs averaged
+120.0 fps (minimum 102 and 119 fps) and reached presents 6000 and 10800 at
+49.998/49.995 s and 89.995/89.995 s. The 60 Hz control on the same
+executable reached Swaps 3000 and 5400 at 50.184 and 90.206 s, so both runs
+are within -0.38% and -0.23%.
+
+The serve and rally were compared in game ticks from match start, with the
+ball position at `0x00416630`:
+
+| Measurement | 60 Hz | 120 Hz |
+| --- | --- | --- |
+| Toss peak | tick 621, height 4.64 | tick 621, height 4.64 |
+| Serve contacts | ticks 622-658, every 6 ticks | identical ticks; position within 0.004 |
+| Rally hit interval | 75-81 ticks | 70-77 ticks |
+| Rally ends (ball lands) | tick 1189 after six exchanges | tick 1156 after six exchanges |
+| Gravity per tick | -0.0027 | -0.00265 |
+
+Ball flight therefore runs at authored speed. The rally that follows differs
+in its random choices. Two 60 Hz runs with the same inputs also diverge
+later in the match, so the rally is compared by its timing, not its outcome.
+
+For audio, every DirectSound Play was logged with its present count and
+converted to game ticks. The title loop cue repeats every 240 ticks at both
+rates, within one tick. Menu and match cues that occur at both rates land on
+the same tick after boot, for example 4378, 4407, 4443, 4517, 4525, 5037, 5040 and 5050.
+Cue totals are similar across the match introduction: 17/24, 61/69 and
+69/56 in three consecutive windows. No cue type plays twice per tick. Sample
+playback stays on the wall clock.
+
+The opening movie was captured once per wall second at both rates with no
+Start press. The same movie scene appears at each capture index, and both
+runs end on the same close-up. The rates differ by at most about half a
+second at the logo fade, within the variation of startup timing. The movie
+and its audio follow the wall clock at both rates.
+
+The remaining match difference is the actor frame fiber `0x000B42B0`. Its
+two per-pass calls, `0x000B4380` and `0x000B4450`, run with the per-pass
+step and spawn effects that draw 8, 36 or 44 values from the shared
+`rand()` state. Each rate is deterministic over this window. Most bursts
+land on the same tick at both rates, but 120 Hz misses the bursts 29 and 32
+ticks after match start, adds one at 36, and moves the 8-value bursts later.
+The RNG state is identical before the first missed burst. A discrete spawn
+test evaluated on each substep is the likely mechanism; it has not been
+located. The changed random sequence then alters later AI and rally choices
+and which effect sounds play.
+
+`private/PlayHfr.cmd` launches the play-test build at 60, 120 or 240 Hz,
+or `off` for the default path. It is a local helper and is not tracked.
+
+These are agent smoke runs. They show that the route reaches the match and
+that the measured timings agree; they are not a user play test. Captures,
+traces and logs remain private.
+
 ## M3: 120 Hz throughput and smoothness (2026-10-05)
 
 A flat instruction sampler (thread suspension plus a linker map, so no

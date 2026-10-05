@@ -3,6 +3,7 @@
 #include "game_scheduler.h"
 
 static unsigned cooldown_phase[4];
+static unsigned clip_phase[8];
 static float pose_cursor_history[8][4];
 static unsigned pose_cursor_slot[8];
 static bool pose_cursor_ready[8];
@@ -65,12 +66,17 @@ static void layer_clock(void)
     const uint32_t work = 0x005e0688u + actor * 0x5cu;
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
     *recomp_memory_u32(0x005e4800u) = layer;
+    /* The authored tick tests the clip end before advancing a whole tick.
+       Testing it on every substep would start the next clip early. */
+    unsigned *phase = clip_phase + (actor * 2u + recomp_runtime.registers.eax) % 8u;
+    const bool tick_start = *phase == 0;
+    *phase = (*phase + 1u) % steps;
     if (byte(layer + 0x70u) == 0) {
         if (byte(layer + 0x78u) != 0) {
             set_byte(layer + 0x71u, 0);
             set_byte(layer + 0x78u, 0);
             set_byte(layer + 0x73u, 0);
-        } else if ((int32_t)word(layer + 0x38u) >= *recomp_memory_u16(layer + 0x64u)) {
+        } else if (tick_start && (int32_t)word(layer + 0x38u) >= *recomp_memory_u16(layer + 0x64u)) {
             set_byte(layer + 0x73u, 0);
         }
         if (byte(layer + 0x73u) == 1 || byte(layer + 0x71u) == 1) {
