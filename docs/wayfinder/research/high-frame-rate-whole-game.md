@@ -3,6 +3,63 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## M1 passed: parameterized fixed game clock (2026-10-05)
+
+`RECOMP_GAME_HZ=60`, `120`, or `240` selects the hand scheduler, scene/frame
+owners and input derivation. Guest pacing follows that setting unless the
+separate pacing-probe override is explicitly set. Converted sleep, script and
+input-repeat models receive the number of substeps per authored 60 Hz tick;
+continuous advancement uses the reciprocal tick length. There is no fixed
+half-step assumption. The default, unset path remains unchanged.
+
+M1's two consecutive 120 Hz runs passed both timing gates on one executable:
+
+| Run | 3000 / 6000 submissions, seconds | Difference | 5400 / 10800 submissions, seconds | Difference |
+| --- | ---: | ---: | ---: | ---: |
+| 60 Hz control | 50.271355 | reference | 90.281018 | reference |
+| 120 Hz A | 49.995329 | -0.549% | 89.994577 | -0.317% |
+| 120 Hz B | 49.995219 | -0.549% | 89.994466 | -0.317% |
+
+The control's Swap 5400 image was byte-identical to the preceding generated
+control. All three runs closed normally. Timing is the existing monotonic
+vblank-arrival probe, before its wait and render-worker submission; these are
+not physical scanout timestamps. Live host input was disabled, with only the
+scripted Start pulses at polls 6 and 8. Each timing run captured only its final
+checkpoint, avoiding a mid-run BMP readback stall. Settings were scale 4.5,
+MSAA 8, SMAA enabled and vsync. No tests or builds overlapped the gate runs.
+
+The earlier drift was processing lateness followed by discarded deadlines.
+In the failing profile, actor-frame work in slot 11 grew from about 1.1 seconds
+per 300 passes to 3.55 seconds, while input, scripts and camera work remained
+small. Render queue waits were near zero. Decomposing the complete actor draw
+owner `0x000B4450` localized the work to environment drawing, actor traversal
+and list submission; fence waits were absent. The existing pacer clamped every
+late deadline to the current time, permanently losing that elapsed interval.
+
+The opt-in high-rate game clock now retains scheduled deadlines after a late
+frame. It still executes and submits every tick; subsequent faster work can
+recover the elapsed-time deficit. The unchanged default presentation clock
+continues to discard lateness. A diagnostic run reached present 7500 late at
+63.850339 seconds, recovered by 8400 at 69.994239 seconds, and reached 10800 at
+89.996351 seconds. This is timing parity, **not uniform pacing or M3 acceptance**;
+processing overruns and catch-up bursts still require the later smoothness gate.
+
+The new hand actor draw owner preserves its inherited EBP at generated call
+boundaries. Generated D3D fence seams at `0x001E3870` and `0x001E39E0` remain,
+along with the documented SetTransform seam; wholesale library replacement
+remains open. Optional `RECOMP_GAME_TIMING_TRACE=1` reports main-loop, fiber and
+actor-draw costs for further investigation.
+
+All 19 CTest cases passed. The tools suite passed 21 tests with one skip,
+including authentication failure checks. Pure pacing tests cover transient
+late frames and retained/default deadline policies at all three rates; sleep
+and input-repeat duration tests also cover 60, 120 and 240 Hz. Raw profiles,
+paired receipts and captures remain private.
+
+M2 is next: poses and lighting still differ. This experimental mode has passed
+M1 only; it is not gameplay acceptance. The requested extra 240 Hz timing run
+will occur after M2 passes. The older sections below record preceding attempts.
+
 ## Input edge/repeat owner (2026-10-05)
 
 The opt-in hand scheduler now dispatches the complete input edge/repeat owner
