@@ -957,6 +957,15 @@ int recomp_d3d_render_state_model_test(void)
     passed &= expect_u32(
         "adapter reset count", model->normalize_normals_update_count, 0u);
 
+    {
+        /* Deferred parameters are float bits, including signed start values. */
+        const uint32_t words[] = {1, 3, 0xc1200000u, 0x42c80000u, 0x3f000000u, 1};
+        RecompD3dFogState fog;
+        recomp_d3d_fog_state(words, 0x7f123456u, &fog);
+        passed &= expect_u32("fog state decode", fog.enabled && fog.range &&
+            fog.mode == 3 && fog.color == 0x7f123456u &&
+            fog.start == -10.0f && fog.end == 100.0f && fog.density == 0.5f, 1);
+    }
     passed &= depth_state_test();
     passed &= stencil_state_test();
     passed &= texture_factor_selector_test();

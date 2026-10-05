@@ -92,6 +92,16 @@ void recomp_d3d_frame_adapter_reset(void)
     frame_device_address = 0u;
 }
 
+/* The window can close between frames, so any command may see CLOSED. */
+static void exit_if_window_closed(RecompD3dPresenterError error)
+{
+    if (error == RECOMP_D3D_PRESENTER_CLOSED) {
+        recomp_d3d_frame_adapter_reset();
+        fprintf(stderr, "recomp runner: window closed; exiting normally\n");
+        recomp_stop(0, "host-window-close");
+    }
+}
+
 RecompD3dPresenter *recomp_d3d_frame_adapter_presenter(void)
 {
     return presenter;
@@ -179,8 +189,10 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
             "d3d-reset:model:%u",
             (unsigned)result.error);
     }
+    recomp_d3d_draw_adapter_capture_command(&result.command);
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
+    exit_if_window_closed(presenter_error);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         recomp_stop(
             2,
@@ -213,8 +225,10 @@ void recomp_d3d_clear_adapter(void)
     if (!recomp_d3d_frame_adapter_target(&result.command.data.clear.target)) {
         recomp_stop(2, "d3d-clear:render-target");
     }
+    recomp_d3d_draw_adapter_capture_command(&result.command);
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
+    exit_if_window_closed(presenter_error);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
@@ -353,15 +367,12 @@ void recomp_d3d_swap_adapter(void)
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
     recomp_d3d_wait_vblank();
+    recomp_d3d_draw_adapter_capture_command(&result.command);
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(
         result.command.data.present.swap_counter, (uint32_t)presenter_error);
-    if (presenter_error == RECOMP_D3D_PRESENTER_CLOSED) {
-        recomp_d3d_frame_adapter_reset();
-        fprintf(stderr, "recomp runner: window closed; exiting normally\n");
-        recomp_stop(0, "host-window-close");
-    }
+    exit_if_window_closed(presenter_error);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
@@ -1389,7 +1400,9 @@ static void set_gamma_ramp(void)
     }
     command.type = RECOMP_D3D_PRESENTER_COMMAND_GAMMA;
     memcpy(command.data.gamma, ramp, sizeof command.data.gamma);
+    recomp_d3d_draw_adapter_capture_command(&command);
     error = recomp_d3d_presenter_submit(presenter, &command);
+    exit_if_window_closed(error);
     if (error != RECOMP_D3D_PRESENTER_OK) {
         recomp_stop(2, "d3d-gamma:presenter:%u", (unsigned)error);
     }

@@ -258,6 +258,31 @@ static bool texture_desc_equal(
         a->pitch == b->pitch;
 }
 
+uint32_t recomp_d3d_texture_mip_span(const RecompD3dTextureDesc *desc)
+{
+    uint32_t bytes_per_pixel, levels, max_levels = 1u, dimension, i;
+    uint64_t total = 0u;
+    if (desc == NULL || desc->linear || desc->depth ||
+        !is_power_of_two(desc->width) || !is_power_of_two(desc->height)) return 0u;
+    switch (desc->format_byte) {
+    case RECOMP_D3D_TEXTURE_FORMAT_P8:
+    case RECOMP_D3D_TEXTURE_FORMAT_A8: bytes_per_pixel = 1u; break;
+    case RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8: bytes_per_pixel = 4u; break;
+    default: return recomp_d3d_texture_compressed_mip_span(desc);
+    }
+    if (desc->bits_per_pixel != bytes_per_pixel * 8u) return 0u;
+    levels = desc->mip_levels ? desc->mip_levels : 1u;
+    dimension = desc->width > desc->height ? desc->width : desc->height;
+    while (dimension > 1u) { dimension >>= 1u; ++max_levels; }
+    if (levels > max_levels) return 0u;
+    for (i = 0u; i < levels; ++i) {
+        uint32_t w = desc->width >> i, h = desc->height >> i;
+        total += (uint64_t)(w ? w : 1u) * (h ? h : 1u) * bytes_per_pixel;
+        if (total > UINT32_MAX) return 0u;
+    }
+    return (uint32_t)total;
+}
+
 void recomp_d3d_texture_census_record(
     RecompD3dTextureCensus *census,
     const RecompD3dTextureDesc *desc,

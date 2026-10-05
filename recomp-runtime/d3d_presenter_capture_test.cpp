@@ -26,6 +26,7 @@ int main()
     std::array<std::vector<uint8_t>, 7> sources;
     RecompD3dPresenterCommand input{};
     input.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    input.capture_frame = 17u; input.capture_call = 3u;
     auto &draw = input.data.draw;
     draw.vertex_count = 3u;
     draw.vertex_stride = 11u;
@@ -67,6 +68,8 @@ int main()
     CHECK(packet.record(2).kind == D3dCapturePacket::RELEASE);
     CHECK(packet.record(2).base == 0x123000u && packet.record(2).size == 0x456u);
     for (size_t record = 0u; record < 2u; ++record) {
+        CHECK(packet.command(record).capture_frame == 17u);
+        CHECK(packet.command(record).capture_call == 3u);
         const auto &captured = packet.command(record).data.draw;
         CHECK(reinterpret_cast<uintptr_t>(&packet.command(record)) % 8u == 0u);
         for (size_t i = 0u; i < sources.size(); ++i) {
@@ -162,10 +165,18 @@ int main()
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     value = {};
     value.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    value.capture_frame = 18u; value.capture_call = 9u;
     value.data.draw.texture.format_byte = value.data.draw.alpha_mask.format_byte =
         value.data.draw.reflection_texture.format_byte = 0x12u;
     for (size_t i = 0u; i < sources.size(); ++i) value.data.draw.*fields[i] = sources[i].data();
+    value.data.draw.directional.world_transforms[3][14] = 12.0f;
+    value.data.draw.directional.positions[7][2] = 30.0f;
+    value.data.draw.directional.positions[7][3] = 1.0f;
+    value.data.draw.directional.attenuation[7][1] = 0.05f;
+    value.data.draw.directional.attenuation[7][3] = 100.0f;
+    const auto lighting = value.data.draw.directional;
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
+    value.data.draw.directional = {};
     value.data.draw.texture.format_byte = 0u; // swizzled: borrowed from guest RAM
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     for (auto field : fields) value.data.draw.*field = nullptr;
@@ -173,6 +184,8 @@ int main()
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     packet.seal();
     CHECK(packet.count() == 8u);
+    CHECK(packet.command(5).capture_frame == 18u);
+    CHECK(packet.command(5).capture_call == 9u);
     CHECK(packet.command(0).data.clear.color == 0xabcdef12u);
     CHECK(packet.command(0).data.clear.z == 0.5f);
     CHECK(packet.record(1).kind == D3dCapturePacket::REPORT);
@@ -186,6 +199,7 @@ int main()
         CHECK(packet.command(5).data.draw.*fields[i] != sources[i].data());
         CHECK(packet.command(7).data.draw.*fields[i] == nullptr);
     }
+    CHECK(std::memcmp(&packet.command(5).data.draw.directional, &lighting, sizeof lighting) == 0);
     CHECK(packet.command(6).data.draw.texture_bytes == sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
     std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");

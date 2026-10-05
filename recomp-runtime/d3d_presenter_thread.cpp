@@ -1,4 +1,5 @@
 #include "d3d_presenter_capture.h"
+#include "d3d_frame_capture.h"
 #include "d3d_presenter_d3d11_backend.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -103,6 +104,16 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                 const auto &command = packet.command(i);
                 draw = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
                 error = d3d11_backend_submit(backend, &command);
+                if (command.capture_frame && !draw) {
+                    char path[1024];
+                    if (recomp_d3d_capture_path(path, sizeof path, command.capture_frame, "host.jsonl")) {
+                        if (FILE *file = std::fopen(path, "ab")) {
+                            std::fprintf(file, "{\"call\":%u,\"type\":%u,\"error\":%u}\n",
+                                command.capture_call, command.type, error);
+                            std::fclose(file);
+                        }
+                    }
+                }
                 break;
             }
             case D3dCapturePacket::RELEASE:
