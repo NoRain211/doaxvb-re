@@ -140,9 +140,8 @@ static void call_one(uint32_t address, uint32_t argument)
     call(address);
 }
 
-uint32_t recomp_game_debug_rng_state(void)
+uint32_t recomp_game_rng_address(void)
 {
-    if (!trace_rng) return 0;
     const uint32_t thread = *recomp_memory_u32(0x28u);
     uint32_t pointer = 0x00eeb28cu;
     if (*recomp_memory_u32(thread + 0x28u)) {
@@ -151,7 +150,14 @@ uint32_t recomp_game_debug_rng_state(void)
         pointer = *recomp_memory_u32(tls + index * 4) + 0x1c;
     }
     const uint32_t data = *recomp_memory_u32(pointer);
-    return data ? *recomp_memory_u32(data + 0x14) : 0;
+    return data ? data + 0x14 : 0;
+}
+
+uint32_t recomp_game_debug_rng_state(void)
+{
+    if (!trace_rng) return 0;
+    const uint32_t address = recomp_game_rng_address();
+    return address ? *recomp_memory_u32(address) : 0;
 }
 
 void recomp_game_scheduler_tick(void)
