@@ -30,6 +30,7 @@ public:
     void clear();
     // Copied commands, records and aligned payload bytes, excluding capacity.
     uint64_t bytes() const;
+    double published_ms = 0;
     bool hasPoseReplay() const { return pose_replay_; }
 
 private:
@@ -57,7 +58,7 @@ private:
     struct CapturedCommand {
         CapturedCommand() {} // Skip zeroing: add() writes every field it uses.
         alignas(8) RecompD3dPresenterCommand value;
-        size_t offsets[9];
+        size_t offsets[10];
     };
     struct Span { size_t size; size_t offset; };
 

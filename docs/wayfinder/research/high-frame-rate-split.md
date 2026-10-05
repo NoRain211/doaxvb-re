@@ -748,3 +748,70 @@ captures retain the images and numeric checks. Twenty CTest checks and the
 full tools suite passed; public export verification passed. These are bounded
 agent smoke observations, not user gameplay acceptance. M3 and M4 remain open;
 `RECOMP_SPLIT_RATE` is not enabled by this milestone.
+
+
+## M3: numeric split-rate presentation
+
+`RECOMP_SPLIT_RATE=120` enables a target present rate while gameplay keeps its
+ordinary 60 Hz clock. Other numeric rates from 60 through 1000 are accepted,
+including 100, 144, 240 and fractional rates. Missing, zero or invalid values
+disable it; the old proposed boolean value `1` does not enable this mode.
+Do not combine it with the separate whole-game high-rate setting.
+
+The worker owns the completed packet, clip-channel endpoints, skeleton tables,
+actor targets, palette recipes, seam inputs and camera endpoints. It samples
+the actual elapsed fraction of the 60 Hz interval at each present, clamped to
+[0,1). There is no midpoint or double-rate assumption in evaluation. Presentation
+has one tick of visual delay. Gameplay root motion, events, collision, IK target
+updates and secondary simulation continue at 60 Hz; only visual root position,
+heading and the sampled pose are evaluated between endpoints. The plain
+`recomp_animation_visual_sample` model has no guest memory or dispatch access.
+
+All tagged actors use the native solver and regenerate their joint seam vertices.
+Camera eye/target, roll and projection inputs are interpolated, not extrapolated.
+Camera history is invalidated on nonconsecutive ticks or changed mode flags.
+The native camera model preserves the steep-view quantized heading branch and
+approximate rotation arithmetic. An offline comparison of 10,001 camera cases
+had maximum matrix error below 0.00000191. The main ball position and wrapped
+rotation angles are interpolated; its ground shadow follows position. Historical
+trail draws remain at their ordinary tick. Explicit object provenance plus an
+endpoint WORLD match distinguishes the current ball from shared trail meshes.
+The two captured ball endpoints matched the original WORLD matrices bit-for-bit.
+HUD and screen-space draws are replayed once per present without pose transforms.
+
+Longer runs exposed a nearly straight arm whose small normalization differences
+amplified the IK bend angle. Packed offset transforms, packed rotations and the
+original reciprocal-square-root refinement now preserve the relevant rounding.
+The failing pose's maximum bone error fell from 0.0001367 to 0.00000218; the
+previous 480-pose integer comparison now has maximum error below 0.00000335.
+A synthetic near-straight-arm regression covers this independently of private
+capture data. Runtime palette and camera comparisons still stop on a mismatch;
+tolerances were not relaxed.
+
+A capture-free 120-second measurement at 3840 by 2160, MSAA 8 and SMAA recorded
+14,399 presents: 119.992 fps, with 120 fps median one-second samples and
+8.334 ms mean reported frame time. Gameplay capture remained 60 Hz. This is
+within one present of the requested count, not a claim of zero scheduling jitter:
+the longest interval was 20.3 ms and the slowest one-second sample was 118 fps.
+The earlier scheduler lost 31 presents by discarding deadlines just before late
+packet publication; retaining those due deadlines removed that systematic loss.
+The complete 150-second smoke exited normally with zero backend draw declines.
+
+Two additional 60-second runs measured the same attract route. After a 20-second
+warm-up, scale 2 with MSAA off and SMAA (1707 by 960) measured 239.949 fps and
+4.168 ms per present. At 3840 by 2160 with MSAA 8 and SMAA, the measurement was
+239.872 fps and 4.169 ms per present. Their longest intervals were 13.8 and
+16.4 ms. These are observed host results, not universal 240 Hz guarantees.
+Host input was disabled for every timing run.
+
+Consecutive match captures contain motion on every pair, including odd presents;
+the nine compared pairs changed 5.88-5.99 million RGB pixels. Camera and ball
+motion are visible, and the inspected HUD remains single and stable. The tested
+arms and attachments remain coherent. Screenshots and detailed pacing logs stay
+private. Twenty-one CTest checks and the full tools suite cover the new path.
+
+Limits: secondary geometry remains frozen at its captured simulation tick;
+optional seam link streams still stop explicitly if encountered. General teleport,
+rig-topology and scene-cut coverage beyond the observed route remains unproven.
+The measurements are agent smoke results, not user gameplay acceptance. M4's
+controlled-input match and 300-present inspection are the remaining play-test gate.

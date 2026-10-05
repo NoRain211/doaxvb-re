@@ -1,4 +1,5 @@
 #include "animation_probe.h"
+#include "animation_split_adapter.h"
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "animation_skeleton.h"
@@ -40,6 +41,7 @@ typedef struct PoseCapture {
 } PoseCapture;
 
 static RecompBoneMatrix solved_bones[4][32];
+static PoseCapture split_captures[4];
 static uint32_t solved_frame[4];
 static bool solved_valid[4];
 static PoseCapture experiment_previous;
@@ -278,6 +280,7 @@ static void prepare_experiment(const PoseCapture *current)
 
 static void note(unsigned entry)
 {
+    if (recomp_animation_split_enabled() && !experiment_frame() && !getenv("RECOMP_ANIMATION_DISPATCH_TRACE")) return;
     static uint32_t frame = UINT32_MAX;
     static uint32_t counts[6];
     uint32_t current = recomp_d3d_frame_adapter_swap_counter();
@@ -311,8 +314,9 @@ static void build_palette(void)
     bool actor_bank = bank >= 0x004d3650u && actor < 4u && (bank-0x004d3650u)%0x800u == 0;
     bool experiment = frame == experiment_frame() && experiment_ready &&
         actor_bank && actor == experiment_actor();
+    bool split = recomp_animation_split_enabled() && actor_bank;
     note(3);
-    if (verify || experiment) {
+    if (verify || experiment || split) {
         uint32_t objects = *recomp_memory_u32(*recomp_ebp_register()-4u);
         unsigned ordinal = *(const uint8_t *)recomp_memory_i8(recomp_runtime.registers.esi);
         object = *recomp_memory_u32(objects+ordinal*4u);
@@ -330,7 +334,7 @@ static void build_palette(void)
         }
     }
     sub_000636D0();
-    if (verify || experiment) {
+    if (verify || experiment || split) {
         RecompBoneMatrix actual[4], native[4];
         recomp_guest_load(actual, 0x00b25840u, output_count*sizeof *actual);
         float recipe_error = matrix_error(expected, actual, output_count);
@@ -340,9 +344,29 @@ static void build_palette(void)
                 offsets, 24, &initial, native, &scratch)) recomp_stop(1, "animation:solved-palette-recipe");
             pose_error = matrix_error(native, actual, output_count);
         }
-        fprintf(stderr, "recomp animation palette: frame=%u recipe=%u count=%u actor=%u recipe_error=%.9g pose_error=%.9g\n",
+        if (!split || verify) fprintf(stderr, "recomp animation palette: frame=%u recipe=%u count=%u actor=%u recipe_error=%.9g pose_error=%.9g\n",
             frame, recipe_id, output_count, actor_bank ? actor : UINT32_MAX, recipe_error, pose_error);
-        if (recipe_error > 1e-5f || pose_error > 1e-4f) recomp_stop(1, "animation:palette-mismatch");
+        if (recipe_error > 1e-5f || pose_error > 1e-4f) {
+            fprintf(stderr, "recomp animation palette mismatch: frame=%u actor=%u recipe=%u recipe_error=%.9g pose_error=%.9g\n",
+                frame, actor, recipe_id, recipe_error, pose_error);
+            const char *failure = getenv("RECOMP_SPLIT_FAILURE");
+            if (failure && actor < 4) {
+                FILE *file = fopen(failure, "wb");
+                if (file) {
+                    fwrite(split_captures+actor, sizeof split_captures[0], 1, file);
+                    RecompBoneMatrix current_bones[32];
+                    recomp_guest_load(current_bones, bank, sizeof current_bones);
+                    fwrite(current_bones, sizeof current_bones, 1, file);
+                    fwrite(recipe, sizeof recipe, 1, file);
+                    fwrite(offsets, sizeof offsets, 1, file);
+                    fwrite(&initial, sizeof initial, 1, file);
+                    fwrite(actual, output_count*sizeof *actual, 1, file);
+                    fclose(file);
+                }
+            }
+            recomp_stop(1, "animation:palette-mismatch");
+        }
+        if (split) recomp_animation_split_palette(actor, frame, object, output_count, recipe, offsets, &initial, actual);
         if (experiment) {
             RecompD3dPoseReplay *replay = &experiment_binding.replay;
             memset(replay, 0, sizeof *replay);
@@ -360,10 +384,16 @@ static void build_palette(void)
         }
     }
 }
-static void build_camera(void) { note(5); sub_00023B10(); }
+static void build_camera(void)
+{
+    uint32_t address = recomp_runtime.registers.eax;
+    note(5); sub_00023B10();
+    recomp_animation_split_camera(address);
+}
 
 static void bind_rigid_pose(void)
 {
+    recomp_animation_split_rigid();
     if (!experiment_ready || recomp_d3d_frame_adapter_swap_counter() != experiment_frame()) return;
     uint32_t context = recomp_runtime.registers.ebx;
     uint32_t caller = *recomp_ebp_register();
@@ -409,7 +439,7 @@ static void build_skeleton(void)
     bool experiment_capture = experiment > 0 && actor == experiment_actor() &&
         (frame == experiment || frame+1 == experiment);
     uint32_t state_frame = state_capture_frame();
-    bool record = actor < 4u && (experiment_capture ||
+    bool record = actor < 4u && (recomp_animation_split_enabled() || experiment_capture ||
         (state_frame && (frame == state_frame || frame+1 == state_frame)) ||
         ((prefix != NULL || verify) && frame >= 1900u && frame < 2020u));
 
@@ -447,13 +477,26 @@ static void build_skeleton(void)
         bool solved = solve_capture(&capture);
         float error = solved ? matrix_error(capture.solved,
             (const RecompBoneMatrix *)(const void *)capture.bones_after, 32) : INFINITY;
-        fprintf(stderr, "recomp animation skeleton: frame=%u actor=%u solved=%u error=%.9g look=%.9g morph=%.9g,%.9g terrain=%.9g,%.9g\n",
+        if (!recomp_animation_split_enabled() || verify) fprintf(stderr, "recomp animation skeleton: frame=%u actor=%u solved=%u error=%.9g look=%.9g morph=%.9g,%.9g terrain=%.9g,%.9g\n",
             frame, actor, solved, error, capture.targets.look_weight, capture.targets.upper_morph,
             capture.targets.lower_morph, capture.targets.hip_height, capture.targets.neck_height);
         solved_valid[actor] = solved;
         solved_frame[actor] = frame;
         if (solved) memcpy(solved_bones[actor], capture.solved, sizeof capture.solved);
         if (solved) prepare_experiment(&capture);
+        if (solved && recomp_animation_split_enabled()) {
+            split_captures[actor] = capture;
+            RecompVisualPose visual = {0};
+            memcpy(visual.tables.offsets, capture.offsets, sizeof capture.offsets);
+            memcpy(visual.tables.alternate_offsets, capture.alternate_offsets, sizeof capture.alternate_offsets);
+            memcpy(visual.tables.limbs, capture.limbs, sizeof capture.limbs);
+            recomp_guest_load(visual.groups, 0x002cfb70u, sizeof visual.groups);
+            memcpy(visual.channels, capture.pose_before, sizeof visual.channels[0]);
+            visual.targets[0] = capture.targets;
+            memcpy(visual.endpoints[0], capture.solved, sizeof capture.solved);
+            recomp_animation_split_capture(actor, frame, &visual);
+        }
+
         if (prefix != NULL) {
             int length = snprintf(path, sizeof path, "%s-%u-%u.bin", prefix, frame, actor);
             if (length < 0 || (size_t)length >= sizeof path) recomp_stop(1, "animation:capture-path");
@@ -633,6 +676,16 @@ void *recomp_animation_probe_pose_vertices(const struct RecompD3dPresenterDrawCo
 #endif
 }
 
+unsigned recomp_animation_probe_object_bone(uint32_t object, unsigned actor, uint32_t *record)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    *record = seam_record(object, actor);
+    return *record ? *(const uint8_t *)recomp_memory_i8(*record+12) : attachment_bone(object, actor);
+#else
+    (void)object; (void)actor; *record = 0; return UINT32_MAX;
+#endif
+}
+
 RecompFunction recomp_animation_probe_lookup_manual(uint32_t address)
 {
 #ifdef RECOMP_FULL_PROGRAM
@@ -640,12 +693,12 @@ RecompFunction recomp_animation_probe_lookup_manual(uint32_t address)
     /* Temporary SDK draw-library seam: observe the game's indirect callback
        provenance, then execute the original once. Library replacement remains
        open; the plain pose/palette models do not depend on these callbacks. */
-    case 0x0017d520u: return experiment_frame() ? draw_rigid : NULL;
-    case 0x0017d670u: return experiment_frame() ? draw_object : NULL;
+    case 0x0017d520u: return (experiment_frame() || recomp_animation_split_enabled()) ? draw_rigid : NULL;
+    case 0x0017d670u: return (experiment_frame() || recomp_animation_split_enabled()) ? draw_object : NULL;
     case 0x000af050u: case 0x000aeef0u: case 0x000af5c0u:
     case 0x000636d0u: case 0x000b01e0u: case 0x00023b10u:
         if (getenv("RECOMP_ANIMATION_DISPATCH_TRACE") == NULL &&
-            getenv("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0) return NULL;
+            getenv("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0 && !recomp_animation_split_enabled()) return NULL;
         break;
     default: return NULL;
     }

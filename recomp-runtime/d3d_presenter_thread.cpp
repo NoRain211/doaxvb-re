@@ -1,6 +1,7 @@
 #include "d3d_presenter_capture.h"
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_pose_replay.h"
+#include "d3d_split_pose.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -28,6 +29,7 @@ struct PresenterThread {
     std::mutex mutex;
     std::condition_variable changed;
     HANDLE wake = nullptr;
+    HANDLE split_timer = nullptr;
     D3dCapturePacket packets[3];
     unsigned open = 0;
     unsigned front = 0;
@@ -41,12 +43,15 @@ struct PresenterThread {
     uint32_t verify_at = 0, verify_count = 0, capture_frame = 0;
     // RECOMP_PERF_COUNTER pacing on the game side, reported once per second.
     bool pacing = false;
+    double split_rate = 0, split_next = 0;
+    uint32_t split_first_frame = 0;
     double last_frame_ms = 0.0;
     double frame_max_ms = 0.0;
-    double queue_wait_ms = 0.0;
+    double queue_wait_ms = 0.0, seal_ms = 0.0, add_ms = 0.0, status_ms = 0.0;
+    unsigned captured_frames = 0;
     ULONGLONG pacing_start = 0u;
 
-    ~PresenterThread() { if (wake != nullptr) CloseHandle(wake); }
+    ~PresenterThread() { if (wake != nullptr) CloseHandle(wake); if (split_timer != nullptr) CloseHandle(split_timer); }
 };
 
 PresenterThread *active_thread;
@@ -94,8 +99,11 @@ void pump(PresenterThread &thread)
 }
 
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
-    const D3dCapturePacket &packet, int phase = -1)
+    const D3dCapturePacket &packet, int phase = -1, float fraction = -1)
 {
+    RecompBoneMatrix sampled[4][32];
+    bool sampled_valid[4] = {};
+    std::vector<uint8_t> vertex_scratch;
     unsigned replay_vertices = 0, visible_vertices = 0;
     float transform_delta = 0;
     for (size_t i = 0; i < packet.count(); ++i) {
@@ -108,7 +116,29 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
             case D3dCapturePacket::COMMAND: {
                 const auto &command = packet.command(i);
                 draw = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
-                if (phase >= 0 && draw && command.data.draw.pose_replay != nullptr) {
+                if (fraction >= 0 && draw && command.data.draw.split_pose) {
+                    const auto *split = static_cast<const RecompSplitDraw *>(command.data.draw.split_pose);
+                    const RecompBoneMatrix *bones = nullptr;
+                    if (split->pose) {
+                        if (split->actor >= 4) { fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return; }
+                        if (!sampled_valid[split->actor]) {
+                            if (!recomp_animation_visual_sample(&split->visual, fraction, sampled[split->actor])) {
+                                fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return;
+                            }
+                            sampled_valid[split->actor] = true;
+                        }
+                        bones = sampled[split->actor];
+                    }
+                    if (split->seam) vertex_scratch.resize(
+                        size_t(command.data.draw.vertex_count)*command.data.draw.vertex_stride);
+                    RecompD3dPresenterCommand replay;
+                    replay.type = command.type;
+                    if (!recomp_d3d_split_draw(&command.data.draw, fraction, bones,
+                        vertex_scratch.data(), &replay.data.draw)) {
+                        fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return;
+                    }
+                    error = d3d11_backend_submit(backend, &replay);
+                } else if (phase >= 0 && draw && command.data.draw.pose_replay != nullptr) {
                     RecompD3dPresenterCommand replay;
                     replay.type = command.type;
                     if (!recomp_d3d_pose_replay_draw(&command.data.draw,
@@ -164,6 +194,8 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
         phase, replay_vertices, visible_vertices, transform_delta);
 }
 
+double clock_ms();
+
 void run(PresenterThread &thread, RecompD3dPresenterConfig config)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -185,6 +217,8 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
     thread.changed.notify_all();
     if (created != RECOMP_D3D_PRESENTER_OK) return;
 
+    double render_start = clock_ms(), render_work = 0;
+    unsigned render_packets = 0, render_presents = 0;
     for (;;) {
         pump(thread);
         D3dCapturePacket *packet = nullptr;
@@ -208,7 +242,47 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 packet->command(i).type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT)
                 frame = packet->command(i).data.present.swap_counter;
         }
-        if (thread.verify_at && frame >= thread.verify_at && frame-thread.verify_at < thread.verify_count) {
+        if (thread.split_rate && frame) {
+            constexpr double tick_ms = 1000.0/60.0;
+            if (!thread.split_first_frame) {
+                thread.split_first_frame = frame;
+                thread.split_next = clock_ms();
+            }
+            double start = packet->published_ms;
+            double now = clock_ms();
+            if (start+tick_ms <= now) start = now;
+            double end = start+tick_ms;
+            // A slightly late producer must not discard an otherwise due present.
+            // Only abandon the clock after a full simulation interval was missed.
+            if (thread.split_next+tick_ms < now) thread.split_next = now;
+            bool presented = false;
+            while (thread.split_next < end && status(thread) == RECOMP_D3D_PRESENTER_OK) {
+                for (;;) {
+                    double remaining = thread.split_next-clock_ms();
+                    if (remaining <= 0) break;
+                    pump(thread);
+                    if (status(thread) != RECOMP_D3D_PRESENTER_OK) break;
+                    if (remaining > 0.5 && thread.split_timer) {
+                        LARGE_INTEGER due{};
+                        due.QuadPart = -static_cast<LONGLONG>((remaining-0.5)*10000.0);
+                        if (SetWaitableTimer(thread.split_timer, &due, 0, nullptr, nullptr, FALSE))
+                            WaitForSingleObject(thread.split_timer, INFINITE);
+                    } else YieldProcessor();
+                }
+                double elapsed = (clock_ms()-start)/tick_ms;
+                float fraction = static_cast<float>((std::max)(0.0, (std::min)(elapsed, 0.999999)));
+                double draw_start = clock_ms();
+                execute(thread, backend, *packet, -1, fraction);
+                render_work += clock_ms()-draw_start; ++render_presents;
+                presented = true;
+                thread.split_next += 1000.0/thread.split_rate;
+                // Do not submit bursts of expired presents when the GPU is late.
+                double now = clock_ms();
+                if (thread.split_next+1000.0/thread.split_rate < now)
+                    thread.split_next = now;
+            }
+            if (!presented && released) execute(thread, backend, *packet);
+        } else if (thread.verify_at && frame >= thread.verify_at && frame-thread.verify_at < thread.verify_count) {
             if (released || packet->hasPoseReplay()) {
                 std::fprintf(stderr, "recomp replay identity: frame=%u rejected=packet-kind\n", frame);
                 fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
@@ -239,6 +313,16 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 execute(thread, backend, *packet, phase);
             }
         } else execute(thread, backend, *packet);
+        if (thread.split_rate && thread.pacing) {
+            ++render_packets;
+            double now = clock_ms();
+            if (now-render_start >= 1000) {
+                std::fprintf(stderr, "recomp split workload: packets=%u presents=%u draw_ms=%.3f last_packet_bytes=%llu\n",
+                    render_packets, render_presents, render_presents ? render_work/render_presents : 0,
+                    static_cast<unsigned long long>(packet->bytes()));
+                render_packets = render_presents = 0; render_work = 0; render_start = now;
+            }
+        }
         packet->clear();
         {
             std::lock_guard<std::mutex> lock(thread.mutex);
@@ -262,6 +346,7 @@ double clock_ms()
    cannot keep up (queue_wait_ms high). */
 void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_ms)
 {
+    ++thread.captured_frames;
     if (thread.last_frame_ms != 0.0) {
         thread.frame_max_ms = (std::max)(thread.frame_max_ms, wait_start_ms - thread.last_frame_ms);
     }
@@ -270,11 +355,13 @@ void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_m
     const ULONGLONG now = GetTickCount64();
     if (thread.pacing_start == 0u) thread.pacing_start = now;
     if (now - thread.pacing_start < 1000u) return;
-    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f\n",
-        static_cast<unsigned long long>(now), thread.frame_max_ms, thread.queue_wait_ms);
+    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f capture_fps=%.2f seal_ms=%.3f add_ms=%.3f status_ms=%.3f\n",
+        static_cast<unsigned long long>(now), thread.frame_max_ms, thread.queue_wait_ms,
+        thread.captured_frames*1000.0/(now-thread.pacing_start), thread.seal_ms/thread.captured_frames, thread.add_ms/thread.captured_frames, thread.status_ms/thread.captured_frames);
     thread.pacing_start = now;
     thread.frame_max_ms = 0.0;
     thread.queue_wait_ms = 0.0;
+    thread.seal_ms = thread.add_ms = thread.status_ms = 0.0; thread.captured_frames = 0;
 }
 
 RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
@@ -291,7 +378,10 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
         auto &packet = thread.packets[thread.open];
         bool verify = thread.verify_at && thread.capture_frame >= thread.verify_at &&
             thread.capture_frame-thread.verify_at < thread.verify_count;
-        packet.seal(packet.hasPoseReplay() || verify);
+        double seal_start = clock_ms();
+        packet.seal(packet.hasPoseReplay() || verify || thread.split_rate != 0);
+        thread.seal_ms += clock_ms()-seal_start;
+        packet.published_ms = clock_ms();
     } catch (const std::bad_alloc &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     } catch (const std::length_error &) {
@@ -321,6 +411,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     std::unique_ptr<PresenterThread> thread;
     try {
         thread = std::make_unique<PresenterThread>();
+        thread->split_rate = recomp_split_rate(std::getenv("RECOMP_SPLIT_RATE"));
+        if (thread->split_rate) thread->split_timer = CreateWaitableTimerExW(nullptr, nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+        if (thread->split_rate) std::fprintf(stderr, "recomp split rate: target=%.6g gameplay=60 visual_delay_ticks=1\n", thread->split_rate);
         if (const char *at = std::getenv("RECOMP_REPLAY_VERIFY_AT")) {
             thread->verify_at = static_cast<uint32_t>(std::strtoul(at, nullptr, 10));
             thread->verify_count = 120;
@@ -354,12 +448,16 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     auto error = validate(presenter);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     auto &thread = *active_thread;
+    double status_start = thread.pacing ? clock_ms() : 0;
     error = status(thread);
+    if (thread.pacing) thread.status_ms += clock_ms()-status_start;
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     if (command == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT)
         thread.capture_frame = command->data.present.swap_counter;
+    double add_start = thread.pacing ? clock_ms() : 0;
     error = thread.packets[thread.open].add(*command);
+    if (thread.pacing) thread.add_ms += clock_ms()-add_start;
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     return command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT
         ? publish(thread, false) : RECOMP_D3D_PRESENTER_OK;

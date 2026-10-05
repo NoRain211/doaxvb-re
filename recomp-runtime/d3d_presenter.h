@@ -158,6 +158,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     const void *pose_replay;
     /* Optional contiguous diagnostic vertex samples, owned with the packet. */
     const void *pose_vertex_bytes;
+    /* Immutable RecompSplitDraw followed by optional seam vertex inputs. */
+    const void *split_pose;
+    uint32_t split_pose_size;
 } RecompD3dPresenterDrawCommand;
 
 typedef struct RecompD3dPresenterCommand {

@@ -4,6 +4,7 @@
 #include "d3d_frame_adapter.h"
 #include "d3d_texture_adapter.h"
 #include "d3d_pose_replay.h"
+#include "animation_split_adapter.h"
 #include "animation_probe.h"
 
 #include <inttypes.h>
@@ -1418,7 +1419,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     RecompD3dDrawResult result;
     RecompD3dPresenterCommand command = {0};
     RecompD3dPoseReplay pose_replay;
-    void *pose_vertices = NULL;
+    void *pose_vertices = NULL, *split_pose = NULL;
     const uint8_t *index_bytes;
     const uint8_t *vertex_bytes;
     uint32_t vertex_span;
@@ -1909,20 +1910,29 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "render-target";
         goto finished;
     }
-    if (command.data.draw.program_count == 0 && (getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
+    bool split_enabled = recomp_animation_split_enabled();
+    if (command.data.draw.program_count == 0 && (split_enabled || getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
         getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL)) {
         float worlds[4][16];
         unsigned count = command.data.draw.blend_weight_count+1;
         bool readable = count <= 4;
         for (unsigned i = 0; readable && i < count; ++i)
             readable = read_transform(device, D3D_TRANSFORM_WORLD+i, worlds[i]);
-        if (readable) recomp_animation_probe_capture_vertices(&command.data.draw, worlds, count);
-        if (readable && recomp_animation_probe_pose_replay(worlds, count, &pose_replay) &&
+        if (!split_enabled && readable) recomp_animation_probe_capture_vertices(&command.data.draw, worlds, count);
+        if (!split_enabled && readable && recomp_animation_probe_pose_replay(worlds, count, &pose_replay) &&
             read_transform(device, D3D_TRANSFORM_VIEW, pose_replay.view) &&
             read_transform(device, D3D_TRANSFORM_PROJECTION, pose_replay.projection))
             command.data.draw.pose_replay = &pose_replay;
         pose_vertices = recomp_animation_probe_pose_vertices(&command.data.draw);
         command.data.draw.pose_vertex_bytes = pose_vertices;
+        float view[16], projection[16];
+        if (readable && split_enabled &&
+            read_transform(device, D3D_TRANSFORM_VIEW, view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) {
+            split_pose = recomp_animation_split_draw(&command.data.draw, worlds, count, view,
+                projection, &command.data.draw.split_pose_size);
+            command.data.draw.split_pose = split_pose;
+        }
     }
     capture_command = &command.data.draw;
 
@@ -1939,6 +1949,8 @@ finished:
     capture_draw(device, primitive_type, index_count, index_data, &result,
         capture_command, decline != NULL ? decline : "accepted");
     free(pose_vertices);
+    free(split_pose);
+
 }
 
 static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *draw)
