@@ -473,6 +473,9 @@ struct RecompD3dPresenter {
     std::vector<double> present_gaps;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
+    uint32_t replay_verify_frame = 0;
+    bool replay_verify_second = false;
+    std::vector<uint8_t> replay_reference;
     ULONGLONG next_frame_dump_ms = 0u;
 };
 
@@ -3006,6 +3009,59 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     return true;
 }
 
+bool compareReplay(RecompD3dPresenter *presenter)
+{
+    if (!presenter->replay_verify_frame) return true;
+    ID3D11Texture2D *back = nullptr, *staging = nullptr;
+    if (FAILED(presenter->swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void **>(&back)))) return false;
+    D3D11_TEXTURE2D_DESC desc{};
+    back->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
+    HRESULT result = presenter->device->CreateTexture2D(&desc, nullptr, &staging);
+    if (FAILED(result)) { back->Release(); return false; }
+    presenter->context->CopyResource(staging, back);
+    back->Release();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    result = presenter->context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(result)) { staging->Release(); return false; }
+    const size_t row_bytes = size_t(desc.Width)*4;
+    auto &reference = presenter->replay_reference;
+    try {
+        if (!presenter->replay_verify_second) reference.resize(row_bytes*desc.Height);
+    } catch (...) {
+        presenter->context->Unmap(staging, 0);
+        staging->Release();
+        throw;
+    }
+    bool valid = reference.size() == row_bytes*desc.Height;
+    uint64_t changed = 0;
+    unsigned maximum = 0;
+    if (valid) for (unsigned y = 0; y < desc.Height; ++y) {
+        const auto *row = static_cast<const uint8_t *>(mapped.pData)+size_t(y)*mapped.RowPitch;
+        auto *old = reference.data()+size_t(y)*row_bytes;
+        if (!presenter->replay_verify_second) std::memcpy(old, row, row_bytes);
+        else for (unsigned x = 0; x < desc.Width; ++x) {
+            bool different = false;
+            for (unsigned c = 0; c < 3; ++c) {
+                unsigned delta = static_cast<unsigned>(std::abs(int(row[x*4+c])-int(old[x*4+c])));
+                maximum = (std::max)(maximum, delta);
+                different |= delta != 0;
+            }
+            changed += different;
+        }
+    }
+    presenter->context->Unmap(staging, 0);
+    staging->Release();
+    if (presenter->replay_verify_second) std::fprintf(stderr,
+        "recomp replay identity: frame=%u pixels=%llu changed=%llu max_channel=%u valid=%u\n",
+        presenter->replay_verify_frame, static_cast<unsigned long long>(desc.Width)*desc.Height,
+        static_cast<unsigned long long>(changed), maximum, valid);
+    presenter->replay_verify_frame = 0;
+    return valid && changed == 0;
+}
+
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterPresentCommand &present)
@@ -3043,6 +3099,7 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     // Capture the rendered buffer before flip presentation releases it.
+    if (!compareReplay(presenter)) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
 
     const auto clock_ms = [] {
@@ -3313,6 +3370,12 @@ RecompD3dPresenterError d3d11_backend_destroy(
 void d3d11_backend_set_immediate_present(bool enabled)
 {
     immediate_present = enabled;
+}
+
+void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay)
+{
+    presenter->replay_verify_frame = frame;
+    presenter->replay_verify_second = replay;
 }
 
 
