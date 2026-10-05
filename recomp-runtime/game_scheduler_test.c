@@ -1,4 +1,5 @@
 #include "game_scheduler.h"
+#include "game_frame_replay.h"
 #include "game_pacing.h"
 #include "program_manual.h"
 
@@ -92,6 +93,28 @@ static void check_pacing(unsigned hz)
 
 int recomp_game_scheduler_test(void)
 {
+    passed = 1;
+    {
+        /* A held present must redraw the tick's UI even after the guest
+           reuses its dynamic vertex/index buffers. */
+        uint8_t vertices[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+        uint16_t indices[3] = {0, 1, 0};
+        RecompD3dPresenterDrawCommand draw = {0};
+        draw.vertex_bytes = vertices; draw.vertex_count = 2; draw.vertex_stride = 4;
+        draw.index_bytes = indices; draw.index_count = 3;
+        RecompGameFrameReplay replay = {0};
+        for (unsigned i = 0; i < 70; ++i)
+            expect(recomp_game_frame_replay_record(&replay, &draw), "frame replay record failed");
+        memset(vertices, 0, sizeof vertices);
+        indices[1] = 9;
+        const RecompD3dPresenterDrawCommand *last = replay.draws + 69;
+        expect(replay.count == 70 && last->vertex_bytes != vertices &&
+               ((const uint8_t *)last->vertex_bytes)[7] == 8 &&
+               ((const uint16_t *)last->index_bytes)[1] == 1,
+               "frame replay did not own its draw buffers");
+        recomp_game_frame_replay_clear(&replay);
+        expect(replay.count == 0, "frame replay clear kept draws");
+    }
     static uint8_t slots[0x250];
     static uint8_t stack[256];
     const RecompMemoryRegion regions[] = {
@@ -103,7 +126,6 @@ int recomp_game_scheduler_test(void)
         {0x0018305au, resume_fiber},
         {0x00183047u, delete_fiber},
     };
-    passed = 1;
     check_pacing(60);
     check_pacing(120);
     check_pacing(240);
