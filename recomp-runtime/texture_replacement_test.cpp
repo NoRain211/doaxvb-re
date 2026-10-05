@@ -73,6 +73,38 @@ int main()
         check(device->CreateTexture2D(&desc, &data, &texture));
         check(device->CreateShaderResourceView(texture.Get(), nullptr, &original));
         REQUIRE(readPixels(device.Get(), context.Get(), original.Get()).bytes == pixels.bytes);
+        {
+            struct RestoreDirectory {
+                fs::path path = fs::current_path();
+                ~RestoreDirectory() { fs::current_path(path); }
+            } restore_directory;
+            fs::current_path(root);
+            fs::create_directories("private/textures/replace");
+            Pixels edited = pixels;
+            edited.bytes[0] = 250;
+            savePng(fs::path("private/textures/replace") / (first.key + ".png"), edited);
+            _wputenv_s(L"RECOMP_TEXTURES", L"");
+            TextureReplacements dump_only;
+            REQUIRE(dump_only.enabled());
+            REQUIRE(dump_only.lookup(first.key, original.Get()) == original.Get());
+            dump_only.finishFrame(device.Get(), context.Get(), 20);
+            REQUIRE(dump_only.lookup(first.key, original.Get()) == original.Get());
+            REQUIRE(loadPng(root / "dump" / (first.key + ".png")).bytes == pixels.bytes);
+            dump_only.request(true);
+            dump_only.finishFrame(device.Get(), context.Get(), 21);
+            REQUIRE(dump_only.lookup(first.key, original.Get()) == original.Get());
+            dump_only.request(false);
+            dump_only.finishFrame(device.Get(), context.Get(), 22);
+            REQUIRE(loadPng(root / "frame-22" / (first.key + ".png")).bytes == pixels.bytes);
+            _wputenv_s(L"RECOMP_TEXTURES", L"1");
+            TextureReplacements default_pack;
+            REQUIRE(default_pack.lookup(first.key, original.Get()) == original.Get());
+            default_pack.finishFrame(device.Get(), context.Get(), 23);
+            auto replaced = default_pack.lookup(first.key, original.Get());
+            REQUIRE(replaced != original.Get());
+            REQUIRE(readPixels(device.Get(), context.Get(), replaced).bytes == edited.bytes);
+            _wputenv_s(L"RECOMP_TEXTURES", (root / "replace").c_str());
+        }
         TextureReplacements replacements;
         REQUIRE(replacements.lookup(first.key, original.Get()) == original.Get());
         replacements.finishFrame(device.Get(), context.Get(), 1);

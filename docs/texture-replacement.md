@@ -2,9 +2,12 @@
 
 Start the runner with `RECOMP_TEXTURES=1` to use `private/textures/replace`,
 or set `RECOMP_TEXTURES` to an absolute directory. Relative paths start at
-the runner's working directory. Set `RECOMP_TEXTURE_DUMP=1` to also write
-each distinct original texture to `private/textures/dump/<key>.png`.
-`RECOMP_TEXTURE_DUMP_DIR` can set an absolute path for the `textures` folder.
+the runner's working directory. Leave `RECOMP_TEXTURES` unset or empty to
+disable replacement scanning and loading, including when dumping is enabled.
+Set `RECOMP_TEXTURE_DUMP=1` independently to write each distinct original
+texture to `private/textures/dump/<key>.png`.
+`RECOMP_TEXTURE_DUMP_DIR` can set an absolute path for the `textures` folder;
+it changes dump destinations without changing the replacement directory.
 
 1. With either option enabled, press **F12** in the game. Originals used by
    the current frame go to `private/textures/frame-<present>/`.

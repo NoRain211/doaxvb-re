@@ -279,8 +279,10 @@ TextureReplacements::TextureReplacements()
     enabled_ = dump_ || (directory && *directory);
     const wchar_t *root = _wgetenv(L"RECOMP_TEXTURE_DUMP_DIR");
     root_ = root && *root ? fs::path(root) : fs::path("private/textures");
-    directory_ = directory && *directory && std::wcscmp(directory, L"1") != 0
-        ? fs::path(directory) : fs::path("private/textures/replace");
+    if (directory && *directory) {
+        directory_ = std::wcscmp(directory, L"1") != 0
+            ? fs::path(directory) : fs::path("private/textures/replace");
+    }
     const char *at = std::getenv("RECOMP_TEXTURE_FRAME_AT");
     if (at) dump_at_ = static_cast<uint32_t>(std::strtoul(at, nullptr, 10));
 }
@@ -333,8 +335,10 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
 {
     if (!enabled_) return;
     try {
-        if (!scanned_ || reload_) scan();
-        if (reload_) std::fprintf(stderr, "recomp textures: rescanned %zu files\n", files_.size());
+        if (!directory_.empty() && (!scanned_ || reload_)) {
+            scan();
+            if (reload_) std::fprintf(stderr, "recomp textures: rescanned %zu files\n", files_.size());
+        }
         reload_ = false;
         const bool frame_dump = frame_dump_ || (dump_at_ && present == dump_at_);
         const auto frame_dir = root_ / ("frame-" + std::to_string(present));
@@ -357,7 +361,7 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
                     std::fprintf(stderr, "recomp textures: dump rejected %s (%s)\n", key.c_str(), e.what());
                 }
             }
-            if (replacements_.find(key) != replacements_.end()) continue;
+            if (directory_.empty() || replacements_.find(key) != replacements_.end()) continue;
             // Missing keys stay in memory until reload. Bound metadata as well as GPU bytes.
             if (replacements_.size() >= 16384) continue;
             auto &replacement = replacements_[key];
