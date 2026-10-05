@@ -1,5 +1,6 @@
 #include "game_scheduler.h"
 #include "kernel_abi.h"
+#include "d3d_draw_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,10 @@ enum {
 static unsigned game_hz = 60;
 static unsigned sleep_half_ticks[FIBER_COUNT];
 static bool startup_clock_pending;
+static bool trace_scheduler;
+static unsigned scheduler_pass;
+
+unsigned recomp_game_scheduler_hz(void) { return game_hz; }
 
 #ifdef RECOMP_FULL_PROGRAM
 void sub_000BB290(void);
@@ -72,6 +77,8 @@ bool recomp_game_sleep_step(int32_t *ticks, unsigned *half_tick, unsigned hz)
 void recomp_game_scheduler_reset(unsigned hz)
 {
     game_hz = hz;
+    trace_scheduler = getenv("RECOMP_GAME_SCHEDULER_TRACE") != NULL;
+    scheduler_pass = 0;
     memset(sleep_half_ticks, 0, sizeof sleep_half_ticks);
 }
 
@@ -96,6 +103,7 @@ static void call_one(uint32_t address, uint32_t argument)
 
 void recomp_game_scheduler_tick(void)
 {
+    ++scheduler_pass;
     const uint32_t saved_esi = recomp_runtime.registers.esi;
     *recomp_memory_u32(CURRENT_SLOT) = 0;
     while ((int32_t)*recomp_memory_u32(CURRENT_SLOT) < FIBER_COUNT) {
@@ -111,7 +119,14 @@ void recomp_game_scheduler_tick(void)
                 &ticks, &sleep_half_ticks[index], game_hz);
             *recomp_memory_u32(slot + 4u) = (uint32_t)ticks;
             if (resume) {
+                const uint32_t draws_before = recomp_d3d_draw_adapter_submitted();
                 call_one(0x0018305au, *recomp_memory_u32(slot + 8u));
+                if (trace_scheduler && (scheduler_pass <= 70 || scheduler_pass % 300 == 0)) {
+                    fprintf(stderr, "recomp game fiber: pass=%u slot=%u callback=%08x draws=%u scene_age=%u\n",
+                        scheduler_pass, index, *recomp_memory_u32(slot + 12u),
+                        recomp_d3d_draw_adapter_submitted() - draws_before,
+                        *recomp_memory_u32(0x004d967cu));
+                }
                 if ((*recomp_memory_u32(slot) & 1u) == 0) {
                     const uint32_t handle = *recomp_memory_u32(slot + 8u);
                     *recomp_memory_u32(slot) = 0;

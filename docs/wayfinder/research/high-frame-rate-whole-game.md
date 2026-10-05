@@ -3,6 +3,97 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## Scene/render continuation (2026-10-05)
+
+`RECOMP_GAME_SCENE=1` selects readable hand source for the scene fiber
+`0x000A37F0`, scenario fiber/tick `0x0006ADB0` / `0x0006B030`, world-frame
+fiber `0x00079D00`, and actor-frame fiber `0x000B42B0`. Use it with
+`RECOMP_GAME_SCHEDULER=1` for the retained 60 Hz baseline. Default dispatch is
+unchanged. These owners still call generated game neighbours. The world frame
+also retains the generated D3D SetTransform seam at `0x001E36D0`; wholesale
+library replacement remains open.
+
+The rejected half-sleep experiment has two independently observed causes:
+
+- The main loop clears and swaps every pass, but one-tick fiber sleeps also
+  delimit draw production. The title world uses slot 10 (`0x00079D00`); the
+  attract scene uses slot 11 (`0x000B42B0`). Slot 13 (`0x0008A970`) supplies UI.
+  A bounded draw-count trace found 456 draws in the attract actor-frame slot and
+  zero in the title-world slot. Leaving slot 11 asleep produced alternating
+  full-scene and black-with-logo images even after title rendering was fixed.
+- Input polling (`0x000B57D0`) and edge derivation (`0x000B5870`) run before
+  the scheduler on every pass. The scene copies them through `0x000A5030`.
+  Its missed pass allows the next poll to replace a one-poll Start edge.
+
+The smallest private cadence experiment kept scene input delivery and frame
+owners active on every pass while integer script time advanced every other
+pass. Start then reached the title naturally at Swap 73, versus Swap 43 at
+60 Hz. All title captures at Swaps 600-603 were filled. Adding the actor-frame
+owner removed the alternating missing scene at Swaps 6000-6003: all four
+captures contained the scene. This establishes the missing-draw mechanism; it
+**does not establish matching animation, camera, lighting or game speed**.
+
+Two translation defects were found before retaining the hand source. The world
+camera helper `0x00023B10` takes its camera pointer in EAX as well as the
+caller's ESI; omitting EAX let it overwrite scheduler storage. Both failed
+receipts stopped at the first world frame with the same corrupted slot address.
+The source now supplies the implicit argument, and a public regression test
+starts with a stale EAX and checks argument/order/stack/view preservation.
+The scene normal-speed branch tests equality with 1.0, rather than greater-than.
+Both corrections follow the authenticated generated owner and bounded static
+analysis. No generated C was edited.
+
+With a fixed startup seed, hand and generated scene images were byte-identical
+at Swaps 300-303, 3000 and 5400. The first four comparisons were from a restored build
+that reported SMAA unavailable, so they are image-parity checks only. After
+restoring the pinned SMAA submodule, the Swap 3000 comparison again matched
+byte-for-byte with scale 4.5, MSAA 8, SMAA enabled and vsync. Generated reached
+that checkpoint in **50.497954 s**, hand in **50.299145 s** (-0.394%). The
+baseline reported the existing Clear/presenter failure after requested close;
+the hand run closed normally. The manual lookup rejects unrelated addresses
+before checking its opt-in environment setting; doing that check on every
+manual dispatch had reduced the first restored build to roughly 47-56 FPS.
+The corrected build sustained about 120 FPS in the sampled title interval.
+
+A private 120 Hz candidate reached physical Swap 6000 in **51.063780 s**, versus
+50.497954 s for baseline Swap 3000 (+1.121%). Its visual checkpoint failed.
+The later actor-frame fix removed the alternating missing scene, but its
+images still had different poses and lighting. Its timing run overlapped
+CTest and is excluded from timing acceptance. Physical swaps are not relabeled:
+at 120 presentations/second, the old 3000/5400 game-time checkpoints correspond
+to approximately 6000/10800 presentations, with startup/transition offsets
+requiring separate alignment.
+
+The later isolated pair reached physical Swap 5400 at 60 Hz in **90.491179 s**
+and physical Swap 10800 at 120 Hz in **93.726659 s** (+3.576%). In that pair the
+3000/6000 checkpoints were 50.474500 s and 51.111271 s (+1.262%). Four consecutive
+120 Hz images at 10800-10803 contained the scene, but did not match the 60 Hz
+image. Both runs closed normally. Thus neither requested timing tolerance nor
+equal-game-time image parity passed. These longer runs were specifically for
+the requested second checkpoint; routine iterations remain below one minute.
+
+The incomplete 120 Hz activation is retained only as private experimental
+source. Public hand source remains a 60 Hz baseline; `RECOMP_GAME_HZ` is not an
+enabled runtime mode. A global half multiplier cannot normalize an actor fiber
+that still resumes at 60 Hz, nor integer ages inside render/environment/camera
+owners that now execute at 120 Hz. These dependencies must be converted as
+coherent owners before the image/timing milestone can pass. Animation and
+skeleton work owned by the split-rate effort was not changed here.
+
+During this work the earlier private build/evidence directories disappeared
+externally. Their recorded observations above survive, but the deleted raw
+receipts cannot be rechecked. Inputs were recovered into a new private directory
+and verified against the same XBE SHA below and the current authenticated recipe;
+all results in this section came from that restored build.
+All 17 CTest cases and 21 tools tests passed (one tools test skipped); public
+export verification passed. The tools tests retain the authenticated SHA and
+manifest rejection checks. No private inputs,
+asset names, captures or logs are public. These are agent smoke observations.
+
+The remaining whole-game estimate stays **7-14 engineer-weeks**. The scheduler
+and scene/frame ownership is clearer, but the requested equal-time visual gate
+still fails; this does not justify reducing the conversion estimate.
+
 ## Deterministic 60 Hz comparison (2026-10-05 follow-up)
 
 The earlier small title-image difference was not a hand-scheduler regression.
@@ -80,8 +171,8 @@ are the in-process vblank-probe arrival times, before the wait and capture.
 
 The paired 60 Hz captures at Swaps 300-303 showed the title scene but were not
 byte-identical. At Swap 300, the mean absolute RGB differences were
-0.577/0.526/0.487 on a 0-255 scale. The source of that difference has not been
-isolated; this is **not** image-parity acceptance. A later unchanged-path repeat
+0.577/0.526/0.487 on a 0-255 scale. At that point the source had not been
+isolated; the deterministic follow-up above identifies the seed difference. A later unchanged-path repeat
 and final hand-loop check were stopped at Swaps 278 and 118 after host-input
 traces confirmed live controller button presses. No further runs were attempted
 without a quiet input interval. The rejected run reported a
