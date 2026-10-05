@@ -1,5 +1,6 @@
 #include "animation_track_adapter.h"
 #include "animation_track.h"
+#include "animation_probe.h"
 #include "stop_report.h"
 
 #include <stdio.h>
@@ -87,6 +88,6 @@ RecompFunction recomp_animation_track_lookup_manual(uint32_t guest_address)
     case 0x000aeb50u: return mode() ? linear : NULL;
     case 0x000aebc0u: return mode() ? quadratic : NULL;
     case 0x000aec50u: return mode() ? constant : NULL;
-    default: return NULL;
+    default: return recomp_animation_probe_lookup_manual(guest_address);
     }
 }

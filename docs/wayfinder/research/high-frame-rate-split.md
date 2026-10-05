@@ -395,3 +395,36 @@ normal/half/next-tick rasterized comparison with unchanged gameplay state.
 decoder tests. Revised planning estimate: 4-8 focused days for the first visual
 experiment, including dispatch integration; the integrated mode remains roughly
 4-8 weeks, conditional on palette identity and render-pass coverage.
+
+
+## Direct-dispatch checkpoint
+
+The pinned lifter already supports selected direct-call and tail-call routing.
+The smaller solution is to extend the authenticated manual-call selection, not
+replace the owning game-update traversal. The regeneration tool now accepts
+repeated `--manual-call-target` arguments, verifies the old generation first,
+updates the selected-input hash, regenerates, and updates the recipe together.
+The lifter revision remains unchanged. Failure restores both the selection and
+recipe metadata. No generated C is edited.
+
+The sampler, fractional sampling entry, blend dispatcher, skeleton assembler,
+draw-palette builder and camera builder are now selected. Regeneration changed
+14 function bodies in four source chunks, with no functions added or removed.
+The new generation reproduced its authenticated manifest with Capstone 5.0.9.
+`RECOMP_ANIMATION_DISPATCH_TRACE=1` observes these entries while calling each
+original exactly once; normal execution remains the default. A bounded attract
+smoke confirmed that direct calls reach the sampler, skeleton, palette and camera
+adapters. The shutdown reported presenter status CLOSED while handling the
+requested window close; this is recorded as a smoke limitation, not clean exit
+or gameplay acceptance.
+
+`RECOMP_POSE_CAPTURE` supplies a private output prefix for a bounded diagnostic
+window. It records sampled channels, actor/limb state, executable-owned rig
+inputs, and before/after bone matrices. Captures must remain under `private/`.
+The raw records are diagnostic observations and do not define the pure solver
+API. They must not be passed off as independently solved poses.
+
+The next gate is a separate, immutable-input skeleton model covering body,
+terrain correction, look-at, limb IK and derived slots. The exporter can reuse
+that model's math only after its integer-pose comparison passes. No half-tick
+rendering or split-rate presenter mode is admitted by this dispatch checkpoint.
