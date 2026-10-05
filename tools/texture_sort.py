@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Sort privately ripped textures using archive, model, runtime and pixel data."""
 import argparse
+from collections import Counter
 import csv
 import html
 import json
@@ -12,11 +13,29 @@ import shutil
 import struct
 import zlib
 
+from model_format import companion_draws, read_mesh
+from texture_rip import texture_key, texture_payloads
+
 
 KEY_PATTERN = re.compile(r"^[0-9a-f]{2}-[0-9]+x[0-9]+-m[0-9]+-[0-9a-f]{64}$")
 MATERIAL_SIZE = 0x90
 MATERIAL_START = 0xA0
 TEXTURE_ORDINAL_OFFSET = 0x70
+# Rig slot numbers come from the recovered hierarchy; the region names are the
+# anatomical reading of that hierarchy, not recovered strings.
+BONE_REGIONS = {
+    "head": (1, 17, 19, 21),
+    "torso": (0, 2, 16, 20, 23),
+    "arms": (4, 8, 10, 14, 24, 25, 26, 27, 30, 31),
+    "hands": (5, 11, 28, 29),
+    "legs": (3, 6, 7, 9, 12, 13),
+    "feet": (18, 22),
+}
+REGION_OF_BONE = {bone: region for region, bones in BONE_REGIONS.items() for bone in bones}
+DRAW_VARIANTS = range(4)
+MAX_DESIGN_LINK = 4
+ITEM_PART = {"head": "accessories", "torso": "swimsuit", "legs": "swimsuit",
+             "arms": "accessories", "hands": "accessories", "feet": "accessories"}
 ROLE_WORDS = {
     "skin-face-eyes-hair": {"skin", "face", "eye", "eyes", "hair"},
     "swimsuits": {"swim", "swimsuit", "costume", "outfit", "clothes"},
@@ -322,7 +341,295 @@ def model_references(rip_root, manifest_textures, model_objects, metadata):
     return references, missing
 
 
+def draw_list(companion):
+    """Union the primary draw lists of the first few companion variants."""
+    seen, draws = set(), []
+    for variant in DRAW_VARIANTS:
+        try:
+            found, _ = companion_draws(companion, variant)
+        except (ValueError, struct.error):
+            break
+        for draw in found:
+            identity = (draw["object"], draw.get("palette"), draw.get("bone"))
+            if identity not in seen:
+                seen.add(identity)
+                draws.append(draw)
+    return draws
+
+
+def object_textures(model, obj):
+    """Texture ordinals and vertex count for objects the strict mesh reader refuses."""
+    count, textures = struct.unpack_from("<II", model, 24)
+    if not 0 <= obj < count:
+        return [], 0
+    offset = struct.unpack_from("<I", model, 40 + obj * 4)[0]
+    vertices = struct.unpack_from("<I", model, offset + 32)[0]
+    ordinals, position = [], offset + MATERIAL_START
+    while position + MATERIAL_SIZE <= len(model) and len(ordinals) < 256:
+        marker, size = struct.unpack_from("<II", model, position)
+        if not marker & 0x80000000 or size != MATERIAL_SIZE:
+            break
+        ordinal = struct.unpack_from("<I", model, position + TEXTURE_ORDINAL_OFFSET)[0]
+        if ordinal < textures:
+            ordinals.append(ordinal)
+        position += size
+    return ordinals, vertices
+
+
+def texture_bone_mass(model, companion, palettes, ordinal_keys):
+    """Sum each texture's vertex weights per body region over the drawn objects.
+
+    Returns ({key: Counter(region -> mass)}, keys that needed the even-weight fallback).
+    """
+    mass, approximate = {}, set()
+    for draw in draw_list(companion):
+        if "bone" in draw:
+            bones = [draw["bone"]]
+        elif draw["palette"] < len(palettes):
+            bones = [entry[0] for entry in palettes[draw["palette"]]]
+        else:
+            continue
+        try:
+            mesh = read_mesh(model, draw["object"])
+        except (ValueError, struct.error, IndexError):
+            try:
+                ordinals, vertices = object_textures(model, draw["object"])
+            except struct.error:
+                continue
+            for ordinal in ordinals:
+                key = ordinal_keys.get(ordinal)
+                if key is None:
+                    continue
+                approximate.add(key)
+                counter = mass.setdefault(key, Counter())
+                for bone in bones:
+                    counter[REGION_OF_BONE.get(bone, "other")] += vertices / len(bones)
+            continue
+        for ordinal, faces in mesh.subsets:
+            key = ordinal_keys.get(ordinal)
+            if key is None:
+                continue
+            counter = mass.setdefault(key, Counter())
+            for vertex in faces:
+                weights = mesh.weights[vertex]
+                for slot, bone in enumerate(bones[:len(weights)]):
+                    counter[REGION_OF_BONE.get(bone, "other")] += weights[slot]
+    return mass, approximate
+
+
+def bundle_code(stem):
+    """Two-letter wearer/body code: suffix after an item number or separator, or before a body number."""
+    match = (re.fullmatch(r"[a-z0-9_]*[0-9_]([a-z]{2})", stem)
+             or re.fullmatch(r"[a-z]*([a-z]{2})[0-9]+", stem))
+    return match.group(1) if match else ""
+
+
+def bone_evidence(rip_root, asset_metadata):
+    """Map texture keys to per-bundle body-region mass from companion draw palettes."""
+    rig = load_json(rip_root / "model-rig.json", {})
+    palettes = rig.get("palettes", [])
+    bundles = {}
+    for path, info in asset_metadata.items():
+        name = Path(info.get("name", ""))
+        suffix = name.suffix.lower()
+        if suffix in (".xpr", ".cat"):
+            location = container_path(rip_root, path)
+            if location is not None:
+                bundles.setdefault((info.get("archive", ""), name.stem.lower()), {})[suffix] = (location, path)
+    evidence = {}
+    for (archive, stem), files in sorted(bundles.items()):
+        if ".xpr" not in files or ".cat" not in files:
+            continue
+        try:
+            model = files[".xpr"][0].read_bytes()
+            companion = files[".cat"][0].read_bytes()
+        except OSError:
+            continue
+        ordinal_keys = {}
+        try:
+            for ordinal, (_, texture, payload, palette, error) in enumerate(texture_payloads(model, True)):
+                if not error:
+                    ordinal_keys[ordinal] = texture_key(texture, payload, palette)
+        except ValueError:
+            continue
+        mass, approximate = texture_bone_mass(model, companion, palettes, ordinal_keys)
+        regions = Counter()
+        for counter in mass.values():
+            regions.update(counter)
+        body = regions["head"] > 0 and regions["feet"] > 0 and regions["torso"] > 0
+        label = source_label(files[".xpr"][1], asset_metadata)
+        for key, counter in mass.items():
+            total = sum(counter.values())
+            if total <= 0:
+                continue
+            evidence.setdefault(key, []).append({
+                "label": label, "stem": stem, "code": bundle_code(stem), "body": body,
+                "fractions": {region: value / total for region, value in counter.items()},
+                "approximate": key in approximate,
+            })
+    return evidence
+
+
+def skin_tone(rgb):
+    r, g, b = rgb
+    return r >= 150 and r > g > b and r - b >= 25
+
+
+def average_rgb(visual):
+    value = visual.get("average_rgb", "")
+    if not re.fullmatch(r"#[0-9a-f]{6}", value):
+        return (0, 0, 0)
+    return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def head_part(visual):
+    """Split head textures: alpha cards are hair, skin tones are face, the rest eyes or mouth."""
+    if visual.get("alpha_transparent", 0) + visual.get("alpha_partial", 0) >= 0.05:
+        return "hair", "high", "head texture with alpha coverage"
+    rgb = average_rgb(visual)
+    largest = max(visual.get("width", 0), visual.get("height", 0))
+    if largest >= 256:
+        return "face", "high", "large opaque head texture"
+    if skin_tone(rgb) and rgb[0] >= 190:
+        return "face", "high", "skin-toned head texture"
+    r, g, b = rgb
+    if r > 1.4 * b and r > g and r < 190 and largest <= 128:
+        return "mouth", "medium", "dark red opaque head texture (mouth or teeth guess)"
+    return "eyes", "medium", "opaque non-skin head texture (eye guess)"
+
+
+def bone_summary(entries):
+    """Average region fractions over bundles so repeated copies do not dominate."""
+    totals = Counter()
+    for entry in entries:
+        totals.update(entry["fractions"])
+    count = max(1, len(entries))
+    fractions = {region: value / count for region, value in totals.items()}
+    region, share = max(fractions.items(), key=lambda item: item[1])
+    return region, share, fractions
+
+
+def classify_by_bones(record, entries, girl_names, body_codes):
+    """Classify a texture from its draw-palette bone evidence; return False if unusable."""
+    region, share, fractions = bone_summary(entries)
+    approximate = any(entry["approximate"] for entry in entries)
+    bodies = [entry for entry in entries if entry["body"]]
+    wearables = [entry for entry in entries if not entry["body"] and entry["code"] in body_codes]
+    mix = ", ".join(f"{name} {value:.0%}" for name, value in sorted(
+        fractions.items(), key=lambda item: -item[1])[:3])
+    basis = [f"draw-palette bone mass: {mix}"]
+    if approximate:
+        basis.append("some objects use even palette weights (strict mesh reader refused them)")
+    confidence = "high" if share >= 0.75 and not approximate else "medium"
+    if bodies:
+        codes = sorted({entry["code"] for entry in bodies})
+        if region == "head":
+            part, part_confidence, reason = head_part(record["visual"])
+            basis.append(reason)
+            if part_confidence == "medium":
+                confidence = "medium"
+        else:
+            part = "skin"
+            basis.append(f"primary body bundle, {region} region")
+        girl = girl_names.get(codes[0], codes[0]) if len(codes) == 1 else "shared"
+        basis.append("body bundle codes " + ", ".join(codes))
+        record["category"] = f"characters/{safe_component(girl)}/{part}"
+    elif wearables:
+        part = ITEM_PART.get(region, "accessories")
+        codes = sorted({entry["code"] for entry in wearables})
+        series = sorted({entry["stem"][:-2] for entry in wearables})
+        basis.append(f"wearable item for {', '.join(codes)}; {region} region")
+        if len(codes) == 1:
+            girl = girl_names.get(codes[0], codes[0])
+            record["category"] = f"characters/{safe_component(girl)}/{part}"
+        else:
+            record["outfit_series"] = series
+            record["outfit_part"] = part
+            record["category"] = f"outfits/{safe_component(series[0])}/{part}"
+    elif region != "other":
+        stem = sorted(entry["stem"] for entry in entries)[0]
+        record["category"] = f"items-shop-icons/held-{safe_component(stem)}"
+        basis.append("drawn on the character rig without a wearer code")
+        confidence = "medium"
+    else:
+        return False
+    record["confidence"] = confidence
+    record["notes"] = "; ".join(basis)
+    return True
+
+
+def classify_by_bundle(record, girl_names, body_codes, body_stems):
+    """Place undrawn textures of body or wearable bundles by bundle identity alone."""
+    stems = {Path(source["metadata"]["name"]).stem.lower()
+             for source in record["sources"] if source["metadata"].get("name")}
+    bodies = sorted({bundle_code(stem) for stem in stems & body_stems})
+    worn = sorted(stem for stem in stems - body_stems if bundle_code(stem) in body_codes)
+    reason = "no primary draw pass references this texture; part unknown"
+    if bodies:
+        girl = girl_names.get(bodies[0], bodies[0]) if len(bodies) == 1 else "shared"
+        record["category"] = f"characters/{safe_component(girl)}/unsorted"
+        record["notes"] = f"{reason}; body bundle codes {', '.join(bodies)}"
+    elif worn:
+        codes = sorted({bundle_code(stem) for stem in worn})
+        if len(codes) == 1:
+            girl = girl_names.get(codes[0], codes[0])
+            record["category"] = f"characters/{safe_component(girl)}/unsorted"
+        else:
+            record["outfit_series"] = sorted({stem[:-2] for stem in worn})
+            record["outfit_part"] = "unsorted"
+            record["category"] = f"outfits/{safe_component(record['outfit_series'][0])}/unsorted"
+        record["notes"] = f"{reason}; wearable item bundle for {', '.join(codes)}"
+    else:
+        return False
+    record["confidence"] = "low"
+    return True
+
+
+def assign_outfit_designs(records):
+    """Group outfit series into designs: colorways of one design share exact texture keys.
+
+    Keys shared by many series are common trims or swatches and do not join designs.
+    """
+    outfits = [record for record in records if record.get("outfit_series")]
+    parents = {}
+
+    def find(name):
+        parents.setdefault(name, name)
+        while parents[name] != name:
+            parents[name] = parents[parents[name]]
+            name = parents[name]
+        return name
+
+    def join(left, right):
+        a, b = sorted((find(left), find(right)))
+        parents[b] = a
+
+    for record in outfits:
+        series = record["outfit_series"]
+        find(series[0])
+        if len(series) <= MAX_DESIGN_LINK:
+            for other in series[1:]:
+                join(series[0], other)
+    for record in outfits:
+        series = record["outfit_series"]
+        design = find(series[0])
+        colorway = series[0] if len(series) == 1 else "shared"
+        record["category"] = (f"outfits/{safe_component(design)}/{safe_component(colorway)}/"
+                              f"{record['outfit_part']}")
+        if len(series) > 1:
+            record["notes"] += "; shared by colorways " + ", ".join(series)
+
+
 def classify_record(record, character_names):
+    entries = record.get("bone_entries")
+    if entries and classify_by_bones(record, entries, record["girl_names"], record["body_codes"]):
+        layout, layout_size = record.get("layout", ("", 1))
+        if layout_size > 1:
+            record["notes"] += f"; layout group {layout} ({layout_size} textures)"
+        return
+    if record.get("body_codes") and classify_by_bundle(
+            record, record["girl_names"], record["body_codes"], record["body_stems"]):
+        return
     source_tokens = set()
     source_names = []
     model_labels = {reference.rsplit(" OBJ@", 1)[0] for reference in record["model_objects"]}
@@ -343,6 +650,10 @@ def classify_record(record, character_names):
             abbreviated_characters.append((alias_map[suffix.group(1)], suffix.group(1)))
     characters = sorted(set(direct_characters) | {name for name, _ in abbreviated_characters})
     visual = record.get("visual", {})
+    width, height = visual.get("width", 0), visual.get("height", 0)
+    aspect = max(width, height) / max(1, min(width, height))
+    natural = (visual.get("alpha_transparent", 0) < 0.05 and aspect <= 2
+               and min(width, height) >= 64 and visual.get("palette_bins", 0) >= 24)
     layout, layout_size = record.get("layout", ("layout-unknown", 1))
     layout_note = f"layout group {layout} ({layout_size} textures)" if layout_size > 1 else ""
     basis = []
@@ -357,10 +668,10 @@ def classify_record(record, character_names):
         else:
             character = characters[0]
             role = next((name for name, words in ROLE_WORDS.items() if source_tokens & words),
-                        "model-texture-atlas")
+                        "unsorted")
             category = f"characters/{safe_component(character)}/{role}"
             if direct_characters:
-                confidence = "medium" if role == "model-texture-atlas" else "high"
+                confidence = "medium" if role == "unsorted" else "high"
                 basis.append(f"paired character archive stem {character}")
             else:
                 codes = sorted({code for name, code in abbreviated_characters if name == character})
@@ -392,28 +703,35 @@ def classify_record(record, character_names):
             basis.append(f"{prefix} bundle filename prefix")
         elif record["model_objects"]:
             source_name = Path(source_names[0]).stem if source_names else "model-bundle"
-            category = f"outfits/{safe_component(source_name)}"
-            basis.append("model/material references establish a model bundle; outfit role is inferred")
+            if record.get("bundle_objects", 0) <= 8:
+                category = f"items-shop-icons/models-{safe_component(source_name)}"
+                basis.append("small model bundle without character rig evidence; item role is inferred")
+            else:
+                category = f"environments/{safe_component(source_name)}"
+                basis.append("large model bundle without character rig evidence; set or prop role is inferred")
         elif visual.get("alpha_transparent", 0) > 0.15 and visual.get("palette_bins", 0) <= 24:
             category = "effects/alpha-sprites"
             basis.append("transparent, limited-palette image heuristic")
+        elif aspect >= 4 and min(width, height) <= 32:
+            category = "ui-hud-fonts/strips-and-gradients"
+            basis.append("strip aspect ratio heuristic")
         elif visual.get("width", 0) <= 64 and visual.get("height", 0) <= 64:
             category = "ui-hud-fonts/small-textures"
             basis.append("small dimensions heuristic")
-        elif visual.get("visual_hint") == "green-dominant":
+        elif visual.get("visual_hint") == "green-dominant" and natural:
             category = "foliage/green-dominant"
-            basis.append("average-color heuristic")
-        elif visual.get("visual_hint") == "blue-dominant":
+            basis.append("average-color heuristic on an opaque, varied texture")
+        elif visual.get("visual_hint") == "blue-dominant" and natural:
             category = "water-sky/blue-dominant"
-            basis.append("average-color heuristic")
+            basis.append("average-color heuristic on an opaque, varied texture")
+        elif visual.get("alpha_transparent", 0) > 0.15:
+            category = "effects/alpha-decals"
+            basis.append("transparent decal or sprite heuristic")
         else:
             category = "other/unclassified"
             basis.append("no identifying container token or model reference")
         if layout_note:
             basis.append(layout_note)
-    if record.get("layout", (None, 1))[1] > 1 and category.split("/", 1)[0] in {"characters", "outfits"}:
-        top, subcategory = category.split("/", 1)
-        category = f"{top}/{subcategory}-{layout}"
     if confidence == "low":
         basis.insert(0, "LOW-CONFIDENCE GUESS")
     record["category"] = category
@@ -436,19 +754,16 @@ def link_texture(source, destination):
 
 
 def remove_previous_links(output, texture_root):
-    index = output / "index.csv"
-    if not index.is_file():
-        return
-    with index.open(encoding="utf-8", newline="") as stream:
-        for row in csv.DictReader(stream):
-            key, category = row.get("key", ""), row.get("category", "")
-            if not KEY_PATTERN.fullmatch(key) or "/" not in category:
-                continue
-            top, subcategory = category.split("/", 1)
-            destination = output / safe_component(top) / safe_component(subcategory) / f"{key}.png"
-            source = texture_root / f"{key}.png"
-            if destination.is_file() and source.is_file() and os.path.samefile(source, destination):
-                destination.unlink()
+    """Remove earlier sorted links to ripped textures, then prune emptied folders."""
+    for destination in sorted(output.rglob("*.png")):
+        source = texture_root / destination.name
+        if (KEY_PATTERN.fullmatch(destination.stem) and source.is_file()
+                and os.path.samefile(source, destination)):
+            destination.unlink()
+    for folder in sorted((path for path in output.rglob("*") if path.is_dir()),
+                         key=lambda path: len(path.parts), reverse=True):
+        if not any(folder.iterdir()):
+            folder.rmdir()
 
 
 def build_gallery(records, output, texture_root):
@@ -588,9 +903,25 @@ def sort_textures(rip_root, output=None, frame_roots=()):
         record["layout"] = groups.get(record["key"], ("layout-unknown", 1))
     classify_names = discover_character_tokens(asset_metadata)
     character_aliases = discover_character_aliases(classify_names)
+    evidence = bone_evidence(rip_root, asset_metadata)
+    body_codes = {entry["code"] for entries in evidence.values()
+                  for entry in entries if entry["body"] and entry["code"]}
+    girl_names = {code: character_aliases[code] for code in body_codes if code in character_aliases}
+    body_stems = {entry["stem"] for entries in evidence.values() for entry in entries if entry["body"]}
+    object_counts = Counter(normalized_path(obj.get("path", "")) for obj in model_objects)
     for record in records:
         record["character_aliases"] = character_aliases
+        record["bone_entries"] = evidence.get(record["key"], [])
+        record["girl_names"] = girl_names
+        record["body_codes"] = body_codes
+        record["body_stems"] = body_stems
+        record["bundle_objects"] = max((object_counts[normalized_path(source["path"])]
+                                        for source in record["sources"]), default=0)
         classify_record(record, classify_names)
+    assign_outfit_designs(records)
+    for record in records:
+        if record["confidence"] == "low" and not record["notes"].startswith("LOW-CONFIDENCE"):
+            record["notes"] = "LOW-CONFIDENCE GUESS; " + record["notes"]
         visual = record["visual"]
         details = [
             f"alpha transparent {visual.get('alpha_transparent', 0):.0%}",
@@ -610,8 +941,8 @@ def sort_textures(rip_root, output=None, frame_roots=()):
     output.mkdir(parents=True, exist_ok=True)
     remove_previous_links(output, texture_root)
     for record in records:
-        category, subcategory = record["category"].split("/", 1)
-        destination = output / safe_component(category) / safe_component(subcategory) / f"{record['key']}.png"
+        destination = output.joinpath(*(safe_component(part) for part in record["category"].split("/")),
+                                      f"{record['key']}.png")
         record["link_kind"] = link_texture(texture_root / f"{record['key']}.png", destination)
     fields = ["key", "category", "confidence", "source container", "size", "notes",
               "XPR records", "model objects", "runtime frames"]

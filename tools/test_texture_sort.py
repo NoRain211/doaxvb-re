@@ -8,10 +8,57 @@ import tempfile
 import unittest
 
 from texture_rip import png
-from texture_sort import image_features, layout_groups, sort_textures
+from test_model_export import triangle_model
+from texture_sort import (assign_outfit_designs, classify_record, head_part, image_features,
+                          layout_groups, sort_textures, texture_bone_mass)
+
+
+def companion(palette):
+    """One primary pass whose script draws object 0 with a palette recipe."""
+    data = bytearray(56)
+    struct.pack_into("<5I", data, 0, 0, 20, 0, 0, 0)
+    struct.pack_into("<2I", data, 20, 1, 16)
+    struct.pack_into("<2I", data, 36, 1, 32)
+    data[52:55] = bytes([2, palette, 0])
+    return bytes(data)
+
+
+def bone_record(entries, visual=None):
+    return {"key": "k", "bone_entries": entries, "girl_names": {"aa": "alpha"},
+            "body_codes": {"aa", "bb"}, "visual": visual or {"average_rgb": "#f0c0a0"},
+            "layout": ("", 1)}
 
 
 class TextureSortTests(unittest.TestCase):
+    def test_palette_weights_become_body_region_mass(self):
+        palettes = [[[1, []], [17, []]], [[2, []], [7, []]]]
+        head, approximate = texture_bone_mass(triangle_model(), companion(0), palettes, {0: "k"})
+        self.assertEqual(approximate, set())
+        self.assertEqual(head["k"], {"head": 3.0})
+        mixed, _ = texture_bone_mass(triangle_model(), companion(1), palettes, {0: "k"})
+        self.assertEqual(mixed["k"], {"torso": 0.75, "legs": 2.25})
+
+    def test_body_and_item_bone_classification(self):
+        body = {"code": "aa", "body": True, "approximate": False, "stem": "xaa00"}
+        record = bone_record([dict(body, fractions={"legs": 0.9, "torso": 0.1})])
+        classify_record(record, set())
+        self.assertEqual((record["category"], record["confidence"]), ("characters/alpha/skin", "high"))
+        record = bone_record([dict(body, fractions={"head": 1.0})],
+                             {"alpha_transparent": 0.3, "average_rgb": "#202020"})
+        classify_record(record, set())
+        self.assertEqual(record["category"], "characters/alpha/hair")
+        self.assertEqual(head_part({"average_rgb": "#f0c0a0"})[0], "face")
+        item = {"body": False, "approximate": False, "fractions": {"torso": 1.0}}
+        records = [bone_record([dict(item, code=code, stem=stem + code)
+                                for code in ("aa", "bb") for stem in stems])
+                   for stems in (["sw01"], ["sw02"], ["sw01", "sw02"])]
+        for record in records:
+            classify_record(record, set())
+        assign_outfit_designs(records)
+        self.assertEqual([record["category"] for record in records],
+                         ["outfits/sw01/sw01/swimsuit", "outfits/sw01/sw02/swimsuit",
+                          "outfits/sw01/shared/swimsuit"])
+
     def test_synthetic_archive_model_frame_and_gallery(self):
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary)
