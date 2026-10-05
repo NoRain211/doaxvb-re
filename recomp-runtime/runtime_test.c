@@ -11,6 +11,7 @@ void sub_00189800(void);
 int recomp_xapi_time_adapter_test(void);
 int recomp_game_scheduler_test(void);
 int recomp_game_scene_test(void);
+int recomp_game_input_test(void);
 int recomp_device_model_test(void);
 int recomp_d3d_creation_model_test(void);
 int recomp_d3d_draw_model_test(void);
@@ -900,6 +901,7 @@ int main(int argc, char **argv)
     passed &= recomp_xapi_time_adapter_test();
     passed &= recomp_game_scheduler_test();
     passed &= recomp_game_scene_test();
+    passed &= recomp_game_input_test();
     passed &= recomp_device_model_test();
     passed &= recomp_d3d_creation_model_test();
     passed &= recomp_d3d_draw_model_test();

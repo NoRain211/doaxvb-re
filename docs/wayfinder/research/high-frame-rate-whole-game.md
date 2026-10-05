@@ -3,6 +3,26 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## Input edge/repeat owner (2026-10-05)
+
+The opt-in hand scheduler now dispatches the complete input edge/repeat owner
+`0x000B5870` to [game_input.c](../../../recomp-runtime/game_input.c).
+Polling remains in the existing XAPI input path; button mapping, pressure
+thresholds, stick deadzones, per-port edges, aggregate edges and disconnect
+clearing retain the guest layout. New presses and releases are derived on each
+poll. Repeat delay/reload is 20/5 polls at 60 Hz; the separable model uses 40/10
+at 120 Hz, preserving elapsed repeat duration. This does not enable the rejected
+whole-game 120 Hz mode.
+
+Public tests cover a one-poll press and release, held-button repeat timing at
+both rates, changed-held-mask cancellation, lower-word repeat masks, analog
+threshold/deadzone boundaries, aggregate delivery, disconnect clearing and
+callee stack cleanup. A deterministic natural attract smoke run with hand input,
+scheduler and scene owners produced a byte-identical image to generated at
+Swap 3000 and closed normally. Live host input was disabled as described below.
+All 17 CTest cases and the tools suite (21 tests, one skip) passed. The public-only
+build also succeeds without private inputs.
+
 ## Scene/render continuation (2026-10-05)
 
 `RECOMP_GAME_SCENE=1` selects readable hand source for the scene fiber
@@ -354,7 +374,7 @@ the [split-rate assessment](high-frame-rate-split.md).
 | UI/menu transitions and fades | `0x000F27C0` / `sub_000F27C0`; `0x000F38D0` / `sub_000F38D0` | Transition age increments each update; a default limit is 30. Fade age advances toward 30; auxiliary counters wrap at 360. Convert elapsed durations or update these at 60 Hz. Integer thresholds, easing inputs and callbacks must agree. |
 | Attract/cutscene control | `0x000A37F0`, `0x000A4B80`, `0x000A4D00`; channel-script helper `0x000B3190` | Scene callbacks and stateful animation commands share frame-driven execution. Paired captures prove attract acceleration. Preserve waits, cuts, animation-event crossings and scene transitions; full cutscene opcode/event inventory remains open. |
 | Audio cues and media service | `0x000BB310` calls service per loop; `0x00191080`, `0x001929C0`, `0x001A8260`, `0x001A82B0` are media counter-consumer anchors | Cue requests can arrive earlier while samples remain on wall time. Retain authored cue timing and deduplicate animation events. Media frequency/counter wrappers already use measured time; do not blindly halve their values. Wholesale middleware replacement remains separate work. |
-| Input repeat and vibration | `0x000B57D0`, `0x000B5870`, `0x000B5AA0` / corresponding `sub_` entries | Input polls/edge derivation occur per pass; repeat starts at 20 updates and reloads 5, feedback durations decrement per pass. Convert to durations or equivalent 40/10 counts at 120 Hz. Preserve single-consumption edges and analog pressure behavior. |
+| Input repeat and vibration | `0x000B57D0`, `0x000B5870`, `0x000B5AA0` / corresponding `sub_` entries | Input polls/edge derivation occur per pass; repeat starts at 20 updates and reloads 5, feedback durations decrement per pass. Hand edge/repeat owner now preserves 20/5 at 60 Hz and models 40/10 at 120 Hz. Runtime remains 60 Hz; vibration duration and cross-rate consumers remain open. |
 
 The existing scalar and fractional animation/trajectory sampling are useful
 conversion seams. They do **not** establish a variable-wall-delta game loop.
