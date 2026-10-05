@@ -10,6 +10,8 @@ void recomp_game_scheduler_reset(unsigned hz);
 void recomp_game_scheduler_tick(void);
 unsigned recomp_game_scheduler_hz(void);
 uint32_t recomp_game_debug_rng_state(void);
+/* Guest address of the CRT rand() state, or 0 before the CRT has one. */
+uint32_t recomp_game_rng_address(void);
 unsigned recomp_game_requested_hz(void);
 bool recomp_game_timing_enabled(void);
 void recomp_game_test_clock_begin(bool enabled);

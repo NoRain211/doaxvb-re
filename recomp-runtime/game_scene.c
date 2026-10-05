@@ -327,7 +327,13 @@ void recomp_game_scenery_draw(void)
             push(scene);
             *recomp_ebp_register() = frame;
             const uint32_t scenery_rng = recomp_game_debug_rng_state();
+            /* A held substep draws without advancing game state. An indirect
+               consumer under the jungle draw ignores the pause flag, so the
+               shared rand() state is restored as well. */
+            const uint32_t rng = hold_effects ? recomp_game_rng_address() : 0;
+            const uint32_t rng_state = rng ? *recomp_memory_u32(rng) : 0;
             call(draw);
+            if (rng) *recomp_memory_u32(rng) = rng_state;
             if (scenery_rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp scenery rng: draw=%08x kind=%u before=%08x after=%08x\n", draw, kind, scenery_rng, recomp_game_debug_rng_state());
             recomp_runtime.registers.esp += 4;
             if (hold_effects) set_byte(0x004d56efu, 0);

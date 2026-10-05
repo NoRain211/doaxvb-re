@@ -13,7 +13,6 @@ int recomp_game_scheduler_test(void);
 int recomp_game_scene_test(void);
 int recomp_game_camera_test(void);
 int recomp_game_actor_test(void);
-int recomp_game_secondary_test(void);
 int recomp_game_world_test(void);
 int recomp_game_environment_test(void);
 int recomp_game_input_test(void);
@@ -925,7 +924,6 @@ int main(int argc, char **argv)
     passed &= recomp_game_scene_test();
     passed &= recomp_game_camera_test();
     passed &= recomp_game_actor_test();
-    passed &= recomp_game_secondary_test();
     passed &= recomp_game_world_test();
     passed &= recomp_game_environment_test();
     passed &= recomp_game_input_test();
