@@ -1,5 +1,7 @@
 #include "game_scheduler.h"
 #include "game_input.h"
+#include "game_scene.h"
+#include "xapi_time_adapter.h"
 #include "kernel_abi.h"
 #include "d3d_draw_adapter.h"
 
@@ -17,10 +19,31 @@ enum {
 };
 
 static unsigned game_hz = 60;
-static unsigned sleep_half_ticks[FIBER_COUNT];
+static unsigned sleep_subticks[FIBER_COUNT];
 static bool startup_clock_pending;
 static bool trace_scheduler;
 static unsigned scheduler_pass;
+static bool trace_timing;
+static uint64_t fiber_time[17], fiber_peak[17];
+static unsigned fiber_calls[17];
+static uint64_t phase_time[6];
+
+static uint64_t timing_now(void)
+{
+    return trace_timing ? recomp_xapi_performance_counter() : 0;
+}
+
+unsigned recomp_game_requested_hz(void)
+{
+    const char *rate = getenv("RECOMP_GAME_HZ");
+    if (rate == NULL) return 0;
+    if (strcmp(rate, "60") == 0) return 60;
+    if (strcmp(rate, "120") == 0) return 120;
+    if (strcmp(rate, "240") == 0) return 240;
+    return 0;
+}
+
+bool recomp_game_timing_enabled(void) { return trace_timing; }
 
 unsigned recomp_game_scheduler_hz(void) { return game_hz; }
 
@@ -60,17 +83,17 @@ static void generated_game_entry(void)
 }
 #endif
 
-bool recomp_game_sleep_step(int32_t *ticks, unsigned *half_tick, unsigned hz)
+bool recomp_game_sleep_step(int32_t *ticks, unsigned *subtick, unsigned steps)
 {
     if (*ticks <= 0) {
         *ticks = 0;
-        *half_tick = 0;
+        *subtick = 0;
         return true;
     }
-    if (hz == 120 && ++*half_tick < 2) {
+    if (++*subtick < steps) {
         return false;
     }
-    *half_tick = 0;
+    *subtick = 0;
     --*ticks;
     return *ticks == 0;
 }
@@ -80,7 +103,12 @@ void recomp_game_scheduler_reset(unsigned hz)
     game_hz = hz;
     trace_scheduler = getenv("RECOMP_GAME_SCHEDULER_TRACE") != NULL;
     scheduler_pass = 0;
-    memset(sleep_half_ticks, 0, sizeof sleep_half_ticks);
+    trace_timing = getenv("RECOMP_GAME_TIMING_TRACE") != NULL;
+    memset(fiber_time, 0, sizeof fiber_time);
+    memset(fiber_peak, 0, sizeof fiber_peak);
+    memset(fiber_calls, 0, sizeof fiber_calls);
+    memset(phase_time, 0, sizeof phase_time);
+    memset(sleep_subticks, 0, sizeof sleep_subticks);
 }
 
 static void push(uint32_t value)
@@ -116,12 +144,22 @@ void recomp_game_scheduler_tick(void)
         const uint32_t flags = *recomp_memory_u32(slot);
         if ((flags & 1u) != 0 && (flags & 0x20u) == 0) {
             int32_t ticks = (int32_t)*recomp_memory_u32(slot + 4u);
+            const uint32_t callback = *recomp_memory_u32(slot + 12u);
+            const bool frame_owner = recomp_game_scene_lookup_manual(callback) != NULL ||
+                callback == 0x0002eec0u || callback == 0x0008a970u;
             const bool resume = recomp_game_sleep_step(
-                &ticks, &sleep_half_ticks[index], game_hz);
+                &ticks, &sleep_subticks[index], frame_owner ? 1u : game_hz / 60u);
             *recomp_memory_u32(slot + 4u) = (uint32_t)ticks;
             if (resume) {
                 const uint32_t draws_before = recomp_d3d_draw_adapter_submitted();
+                const uint64_t started = timing_now();
                 call_one(0x0018305au, *recomp_memory_u32(slot + 8u));
+                if (trace_timing) {
+                    const uint64_t elapsed = timing_now() - started;
+                    fiber_time[index] += elapsed;
+                    if (elapsed > fiber_peak[index]) fiber_peak[index] = elapsed;
+                    ++fiber_calls[index];
+                }
                 if (trace_scheduler && (scheduler_pass <= 70 || scheduler_pass % 300 == 0)) {
                     fprintf(stderr, "recomp game fiber: pass=%u slot=%u callback=%08x draws=%u scene_age=%u\n",
                         scheduler_pass, index, *recomp_memory_u32(slot + 12u),
@@ -138,7 +176,7 @@ void recomp_game_scheduler_tick(void)
                 }
             }
         } else if ((flags & 1u) == 0) {
-            sleep_half_ticks[index] = 0;
+            sleep_subticks[index] = 0;
         }
         ++*recomp_memory_u32(CURRENT_SLOT);
     }
@@ -167,9 +205,12 @@ static void game_loop(void)
     const uint32_t scratch = recomp_runtime.registers.esp;
 
     for (;;) {
+        uint64_t timed = timing_now();
         call(0x000b57d0u); /* Poll controllers. */
         call(0x000b5870u); /* Derive edges and repeats. */
         call(0x000b5aa0u); /* Service feedback. */
+        phase_time[0] += timing_now() - timed;
+        timed = timing_now();
         call(0x001f90e0u);
         if (*recomp_memory_u32(0x005f2b98u) != 0) {
             call(0x001e38f0u);
@@ -190,9 +231,17 @@ static void game_loop(void)
         recomp_runtime.registers.esp += 4u;
         *recomp_memory_u32(0x00a23bacu) = 0;
         call(0x00179b30u);
+        phase_time[1] += timing_now() - timed;
+        timed = timing_now();
         call(0x000b5680u);
+        phase_time[2] += timing_now() - timed;
+        timed = timing_now();
         call(0x000bab70u);
+        phase_time[3] += timing_now() - timed;
+        timed = timing_now();
         call(0x00179a90u);
+        phase_time[4] += timing_now() - timed;
+        timed = timing_now();
         if (*recomp_memory_u32(0x005f2b98u) != 0) {
             call(0x0018a160u);
             if (*recomp_memory_u32(0x00b3c34cu) != 0 &&
@@ -210,13 +259,29 @@ static void game_loop(void)
                 recomp_runtime.registers.esp += 4u;
             }
         }
+        phase_time[5] += timing_now() - timed;
+        if (trace_timing && scheduler_pass % 300 == 0) {
+            fprintf(stderr, "recomp game timing: pass=%u phase_ms=", scheduler_pass);
+            for (unsigned i = 0; i < 6; ++i) fprintf(stderr, "%s%.3f", i ? "," : "", phase_time[i] / 1e6);
+            fprintf(stderr, "\n");
+            for (unsigned i = 0; i < 17; ++i) if (fiber_calls[i]) {
+                fprintf(stderr, "recomp fiber timing: pass=%u slot=%u callback=%08x calls=%u total_ms=%.3f max_ms=%.3f\n",
+                    scheduler_pass, i, *recomp_memory_u32(FIBER_SLOTS + i * SLOT_SIZE + 12u),
+                    fiber_calls[i], fiber_time[i] / 1e6, fiber_peak[i] / 1e6);
+            }
+            memset(phase_time, 0, sizeof phase_time);
+            memset(fiber_time, 0, sizeof fiber_time);
+            memset(fiber_peak, 0, sizeof fiber_peak);
+            memset(fiber_calls, 0, sizeof fiber_calls);
+        }
     }
 }
 
 static void game_entry(void)
 {
     recomp_game_test_clock_begin(test_clock_enabled());
-    recomp_game_scheduler_reset(60);
+    const unsigned hz = recomp_game_requested_hz();
+    recomp_game_scheduler_reset(hz != 0 ? hz : 60);
     fprintf(stderr, "recomp game scheduler: hand source, hz=%u\n", game_hz);
     call(0x000bb2a0u);
     call(0x000bb310u);
@@ -235,7 +300,8 @@ RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
         return NULL;
     }
     const char *enabled = getenv("RECOMP_GAME_SCHEDULER");
-    if (enabled == NULL || strcmp(enabled, "1") != 0) {
+    if ((enabled == NULL || strcmp(enabled, "1") != 0) &&
+        recomp_game_requested_hz() == 0) {
 #ifdef RECOMP_FULL_PROGRAM
         if (address == 0x000bb290u && test_clock_enabled()) {
             return generated_game_entry;

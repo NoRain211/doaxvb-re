@@ -1,4 +1,5 @@
 #include "game_scheduler.h"
+#include "game_pacing.h"
 #include "program_manual.h"
 
 #include <stdio.h>
@@ -58,15 +59,35 @@ static void check_durations(unsigned hz)
         int32_t ticks = durations[i];
         unsigned fraction = 0;
         unsigned calls = 0;
-        do { ++calls; } while (!recomp_game_sleep_step(&ticks, &fraction, hz));
+        do { ++calls; } while (!recomp_game_sleep_step(&ticks, &fraction, hz / 60u));
         expect(calls * 60u == (unsigned)durations[i] * hz,
                "integer sleep duration changed in seconds");
         expect(ticks == 0 && fraction == 0, "completed sleep retained a fraction");
     }
     int32_t ticks = -1;
     unsigned fraction = 1;
-    expect(recomp_game_sleep_step(&ticks, &fraction, hz) && ticks == 0 && fraction == 0,
+    expect(recomp_game_sleep_step(&ticks, &fraction, hz / 60u) && ticks == 0 && fraction == 0,
            "nonpositive sleep did not resume immediately");
+}
+
+static void check_pacing(unsigned hz)
+{
+    const int64_t interval = INT64_C(1000000000) / hz;
+    expect(recomp_game_pacing_delay_ns(-interval / 2, interval, false) ==
+           interval - interval / 2, "on-time presentation delay changed");
+    expect(recomp_game_pacing_delay_ns(-interval * 3, interval, false) == 0,
+           "legacy late frame started catching up");
+    expect(recomp_game_pacing_delay_ns(-interval * 3, interval, true) == -interval * 2,
+           "fixed game clock discarded elapsed time");
+    int64_t deadline = 0, now = 0;
+    for (unsigned frame = 1; frame <= hz; ++frame) {
+        now += frame == 10 ? interval * 5 : interval / 4;
+        const int64_t wait = recomp_game_pacing_delay_ns(deadline - now, interval, true);
+        deadline = now + wait;
+        if (wait > 0) now += wait;
+        expect(deadline == interval * frame, "game deadline accumulated processing drift");
+    }
+    expect(now == interval * hz, "game clock did not recover a transient late frame");
 }
 
 int recomp_game_scheduler_test(void)
@@ -83,8 +104,12 @@ int recomp_game_scheduler_test(void)
         {0x00183047u, delete_fiber},
     };
     passed = 1;
+    check_pacing(60);
+    check_pacing(120);
+    check_pacing(240);
     check_durations(60);
     check_durations(120);
+    check_durations(240);
     recomp_runtime_init(regions, 2, NULL, 0, functions, 3);
     recomp_runtime.registers.esp = 0x010000d0u;
     *recomp_memory_u32(0x010000d4u) = 0x01000080u;
@@ -102,7 +127,7 @@ int recomp_game_scheduler_test(void)
     }
     expect(recomp_game_scheduler_lookup_manual(0x80000080u) == NULL,
            "clock fixture changed later system-time reads");
-    for (unsigned hz = 60; hz <= 120; hz += 60) {
+    for (unsigned hz = 60; hz <= 240; hz *= 2) {
         memset(slots, 0, sizeof slots);
         memset(resumed, 0, sizeof resumed);
         timestamps = deleted = 0;

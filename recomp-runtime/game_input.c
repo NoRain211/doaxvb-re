@@ -5,21 +5,20 @@
 
 _Static_assert(sizeof(RecompGameInput) == 44, "guest input layout");
 
-void recomp_game_input_buttons(RecompGameInput *state, uint32_t held, unsigned hz)
+void recomp_game_input_buttons(RecompGameInput *state, uint32_t held, unsigned steps)
 {
-    const unsigned scale = hz == 120 ? 2 : 1;
     state->previous = state->held;
     state->held = held;
     state->pressed = held & ~state->previous;
     state->released = state->previous & ~held;
     state->repeated = 0;
     if (state->pressed != 0) {
-        state->repeat_delay = 20 * scale;
+        state->repeat_delay = 20 * steps;
         state->repeat_mask = state->pressed & 0xffffu;
         state->repeated = state->repeat_mask;
     } else if (state->repeat_delay != 0 && held == state->previous) {
         if (--state->repeat_delay == 0) {
-            state->repeat_delay = 5 * scale;
+            state->repeat_delay = 5 * steps;
             state->repeated = state->repeat_mask & held;
         }
     } else {
@@ -78,7 +77,7 @@ void recomp_game_input_update(void)
             memset(state.pressure, 0, sizeof state.pressure);
             memset(state.axes, 0, sizeof state.axes);
         }
-        recomp_game_input_buttons(&state, held, recomp_game_scheduler_hz());
+        recomp_game_input_buttons(&state, held, recomp_game_scheduler_hz() / 60u);
         recomp_guest_store(address, &state, sizeof state);
         aggregate.held |= state.held;
         aggregate.previous |= state.previous;

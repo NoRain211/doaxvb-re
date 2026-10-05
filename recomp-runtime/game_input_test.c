@@ -53,11 +53,11 @@ static int check_guest_delivery(void)
 
 int recomp_game_input_test(void)
 {
-    for (unsigned hz = 60; hz <= 120; hz += 60) {
+    for (unsigned hz = 60; hz <= 240; hz *= 2) {
         RecompGameInput state = {0};
         const unsigned scale = hz / 60;
         for (unsigned tick = 0; tick <= 30 * scale; ++tick) {
-            recomp_game_input_buttons(&state, 0x10, hz);
+            recomp_game_input_buttons(&state, 0x10, scale);
             const bool repeat = tick == 0 ||
                 (tick >= 20 * scale && (tick - 20 * scale) % (5 * scale) == 0);
             if (state.pressed != (tick == 0 ? 0x10u : 0) ||
@@ -66,12 +66,12 @@ int recomp_game_input_test(void)
                 return 0;
             }
         }
-        recomp_game_input_buttons(&state, 0, hz);
+        recomp_game_input_buttons(&state, 0, scale);
         if (state.released != 0x10 || state.pressed != 0 ||
             state.repeated != 0 || state.repeat_delay != 0) return 0;
-        recomp_game_input_buttons(&state, 0x10001, hz);
+        recomp_game_input_buttons(&state, 0x10001, scale);
         if (state.pressed != 0x10001 || state.repeated != 1) return 0;
-        recomp_game_input_buttons(&state, 1, hz);
+        recomp_game_input_buttons(&state, 1, scale);
         if (state.released != 0x10000 || state.repeat_delay != 0) return 0;
     }
     return check_guest_delivery();
