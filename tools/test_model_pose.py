@@ -3,7 +3,8 @@ import math
 import unittest
 
 from model_pose import (compare_worlds, euler, fk_worlds, identity, inverse_rigid,
-                        local_poses, multiply, quaternion, rotation, translation)
+                        local_poses, multiply, quaternion, rotation, translation,
+                        affine_local_poses, inverse_affine, pose_matrix)
 
 
 class PoseTests(unittest.TestCase):
@@ -32,6 +33,18 @@ class PoseTests(unittest.TestCase):
         poses = local_poses([parent, child], [{'parent': -1}, {'parent': 0}])
         self.assertMatrixClose(poses[1]['translation'], [0, 2, 0])
         self.assertMatrixClose(poses[1]['rotation'], [0, 0, 0, 1])
+
+    def test_affine_local_scale_preserved_and_shear_residual_reported(self):
+        parent = pose_matrix({'translation':[2,3,4], 'rotation':[0,0,0,1], 'scale':[2,3,4]})
+        child = multiply(multiply(rotation(1,0.5),translation([0,2,0])),parent)
+        poses,error = affine_local_poses([parent,child],[{'parent':-1},{'parent':0}])
+        self.assertLess(error,1e-12)
+        self.assertMatrixClose(poses[0]['scale'],[2,3,4])
+        self.assertMatrixClose(poses[1]['translation'],[0,2,0])
+        self.assertMatrixClose(multiply(parent,inverse_affine(parent)),identity())
+        child[1] += 0.1
+        _,error = affine_local_poses([parent,child],[{'parent':-1},{'parent':0}])
+        self.assertGreater(error,0.01)
 
     def test_fk_primary_chain_and_exact_difference_list(self):
         joints = [{'parent': -1, 'translation': [0, 0, 0]} for _ in range(32)]

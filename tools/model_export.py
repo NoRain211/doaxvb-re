@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Export a private skinned preview with supplied poses or incomplete FK motion.
+"""Export private skinned geometry with supplied, FK or procedural clip poses.
 
 Archive scalar channels are NOT joint rotations. --motion writes a diagnostic
-sidecar unless --fk-motion is selected. Complete motion needs the procedural solver.
+sidecar unless FK or explicit solver inputs are selected. Controllers stay frozen.
 See docs/wayfinder/research/model-format.md for the explicit rig input contract.
 """
 import argparse
@@ -17,7 +17,8 @@ from urllib.parse import quote
 from afs_extract import private_output
 from model_animation import parse_clip
 from model_format import companion_draws, palette_matrices, read_mesh
-from model_pose import sample_fk_clip
+from model_pose import affine_local_poses, sample_fk_clip
+from model_skeleton import solve_scene
 from texture_rip import texture_key, texture_payloads
 
 
@@ -98,7 +99,7 @@ def add_animation(doc, poses, joint_count):
     time_index = doc.accessor([(t,) for t in times], 'SCALAR', bounds=True)
     animation = {'name': 'solved_clip', 'samplers': [], 'channels': []}
     for joint in range(joint_count):
-        rotations, translations = [], []
+        rotations, translations, scales = [], [], []
         for frame in frames:
             value = frame[joint]
             q, xyz = value['rotation'], value['translation']
@@ -110,8 +111,17 @@ def add_animation(doc, poses, joint_count):
                 q = [-v for v in q]
             rotations.append(q)
             translations.append(reflect(xyz))
-        for path, values, kind in [('translation', translations, 'VEC3'),
-                                   ('rotation', rotations, 'VEC4')]:
+            if 'scale' in value:
+                scale = value['scale']
+                if len(scale)!=3 or any(not math.isfinite(v) or v<=0 for v in scale):
+                    raise ValueError('Invalid solved pose scale')
+                scales.append(scale)
+        channels = [('translation', translations, 'VEC3'), ('rotation', rotations, 'VEC4')]
+        if scales:
+            if len(scales)!=len(frames):
+                raise ValueError('Incomplete scale samples')
+            channels.append(('scale', scales, 'VEC3'))
+        for path, values, kind in channels:
             sampler = len(animation['samplers'])
             animation['samplers'].append({'input': time_index,
                                          'output': doc.accessor(values, kind),
@@ -119,6 +129,21 @@ def add_animation(doc, poses, joint_count):
             animation['channels'].append({'sampler': sampler,
                                           'target': {'node': joint + 1, 'path': path}})
     doc.json['animations'] = [animation]
+
+
+def sample_solved_clip(clip, rig, inputs, grid, ticks_per_second):
+    if not math.isfinite(ticks_per_second) or ticks_per_second <= 0:
+        raise ValueError('Ticks per second must be positive')
+    frames, error = [], 0.0
+    for tick in range(clip.count):
+        values = [0.0 if v is None else v for v in clip.sample(tick)]
+        worlds,_ = solve_scene(inputs['tables'],values,inputs['targets'],grid)
+        frame,residual = affine_local_poses(worlds,rig['joints'])
+        frames.append(frame)
+        error = max(error,residual)
+    return {'times':[i/ticks_per_second for i in range(clip.count)], 'frames':frames,
+            'evaluation':'native skeleton model; frozen actor/controllers; queried scene terrain',
+            'max_world_trs_projection_error':error}
 
 
 def build_document(model, draws, rig, texture_uris, poses=None):
@@ -231,7 +256,7 @@ def structural_check(doc):
             sampler = animation['samplers'][channel['sampler']]
             time = j['accessors'][sampler['input']]
             value = j['accessors'][sampler['output']]
-            kind = {'translation': 'VEC3', 'rotation': 'VEC4'}.get(key[1])
+            kind = {'translation': 'VEC3', 'rotation': 'VEC4', 'scale': 'VEC3'}.get(key[1])
             if (sampler['interpolation'] != 'LINEAR' or time['type'] != 'SCALAR'
                     or value['type'] != kind or time['count'] != value['count']
                     or time['componentType'] != 5126 or value['componentType'] != 5126):
@@ -246,6 +271,7 @@ def structural_check(doc):
             for row in struct.iter_unpack('<' + 'f'*width, doc.binary[
                     view['byteOffset']:view['byteOffset'] + view['byteLength']]):
                 if (not all(math.isfinite(v) for v in row)
+                        or (key[1] == 'scale' and min(row) <= 0)
                         or (width == 4 and abs(sum(v*v for v in row)-1) > 2e-5)):
                     raise ValueError('Invalid encoded animation transform')
 
@@ -261,6 +287,8 @@ def main():
     parser.add_argument('--slot', type=int, default=0)
     parser.add_argument('--fk-motion', action='store_true', help='Export explicitly incomplete FK animation')
     parser.add_argument('--ticks-per-second', type=float, default=60)
+    parser.add_argument('--solver-inputs', type=Path, help='Private tables and frozen controller targets')
+    parser.add_argument('--terrain-grid', type=Path, help='Private scene grid for independent height queries')
     args = parser.parse_args()
     try:
         output = private_output(args.output)
@@ -286,12 +314,22 @@ def main():
             if clip is None or poses is not None:
                 raise ValueError('--fk-motion requires --motion and excludes --pose-samples')
             poses = sample_fk_clip(clip, rig, args.ticks_per_second)
+        if args.solver_inputs or args.terrain_grid:
+            if not args.solver_inputs or not args.terrain_grid or clip is None or poses is not None:
+                raise ValueError('Solver requires motion, inputs and terrain; excludes FK/supplied poses')
+            poses = sample_solved_clip(clip, rig, json.loads(args.solver_inputs.read_text()),
+                                       json.loads(args.terrain_grid.read_text()), args.ticks_per_second)
         doc = build_document(model, draws, rig, uris, poses)
         doc.json['extras']['ignored_draw_opcodes'] = ignored
         if args.fk_motion:
             doc.json['extras']['animation'] = poses['evaluation']
             doc.json['extras']['ticks_per_second'] = args.ticks_per_second
             doc.json['animations'][0]['name'] = 'fk_clip_incomplete'
+        if args.solver_inputs:
+            doc.json['extras'].update(animation=poses['evaluation'],
+                ticks_per_second=args.ticks_per_second,
+                max_world_trs_projection_error=poses['max_world_trs_projection_error'],
+                solver_source_commit='8ca957b', controller_policy='frozen for the entire clip')
         structural_check(doc)
         motion = None
         if clip is not None:
