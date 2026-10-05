@@ -11,7 +11,7 @@ typedef struct {
     int32_t repeat_delay;
 } RecompGameInput;
 
-void recomp_game_input_buttons(RecompGameInput *state, uint32_t held, unsigned hz);
+void recomp_game_input_buttons(RecompGameInput *state, uint32_t held, unsigned steps);
 void recomp_game_input_update(void);
 
 #endif

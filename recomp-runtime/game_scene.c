@@ -1,4 +1,7 @@
 #include "game_scene.h"
+#include "game_scheduler.h"
+#include "xapi_time_adapter.h"
+#include <stdio.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -38,11 +41,20 @@ static void set_scalar(uint32_t address, float value)
     recomp_guest_store(address, &value, sizeof value);
 }
 
+static bool whole_tick(unsigned *phase, unsigned steps)
+{
+    if (++*phase < steps) return false;
+    *phase = 0;
+    return true;
+}
+
 static void next_frame(void)
 {
     const uint32_t slot = 0x005f2c38u + *recomp_memory_u32(0x005f2e5cu) * 32u;
     *recomp_memory_u32(slot) &= ~0x10u;
-    *recomp_memory_u32(slot + 4u) = 1;
+    /* These owners produce a frame; zero makes their yield independent of
+       an authored integer sleep duration in the unconverted fibres. */
+    *recomp_memory_u32(slot + 4u) = 0;
     push(*recomp_memory_u32(0x005f2e58u));
     call(0x0018305au);
 }
@@ -54,6 +66,8 @@ static void scene_callback(uint8_t scene, unsigned event)
 
 static void scene_fiber(void)
 {
+    unsigned phase = 0;
+    const unsigned steps = recomp_game_scheduler_hz() / 60u;
     push(recomp_runtime.registers.ebx);
     call(0x000a3950u);
     scene_callback(byte(0x005dece0u), 0);
@@ -77,8 +91,12 @@ static void scene_fiber(void)
                     (uint8_t)(int)(scalar(0x002813e0u) / scalar(0x005decf0u)));
             }
         }
+        if (steps > 1) {
+            set_scalar(0x004d6fc4u,
+                scalar(0x005decf0u) * scalar(0x005ded50u) / steps);
+        }
         set_byte(0x005ded55u, byte(0x005dece0u));
-        ++*recomp_memory_u32(0x004d967cu);
+        if (whole_tick(&phase, steps)) ++*recomp_memory_u32(0x004d967cu);
         scene_callback(byte(0x005dece0u), 1);
         if (byte(0x005ded55u) != byte(0x005dece0u) || byte(0x005ded5cu) != 0) {
             scene_callback(byte(0x005dece0u), 2);
@@ -131,11 +149,13 @@ static void scenario_tick(void)
 
 static void scenario_fiber(void)
 {
+    unsigned phase = 0;
+    const unsigned steps = recomp_game_scheduler_hz() / 60u;
     set_byte(0x004d9534u, 0);
     call(0x00097eb0u);
     for (;;) {
         next_frame();
-        scenario_tick();
+        if (whole_tick(&phase, steps)) scenario_tick();
     }
 }
 
@@ -176,6 +196,59 @@ static void world_fiber(void)
     }
 }
 
+static uint64_t render_time[12];
+static unsigned render_pass;
+
+static void render_call(uint32_t frame, unsigned part, uint32_t address)
+{
+    const bool timing = recomp_game_timing_enabled();
+    const uint64_t start = timing ? recomp_xapi_performance_counter() : 0;
+    *recomp_ebp_register() = frame;
+    call(address);
+    if (timing) render_time[part] += recomp_xapi_performance_counter() - start;
+}
+
+/* This owner publishes its inherited guest EBP before each generated call. */
+static void actor_frame_draw(void)
+{
+    const uint32_t frame = *recomp_ebp_register();
+    render_call(frame, 0, 0x000c03e0u);
+    render_call(frame, 1, 0x0017eef0u);
+    if (byte(0x00b3c428u) == 0) set_byte(0x00b3c428u, 1);
+    *recomp_memory_u32(0x004ca498u) = 0;
+    set_byte(0x004ca4dcu, 0);
+    set_byte(0x00b3c429u, 1);
+    *recomp_memory_u32(0x00a24790u) = 0x000664a0u;
+    *recomp_memory_u32(0x004ca494u) = UINT32_MAX;
+    render_call(frame, 2, 0x000c0d50u);
+    render_call(frame, 3, 0x001435a0u);
+    render_call(frame, 4, 0x000c0fa0u);
+    if (byte(0x005e69bau) != 0) {
+        push(*recomp_memory_u32(0x005e69b0u));
+        render_call(frame, 5, 0x001e3870u);
+        set_byte(0x005e69bau, 0);
+    }
+    render_call(frame, 6, 0x000c11b0u);
+    for (unsigned actor = 0; actor < 4; ++actor) {
+        push(0); push(actor);
+        render_call(frame, 7 + (actor != 0), 0x00063000u);
+        if (actor == 0 && byte(0x004d6ff1u) == 10) {
+            render_call(frame, 9, 0x001e39e0u);
+            *recomp_memory_u32(0x005e69b0u) = recomp_runtime.registers.eax;
+            set_byte(0x005e69bau, 1);
+        }
+    }
+    render_call(frame, 10, 0x000c12b0u);
+    render_call(frame, 11, 0x0017ef70u);
+    recomp_runtime.registers.esp += 4u;
+    if (recomp_game_timing_enabled() && ++render_pass % 300 == 0) {
+        fprintf(stderr, "recomp render timing: pass=%u part_ms=", render_pass);
+        for (unsigned i = 0; i < 12; ++i) fprintf(stderr, "%s%.3f", i ? "," : "", render_time[i] / 1e6);
+        fprintf(stderr, "\n");
+        memset(render_time, 0, sizeof render_time);
+    }
+}
+
 static void actor_frame_fiber(void)
 {
     call(0x000b42f0u);
@@ -187,21 +260,25 @@ static void actor_frame_fiber(void)
 }
 
 /* Complete game-owned scene, authored-script and world-frame owners. Their
-   generated D3D SetTransform seam remains at 0x001e36d0; wholesale D3D
+   generated D3D SetTransform and fence seams remain at 0x001e36d0,
+   0x001e3870 and 0x001e39e0; wholesale D3D
    replacement remains open. See the whole-game high-frame-rate research page. */
 RecompFunction recomp_game_scene_lookup_manual(uint32_t address)
 {
     if (address != 0x000a37f0u && address != 0x0006adb0u &&
-        address != 0x00079d00u && address != 0x000b42b0u) {
+        address != 0x00079d00u && address != 0x000b42b0u &&
+        address != 0x000b4450u) {
         return NULL;
     }
     const char *enabled = getenv("RECOMP_GAME_SCENE");
-    if (enabled == NULL || strcmp(enabled, "1") != 0) return NULL;
+    if ((enabled == NULL || strcmp(enabled, "1") != 0) &&
+        recomp_game_requested_hz() == 0) return NULL;
     switch (address) {
     case 0x000a37f0u: return scene_fiber;
     case 0x0006adb0u: return scenario_fiber;
     case 0x00079d00u: return world_fiber;
     case 0x000b42b0u: return actor_frame_fiber;
+    case 0x000b4450u: return actor_frame_draw;
     default: return NULL;
     }
 }
