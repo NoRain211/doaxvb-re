@@ -4,10 +4,11 @@ import math
 import struct
 import unittest
 
-from model_animation import decode_tangent, decode_value, parse_clip, parse_track
-from model_export import add_animation, build_document, rest_worlds, structural_check
+from model_animation import Clip, Segment, decode_tangent, decode_value, parse_clip, parse_track
+from model_export import add_animation, build_document, rest_worlds, structural_check, sample_solved_clip
 from model_format import companion_draws, palette_matrices, palette_operations, read_mesh
 from model_pose import sample_fk_clip
+from test_model_skeleton import fixture as solver_fixture
 
 
 def triangle_model():
@@ -172,6 +173,26 @@ class ModelTests(unittest.TestCase):
         view = doc.json['bufferViews'][doc.json['accessors'][accessor]['bufferView']]
         struct.pack_into('<2f', doc.binary, view['byteOffset'], 0, 0)
         with self.assertRaisesRegex(ValueError, 'animation times'):
+            structural_check(doc)
+
+    def test_procedural_clip_writes_scales_and_rejects_invalid_encoded_scale(self):
+        tables,values,targets = solver_fixture()
+        clip = Clip(2,tuple((Segment(0,0,v,v),) for v in values))
+        rig = synthetic_rig()
+        rig['joints'] += [{'parent':-1,'translation':[0,0,0]} for _ in range(30)]
+        grid = dict(xmin=-10,xmax=10,zmin=-10,zmax=10,cell=20,width=2,stride=2,
+                    heights=[0]*4,base=0)
+        poses = sample_solved_clip(clip,rig,{'tables':tables,'targets':targets},grid,60)
+        doc = build_document(triangle_model(),[{'object':0,'palette':0,'flags':1}],
+                             rig,{0:('synthetic','synthetic.png')},poses)
+        structural_check(doc)
+        animation = doc.json['animations'][0]
+        self.assertEqual(len(animation['channels']),96)
+        channel = next(c for c in animation['channels'] if c['target']['path']=='scale')
+        accessor = animation['samplers'][channel['sampler']]['output']
+        view = doc.json['bufferViews'][doc.json['accessors'][accessor]['bufferView']]
+        struct.pack_into('<f',doc.binary,view['byteOffset'],0)
+        with self.assertRaisesRegex(ValueError,'animation transform'):
             structural_check(doc)
 
     def test_exported_inverse_bind_matches_rotating_draw_palette(self):

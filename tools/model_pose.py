@@ -78,6 +78,64 @@ def local_poses(worlds, joints):
     return result
 
 
+def inverse_affine(m):
+    """General inverse: approximate runtime rotations need not be orthonormal."""
+    a,b,c,d,e,f,g,h,i = (m[k] for k in (0,1,2,4,5,6,8,9,10))
+    cofactors = [e*i-f*h,c*h-b*i,b*f-c*e,f*g-d*i,a*i-c*g,c*d-a*f,d*h-e*g,b*g-a*h,a*e-b*d]
+    determinant = a*cofactors[0]+b*cofactors[3]+c*cofactors[6]
+    if abs(determinant) < 1e-12:
+        raise ValueError('Singular affine transform')
+    out = identity()
+    for k,v in zip((0,1,2,4,5,6,8,9,10),cofactors):
+        out[k] = v/determinant
+    for c in range(3):
+        out[12+c] = -sum(m[12+k]*out[k*4+c] for k in range(3))
+    return out
+
+
+def pose_matrix(pose):
+    x,y,z,w = pose['rotation']
+    out = [1-2*(y*y+z*z),2*(x*y+z*w),2*(x*z-y*w),0,
+           2*(x*y-z*w),1-2*(x*x+z*z),2*(y*z+x*w),0,
+           2*(x*z+y*w),2*(y*z-x*w),1-2*(x*x+y*y),0,
+           *pose['translation'],1]
+    for r,scale in enumerate(pose.get('scale',[1,1,1])):
+        for c in range(3):
+            out[r*4+c] *= scale
+    return out
+
+
+def affine_local_poses(worlds, joints):
+    """Project affine local bones onto glTF TRS and measure the world residual.
+
+    Nonuniform scale is retained; any shear is explicitly measured, not silently
+    treated as an exact quaternion representation of the native matrix bank.
+    """
+    poses = []
+    for i,joint in enumerate(joints):
+        parent = joint['parent']
+        m = worlds[i] if parent == -1 else multiply(worlds[i],inverse_affine(worlds[parent]))
+        scale = [math.sqrt(sum(m[r*4+c]**2 for c in range(3))) for r in range(3)]
+        if min(scale) < 1e-12:
+            raise ValueError('Singular local scale')
+        rotation = identity()
+        for r in range(3):
+            rotation[r*4:r*4+3] = [v/scale[r] for v in m[r*4:r*4+3]]
+        poses.append({'translation':m[12:15], 'rotation':quaternion(rotation), 'scale':scale})
+    rebuilt,active = {},set()
+    def visit(i):
+        if i in active:
+            raise ValueError('Cyclic pose hierarchy')
+        if i not in rebuilt:
+            active.add(i)
+            parent = joints[i]['parent']
+            rebuilt[i] = multiply(pose_matrix(poses[i]),identity() if parent==-1 else visit(parent))
+            active.remove(i)
+        return rebuilt[i]
+    error = max(abs(a-b) for i in range(len(poses)) for a,b in zip(worlds[i],visit(i)))
+    return poses,error
+
+
 def fk_worlds(channels, rig, position=(0, 0, 0), heading=0.0):
     if len(channels) != 60 or any(not math.isfinite(v) for v in channels):
         raise ValueError('Expected sixty finite pose channels')

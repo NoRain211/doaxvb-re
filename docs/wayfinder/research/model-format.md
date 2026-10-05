@@ -1,11 +1,11 @@
 # Model geometry, draw palettes and scalar motion
 
 This describes the supported readers, not a complete character format or a
-validated animation replacement. The exporter produces a **primary-mesh bind
-preview** using a separately supplied private rig. It can write an animation
-from supplied solved local poses, or an explicitly incomplete FK approximation
-from a motion bank. It does not yet reproduce a captured gameplay skeleton or
-export secondary geometry.
+validated animation replacement. The exporter produces primary skinned meshes
+using a separately supplied private rig. It supports bind previews, supplied
+local poses, incomplete FK motion and a pure procedural solver driven by a
+motion bank and explicit frozen controller inputs. Secondary geometry and a
+runtime replacement loader remain outside its scope.
 
 ## Geometry
 
@@ -179,9 +179,9 @@ companion conditionals, inverse bind export and supplied-pose animation writing.
 Public-only configure/build and runtime tests do not require retail inputs.
 Private evidence and exact numeric hierarchy tables remain outside this document.
 
-A complete animated character still requires a hand-written pose solver with
-the correct limb tables, mirrored/masked blends, root policy, terrain/look-at
-inputs and derived-joint operations. Capture the clip identity/cursor, actor
+A complete animated character still requires mirrored/masked clip blending,
+stateful controllers and a root-motion policy. The pure solver requires the
+correct limb tables, terrain and frozen controller inputs. Capture clip identity/cursor, actor
 placement, rig identity and all procedural inputs together with the resulting
 matrix bank and draw palette. Compare the independently reconstructed palette
 at that same frame before accepting an animated export. A draw capture alone
@@ -190,7 +190,8 @@ does not supply this state, and a bind-pose preview is not that comparison.
 Then add secondary geometry, remaining material commands and attachment paths.
 Replacement needs a verified import/binding contract and a registered manual
 runtime seam; this exporter does not load replacement models into the game.
-# Matched pose capture
+
+## Matched pose capture
 
 `tools/model_capture.py` observes an owned Windows runner through CDB and its
 matching PDB. Supply the runner, user-owned executable, debugger and a new
@@ -216,10 +217,10 @@ zero in this preview. Root placement is in place; gameplay root motion is not
 integrated. The output metadata marks the animation as incomplete.
 
 Primary FK covers trunk, neck, head, shoulder and eye transforms. Limbs remain
-in the supplied rest hierarchy, and terrain, look-at and derived-joint solving
-remain open. Standard sine/cosine also differs from the game's approximate
-trigonometry, so small residuals in directly keyed joints are expected until
-that numerical model is ported. Do not attribute every difference to IK.
+in the supplied rest hierarchy. This mode omits terrain, look-at and derived
+operations. Its standard sine/cosine also differs from the game's approximate
+trigonometry, so directly keyed joints can have small residuals. Do not
+attribute every FK difference to IK; use the pure solver below for comparison.
 
 `tools/model_compare.py` accepts a paired capture, private rig and optional
 archive motion/slot/tick. It reports every differing numeric joint and palette
@@ -231,3 +232,48 @@ reconstruction or a complete solver acceptance gate.
 The structural fallback checks encoded animation times, target uniqueness,
 accessor shapes, finite translations and unit quaternions, in addition to mesh
 buffer bounds. It is not a substitute for a visual animation review.
+
+## Pure skeleton animation
+
+`tools/model_skeleton.py` ports the native pure skeleton model. It implements
+the folded seventh-order sine approximation, float32 stores, keyed body chain,
+terrain correction, look-at, geometric two-link IK, morph offsets and derived
+joint blends. Angles remain radians. Matrices use row vectors and local
+translations. Approximate bases must not be normalized before solving derived
+rotations; their transpose is intentionally used by the native blending math.
+
+Supply `--motion`, `--slot`, `--solver-inputs` and `--terrain-grid` to the
+exporter. The input JSON has `tables` and `targets`. Tables contain 24 primary
+and alternate offset vectors and four 24-byte limb descriptors. A descriptor
+contains endpoint/parent/proximal/middle/tip slots, three position channels,
+three Euler channels, two pole channels, one tip channel, six signed quarter
+turns encoded as bytes, target mask, bend sign, upper-body flag and a reserved
+byte. Targets contain actor position/heading, link lengths, morph/target/look
+weights, eye angles and flags. No retail defaults are embedded in the tool.
+
+The grid supplies bounds, cell size, base elevation, width, stride and unsigned
+16-bit heights. Bilinear lookup uses the low 12 bits in units of 1/1024. Queries
+outside the bounds return the base; incomplete edge cells are rejected. The
+solver calculates provisional joint/query positions independently, then samples
+hip, neck and limb heights before the final solve. Input height placeholders
+are overwritten. Captured bone matrices never enter this calculation.
+
+Controller results and actor placement are frozen for the exported clip. This
+does not advance the original root, eye, look-at, contact or morph controllers.
+Absent scalar tracks use zero; supplied frozen eye angles remain authoritative.
+Private executable tables and scene/controller inputs are still required, so
+this is not an archive-only controller or character reconstruction.
+
+The comparison tool accepts the same solver/grid options and reports every
+matrix residual at its requested tolerance. Keep this numerical solver gate
+separate from glTF conversion: a general affine inverse removes parent motion,
+then local transforms are projected onto translation/quaternion/positive scale.
+Scale is retained, but glTF TRS cannot represent residual shear. The exported
+`max_world_trs_projection_error` measures the resulting maximum world-matrix
+element error over the full clip. Do not call that projection bit-identical to
+the native palette. Full animation channels use translation, rotation and scale.
+
+Synthetic checks cover solver immutability, reach, singular rejection, active
+branches, bilinear terrain and scaled transform conversion. Natural-scene
+coverage and numeric receipts remain private. Active look-at, morph and sloped
+terrain require broader captured comparisons before general acceptance.
