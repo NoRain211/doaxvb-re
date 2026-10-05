@@ -85,6 +85,23 @@ int recomp_game_scheduler_test(void)
     passed = 1;
     check_durations(60);
     check_durations(120);
+    recomp_runtime_init(regions, 2, NULL, 0, functions, 3);
+    recomp_runtime.registers.esp = 0x010000d0u;
+    *recomp_memory_u32(0x010000d4u) = 0x01000080u;
+    recomp_game_test_clock_begin(false);
+    expect(recomp_game_scheduler_lookup_manual(0x80000080u) == NULL,
+           "normal system time was intercepted");
+    recomp_game_test_clock_begin(true);
+    RecompFunction startup_time = recomp_lookup_manual(0x80000080u);
+    expect(startup_time != NULL, "startup clock fixture was not dispatched");
+    if (startup_time != NULL) {
+        startup_time();
+        expect(*recomp_memory_u64(0x01000080u) == UINT64_C(125911584000000000) &&
+               recomp_runtime.registers.esp == 0x010000d8u,
+               "startup clock value or callee cleanup differs");
+    }
+    expect(recomp_game_scheduler_lookup_manual(0x80000080u) == NULL,
+           "clock fixture changed later system-time reads");
     for (unsigned hz = 60; hz <= 120; hz += 60) {
         memset(slots, 0, sizeof slots);
         memset(resumed, 0, sizeof resumed);

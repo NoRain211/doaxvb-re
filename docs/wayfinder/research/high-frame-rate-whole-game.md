@@ -3,6 +3,43 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## Deterministic 60 Hz comparison (2026-10-05 follow-up)
+
+The earlier small title-image difference was not a hand-scheduler regression.
+Two generated runs, with no live controller source, showed the same variation.
+Initialization at `0x0017A7F0` calls the time wrapper `0x001BB36A` and passes its
+Unix-seconds result to the RNG seed entry `0x001BA3E0`. The time wrapper obtains
+real system time through kernel ordinal 128. This changes ambient animation
+between launches. Bounded Ghidra queries used the same binary identity recorded
+below; the differing pixels were concentrated on trees, boats and shadows.
+
+In consecutive captures from Swap 35 through 74, the first seed-dependent title
+image was **Swap 48**. Swaps 35-40 can still contain the fading opening movie,
+which has a separate wall clock. Those media frames are not equal-time images
+merely because they have the same Swap number.
+
+`RECOMP_GAME_TEST_CLOCK=1` now fixes only the first system-time read inside game
+initialization to Unix second 946684800, for deterministic paired captures.
+Subsequent time reads remain live. The fixture works with either generated entry
+or `RECOMP_GAME_SCHEDULER=1`; it changes no default behavior, scene state, input
+state, scheduler duration or performance-counter clock. The clock is a test
+input, not a gameplay-speed fix. A public test checks its one-read scope, manual
+lookup and guest stack cleanup.
+
+With that common seed, generated and hand images were byte-identical at every
+captured Swap **41-74**, **300-303**, and **3000-3001**. Arrival at Swap 3000 was
+50.753193 seconds generated versus 50.610638 seconds hand, a -0.281% difference.
+Both reached the same natural attract image. The generated run reported a
+Clear/presenter error after the requested window close; the hand run closed
+normally. These are smoke comparisons, not gameplay acceptance.
+
+The deterministic harness retains only the two Start pulses at polls 6 and 8
+and **omits `--input-host-after-poll`**. `runner.cpp` then keeps the scripted
+source's base callback null, so a connected controller cannot inject input.
+No live button source is used after the initial pulses. Graphics remain scale
+4.5, 8x MSAA, SMAA and vsync. All 15 CTest cases passed; the current shared tools
+suite passed 20 tests with one skip. Raw captures and comparisons remain private.
+
 ## Hand-source milestone attempt (2026-10-05)
 
 The first conversion attempt did **not** establish speed-correct 120 Hz. The
