@@ -4,6 +4,7 @@
 #include "xapi_time_adapter.h"
 #include "kernel_abi.h"
 #include "d3d_draw_adapter.h"
+#include "d3d_frame_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,11 +23,15 @@ static unsigned game_hz = 60;
 static unsigned sleep_subticks[FIBER_COUNT];
 static bool startup_clock_pending;
 static bool trace_scheduler;
+static bool trace_rng;
 static unsigned scheduler_pass;
 static bool trace_timing;
 static uint64_t fiber_time[17], fiber_peak[17];
 static unsigned fiber_calls[17];
 static uint64_t phase_time[6];
+static const char *state_capture_path;
+static uint32_t state_capture_at;
+static bool main_present_pending;
 
 static uint64_t timing_now(void)
 {
@@ -102,12 +107,17 @@ void recomp_game_scheduler_reset(unsigned hz)
 {
     game_hz = hz;
     trace_scheduler = getenv("RECOMP_GAME_SCHEDULER_TRACE") != NULL;
+    trace_rng = getenv("RECOMP_GAME_RNG_TRACE") != NULL;
     scheduler_pass = 0;
     trace_timing = getenv("RECOMP_GAME_TIMING_TRACE") != NULL;
     memset(fiber_time, 0, sizeof fiber_time);
     memset(fiber_peak, 0, sizeof fiber_peak);
     memset(fiber_calls, 0, sizeof fiber_calls);
     memset(phase_time, 0, sizeof phase_time);
+    state_capture_path = getenv("RECOMP_GAME_STATE_CAPTURE");
+    const char *capture_at = getenv("RECOMP_GAME_STATE_AT");
+    state_capture_at = state_capture_path && capture_at ? (uint32_t)strtoul(capture_at, NULL, 10) : 0;
+    main_present_pending = false;
     memset(sleep_subticks, 0, sizeof sleep_subticks);
 }
 
@@ -130,6 +140,20 @@ static void call_one(uint32_t address, uint32_t argument)
     call(address);
 }
 
+uint32_t recomp_game_debug_rng_state(void)
+{
+    if (!trace_rng) return 0;
+    const uint32_t thread = *recomp_memory_u32(0x28u);
+    uint32_t pointer = 0x00eeb28cu;
+    if (*recomp_memory_u32(thread + 0x28u)) {
+        const uint32_t tls = *recomp_memory_u32(4);
+        const uint32_t index = *recomp_memory_u32(0x003b5258u);
+        pointer = *recomp_memory_u32(tls + index * 4) + 0x1c;
+    }
+    const uint32_t data = *recomp_memory_u32(pointer);
+    return data ? *recomp_memory_u32(data + 0x14) : 0;
+}
+
 void recomp_game_scheduler_tick(void)
 {
     ++scheduler_pass;
@@ -145,15 +169,23 @@ void recomp_game_scheduler_tick(void)
         if ((flags & 1u) != 0 && (flags & 0x20u) == 0) {
             int32_t ticks = (int32_t)*recomp_memory_u32(slot + 4u);
             const uint32_t callback = *recomp_memory_u32(slot + 12u);
-            const bool frame_owner = recomp_game_scene_lookup_manual(callback) != NULL ||
-                callback == 0x0002eec0u || callback == 0x0008a970u;
+            /* Only the unconverted UI frame owner still uses one as a
+               per-present yield. Hand owners use an explicit zero yield;
+               their generated initialization sleeps retain authored time. */
+            const bool frame_owner = callback == 0x0008a970u;
             const bool resume = recomp_game_sleep_step(
                 &ticks, &sleep_subticks[index], frame_owner ? 1u : game_hz / 60u);
             *recomp_memory_u32(slot + 4u) = (uint32_t)ticks;
             if (resume) {
                 const uint32_t draws_before = recomp_d3d_draw_adapter_submitted();
+                const uint32_t rng_before = trace_rng ? recomp_game_debug_rng_state() : 0;
                 const uint64_t started = timing_now();
                 call_one(0x0018305au, *recomp_memory_u32(slot + 8u));
+                if (trace_rng && recomp_game_debug_rng_state() != rng_before) {
+                    fprintf(stderr, "recomp rng: pass=%u swap=%u slot=%u callback=%08x before=%08x after=%08x\n",
+                        scheduler_pass, recomp_d3d_frame_adapter_swap_counter(), index, callback,
+                        rng_before, recomp_game_debug_rng_state());
+                }
                 if (trace_timing) {
                     const uint64_t elapsed = timing_now() - started;
                     fiber_time[index] += elapsed;
@@ -193,6 +225,67 @@ static void scheduler_adapter(void)
     recomp_runtime.registers.esp += 4u;
 }
 
+static void capture_game_state(void)
+{
+    if (trace_scheduler && (scheduler_pass <= 200 || scheduler_pass % 300 == 0)) {
+        fprintf(stderr, "recomp game state trace: pass=%u swap=%u age=%u scene=%u scenario=%u subage=%u camera_yaw=%u target_yaw=%u\n",
+            scheduler_pass, recomp_d3d_frame_adapter_swap_counter() + 1u,
+            *recomp_memory_u32(0x004d967cu), *recomp_memory(0x005dece0u, 1),
+            *recomp_memory_u32(0x004d994cu), *recomp_memory_u32(0x004d9950u),
+            *recomp_memory_u32(0x0041a934u), *recomp_memory_u32(0x0041a96cu));
+    }
+    if (!state_capture_at || recomp_d3d_frame_adapter_swap_counter() + 1u != state_capture_at) return;
+    static const uint32_t ranges[][2] = {
+        {0x0041a7e0u, 0x4a40u}, {0x004d6fc0u, 0x2a40u},
+        {0x009d4900u, 0xe00u}, {0x005dece0u, 0xa0u},
+        {0x005e0680u, 0x1000u},
+        {0x004d5600u, 0x100u},
+        {0x00327c80u, 0x200u}, {0x005bb260u, 0x20u},
+        {0x004256e0u, 0xa0020u},
+        {0x00327400u, 0x880u}, {0x004c9700u, 0x2100u},
+        {0x004d3650u, 0x3960u}, {0x005e5fe8u, 0x750u},
+        {0x005bb960u, 0x1e0u},
+        {0x005c3770u, 0x50u}, {0x00326fa0u, 8u},
+    };
+    FILE *output = fopen(state_capture_path, "wb");
+    if (output != NULL) {
+        for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i) {
+            fwrite(ranges[i], sizeof ranges[i], 1, output);
+            fwrite(recomp_memory(ranges[i][0], ranges[i][1]), ranges[i][1], 1, output);
+        }
+        for (unsigned group = 0; group < 2; ++group) {
+            const uint32_t descriptor = *recomp_memory_u32(0x00326fa0u + group * 4);
+            if (!descriptor) continue;
+            const uint32_t header[] = {descriptor, 20};
+            fwrite(header, sizeof header, 1, output);
+            fwrite(recomp_memory(descriptor, 20), 20, 1, output);
+            const uint32_t count = *recomp_memory_u16(descriptor + 16);
+            const uint32_t records[] = {*recomp_memory_u32(descriptor), count * 64};
+            if (records[0] && count < 4096) {
+                fwrite(records, sizeof records, 1, output);
+                fwrite(recomp_memory(records[0], records[1]), records[1], 1, output);
+            }
+        }
+        fclose(output);
+        fprintf(stderr, "recomp game state: swap=%u path=%s\n", state_capture_at, state_capture_path);
+    }
+    state_capture_at = 0;
+}
+
+/* Initialization and render-target changes also issue synchronous Swaps.
+   Those remain authored-duration operations while the main loop produces
+   one new frame per substep. Delivery stays in the native D3D adapter. */
+static void game_swap(void)
+{
+    const uint32_t stack = recomp_runtime.registers.esp;
+    const unsigned presents = main_present_pending ? 1u : game_hz / 60u;
+    main_present_pending = false;
+    for (unsigned i = 0; i < presents; ++i) {
+        recomp_runtime.registers.esp = stack;
+        recomp_d3d_swap_adapter();
+    }
+}
+
 /* This replaces the complete main-loop owner, including its movie branch.
    Generated neighbours retain their guest calling conventions and storage. */
 static void game_loop(void)
@@ -203,10 +296,13 @@ static void game_loop(void)
     recomp_runtime.registers.esp -= 20u;
     push(recomp_runtime.registers.esi);
     const uint32_t scratch = recomp_runtime.registers.esp;
+    unsigned poll_phase = 0;
+    const unsigned steps = game_hz / 60u;
 
     for (;;) {
         uint64_t timed = timing_now();
-        call(0x000b57d0u); /* Poll controllers. */
+        if (poll_phase == 0) call(0x000b57d0u);
+        poll_phase = (poll_phase + 1u) % steps;
         call(0x000b5870u); /* Derive edges and repeats. */
         call(0x000b5aa0u); /* Service feedback. */
         phase_time[0] += timing_now() - timed;
@@ -239,7 +335,10 @@ static void game_loop(void)
         call(0x000bab70u);
         phase_time[3] += timing_now() - timed;
         timed = timing_now();
+        capture_game_state();
+        main_present_pending = true;
         call(0x00179a90u);
+        main_present_pending = false;
         phase_time[4] += timing_now() - timed;
         timed = timing_now();
         if (*recomp_memory_u32(0x005f2b98u) != 0) {
@@ -292,6 +391,9 @@ static void game_entry(void)
    remains open; see docs/wayfinder/research/high-frame-rate-whole-game.md. */
 RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
 {
+    if (address == 0x001e8f30u && recomp_game_requested_hz() > 60u) {
+        return game_swap;
+    }
     if (address == 0x80000080u && startup_clock_pending) {
         return startup_clock;
     }
