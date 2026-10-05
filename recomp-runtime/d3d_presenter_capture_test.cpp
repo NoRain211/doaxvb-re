@@ -196,6 +196,11 @@ int main()
     value = {};
     value.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     value.data.draw.pose_replay = &pose;
+    std::array<uint8_t, 12*RECOMP_POSE_REPLAY_SAMPLES> pose_vertices;
+    pose_vertices.fill(0x37);
+    value.data.draw.vertex_count = 1;
+    value.data.draw.vertex_stride = 12;
+    value.data.draw.pose_vertex_bytes = pose_vertices.data();
     value.data.draw.texture_bytes = sources[2].data();
     value.data.draw.texture_byte_count = static_cast<uint32_t>(sources[2].size());
     value.data.draw.texture.format_byte = 0;
@@ -203,10 +208,14 @@ int main()
     CHECK(packet.hasPoseReplay());
     packet.seal(true);
     pose = {};
+    pose_vertices.fill(0);
     std::fill(sources[2].begin(), sources[2].end(), 0x55);
     const auto &frozen = packet.command(0).data.draw;
     const auto *saved = static_cast<const RecompD3dPoseReplay *>(frozen.pose_replay);
     CHECK(saved != &pose && saved->frame == 7 && saved->palettes[1][0][12] == 0.25f);
+    CHECK(frozen.pose_vertex_bytes != pose_vertices.data());
+    const auto *owned_vertices = static_cast<const uint8_t *>(frozen.pose_vertex_bytes);
+    CHECK(std::all_of(owned_vertices, owned_vertices+pose_vertices.size(), [](uint8_t v) { return v == 0x37; }));
     CHECK(frozen.texture_bytes != sources[2].data());
     CHECK(static_cast<const uint8_t *>(frozen.texture_bytes)[0] != 0x55);
     packet.clear();

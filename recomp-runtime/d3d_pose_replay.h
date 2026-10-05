@@ -3,11 +3,14 @@
 
 #include "d3d_presenter.h"
 
+/* Diagnostic quarter samples only; this count does not define a present rate. */
+enum { RECOMP_POSE_REPLAY_SAMPLES = 5 };
+
 /* Owned by the capture packet after submit. Numeric provenance comes from the
    game palette/object binding, not draw order or vertex-buffer addresses. */
 typedef struct RecompD3dPoseReplay {
     uint32_t frame, actor, recipe, count;
-    float palettes[3][4][16];
+    float palettes[RECOMP_POSE_REPLAY_SAMPLES][4][16];
     float view[16], projection[16];
 } RecompD3dPoseReplay;
 

@@ -3,6 +3,7 @@
 #ifdef RECOMP_FULL_PROGRAM
 #include "animation_skeleton.h"
 #include "animation_pose.h"
+#include "animation_seam.h"
 #include "d3d_pose_replay.h"
 #include "d3d_frame_adapter.h"
 #include "stop_report.h"
@@ -43,7 +44,7 @@ static uint32_t solved_frame[4];
 static bool solved_valid[4];
 static PoseCapture experiment_previous;
 static bool experiment_previous_valid, experiment_ready;
-static RecompBoneMatrix experiment_bones[3][32];
+static RecompBoneMatrix experiment_bones[RECOMP_POSE_REPLAY_SAMPLES][32];
 typedef struct PoseBinding {
     uint32_t object;
     RecompBoneMatrix original[4];
@@ -72,6 +73,50 @@ static unsigned experiment_actor(void)
 {
     const char *text = getenv("RECOMP_POSE_EXPERIMENT_ACTOR");
     return text == NULL ? 0u : (unsigned)strtoul(text, NULL, 10);
+}
+
+static uint32_t state_capture_frame(void)
+{
+    const char *text = getenv("RECOMP_POSE_STATE_CAPTURE_AT");
+    if (!text) return 0;
+    char *end;
+    unsigned long frame = strtoul(text, &end, 10);
+    return *text && !*end && frame < UINT32_MAX ? (uint32_t)frame : 0;
+}
+
+static uint32_t seam_record(uint32_t object, unsigned actor)
+{
+    if (actor >= 4) return 0;
+    unsigned count = *(const uint8_t *)recomp_memory_i8(0x004cb644u+actor);
+    unsigned mask = *(const uint8_t *)recomp_memory_i8(0x004cb640u+actor);
+    if (count > 32) recomp_stop(1, "animation:seam-record-count");
+    for (unsigned i = 0; i < count; ++i) {
+        uint32_t record = 0x004ca640u+actor*0x400u+i*32u;
+        if (*recomp_memory_u32(record) == object &&
+            (*(const uint8_t *)recomp_memory_i8(record+14u)&mask) == 0) return record;
+    }
+    return 0;
+}
+
+/* 0x58A50 binds these attachment records through a separate SDK callback.
+   Resolve the actor-owned descriptor rather than guessing from matrix values. */
+static unsigned attachment_bone(uint32_t object, unsigned actor)
+{
+    if (actor >= 4) return UINT32_MAX;
+    uint32_t owner = 0x004256f8u+actor*0x1b668u;
+    unsigned count = *(const uint8_t *)recomp_memory_i8(owner+6);
+    for (unsigned i = 0; i < count; ++i) {
+        uint32_t entry = owner+0x3474u+i*8u;
+        unsigned kind = *(const uint8_t *)recomp_memory_i8(entry);
+        unsigned flags = *(const uint8_t *)recomp_memory_i8(entry+1);
+        if (!kind || kind > 3 || (flags&2)) continue;
+        uint32_t descriptor = *recomp_memory_u32(entry+4);
+        unsigned mesh = *recomp_memory_u16(descriptor);
+        unsigned bone = *(const uint8_t *)recomp_memory_i8(descriptor+3);
+        if (mesh >= 128 || bone >= 32) continue;
+        if (*recomp_memory_u32(0x00b34a80u+actor*0x200u+mesh*4u) == object) return bone;
+    }
+    return UINT32_MAX;
 }
 
 static float guest_float(uint32_t address)
@@ -172,6 +217,32 @@ static bool solve_capture(PoseCapture *c)
     return recomp_animation_solve_skeleton(&t, c->pose_before+3, s, c->solved);
 }
 
+static void evaluate_experiment_pose(const PoseCapture *previous, const PoseCapture *current,
+    float fraction, RecompBoneMatrix output[32])
+{
+    RecompAnimationPose a, b, blended;
+    RecompAnimationGroup groups[24];
+    memcpy(&a, previous->pose_before, sizeof a);
+    memcpy(&b, current->pose_before, sizeof b);
+    blended = a;
+    recomp_guest_load(groups, 0x002cfb70u, sizeof groups);
+    if (!recomp_animation_pose_blend(groups, 24, &a, &b, fraction, &blended))
+        recomp_stop(1, "animation:experiment-blend");
+    PoseCapture sample = *previous;
+    memcpy(sample.pose_before, &blended, sizeof blended);
+    float old_actor[96], new_actor[96];
+    memcpy(old_actor, sample.actor_after, sizeof old_actor);
+    memcpy(new_actor, current->actor_after, sizeof new_actor);
+    for (unsigned i = 0; i < 3; ++i) old_actor[i] = (float)(old_actor[i]+((double)new_actor[i]-old_actor[i])*fraction);
+    const double pi = 3.14159265358979323846;
+    double angle = fmod((double)new_actor[3]-old_actor[3]+pi, 2*pi);
+    if (angle < 0) angle += 2*pi;
+    old_actor[3] = (float)(old_actor[3]+(angle-pi)*fraction);
+    memcpy(sample.actor_after, old_actor, sizeof old_actor);
+    if (!solve_capture(&sample)) recomp_stop(1, "animation:experiment-solve");
+    memcpy(output, sample.solved, sizeof sample.solved);
+}
+
 static void prepare_experiment(const PoseCapture *current)
 {
     uint32_t frame = experiment_frame();
@@ -189,35 +260,18 @@ static void prepare_experiment(const PoseCapture *current)
     void *guest_before = malloc(RECOMP_XBOX_RAM_SIZE);
     if (guest_before == NULL) recomp_stop(1, "animation:experiment-snapshot");
     memcpy(guest_before, recomp_memory(0, RECOMP_XBOX_RAM_SIZE), RECOMP_XBOX_RAM_SIZE);
-    RecompAnimationPose a, b, blended;
-    RecompAnimationGroup groups[24];
-    memcpy(&a, experiment_previous.pose_before, sizeof a);
-    memcpy(&b, current->pose_before, sizeof b);
-    blended = a;
-    recomp_guest_load(groups, 0x002cfb70u, sizeof groups);
-    if (!recomp_animation_pose_blend(groups, 24, &a, &b, 0.5f, &blended))
-        recomp_stop(1, "animation:experiment-blend");
-    PoseCapture half = experiment_previous;
-    memcpy(half.pose_before, &blended, sizeof blended);
-    float old_actor[96], new_actor[96];
-    memcpy(old_actor, half.actor_after, sizeof old_actor);
-    memcpy(new_actor, current->actor_after, sizeof new_actor);
-    for (unsigned i = 0; i < 3; ++i) old_actor[i] = (float)(((double)old_actor[i]+new_actor[i])*0.5);
-    const double pi = 3.14159265358979323846;
-    double angle = fmod((double)new_actor[3]-old_actor[3]+pi, 2*pi);
-    if (angle < 0) angle += 2*pi;
-    old_actor[3] = (float)(old_actor[3]+(angle-pi)*0.5);
-    memcpy(half.actor_after, old_actor, sizeof old_actor);
-    if (!solve_capture(&half)) recomp_stop(1, "animation:experiment-solve");
+    memcpy(experiment_bones[0], experiment_previous.solved, sizeof current->solved);
+    for (unsigned phase = 1; phase+1 < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
+        float fraction = (float)phase/(RECOMP_POSE_REPLAY_SAMPLES-1);
+        evaluate_experiment_pose(&experiment_previous, current, fraction, experiment_bones[phase]);
+    }
+    memcpy(experiment_bones[RECOMP_POSE_REPLAY_SAMPLES-1], current->solved, sizeof current->solved);
     bool unchanged = memcmp(guest_before, recomp_memory(0, RECOMP_XBOX_RAM_SIZE), RECOMP_XBOX_RAM_SIZE) == 0;
     free(guest_before);
     if (!unchanged) recomp_stop(1, "animation:experiment-guest-write");
-    memcpy(experiment_bones[0], experiment_previous.solved, sizeof half.solved);
-    memcpy(experiment_bones[1], half.solved, sizeof half.solved);
-    memcpy(experiment_bones[2], current->solved, sizeof half.solved);
     experiment_ready = true;
     experiment_binding_count = 0;
-    fprintf(stderr, "recomp pose experiment prepared: frame=%u actor=%u guest_bytes_unchanged=%u midpoint_delta=%.9g\n",
+    fprintf(stderr, "recomp pose experiment prepared: frame=%u actor=%u guest_bytes_unchanged=%u first_sample_delta=%.9g\n",
         frame, current->actor, RECOMP_XBOX_RAM_SIZE,
         matrix_error(experiment_bones[0], experiment_bones[1], 32));
 }
@@ -294,7 +348,7 @@ static void build_palette(void)
             memset(replay, 0, sizeof *replay);
             replay->frame = frame; replay->actor = actor;
             replay->recipe = recipe_id; replay->count = output_count;
-            for (unsigned phase = 0; phase < 3; ++phase) {
+            for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
                 if (!recomp_animation_build_palette(recipe, sizeof recipe, output_count,
                     experiment_bones[phase], 32, offsets, 24, &initial, native, &scratch))
                     recomp_stop(1, "animation:experiment-palette");
@@ -326,7 +380,7 @@ static void bind_rigid_pose(void)
     memset(replay, 0, sizeof *replay);
     replay->frame = experiment_frame(); replay->actor = experiment_actor();
     replay->recipe = UINT32_MAX; replay->count = 1;
-    for (unsigned phase = 0; phase < 3; ++phase)
+    for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase)
         memcpy(replay->palettes[phase][0], experiment_bones[phase][joint].m, sizeof original);
     experiment_binding.object = recomp_runtime.registers.ecx;
     experiment_binding.original[0] = original;
@@ -354,7 +408,9 @@ static void build_skeleton(void)
     uint32_t experiment = experiment_frame();
     bool experiment_capture = experiment > 0 && actor == experiment_actor() &&
         (frame == experiment || frame+1 == experiment);
+    uint32_t state_frame = state_capture_frame();
     bool record = actor < 4u && (experiment_capture ||
+        (state_frame && (frame == state_frame || frame+1 == state_frame)) ||
         ((prefix != NULL || verify) && frame >= 1900u && frame < 2020u));
 
     note(4);
@@ -411,19 +467,40 @@ static void build_skeleton(void)
 }
 #endif
 
+void recomp_animation_probe_capture_frame(uint32_t frame)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    uint32_t target = state_capture_frame();
+    const char *prefix = getenv("RECOMP_POSE_STATE_CAPTURE");
+    if (!target || !prefix || (frame != target && frame+1 != target)) return;
+    char path[1024];
+    int length = snprintf(path, sizeof path, "%s-%u.bin", prefix, frame);
+    if (length < 0 || (size_t)length >= sizeof path) recomp_stop(1, "animation:state-path");
+    FILE *file = fopen(path, "wb");
+    if (!file) recomp_stop(1, "animation:state-open");
+    bool ok = fwrite(recomp_memory(0, RECOMP_XBOX_RAM_SIZE), RECOMP_XBOX_RAM_SIZE, 1, file) == 1;
+    if (fclose(file) != 0 || !ok) recomp_stop(1, "animation:state-write");
+    fprintf(stderr, "recomp animation state capture: frame=%u bytes=%u\n", frame, RECOMP_XBOX_RAM_SIZE);
+#else
+    (void)frame;
+#endif
+}
+
 void recomp_animation_probe_capture_vertices(const struct RecompD3dPresenterDrawCommand *draw,
     const float worlds[4][16], unsigned count)
 {
 #ifdef RECOMP_FULL_PROGRAM
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     const char *prefix = getenv("RECOMP_POSE_VERTEX_CAPTURE");
-    if (!prefix || !experiment_frame() || (frame != experiment_frame() && frame+1 != experiment_frame())) return;
+    uint32_t target = state_capture_frame() ? state_capture_frame() : experiment_frame();
+    if (!prefix || !target || (frame != target && frame+1 != target)) return;
     char path[1024];
     int length = snprintf(path, sizeof path, "%s-%u.bin", prefix, frame);
     if (length < 0 || length >= sizeof path) recomp_stop(1, "animation:vertex-path");
     static uint32_t last_frame = UINT32_MAX;
     FILE *file = fopen(path, frame == last_frame ? "ab" : "wb");
     if (!file) recomp_stop(1, "animation:vertex-open");
+    bool first = frame != last_frame;
     last_frame = frame;
     uint32_t header[8] = {frame, *recomp_memory_u32(0x00a2479cu), *recomp_memory_u32(0x00a247a8u),
         draw->fvf, draw->vertex_stride, draw->vertex_count, draw->index_count, count};
@@ -432,6 +509,16 @@ void recomp_animation_probe_capture_vertices(const struct RecompD3dPresenterDraw
         fwrite(draw->vertex_bytes, draw->vertex_stride*draw->vertex_count, 1, file) == 1 &&
         fwrite(draw->index_bytes, draw->index_count*2u, 1, file) == 1;
     if (fclose(file) != 0 || !ok) recomp_stop(1, "animation:vertex-write");
+    length = snprintf(path, sizeof path, "%s-%u.jsonl", prefix, frame);
+    if (length < 0 || (size_t)length >= sizeof path) recomp_stop(1, "animation:vertex-map-path");
+    file = fopen(path, first ? "wb" : "ab");
+    if (!file) recomp_stop(1, "animation:vertex-map-open");
+    uintptr_t vertex = (uintptr_t)draw->vertex_bytes;
+    uintptr_t base = (uintptr_t)recomp_memory(0, RECOMP_XBOX_RAM_SIZE);
+    uint32_t address = vertex >= base && vertex-base < RECOMP_XBOX_RAM_SIZE ? (uint32_t)(vertex-base) : UINT32_MAX;
+    fprintf(file, "{\"object\":%u,\"vertex_address\":%u,\"vertices\":%u,\"stride\":%u}\n",
+        header[1], address, draw->vertex_count, draw->vertex_stride);
+    if (fclose(file) != 0) recomp_stop(1, "animation:vertex-map-write");
 #else
     (void)draw; (void)worlds; (void)count;
 #endif
@@ -455,12 +542,94 @@ bool recomp_animation_probe_pose_replay(const float worlds[4][16], unsigned coun
             sizeof binding->replay.palettes) != 0) recomp_stop(1, "animation:ambiguous-draw-binding");
         found = binding;
     }
-    if (!found) return false;
-    *output = found->replay;
+    if (found) *output = found->replay;
+    else {
+        unsigned actor = experiment_actor();
+        uint32_t record = seam_record(object, actor);
+        if (count != 1) return false;
+        unsigned joint = record ? *(const uint8_t *)recomp_memory_i8(record+12u) :
+            attachment_bone(object, actor);
+        if (joint >= 32 || memcmp(worlds[0],
+            recomp_memory(0x004d3650u+actor*0x800u+joint*64u, 64), 64) != 0) return false;
+        memset(output, 0, sizeof *output);
+        output->frame = experiment_frame(); output->actor = actor;
+        output->recipe = UINT32_MAX; output->count = 1;
+        for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase)
+            memcpy(output->palettes[phase][0], experiment_bones[phase][joint].m, 64);
+    }
     return true;
 #else
     (void)worlds; (void)count; (void)output;
     return false;
+#endif
+}
+
+/* The stream contains guest destination addresses, but replay writes only its
+   owned draw buffer. Rig controls and point/normal pairs remain immutable. */
+void *recomp_animation_probe_pose_vertices(const struct RecompD3dPresenterDrawCommand *draw)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    if (!draw || !draw->pose_replay || !experiment_ready) return NULL;
+    unsigned actor = experiment_actor();
+    uint32_t record = seam_record(*recomp_memory_u32(0x00a2479cu), actor);
+    if (!record) return NULL;
+    if (*recomp_memory_u32(record+24) || *recomp_memory_u32(record+28))
+        recomp_stop(1, "animation:seam-link-stream-unimplemented");
+    unsigned destination = *(const uint8_t *)recomp_memory_i8(record+12);
+    unsigned source = *(const uint8_t *)recomp_memory_i8(record+13);
+    if (destination >= 32 || source >= 32) recomp_stop(1, "animation:seam-bone-index");
+    uintptr_t base = (uintptr_t)recomp_memory(0, RECOMP_XBOX_RAM_SIZE);
+    uintptr_t first = (uintptr_t)draw->vertex_bytes-base;
+    size_t size = (size_t)draw->vertex_count*draw->vertex_stride;
+    if (first >= RECOMP_XBOX_RAM_SIZE || size > RECOMP_XBOX_RAM_SIZE-first)
+        recomp_stop(1, "animation:seam-vertex-span");
+    uint8_t *vertices = malloc(size*RECOMP_POSE_REPLAY_SAMPLES);
+    if (!vertices) recomp_stop(1, "animation:seam-allocation");
+    float reference[10][4];
+    uint32_t reference_address = *recomp_memory_u32(record+8);
+    recomp_guest_load(reference, reference_address, sizeof reference);
+    for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
+        uint8_t *output = vertices+size*phase;
+        memcpy(output, draw->vertex_bytes, size);
+        RecompBoneMatrix relative, matrix;
+        RecompSeamBasis basis;
+        if (!recomp_animation_seam_relative(&experiment_bones[phase][source],
+                &experiment_bones[phase][destination], &relative) ||
+            !recomp_animation_seam_basis(reference, &relative, &basis))
+            recomp_stop(1, "animation:seam-basis");
+        matrix = relative;
+        uint32_t cursor = *recomp_memory_u32(record+4), point = reference_address+sizeof reference;
+        unsigned words = 0;
+        while (*recomp_memory_u32(cursor)) {
+            uint32_t command = *recomp_memory_u32(cursor); cursor += 4;
+            if (command < 16) {
+                float coefficients[4];
+                recomp_guest_load(coefficients, 0x00333770u+command*16, sizeof coefficients);
+                if (!recomp_animation_seam_matrix(&basis, coefficients, &matrix))
+                    recomp_stop(1, "animation:seam-matrix");
+            }
+            do {
+                float input[8], vertex[6];
+                recomp_guest_load(input, point, sizeof input); point += sizeof input;
+                recomp_animation_seam_vertex(&matrix, input, input+4, vertex);
+                uint32_t address;
+                while ((address = *recomp_memory_u32(cursor)) != UINT32_MAX) {
+                    address &= RECOMP_XBOX_RAM_SIZE-1;
+                    if (address >= first && address-first <= size && size-(address-first) >= sizeof vertex)
+                        memcpy(output+address-first, vertex, sizeof vertex);
+                    cursor += 4;
+                    if (++words > 100000) recomp_stop(1, "animation:seam-stream-limit");
+                }
+                cursor += 4;
+                if (++words > 100000) recomp_stop(1, "animation:seam-stream-limit");
+            } while (*recomp_memory_u32(cursor) != UINT32_MAX);
+            cursor += 4;
+        }
+    }
+    return vertices;
+#else
+    (void)draw;
+    return NULL;
 #endif
 }
 
@@ -476,7 +645,7 @@ RecompFunction recomp_animation_probe_lookup_manual(uint32_t address)
     case 0x000af050u: case 0x000aeef0u: case 0x000af5c0u:
     case 0x000636d0u: case 0x000b01e0u: case 0x00023b10u:
         if (getenv("RECOMP_ANIMATION_DISPATCH_TRACE") == NULL &&
-            getenv("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0) return NULL;
+            getenv("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0) return NULL;
         break;
     default: return NULL;
     }

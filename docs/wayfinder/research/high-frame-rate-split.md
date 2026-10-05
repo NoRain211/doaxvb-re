@@ -678,3 +678,73 @@ must sample an arbitrary fraction in [0,1) of the 60 Hz simulation interval.
 M2 additionally checks quarter and three-quarter poses. M3 retains the 120 Hz
 gate and adds 240 Hz measurements at reduced settings and at 2160p/MSAA 8/SMAA;
 the latter measurement is not required to pass. M2 through M4 remain open.
+
+
+## M2: fractional pose and seam geometry
+
+The bounded pose experiment now accepts a continuous interpolation fraction;
+its diagnostic batch renders n, n+0.25, n+0.5, n+0.75 and n+1. Five is a
+comparison-image count, not a presentation-rate assumption. The camera stays
+fixed to isolate the selected character. The completed close-up and match
+comparisons have continuous elbows, wrists and forehead attachments at all
+five samples. The initial match selection was off-screen and was excluded.
+The visible match actor exposed a separate unbound forehead attachment; its
+actor-owned descriptor now supplies the bone identity for deferred draws.
+
+The principal joint vertex owner is 0x67540, with workers 0x67630/0x67CA0.
+An offline invocation of the original writer reproduced all six close-up arm
+draw buffers byte-for-byte, both from their own captured bones and from the
+preceding tick's bones. The readable `animation_seam` model reconstructs the
+same position/normal data with maximum errors below 0.00000082 in the close-up
+and 0.00000030 in the match. These are numeric comparisons, not bit identity.
+The sampled draw buffers are host-owned and captured before their allocation
+is released; replay does not write gameplay memory or advance secondary state.
+
+For model exporters, the seam algorithm uses row-vector affine matrices:
+
+- Form `source_bone * inverse(destination_bone)`.
+- Read ten rig-provided float4 controls: three direction pairs, followed by
+  four origin controls. For each direction pair, retain the first vector,
+  transform the second as a direction, and normalize their sum. The origin
+  basis retains the first origin, transforms the second, and averages the
+  transformed third with the fourth.
+- Each rig-provided coefficient triple mixes the three basis rows separately
+  for X, Y, Z and origin. Normalize Z; remove Y's projection on Z and normalize
+  Y; remove X's projections on Z and Y and normalize X.
+- Transform immutable source positions and normals by that frame, then scatter
+  xyz/normal triples to the mapped seam vertices. Preserve UVs and other
+  attributes. The descriptor's destination bone is the draw's WORLD matrix.
+
+The input stream starts vertex records after the ten controls (160 bytes).
+A vertex record contains position float4 and normal float4. Command values
+below 16 select a caller-supplied coefficient row; larger values reuse the
+previous frame. Destination lists and groups have separate all-ones sentinels;
+a zero command ends the stream. No retail controls or coefficient table are
+embedded in the model. Optional copy/transform link streams were absent in
+these windows and currently stop the diagnostic if encountered.
+
+Rigid attachments dispatched by 0x58A50 use a separate actor-owned descriptor
+list and SDK callback. Its mesh selector and bone byte establish provenance;
+an exact current WORLD match is additionally required. This covers the tested
+forehead attachment without guessing ownership from draw order or palette
+similarity alone. General secondary geometry remains frozen at the ordinary
+tick, and its integration owners are never rerun by this experiment.
+
+For all 32 bones in each tested pose, the three interior samples have positive
+orientation determinants, remain within the endpoint angular spans, and move
+forward between endpoint translations. The largest quarter-step axis rotation
+was 0.14 degrees in the close-up and 2.61 degrees in the match, versus endpoint
+spans of 0.55 and 9.86 degrees. This is a geometric between-endpoints check:
+curved rotations are not component-wise linear matrix interpolation. Individual
+matrix components exceed their endpoint boxes by up to 0.001043 in the match;
+clamping them would deform the recovered rotation algorithm. No flips or pops
+were observed. Full guest-memory comparisons remained unchanged for evaluation.
+
+Both windows produced all five images at scale 4.5, MSAA 8, SMAA and vsync with
+host input disabled. The match run exited normally with zero backend draw
+declines. The close-up capture completed, but its delayed window close hit the
+existing presenter-close error path; this is not a clean-exit claim. Private
+captures retain the images and numeric checks. Twenty CTest checks and the
+full tools suite passed; public export verification passed. These are bounded
+agent smoke observations, not user gameplay acceptance. M3 and M4 remain open;
+`RECOMP_SPLIT_RATE` is not enabled by this milestone.
