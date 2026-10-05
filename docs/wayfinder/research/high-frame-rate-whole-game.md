@@ -3,6 +3,101 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## Hand-source milestone attempt (2026-10-05)
+
+The first conversion attempt did **not** establish speed-correct 120 Hz. The
+retained change is an opt-in hand-written game entry, main loop and scheduler in
+[game_scheduler.c](../../../recomp-runtime/game_scheduler.c). Set
+`RECOMP_GAME_SCHEDULER=1` to exercise them at the existing 60 Hz game cadence.
+Unset leaves generated dispatch unchanged. There is no retained `RECOMP_GAME_HZ`
+mode. The existing `RECOMP_GUEST_VBLANK_HZ=120` remains a pacing-only probe and
+still accelerates unconverted game work.
+
+The complete owners replaced are `0x000BB290`, `0x000BB310` and `0x000B5680`.
+The startup adapter already dispatches the first through manual lookup. Replacing
+that entry and loop is necessary: the generated loop calls the scheduler
+directly, so registering the scheduler alone would never intercept that call.
+The hand loop preserves input, feedback, audio, clear/setup, scheduler, post-frame
+work, Swap and movie-service ordering. The scheduler preserves all 17 slots,
+integer sleeps, suspension, completion/deletion and alternating timestamp banks.
+It keeps guest layouts intact and calls existing neighbours through dispatch.
+
+The main loop retains the pre-existing generated D3D vblank/field-status calls
+(`0x001E38F0`, `0x001E4830`) and movie-service calls (`0x0018A160`,
+`0x0018A560`, `0x00198190`, `0x00197EC0`). These are library seams, not new
+library decompilations; wholesale D3D/media replacement remains open. The
+existing manual Clear, audio and fiber adapters still own their corresponding
+library entries.
+
+### Bounded smoke results
+
+All new runs used scale 4.5, 8x MSAA, SMAA, vsync, Start pulses at polls 6 and 8,
+and host input after poll 10. Only one runner was started at a time. Times below
+are the in-process vblank-probe arrival times, before the wait and capture.
+
+| Run | Checkpoint | Elapsed seconds | Scope of observation |
+| --- | --- | ---: | --- |
+| Generated baseline, 60 Hz pacing | Swap 300 | 5.352691 | Title scene; normal close. |
+| Hand entry/loop/scheduler, 60 Hz pacing | Swap 300 | 5.396116 | Same scene transition sequence at Swaps 1/2/10/43; normal close. Time difference +0.811%. |
+| Rejected half-sleep scheduler, 120 Hz pacing | Swap 600 | 12.399183 | Still in the opening movie; missed the scripted Start input. Swaps 600/602 were entirely black, 601/603 contained movie frames. |
+
+The paired 60 Hz captures at Swaps 300-303 showed the title scene but were not
+byte-identical. At Swap 300, the mean absolute RGB differences were
+0.577/0.526/0.487 on a 0-255 scale. The source of that difference has not been
+isolated; this is **not** image-parity acceptance. A later unchanged-path repeat
+and final hand-loop check were stopped at Swaps 278 and 118 after host-input
+traces confirmed live controller button presses. No further runs were attempted
+without a quiet input interval. The rejected run reported a
+Clear/presenter error during requested shutdown after its four captures.
+
+Two earlier runs reached Swap 3000 at 50.679696 seconds (60 Hz pacing) and
+30.189443 seconds (120 Hz pacing), but are invalid attract comparisons. Both
+left the title/attract flow for menus following extra A-button edges, first at
+Swap 1718 and Swap 836 respectively. Both had enabled live host input and
+reported a connected controller. Subsequent checks enabled the existing input
+trace and stopped on the first unscripted edge rather than retrying the same
+invalid gate. No new valid attract measurement at 3000 or 5400 was obtained.
+The earlier research measurements in this document used different graphics/input
+settings and must not be presented as results of this conversion.
+
+### Why half-sleeps were rejected
+
+A tested fractional sleep model preserves integer guest counts while consuming
+half a tick per 120 Hz pass. Synthetic durations of 1, 2, 5, 20, 30, 3000 and
+5400 ticks expire at exactly the same simulated time as at 60 Hz. Tests also
+exercise runnable, sleeping, suspended and inactive slots, completed fibers with
+and without handles, timestamp order/bank selection and stack/register balance.
+These are model tests; 3000/5400 in that test are not observed attract events.
+
+However, one-tick fiber sleeps are also the frame-production boundary. Sleeping
+those fibers on alternate main-loop passes leaves the unconditional Clear/Swap
+without their draws. Input edges are derived every pass and can disappear before
+a sleeping scene fiber consumes them. The rejected run demonstrates both hazards.
+The runtime 120 Hz activation was removed; the half-tick model and synthetic
+tests remain as groundwork. No generated source or authenticated recipe changed.
+
+The next coherent owner cluster must separate scene/script advancement from
+per-pass frame production and define how input edges survive that separation.
+Changing only the scene counter or shared multiplier cannot repair blank frames
+or recover lost input. Reusing the previous frame would not supply the requested
+additional visual samples. Camera, animation advance/root motion, physics,
+UI fades, input repeat, feedback and media timing are still unconverted in this
+whole-game work. The independent split-rate work is outside this change.
+
+The 7-14 engineer-week planning range remains; this attempt does not justify a
+reduction. Revise the first milestone to include the main-loop, scene/frame
+production and input-delivery owners together, rather than treating the scheduler
+as an independently shippable 120 Hz slice. Pixel parity at 60 Hz, clean natural
+attract checkpoints and sustained 120 Hz throughput at the requested settings
+remain gates before expanding the conversion.
+
+Validation: all 15 CTest cases in the shared working tree passed (including the
+independent animation test), and the tools suite passed 19 tests with one skip.
+Wrong function SHA and generated-manifest configurations still fail. Public-only
+configuration/build needs no private input. Raw queries, rejected source,
+measurements and images remain private. This is smoke/model evidence and a
+hand-source foundation, not gameplay progress or a supported 120 Hz mode.
+
 ## Finding
 
 The attract/demo and game scheduler are frame-driven. Changing only guest Swap
@@ -112,7 +207,8 @@ indirect timer consumer has been found.
 
 ## Conversion inventory
 
-The conversion column describes required work, not implemented fixes.
+The conversion column describes the remaining 120 Hz work. The opt-in
+60 Hz scheduler replacement above does not complete any 120 Hz row.
 For the animation and camera clusters, see the independent bounded analysis in
 the [split-rate assessment](high-frame-rate-split.md).
 
