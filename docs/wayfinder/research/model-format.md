@@ -189,3 +189,19 @@ does not supply this state, and a bind-pose preview is not that comparison.
 Then add secondary geometry, remaining material commands and attachment paths.
 Replacement needs a verified import/binding contract and a registered manual
 runtime seam; this exporter does not load replacement models into the game.
+# Matched pose capture
+
+`tools/model_capture.py` observes an owned Windows runner through CDB and its
+matching PDB. Supply the runner, user-owned executable, debugger and a new
+private output directory. It waits for the shared runner, uses the scripted
+start pulses without host input, and bounds execution to at most 60 seconds.
+The run is an attract smoke, not gameplay acceptance. Input timing alone does
+not fix the game's startup random seed.
+
+Capture includes the selected actor's scalar pose, motion layers, rig offsets,
+controller state, skeleton result, draw bone bank and palette. Initialization
+can evaluate a skeleton before its first draw; the tool retries when those
+frame identities differ. Only a matching actor and swap frame is accepted.
+Receipts and RAM snapshots remain private. The layer cursor can already have
+advanced beyond the sampled pose; verify archive sampling separately instead
+of equating it with the pose's tick.
