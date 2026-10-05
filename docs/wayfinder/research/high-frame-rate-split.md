@@ -925,3 +925,60 @@ ratio (for example a 24-degree root turn at tick 1999). That costs one
 unblended tick and causes no visual error. The ratio test is a heuristic. A cut
 between two nearly identical shots would not be detected, but it would also
 look the same either way.
+
+
+## S2: present hitches
+
+The 24 ms interval reported for M4 had four reproducible causes. A
+buffered per-present trace (`RECOMP_SPLIT_TRACE=present`, written at exit or
+after `RECOMP_SPLIT_TRACE_LIMIT` presents) records each present's deadline,
+start, end, packet publication time, fraction and draw count without writing
+to stderr while pacing.
+
+1. The game thread sealed each packet while holding the presenter queue
+   mutex. Sealing copies the owned textures, about 23 MB per tick and more
+   while the game streams assets (ticks 4809 to 4811 of the attract cycle).
+   The worker checks that mutex before every present, so a slow seal delayed
+   presents by up to 11 ms. The open slot is invisible to the worker until it
+   is counted as pending, so sealing now happens outside the lock.
+2. At some cuts the game publishes the next packet 8 to 13 ms late. The worker
+   used to idle until it arrived. After the current tick's presents, it now
+   presents the current packet again at its end pose at each deadline. This
+   is the same image ordinary 60 Hz presentation would show.
+3. A new shot creates 50 to 143 textures, 4 to 13 ms of work, inside its first
+   present. Packets arrive just in time, so there is no lookahead. The worker
+   now keeps holding the current packet while it creates the next packet's
+   missing textures in idle time before each deadline. It stops 1.5 ms short
+   of the deadline and waits at most one tick. Textures estimated to take
+   longer than one present slot are left to their draw. Only addresses with no
+   cache entry are prepared, so entries the packet on screen uses are never
+   replaced.
+4. With two flip buffers, `Present` blocked for 7 to 33 ms whenever a
+   compositor frame was late. Split mode now uses three buffers. Ordinary
+   presentation keeps two.
+
+Runs used the attract route with host input off, scale 4.5, MSAA 8 and SMAA at
+120 Hz, measured from 35 s to 155 s after the first present. Before the
+changes, one window had a 35.6 ms maximum and 13 intervals over 12.5 ms. Three
+windows on the final binary:
+
+| Run | Presents | Rate | p99 | p99.9 | Max outside loads | Over 12.5 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| 120 a | 14,399 | 119.990 | 9.19 ms | 10.41 ms | 23.85 ms | 4 |
+| 120 b | 14,396 | 119.963 | 9.45 ms | 10.95 ms | 29.92 ms | 3 |
+| 120 e | 14,394 | 119.949 | 9.58 ms | 10.60 ms | 23.09 ms | 3 |
+
+The only load in each window is the first frame after the blank loading
+packets at the end of the attract demo (tick 8662). It took 16.7, 16.8 and
+42.6 ms. At 240 Hz with scale 2, one window recorded 28,760 presents
+(239.661/s), with a mean of 4.173 ms, p99 of 5.53 ms, p99.9 of 7.33 ms and a
+13.28 ms maximum. Eighteen intervals exceeded 8.5 ms.
+
+**The S2 gate is not met.** The remaining outliers are single slow presents
+that do not repeat at the same ticks across runs. GPU load stayed at 33 to 39%.
+Per-process sampling showed other desktop programs active at those moments,
+for example Discord at 118 to 160% CPU during two of the stalls. Raising the
+worker to MMCSS "Games" scheduling and raising the D3D GPU thread priority did
+not change the outlier count, so neither was kept. A quiet machine, or a
+measurement that excludes host interference, is needed to show whether
+anything in the runtime still causes isolated stalls.

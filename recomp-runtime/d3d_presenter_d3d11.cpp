@@ -495,6 +495,7 @@ namespace {
 RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
+static bool split_presentation;
 
 /* kernel_config.c reports the Xbox widescreen video flag unless
    RECOMP_D3D_WIDESCREEN=0, so the game renders anamorphic 16:9 (or 4:3) into
@@ -743,7 +744,8 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.SampleDesc.Count = 1u;
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = immediate_present ? 1u : 2u;
+    swap_chain_desc.BufferCount = immediate_present ? 1u :
+        split_presentation ? 3u : 2u;
     swap_chain_desc.OutputWindow = presenter->window;
     swap_chain_desc.Windowed = TRUE;
     swap_chain_desc.SwapEffect = immediate_present
@@ -3278,6 +3280,41 @@ RecompD3dPresenterError d3d11_backend_create(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+/* Creates a cache-miss texture before its draw needs it. Addresses already
+   cached, render targets and dynamic linear textures are skipped, so entries
+   the packet on screen still uses are not replaced. */
+void prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    const RecompD3dTextureDesc &desc = draw.texture;
+    if (draw.texture_is_backbuffer || desc.linear || draw.texture_bytes == nullptr ||
+        presenter->texture_index.count(desc.data) != 0u ||
+        findRenderTarget(presenter, desc) != nullptr) return;
+    lookupTexture(presenter, draw);
+}
+
+void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    if (presenter == nullptr || presenter != active_presenter || command == nullptr ||
+        GetCurrentThreadId() != presenter->owner_thread ||
+        command->type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) return;
+    const RecompD3dPresenterDrawCommand &draw = command->data.draw;
+    if (draw.has_texture) prepareTexture(presenter, draw);
+    RecompD3dPresenterDrawCommand extra{};
+    if (draw.has_alpha_mask) {
+        extra.texture = draw.alpha_mask;
+        extra.texture_bytes = draw.alpha_mask_bytes;
+        extra.texture_byte_count = draw.alpha_mask_byte_count;
+        extra.palette_bytes = draw.alpha_mask_palette;
+        extra.palette_byte_count = draw.alpha_mask_palette_byte_count;
+        prepareTexture(presenter, extra);
+    } else if (draw.has_reflection || draw.program_alpha_mask) {
+        extra.texture = draw.reflection_texture;
+        extra.texture_bytes = draw.reflection_bytes;
+        extra.texture_byte_count = draw.reflection_byte_count;
+        prepareTexture(presenter, extra);
+    }
+}
+
 RecompD3dPresenterError d3d11_backend_submit(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterCommand *command)
@@ -3396,6 +3433,13 @@ RecompD3dPresenterError d3d11_backend_destroy(
 void d3d11_backend_set_immediate_present(bool enabled)
 {
     immediate_present = enabled;
+}
+
+/* Split presentation paces itself: a third buffer absorbs a late compositor
+   frame instead of blocking the next Present. */
+void d3d11_backend_set_split_presentation(bool enabled)
+{
+    split_presentation = enabled;
 }
 
 void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay)
