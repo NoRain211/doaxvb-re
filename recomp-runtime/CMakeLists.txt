@@ -181,6 +181,7 @@ add_executable(recomp_runtime_test
     program_manual.c
     animation_track.c
     animation_track_adapter.c
+    animation_probe.c
     save_adapter.c
     ohci_model.c
     ohci_model_test.c
@@ -445,6 +446,7 @@ if(RECOMP_PROGRAM_DIR)
         program_manual.c
         animation_track.c
         animation_track_adapter.c
+        animation_probe.c
         save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Move the build to another lifter revision and record the regenerated program.
+"""Change the lifter revision or manual-call selection and authenticate regeneration.
 
 The script generates the current pin (which must still match the recipe) and the
 target revision, rewrites the recipe identities, stages them with the submodule and lists
@@ -19,7 +19,8 @@ from extract_iso import sha256
 ROOT = build_game.ROOT
 LIFTER = build_game.LIFTER
 BODY = re.compile(r"^void (sub_[0-9A-Fa-f]{8})\(void\)", re.MULTILINE)
-PINNED = ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json")
+PINNED = ("tools/game-recipe/recipe.json", "tools/build_game.py", "public-export.json",
+          "tools/game-recipe/manual-call-targets.json")
 
 
 def git(*args):
@@ -41,6 +42,26 @@ def function_hashes(generated):
 def compare(old, new):
     return (sorted(name for name in old.keys() & new.keys() if old[name] != new[name]),
             sorted(new.keys() - old.keys()), sorted(old.keys() - new.keys()))
+
+
+def add_manual_targets(root, additions):
+    """Extend the authenticated selection; the lifter validates entry ownership."""
+    if not additions:
+        return
+    if any(not 0 < address <= 0xffffffff for address in additions):
+        raise ValueError("Manual-call targets must be nonzero 32-bit addresses")
+    recipe_path = root / "tools/game-recipe/recipe.json"
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+    name = recipe["manual_call_targets"]
+    if name != "tools/game-recipe/manual-call-targets.json":
+        raise ValueError("Unexpected manual-call target file")
+    targets_path = root / name
+    addresses = {int(value, 16) for value in json.loads(targets_path.read_text(encoding="utf-8"))}
+    addresses.update(additions)
+    targets_path.write_text(json.dumps([f"0x{value:08X}" for value in sorted(addresses)],
+                                      indent=2) + "\n", encoding="utf-8", newline="\n")
+    recipe["files"][name] = sha256(targets_path)
+    recipe_path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def pin_metadata(root, generated, revision):
@@ -83,6 +104,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--imported", type=Path, required=True, help="Completed import beneath private/")
     parser.add_argument("--revision", help="Lifter commit (default: the fork's codex/doaxbv-recipe tip)")
+    parser.add_argument("--manual-call-target", action="append", default=[],
+                        type=lambda value: int(value, 0),
+                        help="Add a manual-dispatch entry; repeat for a cluster. "
+                             "Defaults to the current pin when --revision is omitted.")
     args = parser.parse_args()
     if git("status", "--porcelain"):
         raise SystemExit("tools/xboxrecomp has local changes; commit or discard them first")
@@ -93,19 +118,18 @@ def main():
     previous = git("rev-parse", "HEAD")
     if args.revision:
         revision = git("rev-parse", "--verify", f"{args.revision}^{{commit}}")
+    elif args.manual_call_target:
+        revision = previous
     else:
         # The fork's main follows upstream, whose lifter line regresses gameplay.
         git("fetch", "origin", "codex/doaxbv-recipe")
         revision = git("rev-parse", "FETCH_HEAD")
     old = generate(args.imported, verify_parity=True)
-    try:
-        git("checkout", "--detach", revision)
-        new = generate(args.imported, verify_parity=False, revision=revision)
-    except Exception:
-        git("checkout", "--detach", previous)
-        raise
     saved = {name: (ROOT / name).read_bytes() for name in PINNED}
     try:
+        git("checkout", "--detach", revision)
+        add_manual_targets(ROOT, args.manual_call_target)
+        new = generate(args.imported, verify_parity=False, revision=revision)
         changed_files = pin_metadata(ROOT, new, revision)
     except Exception:
         for name, data in saved.items():
@@ -118,7 +142,7 @@ def main():
     report.write_text("".join(f"{kind} {name}\n" for kind, names in
                               (("changed", changed), ("added", added), ("removed", removed))
                               for name in names), encoding="utf-8")
-    print(f"Lifter pin moved to {revision}. Nothing was committed.")
+    print(f"Recipe regenerated at lifter {revision}. Nothing was committed.")
     print(f"Generated files changed: {', '.join(changed_files) or 'none'}")
     print(f"Functions: {len(changed)} changed, {len(added)} added, {len(removed)} removed; see {report}")
 
