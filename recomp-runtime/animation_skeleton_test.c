@@ -83,6 +83,13 @@ int main(void)
     p[14] = NAN;
     CHECK(!recomp_animation_solve_skeleton(&t, p, &s, b));
     CHECK(memcmp(before, b, sizeof b) == 0);
+    /* A nearly straight synthetic chain amplifies packed rounding before acos. */
+    fixture(&t, p, &s);
+    s.position[0] = 3.17f; s.position[2] = 2.9f; s.heading = 1.5f;
+    p[12] = 0.2f; p[14] = 2.0002f; t.offsets[5][0] = 0.2f;
+    CHECK(recomp_animation_solve_skeleton(&t, p, &s, a));
+    CHECK(fabsf(a[5].m[0]-0.06801302731f) < 0.000002f);
+    CHECK(fabsf(a[5].m[2]+0.99721509218f) < 0.000002f);
     puts("Animation skeleton tests passed");
     return 0;
 }

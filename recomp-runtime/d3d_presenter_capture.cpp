@@ -14,7 +14,7 @@ constexpr const void *Draw::*pointer_fields[] = {
     &Draw::vertex_bytes, &Draw::index_bytes, &Draw::texture_bytes,
     &Draw::palette_bytes, &Draw::alpha_mask_bytes,
     &Draw::alpha_mask_palette, &Draw::reflection_bytes,
-    &Draw::pose_replay, &Draw::pose_vertex_bytes,
+    &Draw::pose_replay, &Draw::pose_vertex_bytes, &Draw::split_pose,
 };
 // No readable guest span can exceed the runner's entire 64 MiB RAM region.
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
@@ -58,7 +58,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
 
-    uint64_t sizes[9]{};
+    uint64_t sizes[10]{};
     if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         const auto &draw = command.data.draw;
         sizes[0] = uint64_t(draw.vertex_count) * draw.vertex_stride;
@@ -70,6 +70,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         sizes[6] = draw.reflection_byte_count;
         sizes[7] = draw.pose_replay != nullptr ? sizeof(RecompD3dPoseReplay) : 0u;
         sizes[8] = draw.pose_vertex_bytes ? sizes[0]*RECOMP_POSE_REPLAY_SAMPLES : 0;
+        sizes[9] = draw.split_pose ? draw.split_pose_size : 0;
         for (uint64_t size : sizes) {
             if (size > max_span_bytes) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
         }
@@ -77,13 +78,13 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
-    const void *inserted_sources[9]{};
+    const void *inserted_sources[10]{};
     size_t inserted_count = 0u;
     try {
         CapturedCommand &captured = commands_.emplace_back();
         copyCommand(captured.value, command);
         if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
-            for (size_t i = 0u; i < 9u; ++i) {
+            for (size_t i = 0u; i < 10u; ++i) {
                 const void *source = command.data.draw.*pointer_fields[i];
                 if (source != nullptr && borrowed(command.data.draw, i)) {
                     captured.offsets[i] = borrowed_offset;
@@ -94,7 +95,11 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 if (source == nullptr) continue;
 
                 const size_t size = static_cast<size_t>(sizes[i]);
-                const auto range = spans_.equal_range(source);
+                // Per-draw split inputs reuse one allocator address and often
+                // share a long camera-only prefix. Searching all older values
+                // at that address makes capture quadratic in the draw count.
+                const auto range = i == 9u ? std::make_pair(spans_.end(), spans_.end())
+                    : spans_.equal_range(source);
                 for (auto it = range.first; it != range.second; ++it) {
                     if (it->second.size == size && (size == 0u ||
                         std::memcmp(source, payload_.data() + it->second.offset, size) == 0)) {
@@ -169,8 +174,8 @@ void D3dCapturePacket::seal(bool own_textures)
             if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
             const auto &draw = captured.value.data.draw;
             const size_t sizes[] = {0u, 0u, draw.texture_byte_count, 0u,
-                draw.alpha_mask_byte_count, 0u, draw.reflection_byte_count, 0u, 0u};
-            for (size_t i = 0; i < 9; ++i) {
+                draw.alpha_mask_byte_count, 0u, draw.reflection_byte_count, 0u, 0u, 0u};
+            for (size_t i = 0; i < 10; ++i) {
                 if (captured.offsets[i] != borrowed_offset) continue;
                 const void *source = draw.*pointer_fields[i];
                 const auto range = spans_.equal_range(source);
@@ -193,7 +198,7 @@ void D3dCapturePacket::seal(bool own_textures)
     }
     for (auto &captured : commands_) {
         if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
-        for (size_t i = 0u; i < 9u; ++i) {
+        for (size_t i = 0u; i < 10u; ++i) {
             if (captured.offsets[i] == borrowed_offset) continue;
             captured.value.data.draw.*pointer_fields[i] = captured.offsets[i] == null_offset
                 ? nullptr : payload_.data() + captured.offsets[i];

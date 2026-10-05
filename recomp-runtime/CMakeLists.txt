@@ -182,10 +182,15 @@ add_executable(recomp_runtime_test
     animation_track.c
     animation_track_adapter.c
     animation_probe.c
+    d3d_pose_replay.c
     animation_palette.c
     animation_skeleton.c
     animation_pose.c
     animation_seam.c
+    animation_visual.c
+    animation_camera.c
+    animation_split_adapter.c
+    d3d_split_pose.c
     save_adapter.c
     ohci_model.c
     ohci_model_test.c
@@ -455,6 +460,10 @@ if(RECOMP_PROGRAM_DIR)
         animation_skeleton.c
         animation_pose.c
         animation_seam.c
+        animation_visual.c
+        animation_camera.c
+        animation_split_adapter.c
+        d3d_split_pose.c
         save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
@@ -553,6 +562,13 @@ if(WIN32)
         d3d_presenter_thread_test.cpp
         d3d_presenter_thread.cpp
         d3d_pose_replay.c
+        d3d_split_pose.c
+        animation_visual.c
+        animation_camera.c
+        animation_pose.c
+        animation_skeleton.c
+        animation_palette.c
+        animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
         d3d_vertex_program.cpp
@@ -722,3 +738,11 @@ if(NOT MSVC)
     target_link_libraries(recomp_animation_seam_test PRIVATE m)
 endif()
 add_test(NAME recomp-runtime-animation-seam COMMAND recomp_animation_seam_test)
+
+add_executable(recomp_d3d_split_pose_test d3d_split_pose_test.c d3d_split_pose.c
+    d3d_pose_replay.c d3d_draw_model.c animation_visual.c animation_camera.c
+    animation_pose.c animation_skeleton.c animation_palette.c animation_seam.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_d3d_split_pose_test PRIVATE m)
+endif()
+add_test(NAME recomp-runtime-split-pose COMMAND recomp_d3d_split_pose_test)

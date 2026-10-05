@@ -58,16 +58,29 @@ static RecompBoneMatrix translate(RecompBoneMatrix m, const float xyz[3])
     return m;
 }
 
+/* Packed point transforms round each product and both pairwise sums. */
+static RecompBoneMatrix translate_packed(RecompBoneMatrix m, const float xyz[3])
+{
+    for (unsigned c = 0; c < 4; ++c) {
+        float xy = xyz[0]*m.m[c]+xyz[1]*m.m[4+c];
+        float zw = xyz[2]*m.m[8+c]+m.m[12+c];
+        m.m[12+c] = xy+zw;
+    }
+    return m;
+}
+
 static RecompBoneMatrix rotate(RecompBoneMatrix m, unsigned axis, float angle)
 {
-    RecompBoneMatrix rotation = identity();
     unsigned a = (axis+1)%3, b = (axis+2)%3;
-    float s, c;
-    sine_cosine(angle, &s, &c);
-    rotation.m[a*4+a] = rotation.m[b*4+b] = c;
-    rotation.m[a*4+b] = s;
-    rotation.m[b*4+a] = -s;
-    return multiply(rotation, m);
+    float sine, cosine;
+    sine_cosine(angle, &sine, &cosine);
+    for (unsigned column = 0; column < 4; ++column) {
+        float sa = sine*m.m[a*4+column], ca = cosine*m.m[a*4+column];
+        float sb = sine*m.m[b*4+column], cb = cosine*m.m[b*4+column];
+        m.m[a*4+column] = ca+sb;
+        m.m[b*4+column] = cb-sa;
+    }
+    return m;
 }
 
 static RecompBoneMatrix euler(RecompBoneMatrix m, const float xyz[3])
@@ -87,11 +100,24 @@ static void cross(const float a[3], const float b[3], float out[3])
             (double)a[(i+2)%3]*b[(i+1)%3]);
 }
 
+/* The scaffold's reciprocal-square-root plus one refinement is observable
+   near a straight IK chain; ordinary sqrtf changes the bend angle. */
+static float refined_length(float squared)
+{
+    if (squared <= 0) return 0;
+    float inverse = 1.0f/sqrtf(squared);
+    float correction = squared*inverse;
+    correction *= inverse; correction *= inverse; correction *= 0.5f;
+    return (inverse*1.5f-correction)*squared;
+}
+
 static float normalize(float v[3])
 {
-    float length = sqrtf((float)dot(v, v));
-    if (length > 0.0f)
-        for (unsigned i = 0; i < 3; ++i) v[i] /= length;
+    float length = refined_length((float)dot(v, v));
+    if (length > 0.0f) {
+        double inverse = 1.0/length;
+        for (unsigned i = 0; i < 3; ++i) v[i] = (float)(v[i]*inverse);
+    }
     return length;
 }
 
@@ -151,7 +177,7 @@ static RecompBoneMatrix blend(RecompBoneMatrix a, RecompBoneMatrix b, float weig
 static RecompBoneMatrix joint(RecompBoneMatrix parent, const float offset[4],
     const float angles[3])
 {
-    return euler(translate(parent, offset), angles);
+    return euler(translate_packed(parent, offset), angles);
 }
 
 static void mixed_offset(const RecompSkeletonTables *t, unsigned index, float w, float out[3])
@@ -214,11 +240,11 @@ static bool solve_limb(const RecompSkeletonTables *t, const float *p,
             mixed_offset(t, 0, weight, anchor_offset);
             anchor = joint(anchor, anchor_offset, p+6);
             mixed_offset(t, 20, weight, anchor_offset);
-            anchor = translate(anchor, anchor_offset);
+            anchor = translate_packed(anchor, anchor_offset);
         }
         mixed_offset(t, d->proximal, weight, anchor_offset);
     } else memcpy(anchor_offset, t->offsets[d->proximal], sizeof anchor_offset);
-    anchor = translate(anchor, anchor_offset);
+    anchor = translate_packed(anchor, anchor_offset);
     float forward[3], up[3], side[3];
     for (unsigned i = 0; i < 3; ++i) forward[i] = target.m[12+i]-anchor.m[12+i];
     float distance_squared = (float)dot(forward, forward);
@@ -233,7 +259,7 @@ static bool solve_limb(const RecompSkeletonTables *t, const float *p,
     memcpy(basis.m, side, sizeof side);
     memcpy(basis.m+4, up, sizeof up);
     memcpy(basis.m+8, forward, sizeof forward);
-    RecompBoneMatrix nominal_anchor = translate(b[d->parent], t->offsets[d->proximal]);
+    RecompBoneMatrix nominal_anchor = translate_packed(b[d->parent], t->offsets[d->proximal]);
     memcpy(basis.m+12, nominal_anchor.m+12, 3*sizeof(float));
     float complement = 1.0f-weight;
     float first = (float)((double)complement*lengths->proximal+weight*(double)lengths->alternate_proximal);
@@ -262,7 +288,7 @@ static bool solve_limb(const RecompSkeletonTables *t, const float *p,
     for (unsigned i = 0; i < 3; ++i) angles[i] = p[d->rotation_channels[i]];
     b[d->end] = euler(basis, angles);
     if (d->tip != 255)
-        b[d->tip] = rotate(translate(b[d->end], t->offsets[d->tip]), 0, p[d->tip_channel]);
+        b[d->tip] = rotate(translate_packed(b[d->end], t->offsets[d->tip]), 0, p[d->tip_channel]);
     return true;
 }
 
@@ -273,7 +299,7 @@ static void correct_terrain(const RecompSkeletonTables *t,
     float clearance = b[2].m[13]-s->hip_height;
     if (s->terrain_disabled || height == 0 || clearance >= 0.5f || clearance <= -0.1f)
         return;
-    RecompBoneMatrix neck = translate(b[0], t->offsets[19]);
+    RecompBoneMatrix neck = translate_packed(b[0], t->offsets[19]);
     float horizontal[3] = {neck.m[12]-b[2].m[12], 0, neck.m[14]-b[2].m[14]};
     float distance = normalize(horizontal);
     if (distance < 0.1f) return;
@@ -386,14 +412,14 @@ bool recomp_animation_solve_skeleton(const RecompSkeletonTables *t, const float 
     b[23] = joint(b[2], t->offsets[23], p+44);
     b[0] = joint(b[23], t->offsets[0], p+6);
     correct_terrain(t, s, b);
-    b[20] = rotate(rotate(translate(b[0], t->offsets[20]), 1, p[51]), 2, p[50]);
-    b[16] = rotate(rotate(translate(b[0], t->offsets[16]), 1, p[53]), 2, p[52]);
+    b[20] = rotate(rotate(translate_packed(b[0], t->offsets[20]), 1, p[51]), 2, p[50]);
+    b[16] = rotate(rotate(translate_packed(b[0], t->offsets[16]), 1, p[53]), 2, p[52]);
     float neck[3], head[3];
     look_angles(t, s, b[0], p, neck, head);
     b[19] = joint(b[0], t->offsets[19], neck);
     b[1] = joint(b[19], t->offsets[1], head);
-    b[21] = rotate(rotate(translate(b[1], t->offsets[21]), 1, s->eyes[1]), 0, s->eyes[0]);
-    b[17] = rotate(rotate(translate(b[1], t->offsets[17]), 1, s->eyes[3]), 0, s->eyes[2]);
+    b[21] = rotate(rotate(translate_packed(b[1], t->offsets[21]), 1, s->eyes[1]), 0, s->eyes[0]);
+    b[17] = rotate(rotate(translate_packed(b[1], t->offsets[17]), 1, s->eyes[3]), 0, s->eyes[2]);
     for (unsigned i = 0; i < 4; ++i) if (!solve_limb(t, p, s, i, b)) return false;
     derived_joints(b, s->derived_blend != 0);
     for (unsigned i = 0; i < 32; ++i)
