@@ -42,6 +42,8 @@
     "tools/extract_iso.py",
     "tools/afs_extract.py",
     "tools/model_animation.py",
+    "tools/model_capture.py",
+    "tools/test_model_capture.py",
     "tools/model_format.py",
     "tools/model_export.py",
     "tools/test_model_export.py",
