@@ -1,12 +1,22 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
+#include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#ifdef RECOMP_RTGI
+#include "d3d_rtgi.h"
+#endif
+#include "d3d_tuning.h"
+#include "d3d_frame_capture.h"
+#include "d3d_smooth_normals.h"
+#include "texture_replacement.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 #include <d3d11.h>
+#include <wincodec.h>
 #include <dxgi.h>
+#include <dxgi1_5.h>
 #include <d3dcompiler.h>
 
 #include <cmath>
@@ -22,6 +32,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <list>
 #include <string>
 
 #ifdef RECOMP_SMAA
@@ -69,9 +80,9 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
    serve both, so the shader is assembled per FVF from the decoded layout and
    cached with its matching input layout.
 
-   Vertex color comes from the stream or the admitted directional-lighting
+   Vertex color comes from the stream or the admitted fixed-function lighting
    path. Unsupported lighting configurations retain the earlier texture/normal
-   fallback. Texture alpha remains independent of directional diffuse RGB. */
+   fallback. Texture alpha remains independent of lit diffuse RGB. */
 constexpr char kDrawShaderPrologue[] =
     "cbuffer Transform : register(b0) {\n"
     "    row_major float4x4 wvp[4];\n"
@@ -92,6 +103,22 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 directional_directions[8];\n"
     "    float4 directional_colors[8];\n"
     "    float4 directional_flags;\n"
+    "    row_major float4x4 light_world[4];\n"
+    "    float4 light_positions[8];\n"
+    "    float4 light_attenuation[8];\n"
+    "    float4 fog_color;\n"
+    "    float4 fog_params; // start, end, density, mode\n"
+    "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
+    "    row_major float4x4 fog_world_view[4];\n"
+    "}\n"
+    "float fogFactor(float depth) {\n"
+    "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
+    "    if (fog_params.w == 2) { float d = depth * fog_params.z; return saturate(exp(-d*d)); }\n"
+    "    if (fog_params.w == 3) {\n"
+    "        float span = fog_params.y - fog_params.x;\n"
+    "        return span == 0 ? (depth < fog_params.y ? 1 : 0) : saturate((fog_params.y-depth)/span);\n"
+    "    }\n"
+    "    return saturate(depth);\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -201,7 +228,25 @@ void buildDrawShaderSource(
         "            (func == 4 && alpha > ref) ||\n"
         "            (func == 5 && alpha != ref) ||\n"
         "            (func == 6 && alpha >= ref);\n"
-        "        if (!alpha_pass) discard;\n"
+        "        if (draw_flags.y > 1.5f) {\n"
+        /* Sharpen ordinary cutouts; retain exact byte comparisons for the
+           other functions. Zero alpha must never cover a sample at ref=0. */
+        "            float coverage = saturate((shaded.a - ref / 255.0f) / max(fwidth(shaded.a), 1e-4f) + 0.5f);\n"
+        "            shaded.a = func == 4 || func == 6\n"
+        "                ? (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0)\n"
+        "                : (alpha_pass ? 1.0f : 0.0f);\n"
+        "        } else if (!alpha_pass) discard;\n"
+        "    }\n"
+        /* Dither before the first UNORM quantization; post-process input is already 8-bit. */
+        "    if (directional_flags.w > 0.5f) {\n"
+        "        uint2 p = (uint2)input.position.xy;\n"
+        "        uint b = ((p.x ^ p.y) & 1) * 8 + (p.y & 1) * 4\n"
+        "            + (((p.x ^ p.y) >> 1) & 1) * 2 + ((p.y >> 1) & 1);\n"
+        "        shaded.rgb += ((b + 0.5f) / 16.0f - 0.5f) / 255.0f;\n"
+        "    }\n"
+        "    if (fog_flags.x > 0.5f) {\n"
+        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(input.fog_depth);\n"
+        "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
         "    }\n"
         "    return shaded;\n"
         "}\n",
@@ -289,6 +334,22 @@ void releaseCom(T *&object)
    Revisit the bound if another scene exceeds it and causes compilation churn. */
 constexpr uint32_t kDrawPipelineSlots = 16u;
 
+struct SmoothNormalsEntry {
+    std::vector<uint8_t> source, vertices;
+    std::vector<uint16_t> indices;
+    uint32_t fvf, stride, primitive;
+    std::list<uint64_t>::iterator recent;
+    size_t bytes() const { return source.size()+vertices.size()+indices.size()*2u; }
+};
+
+struct SmoothNormalsCache {
+    std::unordered_map<uint64_t, SmoothNormalsEntry> entries;
+    std::list<uint64_t> order;
+    size_t bytes = 0;
+    uint64_t hits = 0, misses = 0;
+    double total_ms = 0, rebuild_ms = 0, max_rebuild_ms = 0;
+};
+
 struct DrawPipeline {
     uint32_t fvf;
     uint32_t program_count;
@@ -324,6 +385,7 @@ constexpr uint32_t kBlendStateSlots = 16u;
 struct BlendStateEntry {
     bool used;
     bool enable;
+    bool alpha_to_coverage;
     RecompD3dBlendFactor src;
     RecompD3dBlendFactor dst;
     RecompD3dBlendOp op;
@@ -348,6 +410,7 @@ struct TextureEntry {
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     uint64_t fingerprint;
+    TextureIdentity identity;
     ID3D11ShaderResourceView *view;
 };
 
@@ -408,6 +471,13 @@ struct RecompD3dPresenter {
     uint32_t msaa = 1u;         // RECOMP_D3D_MSAA: main target sample count
     float target_scale_x = 1.0f, target_scale_y = 1.0f; // bound target / guest size
     bool smaa = false;          // RECOMP_D3D_SMAA: post-process the output
+    bool rtgi_requested = false; // RECOMP_D3D_RTGI=1: ray-traced GI when available
+#ifdef RECOMP_RTGI
+    D3dRtgi *rtgi = nullptr;
+    bool rtgi_pending = false;  // 3D draws recorded since the last GI pass
+    bool rtgi_applied = false;  // GI already lit this frame; later draws skip it
+#endif
+    ID3D11ShaderResourceView *depth_sample = nullptr; // main depth, only for RTGI
     ID3D11VertexShader *smaa_vs[3]{};   // edges, weights, blend
     ID3D11PixelShader *smaa_ps[3]{};
     ID3D11ShaderResourceView *smaa_views[6]{}; // -, edges, area, search, weights, output
@@ -418,6 +488,12 @@ struct RecompD3dPresenter {
     IDXGISwapChain *swap_chain = nullptr;
     ID3D11RenderTargetView *render_target_view = nullptr;
     ID3D11RenderTargetView *present_target_view = nullptr;
+    // VRR only: main-sized output, downscaled into the window-sized swap chain.
+    ID3D11RenderTargetView *vrr_target_view = nullptr;
+    ID3D11ShaderResourceView *vrr_source = nullptr;
+    ID3D11VertexShader *vrr_vs = nullptr;
+    ID3D11PixelShader *vrr_ps = nullptr;
+    ID3D11SamplerState *vrr_sampler = nullptr;
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -430,6 +506,8 @@ struct RecompD3dPresenter {
     ID3D11Buffer *draw_index_buffer = nullptr;
     ID3D11Buffer *draw_constant_buffer = nullptr;
     ID3D11RasterizerState *draw_rasterizer_states[3] = {};
+    SmoothNormalsCache smooth_normals;
+    std::vector<uint8_t> smooth_vertex_scratch;
     UINT draw_vertex_capacity = 0u;
     UINT draw_index_capacity = 0u;
     UINT draw_vertex_used = 0u;
@@ -449,13 +527,15 @@ struct RecompD3dPresenter {
     uint32_t next_blend_state_slot = 0u;
     std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
     std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
+    TextureReplacements replacements;
+    size_t texture_identity_bytes = 0;
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[4][4]{};
+    ID3D11SamplerState *address_samplers[2][4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -471,6 +551,15 @@ struct RecompD3dPresenter {
     double last_present_ms = 0.0;
     double present_call_max_ms = 0.0;
     std::vector<double> present_gaps;
+    // Display refreshes each present stayed on screen (DXGI statistics), 1..8+.
+    unsigned refresh_holds[9]{};
+    UINT last_stat_present = 0u, last_stat_refresh = 0u;
+    /* RECOMP_D3D_PRESENT_LOG: one CSV row of raw DXGI counters per present,
+       in QPC ticks, to line up with a PresentMon --qpc_time capture. */
+    FILE *present_log = nullptr;
+    UINT sync_interval = 1u;
+    bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
+    long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -512,6 +601,15 @@ uint32_t windowHeight(const RecompD3dPresenter *presenter)
         mainHeight(presenter), static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
 }
 
+/* VRR needs direct flip, which a DWM-scaled swap chain loses; with VRR the
+   swap chain matches the window and the presenter scales into it itself. */
+bool vrrScaled(const RecompD3dPresenter *presenter)
+{
+    return presenter->vrr && !immediate_present &&
+        (mainWidth(presenter) != presentClientWidth(presenter, windowHeight(presenter)) ||
+         mainHeight(presenter) != windowHeight(presenter));
+}
+
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
@@ -523,12 +621,21 @@ LRESULT CALLBACK presenterWindowProc(
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
+    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30))) {
+        auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (presenter && presenter->replacements.enabled()) {
+            presenter->replacements.request((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+            return 0;
+        }
+    }
     if (message == WM_CLOSE) {
         auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
             GetWindowLongPtrW(window, GWLP_USERDATA));
         if (presenter != nullptr) {
             presenter->close_requested = true;
         }
+        recomp_tuning.paused = false;   // let a paused game reach its next present and exit
         DestroyWindow(window);
         return 0;
     }
@@ -554,12 +661,18 @@ void releaseSmaa(RecompD3dPresenter *presenter)
 
 void releaseGraphics(RecompD3dPresenter *presenter)
 {
+    presenter->replacements.clear();
     if (presenter->context != nullptr) {
         presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
         presenter->context->ClearState();
         presenter->context->Flush();
     }
     releaseCom(presenter->present_target_view);
+    releaseCom(presenter->vrr_target_view);
+    releaseCom(presenter->vrr_source);
+    releaseCom(presenter->vrr_vs);
+    releaseCom(presenter->vrr_ps);
+    releaseCom(presenter->vrr_sampler);
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -598,8 +711,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         TextureEntry &entry = presenter->textures[i];
 
         releaseCom(entry.view);
+        entry.identity = {};
         entry.used = false;
     }
+    presenter->texture_identity_bytes = 0;
     presenter->texture_index.clear();
     presenter->texture_count = 0u;
     presenter->next_texture_slot = 0u;
@@ -614,8 +729,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->depth_targets.clear();
     presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
-    for (auto &row : presenter->address_samplers) {
-        for (auto &sampler : row) releaseCom(sampler);
+    for (auto &filter : presenter->address_samplers) {
+        for (auto &row : filter) {
+            for (auto &sampler : row) releaseCom(sampler);
+        }
     }
     releaseCom(presenter->filter_sampler);
     releaseCom(presenter->program_mask_sampler);
@@ -624,6 +741,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->draw_vertex_used = 0u;
     presenter->draw_index_used = 0u;
     presenter->draw_shared_ready = false;
+#ifdef RECOMP_RTGI
+    d3d_rtgi_destroy(presenter->rtgi);
+    presenter->rtgi = nullptr;
+#endif
+    releaseCom(presenter->depth_sample);
     releaseCom(presenter->depth_view);
     releaseCom(presenter->depth_texture);
     releaseCom(presenter->render_target_view);
@@ -637,6 +759,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
 void releasePresenter(RecompD3dPresenter *presenter)
 {
     releaseGraphics(presenter);
+    if (presenter->present_log != nullptr) {
+        std::fclose(presenter->present_log);
+        presenter->present_log = nullptr;
+    }
     if (presenter->window != nullptr && IsWindow(presenter->window)) {
         DestroyWindow(presenter->window);
     }
@@ -721,8 +847,10 @@ HRESULT createDeviceWithDriver(
     };
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    swap_chain_desc.BufferDesc.Width = mainWidth(presenter);
-    swap_chain_desc.BufferDesc.Height = mainHeight(presenter);
+    swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
+        ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
+    swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
+        ? windowHeight(presenter) : mainHeight(presenter);
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 0u;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1u;
     swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -734,6 +862,8 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.Windowed = TRUE;
     swap_chain_desc.SwapEffect = immediate_present
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swap_chain_desc.Flags = presenter->vrr && !immediate_present
+        ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
 
     return D3D11CreateDeviceAndSwapChain(
         nullptr,
@@ -778,6 +908,12 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         presenter->create_result = warp_result;
         std::fprintf(stderr, "recomp d3d presenter: using WARP driver\n");
     }
+    // One queued frame: vsync back-pressure paces the game without adding input lag.
+    IDXGIDevice1 *dxgi_device = nullptr;
+    if (SUCCEEDED(presenter->device->QueryInterface(IID_PPV_ARGS(&dxgi_device)))) {
+        dxgi_device->SetMaximumFrameLatency(1u);
+        releaseCom(dxgi_device);
+    }
 
     ID3D11Texture2D *back_buffer = nullptr;
     HRESULT result = presenter->swap_chain->GetBuffer(
@@ -810,6 +946,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     if (SUCCEEDED(result)) {
         D3D11_TEXTURE2D_DESC desc{};
         back_buffer->GetDesc(&desc);
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
         desc.MiscFlags = 0u;
         desc.SampleDesc.Count = presenter->msaa;
@@ -821,30 +959,106 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         }
         releaseCom(guest_buffer);
     }
+    if (SUCCEEDED(result) && vrrScaled(presenter)) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
+        desc.MipLevels = desc.ArraySize = 1u;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1u;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture2D *output = nullptr;
+        result = presenter->device->CreateTexture2D(&desc, nullptr, &output);
+        if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(
+            output, nullptr, &presenter->vrr_target_view);
+        if (SUCCEEDED(result)) result = presenter->device->CreateShaderResourceView(
+            output, nullptr, &presenter->vrr_source);
+        releaseCom(output);
+        static const char shader[] =
+            "Texture2D pixels : register(t0);\n"
+            "SamplerState bilinear : register(s0);\n"
+            "float4 vs(uint id : SV_VertexID, out float2 uv : TEXCOORD0) : SV_Position {\n"
+            " uv = float2((id << 1) & 2, id & 2);\n"
+            " return float4(uv * float2(2,-2) + float2(-1,1), 0, 1); }\n"
+            "float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+            " return pixels.SampleLevel(bilinear, uv, 0); }\n";
+        ID3DBlob *vertex = nullptr, *pixel = nullptr;
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
+        if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
+            vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &presenter->vrr_vs);
+        if (SUCCEEDED(result)) result = presenter->device->CreatePixelShader(
+            pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr, &presenter->vrr_ps);
+        releaseCom(vertex);
+        releaseCom(pixel);
+        D3D11_SAMPLER_DESC sampler{};
+        sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler.MaxLOD = D3D11_FLOAT32_MAX;
+        if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
+            &sampler, &presenter->vrr_sampler);
+    }
     releaseCom(back_buffer);
     if (FAILED(result)) {
         return result;
     }
 
-    D3D11_TEXTURE2D_DESC depth_desc{};
-    depth_desc.Width = mainWidth(presenter);
-    depth_desc.Height = mainHeight(presenter);
-    depth_desc.MipLevels = 1u;
-    depth_desc.ArraySize = 1u;
-    depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    depth_desc.SampleDesc.Count = presenter->msaa;
-    depth_desc.Usage = D3D11_USAGE_DEFAULT;
-    depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    result = presenter->device->CreateTexture2D(
-        &depth_desc, nullptr, &presenter->depth_texture);
+    /* RTGI reads the main depth, so it needs a typeless texture. Without RTGI,
+       or when that texture cannot be made, depth keeps its typed, depth-only form. */
+    for (const bool readable_depth : {presenter->rtgi_requested, false}) {
+        releaseCom(presenter->depth_sample);
+        releaseCom(presenter->depth_view);
+        releaseCom(presenter->depth_texture);
+        D3D11_TEXTURE2D_DESC depth_desc{};
+        depth_desc.Width = mainWidth(presenter);
+        depth_desc.Height = mainHeight(presenter);
+        depth_desc.MipLevels = 1u;
+        depth_desc.ArraySize = 1u;
+        depth_desc.Format = readable_depth
+            ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_desc.SampleDesc.Count = presenter->msaa;
+        depth_desc.Usage = D3D11_USAGE_DEFAULT;
+        depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL |
+            (readable_depth ? D3D11_BIND_SHADER_RESOURCE : 0u);
+        result = presenter->device->CreateTexture2D(
+            &depth_desc, nullptr, &presenter->depth_texture);
+        D3D11_DEPTH_STENCIL_VIEW_DESC depth_view_desc{};
+        depth_view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_view_desc.ViewDimension = presenter->msaa > 1u
+            ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (SUCCEEDED(result)) {
+            result = presenter->device->CreateDepthStencilView(
+                presenter->depth_texture, readable_depth ? &depth_view_desc : nullptr,
+                &presenter->depth_view);
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC sample_desc{};
+        sample_desc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        sample_desc.ViewDimension = presenter->msaa > 1u
+            ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
+        sample_desc.Texture2D.MipLevels = 1u; // Ignored for Texture2DMS.
+        if (SUCCEEDED(result) && readable_depth) {
+            result = presenter->device->CreateShaderResourceView(
+                presenter->depth_texture, &sample_desc, &presenter->depth_sample);
+        }
+        if (SUCCEEDED(result) || !readable_depth) break;
+        std::fprintf(stderr, "recomp rtgi: readable depth unavailable hr=0x%08lX\n",
+            static_cast<unsigned long>(result));
+    }
     if (FAILED(result)) {
         return result;
     }
-    result = presenter->device->CreateDepthStencilView(
-        presenter->depth_texture, nullptr, &presenter->depth_view);
-    if (FAILED(result)) {
-        return result;
+#ifdef RECOMP_RTGI
+    if (presenter->depth_sample != nullptr) {
+        presenter->rtgi = d3d_rtgi_create(
+            presenter->device, mainWidth(presenter), mainHeight(presenter));
+        if (presenter->rtgi != nullptr) {
+            std::fprintf(stderr, "recomp rtgi: enabled at %ux%u\n",
+                mainWidth(presenter), mainHeight(presenter));
+        }
     }
+#endif
 
     presenter->context->OMSetRenderTargets(
         1u, &presenter->render_target_view, presenter->depth_view);
@@ -1204,40 +1418,123 @@ bool compileDrawShader(
     return SUCCEEDED(result);
 }
 
+bool pixelLightingEnabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("RECOMP_D3D_PIXEL_LIGHTING");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 /* Builds the HLSL for one FVF, plus its vertex program when it has one. */
 bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source)
+    std::string &compiled_source,
+    bool pixel_lighting = pixelLightingEnabled())
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
     }
 
-    char source[8192];
+    char source[12288];
     buildDrawShaderSource(layout, source, sizeof source);
     compiled_source = source;
-    if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
+    const auto fields = compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {");
+    compiled_source.insert(fields, "\n    float fog_depth : TEXCOORD6;\n"
+        "    noperspective float fog_factor : TEXCOORD7;\n");
+    if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+        const auto input = compiled_source.find("struct VSIn {") + std::strlen("struct VSIn {");
+        compiled_source.insert(input, "\n    float4 specular : COLOR1;\n");
+    }
+    std::string fog = "    output.fog_depth = fog_flags.y > 0.5f ? abs(output.position.z) : output.position.w;\n";
+    fog += layout.specular_offset != RECOMP_D3D_FVF_ABSENT
+        ? "    output.fog_factor = input.specular.a;\n" : "    output.fog_factor = 1;\n";
+    if (!layout.pretransformed) {
+        fog += "    if (fog_flags.z > 0.5f) {\n"
+            "        float3 eye = mul(float4(input.position,1),fog_world_view[0]).xyz;\n";
+        if (layout.blend_weight_count) {
+            fog += "        if (blend_flags.x > 0.5f) { eye=0; float remainder=1;\n";
+            for (uint32_t i = 0; i < layout.blend_weight_count; ++i) {
+                const auto index = std::to_string(i);
+                fog += "eye += input.weights["+index+"] * mul(float4(input.position,1),fog_world_view["+index+"]).xyz;\n"
+                    "remainder -= input.weights["+index+"];\n";
+            }
+            fog += "eye += remainder * mul(float4(input.position,1),fog_world_view["+
+                std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
+        }
+        fog += "        output.fog_depth = length(eye);\n    }\n";
+    } else {
+        fog += "    if (fog_flags.y > 0.5f) output.fog_depth = abs(output.position.z / output.position.w);\n";
+    }
+    compiled_source.insert(compiled_source.find("    return output;"), fog);
+    if (!pipeline.program_count &&
+        layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
-            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n";
+            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n"
+            "        float3 world_pos = mul(float4(input.position,1),light_world[0]).xyz;\n";
         if (layout.blend_weight_count) {
-            lighting += "        if (blend_flags.x > 0.5f) { n=0; float remainder=1;\n";
+            lighting += "        if (blend_flags.x > 0.5f) { n=0; world_pos=0; float remainder=1;\n";
             for (uint32_t i=0; i<layout.blend_weight_count; ++i) {
                 const auto index=std::to_string(i);
                 lighting += "n += input.weights["+index+"] * mul(float4(input.normal,0),directional_normals["+index+"]).xyz;\n"
+                    "world_pos += input.weights["+index+"] * mul(float4(input.position,1),light_world["+index+"]).xyz;\n"
                     "remainder -= input.weights["+index+"];\n";
             }
             lighting += "n += remainder * mul(float4(input.normal,0),directional_normals["+
+                std::to_string(layout.blend_weight_count)+"]).xyz;\n"
+                "world_pos += remainder * mul(float4(input.position,1),light_world["+
                 std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
         }
-        lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
+        const std::string evaluate =
+            "float3 evaluateLighting(float3 n, float3 world_pos) {\n"
             "        float3 rgb=directional_base.rgb;\n"
-            "        for (uint i=0; i<(uint)directional_flags.z; ++i)\n"
-            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,directional_directions[i].xyz));\n"
-            "        output.color.rgb=saturate(rgb);\n"
-            "    }\n";
+            "        for (uint i=0; i<(uint)directional_flags.z; ++i) {\n"
+            "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
+            "            if (light_positions[i].w > 0.5f) {\n"
+            "                l = light_positions[i].xyz - world_pos;\n"
+            "                float d = length(l);\n"
+            "                float denominator = dot(light_attenuation[i].xyz,float3(1,d,d*d));\n"
+            "                atten = d <= light_attenuation[i].w && denominator > 0 ? 1/denominator : 0;\n"
+            "                l = d > 0 ? l/d : float3(0,0,0);\n"
+            "            }\n"
+            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) * atten;\n"
+            "        }\n"
+            "        return saturate(rgb);\n"
+            "}\n";
+        const auto vertex = compiled_source.find("VSOut vs_main(");
+        if (vertex == std::string::npos) return false;
+        compiled_source.insert(vertex, evaluate);
+        lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
+        if (pixel_lighting) {
+            const std::string declaration = "struct VSOut {";
+            const auto fields = compiled_source.find(declaration);
+            if (fields == std::string::npos) return false;
+            compiled_source.insert(fields + declaration.size(),
+                "\n    float3 light_position : TEXCOORD5;\n"
+                "    float4 light_normal : TEXCOORD8;\n");
+            // Initialize unlit draws too; their existing color path stays intact.
+            lighting.insert(0, "    output.light_position = 0; output.light_normal = 0;\n");
+            lighting += "        output.light_position = world_pos;\n"
+                "        output.light_normal = float4(n, length(n));\n";
+            const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+            const auto sample = compiled_source.find(pixel);
+            if (sample == std::string::npos) return false;
+            // Preserve magnitude when NORMALIZENORMALS is off, including flat lighting.
+            compiled_source.insert(sample + pixel.size(),
+                "\n    if (directional_flags.x > 0.5f) {\n"
+                "        float3 n = input.light_normal.xyz;\n"
+                "        if (dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
+                "        if (directional_flags.y < 0.5f) n *= input.light_normal.w;\n"
+                "        input.color.rgb = evaluateLighting(n, input.light_position);\n"
+                "    }\n");
+        } else {
+            lighting += "        output.color.rgb = evaluateLighting(n, world_pos);\n";
+        }
+        lighting += "    }\n";
         const auto uv = compiled_source.find("    output.texcoord =");
         if (uv == std::string::npos) return false;
         compiled_source.insert(uv, lighting);
@@ -1335,7 +1632,7 @@ bool createDrawPipeline(
             &pipeline.pixel_shader);
     }
     if (SUCCEEDED(result)) {
-        D3D11_INPUT_ELEMENT_DESC elements[8]{};
+        D3D11_INPUT_ELEMENT_DESC elements[9]{};
         UINT count = 0u;
 
         elements[count++] = {
@@ -1361,6 +1658,11 @@ bool createDrawPipeline(
             elements[count++] = {
                 "COLOR", 0u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
                 layout.diffuse_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+        }
+        if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+            elements[count++] = {
+                "COLOR", 1u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
+                layout.specular_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
         const uint32_t texture_coords = layout.texcoord_count == 4u ? 4u
             : layout.texcoord_count == 2u ? 2u
@@ -1420,7 +1722,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
     /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 140u) * sizeof(float);
+    constant_desc.ByteWidth = (140u + 192u * 4u + 268u + 76u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1877,7 +2179,7 @@ void copyGuestBuffer(RecompD3dPresenter *presenter, ID3D11Resource *target)
     presenter->render_target_view->GetResource(&source);
     if (presenter->msaa > 1u) presenter->context->ResolveSubresource(
         target, 0u, source, 0u, DXGI_FORMAT_B8G8R8A8_UNORM);
-    else presenter->context->CopyResource(target, source);
+    else presenter->context->CopySubresourceRegion(target, 0u, 0u, 0u, 0u, source, 0u, nullptr);
     releaseCom(source);
 }
 
@@ -1895,14 +2197,20 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
         presenter->render_target_view == nullptr) return nullptr;
 
     if (presenter->back_buffer_copy == nullptr) {
+        /* An upscaled copy keeps mips so a guest downsample (the 256x256
+           depth-of-field source) averages its footprint like the Xbox did. */
+        const bool mips = presenter->scale != 1.0f;
         D3D11_TEXTURE2D_DESC texture_desc{};
         texture_desc.Width = mainWidth(presenter);
         texture_desc.Height = mainHeight(presenter);
-        texture_desc.MipLevels = texture_desc.ArraySize = 1u;
+        texture_desc.MipLevels = mips ? 0u : 1u;
+        texture_desc.ArraySize = 1u;
         texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         texture_desc.SampleDesc.Count = 1u;
         texture_desc.Usage = D3D11_USAGE_DEFAULT;
-        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+            (mips ? D3D11_BIND_RENDER_TARGET : 0u);
+        texture_desc.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0u;
         HRESULT result = presenter->device->CreateTexture2D(
             &texture_desc, nullptr, &presenter->back_buffer_copy);
         if (SUCCEEDED(result)) {
@@ -1926,7 +2234,8 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
 ID3D11SamplerState *lookupDrawSampler(
-    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
+    bool anisotropic = false)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
@@ -1934,12 +2243,16 @@ ID3D11SamplerState *lookupDrawSampler(
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[u - 1][v - 1];
+    ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
     if (sampler == nullptr) {
         D3D11_SAMPLER_DESC desc{};
         presenter->draw_sampler->GetDesc(&desc);
         desc.AddressU = u;
         desc.AddressV = v;
+        if (anisotropic) {
+            desc.Filter = D3D11_FILTER_ANISOTROPIC;
+            desc.MaxAnisotropy = 16u;
+        }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
         }
@@ -1949,6 +2262,9 @@ ID3D11SamplerState *lookupDrawSampler(
 
 void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 {
+    auto &identity = presenter->textures[slot].identity;
+    presenter->texture_identity_bytes -= identity.bytes.size();
+    identity = {};
     const auto range = presenter->texture_index.equal_range(presenter->textures[slot].data);
     for (auto it = range.first; it != range.second; ++it) {
         if (it->second == slot) {
@@ -1976,7 +2292,14 @@ ID3D11ShaderResourceView *lookupTexture(
             desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
     }
 
-    if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
+    if (draw.texture_is_backbuffer) {
+        ID3D11ShaderResourceView *view = lookupBackBufferTexture(presenter, desc);
+        /* Only a draw into a smaller offscreen target minifies; 1:1 reads skip it. */
+        if (view != nullptr && presenter->scale != 1.0f && draw.target.offscreen) {
+            presenter->context->GenerateMips(view);
+        }
+        return view;
+    }
 
     if (palettized && (draw.palette_bytes == nullptr ||
         draw.palette_byte_count != kPaletteBytes)) {
@@ -1995,6 +2318,9 @@ ID3D11ShaderResourceView *lookupTexture(
             draw.texture_byte_count)) {
         return nullptr;
     }
+    const bool replaceable = presenter->replacements.enabled() && !desc.linear &&
+        !desc.depth && draw.texture_bytes &&
+        draw.texture_byte_count == recomp_d3d_texture_mip_span(&desc);
     const auto cached = presenter->texture_index.equal_range(desc.data);
     const bool fingerprinted = !linear_bgra && draw.texture_bytes != nullptr;
     const uint64_t fingerprint = fingerprinted
@@ -2005,7 +2331,8 @@ ID3D11ShaderResourceView *lookupTexture(
         if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
-            if (fingerprinted && entry.fingerprint != fingerprint) {
+            if (fingerprinted && (entry.fingerprint != fingerprint ||
+                (replaceable && !entry.identity.key.empty() && !entry.identity.matches(draw)))) {
                 static unsigned reported;
                 if (reported < 32u) {
                     ++reported;
@@ -2024,7 +2351,7 @@ ID3D11ShaderResourceView *lookupTexture(
                     resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
                 releaseCom(resource);
             }
-            return entry.view;
+            return replaceable ? presenter->replacements.lookup(entry.identity.key, entry.view) : entry.view;
         }
     }
     const DXGI_FORMAT format = linear_bgra
@@ -2132,6 +2459,14 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.fingerprint = fingerprint;
+    presenter->texture_identity_bytes -= entry.identity.bytes.size();
+    entry.identity = {};
+    if (replaceable && presenter->texture_identity_bytes + draw.texture_byte_count +
+        kPaletteBytes <= 128u * 1024u * 1024u) {
+        try { entry.identity.assign(draw); }
+        catch (const std::exception &) { entry.identity = {}; }
+    }
+    presenter->texture_identity_bytes += entry.identity.bytes.size();
     entry.view = view;
     try {
         presenter->texture_index.emplace(desc.data, slot);
@@ -2140,17 +2475,19 @@ ID3D11ShaderResourceView *lookupTexture(
         entry.used = false;
         return nullptr;
     }
-    return view;
+    return replaceable ? presenter->replacements.lookup(entry.identity.key, view) : view;
 }
 
 ID3D11BlendState *lookupBlendState(
     RecompD3dPresenter *presenter,
-    const RecompD3dBlendState &blend)
+    const RecompD3dBlendState &blend,
+    bool alpha_to_coverage = false)
 {
     for (uint32_t i = 0u; i < presenter->blend_state_count; ++i) {
         BlendStateEntry &entry = presenter->blend_states[i];
 
         if (entry.used && entry.enable == blend.blend_enable &&
+            entry.alpha_to_coverage == alpha_to_coverage &&
             entry.src == blend.src_factor && entry.dst == blend.dst_factor &&
             entry.op == blend.op &&
             entry.color_write_mask == blend.color_write_mask) {
@@ -2159,6 +2496,7 @@ ID3D11BlendState *lookupBlendState(
     }
 
     D3D11_BLEND_DESC desc{};
+    desc.AlphaToCoverageEnable = alpha_to_coverage;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2185,6 +2523,7 @@ ID3D11BlendState *lookupBlendState(
     }
     entry.used = true;
     entry.enable = blend.blend_enable;
+    entry.alpha_to_coverage = alpha_to_coverage;
     entry.src = blend.src_factor;
     entry.dst = blend.dst_factor;
     entry.op = blend.op;
@@ -2205,15 +2544,130 @@ ID3D11BlendState *lookupBlendState(
     return state;
 }
 
+// Hash every byte: CPU-skinned streams and in-place buffer rewrites must miss.
+uint64_t normalFingerprint(const void *source, size_t size, uint64_t hash)
+{
+    const auto *bytes = static_cast<const uint8_t *>(source);
+    while (size >= 8u) {
+        uint64_t word;
+        std::memcpy(&word, bytes, 8u);
+        hash = (hash ^ word) * 0x100000001b3ull;
+        bytes += 8u;
+        size -= 8u;
+    }
+    while (size--) hash = (hash ^ *bytes++) * 0x100000001b3ull;
+    return hash;
+}
+
+bool smoothNormalsEnabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("RECOMP_D3D_SMOOTH_NORMALS");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+const void *smoothNormalVertices(RecompD3dPresenter *presenter,
+    const RecompD3dPresenterDrawCommand &draw, const RecompD3dVertexLayout &layout,
+    bool enabled = smoothNormalsEnabled())
+{
+    if (!enabled || !draw.directional.enabled || draw.program_count || layout.pretransformed ||
+        layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
+        draw.primitive_type < 5u || draw.primitive_type > 7u) return draw.vertex_bytes;
+
+    static const bool measure = std::getenv("RECOMP_PERF_COUNTER") != nullptr;
+    const auto start = measure ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    auto &cache = presenter->smooth_normals;
+    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
+    uint32_t first = UINT32_MAX, last = 0;
+    for (uint32_t i=0; i<draw.index_count; ++i) {
+        first = (std::min)(first, uint32_t(indices[i]));
+        last = (std::max)(last, uint32_t(indices[i]));
+    }
+    if (last >= draw.vertex_count) return draw.vertex_bytes;
+    // Index buffers often select only the tail of a shared vertex buffer.
+    // Unreferenced prefixes must not consume the cache or invalidate on animation.
+    const uint32_t count = last-first+1u;
+    const auto *source = static_cast<const uint8_t *>(draw.vertex_bytes)+size_t(first)*draw.vertex_stride;
+    const size_t size = size_t(count)*draw.vertex_stride;
+    const size_t index_size = size_t(draw.index_count)*2u;
+    const uint32_t shape[] = {draw.fvf, draw.vertex_stride, draw.primitive_type, count, draw.index_count, first};
+    uint64_t key = normalFingerprint(shape, sizeof shape, 0xcbf29ce484222325ull);
+    key = normalFingerprint(source, size, key);
+    key = normalFingerprint(draw.index_bytes, index_size, key);
+    auto found = cache.entries.find(key);
+    const void *result = draw.vertex_bytes;
+    if (found != cache.entries.end() && found->second.fvf == draw.fvf &&
+        found->second.stride == draw.vertex_stride && found->second.primitive == draw.primitive_type &&
+        found->second.source.size() == size && found->second.indices.size()*2u == index_size &&
+        !std::memcmp(found->second.source.data(), source, size) &&
+        !std::memcmp(found->second.indices.data(), draw.index_bytes, index_size)) {
+        ++cache.hits;
+        cache.order.splice(cache.order.end(), cache.order, found->second.recent);
+        result = found->second.vertices.data();
+    } else {
+        ++cache.misses;
+        const auto rebuild_start = measure ? std::chrono::steady_clock::now() : start;
+        auto vertices = recomp_d3d_smooth_normals(source, count, draw.vertex_stride,
+            layout, indices, draw.index_count, draw.primitive_type, first);
+        if (measure) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-rebuild_start).count();
+            cache.rebuild_ms += ms;
+            cache.max_rebuild_ms = (std::max)(cache.max_rebuild_ms, ms);
+        }
+        // Leave room for a full scene plus changing animation buffers.
+        constexpr size_t budget = 32u*1024u*1024u;
+        const size_t cost = size*2u+index_size;
+        if (!vertices.empty() && cost <= budget) {
+            // A hash collision is a miss, never permission to reuse other geometry.
+            if (found != cache.entries.end()) {
+                cache.bytes -= found->second.bytes();
+                cache.order.erase(found->second.recent);
+                cache.entries.erase(found);
+            }
+            while (!cache.order.empty() && (cache.bytes+cost > budget || cache.order.size() >= 1024u)) {
+                auto oldest = cache.entries.find(cache.order.front());
+                cache.bytes -= oldest->second.bytes();
+                cache.entries.erase(oldest);
+                cache.order.pop_front();
+            }
+            SmoothNormalsEntry entry{{source, source+size}, std::move(vertices),
+                {indices, indices+draw.index_count}, draw.fvf, draw.vertex_stride, draw.primitive_type};
+            auto inserted = cache.entries.emplace(key, std::move(entry));
+            cache.order.push_back(key);
+            inserted.first->second.recent = --cache.order.end();
+            cache.bytes += cost;
+            result = inserted.first->second.vertices.data();
+        }
+    }
+    if (result != draw.vertex_bytes && (first || count != draw.vertex_count)) {
+        // Keep the original index base. No draw reads the unused scratch prefix.
+        auto &scratch = presenter->smooth_vertex_scratch;
+        const size_t full_size = size_t(draw.vertex_count)*draw.vertex_stride;
+        if (scratch.size()<full_size) scratch.resize(full_size);
+        std::memcpy(scratch.data()+size_t(first)*draw.vertex_stride, result, size);
+        result = scratch.data();
+    }
+    if (measure) cache.total_ms += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now()-start).count();
+    return result;
+}
+
 RecompD3dPresenterError submitDraw(
     RecompD3dPresenter *presenter,
-    const RecompD3dPresenterDrawCommand &draw)
+    const RecompD3dPresenterDrawCommand &draw, const char **reason = nullptr,
+    bool *sampled_texture = nullptr)
 {
+    const auto reject = [reason](const char *why, RecompD3dPresenterError error) {
+        if (reason) *reason = why;
+        return error;
+    };
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
         draw.index_count == 0u ||
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return reject("buffers-or-cull", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
     }
 
     RecompD3dVertexLayout layout;
@@ -2222,7 +2676,7 @@ RecompD3dPresenterError submitDraw(
         (!layout.pretransformed && !draw.has_transform) ||
         (draw.blend_weight_count != 0u &&
          layout.blend_weight_count != draw.blend_weight_count)) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return reject("layout-or-transform", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
     }
 
     D3D11_PRIMITIVE_TOPOLOGY topology;
@@ -2241,12 +2695,12 @@ RecompD3dPresenterError submitDraw(
     }
 
     if (!ensureSharedDrawState(presenter)) {
-        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        return reject("host-resource", RECOMP_D3D_PRESENTER_HOST_FAILURE);
     }
 
     const DrawPipeline *pipeline = lookupDrawPipeline(presenter, draw.fvf, &draw);
     if (pipeline == nullptr) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return reject("pipeline", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
     }
 
     ID3D11RenderTargetView *color_view;
@@ -2254,7 +2708,7 @@ RecompD3dPresenterError submitDraw(
     const RecompD3dPresenterError target_result =
         bindTarget(presenter, draw.target, color_view, depth_view);
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
-        return target_result;
+        return reject("render-target", target_result);
     }
     if (draw.has_texture) {
         const RenderTargetEntry *sampled = findRenderTarget(presenter, draw.texture);
@@ -2262,7 +2716,7 @@ RecompD3dPresenterError submitDraw(
             std::fprintf(stderr,
                 "recomp d3d presenter: cannot sample active render target "
                 "data=0x%08X\n", draw.texture.data);
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return reject("active-target-feedback", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         }
     }
 
@@ -2270,8 +2724,8 @@ RecompD3dPresenterError submitDraw(
     UINT vertex_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_vertex_buffer,
             presenter->draw_vertex_capacity, presenter->draw_vertex_used,
-            draw.vertex_bytes, vertex_size, D3D11_BIND_VERTEX_BUFFER, vertex_offset)) {
-        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+            smoothNormalVertices(presenter, draw, layout), vertex_size, D3D11_BIND_VERTEX_BUFFER, vertex_offset)) {
+        return reject("host-resource", RECOMP_D3D_PRESENTER_HOST_FAILURE);
     }
 
     /* Triangle fans are expanded into a triangle list here because D3D11
@@ -2285,7 +2739,7 @@ RecompD3dPresenterError submitDraw(
 
     if (draw.primitive_type == 7u) {
         if (draw.triangle_count > 4096u) {
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return reject("fan-limit", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         }
         for (uint32_t i = 0u; i < draw.triangle_count; ++i) {
             fan_indices[i * 3u + 0u] = source_indices[0];
@@ -2308,7 +2762,7 @@ RecompD3dPresenterError submitDraw(
         has_second_texture ? texture_view : nullptr, release_view);
     ID3D11ShaderResourceView *mask_view = nullptr;
     if (draw.has_alpha_mask) {
-        if (layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (layout.texcoord_count != 2u) return reject("alpha-mask-layout", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         RecompD3dPresenterDrawCommand mask{};
         mask.texture = draw.alpha_mask;
         mask.texture_bytes = draw.alpha_mask_bytes;
@@ -2316,27 +2770,28 @@ RecompD3dPresenterError submitDraw(
         mask.palette_bytes = draw.alpha_mask_palette;
         mask.palette_byte_count = draw.alpha_mask_palette_byte_count;
         mask_view = lookupTexture(presenter, mask);
-        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask_view == nullptr || texture_view == nullptr) return reject("alpha-mask-texture", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
     }
     if (draw.has_reflection || draw.program_alpha_mask) {
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
             (draw.program_alpha_mask && layout.normal_offset == RECOMP_D3D_FVF_ABSENT) ||
-            layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            layout.texcoord_count == 0u) return reject("reflection-layout", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         RecompD3dPresenterDrawCommand reflection{};
         reflection.texture = draw.reflection_texture;
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
         mask_view = lookupTexture(presenter, reflection);
-        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask_view == nullptr || texture_view == nullptr) return reject("reflection-texture", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
     }
     if (draw.four_tap_filter && texture_view == nullptr) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return reject("four-tap-texture", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
     }
     if (draw.program_count) dumpProgramTexture(presenter, texture_view, draw.program_alpha_mask);
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
+    if (sampled_texture) *sampled_texture = texture_view != nullptr;
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 140]{};
+    float draw_constants[140 + 192 * 4 + 268 + 76]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2350,7 +2805,7 @@ RecompD3dPresenterError submitDraw(
         viewport.Height /= presenter->target_scale_y;
         if (count != 1u || viewport.Width <= 0.0f || viewport.Height <= 0.0f ||
             viewport.MaxDepth <= viewport.MinDepth) {
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return reject("viewport", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         }
         /* Undo the bound viewport; legacy pixel centers are integers, while
            D3D11 centers are half integers. The shader restores clip W from RHW. */
@@ -2368,12 +2823,12 @@ RecompD3dPresenterError submitDraw(
         /* Undo the guest sample grid, which may differ from the host target. */
         for (unsigned axis = 0; axis < 2; ++axis) {
             const float scale = draw.program_constants[58][axis];
-            if (!std::isfinite(scale) || scale == 0) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            if (!std::isfinite(scale) || scale == 0) return reject("program-viewport-xy", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
             draw_constants[axis * 5] = 1.0f / scale;
             draw_constants[12 + axis] = -draw.program_constants[59][axis] / scale;
         }
         const float depth_scale = draw.program_constants[58][2];
-        if (!std::isfinite(depth_scale) || depth_scale <= 0) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (!std::isfinite(depth_scale) || depth_scale <= 0) return reject("program-viewport-z", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         draw_constants[10] = 1.0f / depth_scale;
         draw_constants[14] = -draw.program_constants[59][2] / depth_scale;
         draw_constants[138] = draw.program_alpha_mask ? 1.0f : 0.0f;
@@ -2381,7 +2836,7 @@ RecompD3dPresenterError submitDraw(
     }
     if (draw.directional.enabled && !draw.program_count) {
         const auto &light = draw.directional;
-        if (light.count > 8u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (light.count > 8u) return reject("light-count", RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         float *constants = draw_constants + 140 + 192 * 4;
         std::memcpy(constants, light.normal_transforms, sizeof light.normal_transforms);
         std::memcpy(constants+64, light.ambient_emissive, sizeof light.ambient_emissive);
@@ -2391,9 +2846,40 @@ RecompD3dPresenterError submitDraw(
         constants[136]=1;
         constants[137]=light.normalize ? 1.0f:0.0f;
         constants[138]=static_cast<float>(light.count);
+        std::memcpy(constants+140, light.world_transforms, sizeof light.world_transforms);
+        std::memcpy(constants+204, light.positions, sizeof light.positions);
+        std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
+    }
+    /* Spare directional_flags.w: dither only opaque writes to the main target. */
+    draw_constants[140 + 192 * 4 + 139] =
+        !draw.blend.blend_enable && !draw.target.offscreen ? 1.0f : 0.0f;
+    {
+        static const bool fog_enabled = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        static const bool fog_visualize = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG_FACTOR");
+            return value && std::strcmp(value, "1") == 0;
+        }();
+        float *fog = draw_constants + 140 + 192 * 4 + 268;
+        for (unsigned c = 0; c < 3; ++c)
+            fog[c] = ((draw.fog.color >> (16 - 8*c)) & 255u) / 255.0f;
+        fog[4] = draw.fog.start;
+        fog[5] = draw.fog.end;
+        fog[6] = draw.fog.density;
+        fog[7] = static_cast<float>(draw.fog.mode);
+        fog[8] = draw.fog.enabled && fog_enabled ? 1.0f : 0.0f;
+        fog[9] = draw.fog_z ? 1.0f : 0.0f;
+        fog[10] = draw.fog.range ? 1.0f : 0.0f;
+        fog[11] = fog_visualize ? 1.0f : 0.0f;
+        std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
-    draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+    const bool alpha_to_coverage = draw.depth.alpha_test_enable &&
+        !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u;
+    /* draw_flags.y: 0 disabled, 1 hard alpha test, 2 MSAA coverage. */
+    draw_constants[65] = alpha_to_coverage ? 2.0f : draw.depth.alpha_test_enable ? 1.0f : 0.0f;
     draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
@@ -2439,7 +2925,7 @@ RecompD3dPresenterError submitDraw(
             presenter->draw_constant_buffer,
             draw_constants,
             sizeof draw_constants)) {
-        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        return reject("host-resource", RECOMP_D3D_PRESENTER_HOST_FAILURE);
     }
 
     const UINT stride = draw.vertex_stride;
@@ -2457,16 +2943,21 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
+    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
+        !layout.pretransformed && !draw.texture.linear &&
+        !draw.texture.render_target && !draw.texture_is_backbuffer &&
+        draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
+        !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v),
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
         draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {
-        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        return reject("host-resource", RECOMP_D3D_PRESENTER_HOST_FAILURE);
     }
     presenter->context->OMSetDepthStencilState(depth_state, draw.depth.stencil_ref);
     {
@@ -2476,9 +2967,9 @@ RecompD3dPresenterError submitDraw(
             ((color >> 8u) & 255u) / 255.0f,
             (color & 255u) / 255.0f,
             ((color >> 24u) & 255u) / 255.0f};
-        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend);
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage);
         if (blend_state == nullptr) {
-            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+            return reject("host-resource", RECOMP_D3D_PRESENTER_HOST_FAILURE);
         }
 
         presenter->context->OMSetBlendState(
@@ -2487,6 +2978,17 @@ RecompD3dPresenterError submitDraw(
             0xffffffffu);
     }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
+#ifdef RECOMP_RTGI
+    /* Render-target and backbuffer views change within a frame, so their
+       draws trace as opaque. */
+    if (presenter->rtgi != nullptr && !presenter->rtgi_applied && !recomp_tuning.rtgi_off &&
+        d3d_rtgi_add_draw(presenter->rtgi, draw,
+            draw.texture_is_backbuffer || draw.texture.render_target ? nullptr : texture_view,
+            draw.has_alpha_mask && !draw.alpha_mask.render_target ? mask_view : nullptr,
+            draw.plain_texture_material)) {
+        presenter->rtgi_pending = true;
+    }
+#endif
     static const char *program_dump = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
     static unsigned program_dump_count = 0;
     if (draw.program_count && program_dump && program_dump_count < 2 &&
@@ -2625,53 +3127,104 @@ bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
     return true;
 }
 
+bool writeCapturePng(const char *path, UINT width, UINT height,
+    const D3D11_MAPPED_SUBRESOURCE &mapped)
+{
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IWICImagingFactory *factory = nullptr;
+    IWICStream *stream = nullptr;
+    IWICBitmapEncoder *encoder = nullptr;
+    IWICBitmapFrameEncode *frame = nullptr;
+    wchar_t wide[1024];
+    HRESULT hr = MultiByteToWideChar(CP_ACP, 0, path, -1, wide, 1024)
+        ? CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&factory)) : E_INVALIDARG;
+    if (SUCCEEDED(hr)) hr = factory->CreateStream(&stream);
+    if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(wide, GENERIC_WRITE);
+    if (SUCCEEDED(hr)) hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+    if (SUCCEEDED(hr)) hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, nullptr);
+    if (SUCCEEDED(hr)) hr = frame->Initialize(nullptr);
+    if (SUCCEEDED(hr)) hr = frame->SetSize(width, height);
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&format);
+    if (SUCCEEDED(hr) && format != GUID_WICPixelFormat32bppBGRA) hr = E_FAIL;
+    // Swapchain alpha is not window opacity; screenshots must be opaque.
+    std::vector<BYTE> pixels(static_cast<size_t>(width) * height * 4u);
+    for (UINT y = 0; y < height; ++y) {
+        BYTE *row = pixels.data() + static_cast<size_t>(y) * width * 4u;
+        std::memcpy(row, static_cast<const BYTE *>(mapped.pData) +
+            static_cast<size_t>(y) * mapped.RowPitch, width * 4u);
+        for (UINT x = 0; x < width; ++x) row[x * 4u + 3u] = 255u;
+    }
+    if (SUCCEEDED(hr)) hr = frame->WritePixels(height, width * 4u,
+        width * height * 4u, pixels.data());
+    if (SUCCEEDED(hr)) hr = frame->Commit();
+    if (SUCCEEDED(hr)) hr = encoder->Commit();
+    releaseCom(frame); releaseCom(encoder); releaseCom(stream); releaseCom(factory);
+    if (SUCCEEDED(initialized)) CoUninitialize();
+    std::fprintf(stderr, "recomp d3d capture: PNG %s hr=0x%08lX\n", path, static_cast<unsigned long>(hr));
+    return SUCCEEDED(hr);
+}
+
 /* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
    INTERVAL_MS optionally spaces captures in host time. Capture stays inside
    the renderer, without cross-process window painting or missed-frame bursts. */
-void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
+void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count,
+    const char *capture_path = nullptr)
 {
-    const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
-    if (path == nullptr) {
-        return;
-    }
-    /* A single dump cannot answer whether content moves between frames, only
-       whether one frame is correct. RECOMP_D3D_FRAME_DUMP_COUNT captures a
-       burst of consecutive presents so successive back buffers can be
-       compared against each other. Default 1 keeps existing gates identical. */
-    const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
-    const unsigned count = count_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
-        : 1u;
-    if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
-        return;
-    }
-    const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
-    const unsigned at = at_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(at_text, nullptr, 10))
-        : 1u;
-    if (present_count < at) {
-        return;
-    }
-    const char *interval_text =
-        std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
-    const unsigned interval_ms = interval_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
-        : 0u;
-    if (!frameDumpDue(GetTickCount64(), interval_ms,
-            presenter->next_frame_dump_ms)) {
-        return;
-    }
-    const unsigned dump_index = presenter->frame_dump_count++;
-
-    /* One name per frame in a burst; the single-dump case keeps the exact
-       path it always used so existing gates and receipts still match. */
+    const char *path = capture_path ? capture_path : std::getenv("RECOMP_D3D_FRAME_DUMP");
+    unsigned interval_ms = 0u;
     char burst_path[1024];
-    if (count > 1u) {
-        std::snprintf(
-            burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
-        path = burst_path;
-    }
+    if (!capture_path) {
+        if (path == nullptr) {
+            return;
+        }
+        /* A single dump cannot answer whether content moves between frames, only
+           whether one frame is correct. RECOMP_D3D_FRAME_DUMP_COUNT captures a
+           burst of consecutive presents so successive back buffers can be
+           compared against each other. Default 1 keeps existing gates identical. */
+        const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
+        const unsigned count = count_text != nullptr
+            ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
+            : 1u;
+        if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
+            return;
+        }
+        const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
+        const unsigned at = at_text != nullptr
+            ? static_cast<unsigned>(std::strtoul(at_text, nullptr, 10))
+            : 1u;
+        if (present_count < at) {
+            return;
+        }
+        const char *interval_text =
+            std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
+        interval_ms = interval_text != nullptr
+            ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
+            : 0u;
+        /* EVERY spaces captures in presents instead; the game advances once per
+           present, so two runs capture identical game state. */
+        const char *every_text = std::getenv("RECOMP_D3D_FRAME_DUMP_EVERY");
+        const unsigned every = every_text != nullptr
+            ? static_cast<unsigned>(std::strtoul(every_text, nullptr, 10))
+            : 0u;
+        if (every != 0u ? (present_count - at) % every != 0u
+                : !frameDumpDue(GetTickCount64(), interval_ms,
+                    presenter->next_frame_dump_ms)) {
+            return;
+        }
+        const unsigned dump_index = presenter->frame_dump_count++;
 
+        /* One name per frame in a burst; the single-dump case keeps the exact
+           path it always used so existing gates and receipts still match. */
+        if (count > 1u) {
+            std::snprintf(
+                burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
+            path = burst_path;
+        }
+
+    }
     ID3D11Texture2D *back_buffer = nullptr;
     if (FAILED(presenter->swap_chain->GetBuffer(
             0u, __uuidof(ID3D11Texture2D),
@@ -2701,7 +3254,9 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         const unsigned padded = (row_bytes + 3u) & ~3u;
         const unsigned image_bytes = padded * height;
 
-        if (FILE *file = std::fopen(path, "wb")) {
+        if (capture_path) {
+            writeCapturePng(path, width, height, mapped);
+        } else if (FILE *file = std::fopen(path, "wb")) {
             unsigned char header[54] = {0};
             const unsigned total = 54u + image_bytes;
 
@@ -3006,9 +3561,52 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     return true;
 }
 
+#ifdef RECOMP_RTGI
+/* Lights the frame's 3D scene once, before its screen-space UI. The GI pass
+   clears context state; every draw and clear rebinds what it uses. */
+void applyRtgi(RecompD3dPresenter *presenter)
+{
+    RecompD3dTextureDesc desc{};
+    desc.format_byte = 0x12u;
+    desc.linear = true;
+    desc.width = presenter->config.width;
+    desc.height = presenter->config.height;
+    ID3D11ShaderResourceView *color = lookupBackBufferTexture(presenter, desc);
+    if (color != nullptr) {
+        d3d_rtgi_apply(presenter->rtgi, presenter->context, presenter->render_target_view,
+            color, presenter->depth_sample, presenter->msaa);
+    }
+    presenter->rtgi_pending = false;
+    presenter->rtgi_applied = true;
+}
+#endif
+
+/* The guest runs at 60 Hz. On a 120 or 240 Hz display, interval 1 shows its
+   frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
+   refresh/60. Rechecked each second, as the window can change monitors.
+   ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
+UINT syncInterval(RecompD3dPresenter *presenter)
+{
+    if (presenter->present_count % 60u == 0u) {
+        MONITORINFOEXW monitor{};
+        monitor.cbSize = sizeof monitor;
+        DEVMODEW mode{};
+        mode.dmSize = sizeof mode;
+        UINT interval = 1u;
+        if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+            // Integer rates such as 239 stand for 239.76 Hz.
+            const DWORD hz = mode.dmDisplayFrequency, k = (hz + 30u) / 60u;
+            if (k >= 2u && k <= 4u && hz + 1u >= 60u * k && hz <= 60u * k + 1u) interval = k;
+        }
+        presenter->sync_interval = interval;
+    }
+    return presenter->sync_interval;
+}
+
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
-    const RecompD3dPresenterPresentCommand &present)
+    const RecompD3dPresenterPresentCommand &present, uint32_t capture_frame = 0u)
 {
     if (present.effective_flags != 5u || present.swap_counter == 0u) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -3039,10 +3637,39 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
-    if (!renderOutput(presenter, presenter->present_target_view)) {
+#ifdef RECOMP_RTGI
+    if (presenter->rtgi_pending) applyRtgi(presenter);
+    presenter->rtgi_applied = false;
+#endif
+    if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
+            ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
+    if (presenter->vrr_target_view != nullptr) {
+        auto *context = presenter->context;
+        D3D11_TEXTURE2D_DESC window{};
+        ID3D11Texture2D *back_buffer = nullptr;
+        presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+        if (back_buffer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        back_buffer->GetDesc(&window);
+        releaseCom(back_buffer);
+        const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
+            static_cast<float>(window.Width), static_cast<float>(window.Height), 0.0f, 1.0f};
+        context->ClearState();
+        context->RSSetViewports(1u, &viewport);
+        context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
+        context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
+        context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
+        context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
+        context->Draw(3u, 0u);
+        context->ClearState();
+    }
     // Capture the rendered buffer before flip presentation releases it.
+    char capture_path[1024];
+    if (capture_frame && recomp_d3d_capture_path(capture_path, sizeof capture_path, capture_frame, "frame.png"))
+        dumpBackBufferOnce(presenter, capture_frame, capture_path);
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
 
     const auto clock_ms = [] {
@@ -3050,9 +3677,24 @@ RecompD3dPresenterError submitPresent(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
-    const HRESULT present_result = presenter->swap_chain->Present(
-        immediate_present ? 0u : 1u,
-        immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
+    const UINT sync_interval = immediate_present || presenter->vrr ? 0u : syncInterval(presenter);
+    const UINT present_flags = immediate_present ? DXGI_PRESENT_DO_NOT_WAIT
+        : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    if (presenter->vrr && !immediate_present) {
+        /* VRR shows a frame the moment it is presented, so render-time jitter
+           became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
+           late frame presents now and moves the grid, as the guest timer does. */
+        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now);
+        // Submit the frame's last commands now, so the GPU finishes them before the flip.
+        presenter->context->Flush();
+        recomp_d3d_sleep_until(presenter->vrr_slot_ns);
+    }
+    LARGE_INTEGER qpc_before{}, qpc_after{};
+    QueryPerformanceCounter(&qpc_before);
+    const HRESULT present_result = presenter->swap_chain->Present(sync_interval, present_flags);
+    QueryPerformanceCounter(&qpc_after);
     if (FAILED(present_result)) {
         std::fprintf(
             stderr,
@@ -3066,6 +3708,19 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    if (presenter->present_log != nullptr) {
+        DXGI_FRAME_STATISTICS stats{};
+        UINT last_present = 0u;
+        const HRESULT stats_result = presenter->swap_chain->GetFrameStatistics(&stats);
+        presenter->swap_chain->GetLastPresentCount(&last_present);
+        std::fprintf(presenter->present_log,
+            "%u,%lld,%lld,%u,0x%X,0x%08lX,%u,0x%08lX,%u,%u,%u,%lld\n",
+            presenter->present_count, qpc_before.QuadPart, qpc_after.QuadPart,
+            sync_interval, present_flags, static_cast<unsigned long>(present_result),
+            last_present, static_cast<unsigned long>(stats_result), stats.PresentCount,
+            stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+    }
+    presenter->replacements.finishFrame(presenter->device, presenter->context, presenter->present_count);
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
         // The first Present lands before the sampled window opens.
@@ -3077,11 +3732,29 @@ RecompD3dPresenterError submitPresent(
             presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
         }
         presenter->last_present_ms = present_end_ms;
+        DXGI_FRAME_STATISTICS stats{};
+        if (SUCCEEDED(presenter->swap_chain->GetFrameStatistics(&stats))) {
+            if (presenter->last_stat_present != 0u &&
+                stats.PresentCount == presenter->last_stat_present + 1u) {
+                const UINT hold = stats.PresentRefreshCount - presenter->last_stat_refresh;
+                ++presenter->refresh_holds[(std::min)(hold, 8u)];
+            }
+            presenter->last_stat_present = stats.PresentCount;
+            presenter->last_stat_refresh = stats.PresentRefreshCount;
+        }
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
-            char title[96];
-            std::snprintf(title, sizeof title, "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
+            char title[128];
+            const int length = std::snprintf(title, sizeof title,
+                "DOAXBV Recomp | %.1f FPS | %.1f ms/frame", fps, frame_ms);
+#ifdef RECOMP_RTGI
+            if (presenter->rtgi != nullptr) {
+                std::snprintf(title + length, sizeof title - length, " | RTGI %s %.2f%s",
+                    recomp_tuning.rtgi_off ? "off" : "on", recomp_tuning.rtgi_strength.load(),
+                    recomp_tuning.rtgi_split ? " split" : "");
+            }
+#endif
             SetWindowTextA(presenter->window, title);
             // A late frame took over 1.5x this second's average: visible judder.
             double max_ms = 0.0;
@@ -3091,9 +3764,13 @@ RecompD3dPresenterError submitPresent(
                 late += gap > frame_ms * 1.5;
             }
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
-                max_ms, late, presenter->present_call_max_ms);
+                max_ms, late, presenter->present_call_max_ms,
+                presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
+                presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+            std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
         }
@@ -3172,6 +3849,38 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
+    const char *rtgi = std::getenv("RECOMP_D3D_RTGI");
+    created->rtgi_requested = rtgi != nullptr && std::strcmp(rtgi, "1") == 0;
+#ifndef RECOMP_RTGI
+    if (created->rtgi_requested) {
+        std::fprintf(stderr, "recomp rtgi: not built into this runner\n");
+        created->rtgi_requested = false;
+    }
+#endif
+    /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
+       evenly. DXGI cannot tell whether VRR is active; without it this tears. */
+    const char *vrr = std::getenv("RECOMP_D3D_VRR");
+    if (vrr != nullptr && std::strcmp(vrr, "1") == 0) {
+        IDXGIFactory5 *factory = nullptr;
+        BOOL tearing = FALSE;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+            factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing);
+            factory->Release();
+        }
+        created->vrr = tearing != FALSE;
+        std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+    }
+    if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
+        created->present_log = std::fopen(log, "w");
+        if (created->present_log != nullptr) {
+            LARGE_INTEGER frequency{};
+            QueryPerformanceFrequency(&frequency);
+            std::fprintf(created->present_log, "# qpc_frequency=%lld\n"
+                "present,qpc_before,qpc_after,sync_interval,flags,present_hr,last_present_count,"
+                "stats_hr,stats_present_count,present_refresh_count,sync_refresh_count,sync_qpc\n",
+                frequency.QuadPart);
+        }
+    }
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);
@@ -3215,9 +3924,42 @@ RecompD3dPresenterError d3d11_backend_submit(
     case RECOMP_D3D_PRESENTER_COMMAND_CLEAR:
         return submitClear(presenter, command->data.clear);
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
-        return submitPresent(presenter, command->data.present);
-    case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
-        return submitDraw(presenter, command->data.draw);
+        return submitPresent(presenter, command->data.present, command->capture_frame);
+    case RECOMP_D3D_PRESENTER_COMMAND_DRAW: {
+        const RecompD3dPresenterDrawCommand &draw = command->data.draw;
+#ifdef RECOMP_RTGI
+        RecompD3dVertexLayout layout{};
+        if (presenter->rtgi_pending && !draw.target.offscreen &&
+            recomp_d3d_fvf_layout(draw.fvf, &layout) && layout.pretransformed) {
+            applyRtgi(presenter);
+        }
+#endif
+        const char *reason = "drawn";
+        bool texture_sampled = false;
+        const auto error = submitDraw(presenter, draw, &reason, &texture_sampled);
+        if (command->capture_frame) {
+            char path[1024];
+            if (recomp_d3d_capture_path(path, sizeof path, command->capture_frame, "host.jsonl")) {
+                if (FILE *file = std::fopen(path, "ab")) {
+                    D3D11_VIEWPORT viewport{};
+                    UINT count = 1;
+                    presenter->context->RSGetViewports(&count, &viewport);
+                    std::fprintf(file, "{\"call\":%u,\"error\":%u,\"outcome\":\"%s\","
+                        "\"path\":\"%s\",\"texture_sampled\":%u,\"depth_dropped\":%u,"
+                        "\"viewport\":[%g,%g,%g,%g,%g,%g]}\n",
+                        command->capture_call, error, reason,
+                        draw.program_count ? "vertex-program" : draw.four_tap_filter ? "four-tap" :
+                        draw.has_reflection ? "reflection" : draw.has_alpha_mask ? "alpha-mask" : "fixed-function",
+                        texture_sampled, draw.target.offscreen && !draw.target.no_depth &&
+                        !draw.target.custom_depth && (presenter->scale != 1.0f || presenter->msaa > 1u),
+                        viewport.TopLeftX, viewport.TopLeftY, viewport.Width, viewport.Height,
+                        viewport.MinDepth, viewport.MaxDepth);
+                    std::fclose(file);
+                }
+            }
+        }
+        return error;
+    }
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
@@ -3306,6 +4048,12 @@ RecompD3dPresenterError d3d11_backend_destroy(
     destroyed->precompile_stop = true;
     if (destroyed->precompile.joinable()) destroyed->precompile.join();
     releasePresenter(destroyed);
+    if (std::getenv("RECOMP_PERF_COUNTER") && destroyed->smooth_normals.misses) {
+        const auto &s = destroyed->smooth_normals;
+        std::fprintf(stderr, "recomp smooth normals: hits=%llu misses=%llu total_ms=%.3f rebuild_ms=%.3f max_rebuild_ms=%.3f cache_bytes=%zu presents=%u\n",
+            static_cast<unsigned long long>(s.hits), static_cast<unsigned long long>(s.misses),
+            s.total_ms, s.rebuild_ms, s.max_rebuild_ms, s.bytes, destroyed->present_count);
+    }
     delete destroyed;
     return RECOMP_D3D_PRESENTER_OK;
 }

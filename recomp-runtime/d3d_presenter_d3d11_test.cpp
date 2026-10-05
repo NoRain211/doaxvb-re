@@ -65,19 +65,21 @@ static bool createTestTargets(
     desc.MipLevels = 1u;
     desc.ArraySize = 1u;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    desc.SampleDesc.Count = 1u;
+    desc.SampleDesc.Count = presenter->msaa;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET;
     if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, color)) ||
         FAILED(presenter->device->CreateRenderTargetView(
             *color, nullptr, &presenter->render_target_view))) {
         return false;
     }
+    desc.SampleDesc.Count = 1u;
     desc.Usage = D3D11_USAGE_STAGING;
     desc.BindFlags = 0u;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, readback))) {
         return false;
     }
+    desc.SampleDesc.Count = presenter->msaa;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
     desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
@@ -112,7 +114,11 @@ static bool checkPixels(
         const auto *row = reinterpret_cast<const uint32_t *>(
             static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
         for (uint32_t x = 0u; x < 4u; ++x) {
-            if (row[x] != expected[x]) {
+            // Opaque main-target RGB may round to the adjacent byte after dithering.
+            bool matches = (row[x] >> 24) == (expected[x] >> 24);
+            for (unsigned shift : {0u, 8u, 16u})
+                matches &= std::abs(int((row[x] >> shift) & 255) - int((expected[x] >> shift) & 255)) <= 1;
+            if (!matches) {
                 std::fprintf(stderr,
                     "FAIL %s pixel=(%u,%u) got=%08x expected=%08x\n",
                     label, x, y, row[x], expected[x]);
@@ -1364,6 +1370,66 @@ static int testTextureCache(RecompD3dPresenter *presenter, uint32_t &detail)
     return 0;
 }
 
+static bool testFog(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t specular; };
+    Vertex vertices[] = {{0,0,0.25f,0.5f,0x80000000u}, {4,0,0.25f,0.5f,0x80000000u},
+        {0,4,0.25f,0.5f,0x80000000u}, {4,4,0.25f,0.5f,0x80000000u}};
+    const uint16_t indices[] = {0,1,2,3};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x084u; // XYZRHW | SPECULAR
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4;
+    draw.triangle_count = 2;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    draw.blend.color_write_mask = 15;
+    draw.use_texture_factor = true;
+    draw.texture_factor = 0x80ffffffu;
+    draw.fog.enabled = true;
+    draw.fog.color = 0x000000ffu; // Fog alpha must not replace source alpha.
+    draw.fog.end = 4;
+    const RecompD3dPresenterClearCommand clear = {true, false, false, 0x00ff0000u, 1, 0};
+    const struct { uint32_t mode; float density; const char *label; } cases[] = {
+        {0,0,"RHW vertex fog uses specular alpha"},
+        {1,0.25541281f,"EXP uses reciprocal RHW"},
+        {2,0.35736033f,"EXP2 uses reciprocal RHW"},
+        {3,0,"linear uses reciprocal RHW, not screen Z"},
+    };
+    for (const auto &test : cases) {
+        draw.fog.mode = test.mode;
+        draw.fog.density = test.density;
+        // Keep exponential results away from a half-byte quantization boundary.
+        const uint32_t pixel = test.mode == 1 || test.mode == 2 ? 0x809999ffu : 0x808080ffu;
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter, color, readback, test.label, expected)) return false;
+    }
+    draw.fog.enabled = false;
+    const uint32_t unfogged[] = {0x80ffffffu,0x80ffffffu,0x80ffffffu,0x80ffffffu};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "disabled fog preserves RGB and alpha", unfogged)) return false;
+    draw.fog.enabled = true;
+    draw.fog.end = 2;
+    draw.blend.blend_enable = true;
+    draw.blend.src_factor = draw.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+    const uint32_t additive[] = {0x80ff00ffu,0x80ff00ffu,0x80ff00ffu,0x80ff00ffu};
+    if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "additive draw fogs to fog color before blending", additive)) return false;
+    draw.blend.blend_enable = false;
+    draw.fog_z = true;
+    draw.fog.end = 0.5f;
+    const uint32_t zfog[] = {0x808080ffu,0x808080ffu,0x808080ffu,0x808080ffu};
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+        checkPixels(presenter, color, readback, "affine fog uses screen Z", zfog);
+}
+
 static bool testVertexBlending(
     RecompD3dPresenter *presenter, ID3D11Texture2D *color, ID3D11Texture2D *readback)
 {
@@ -1951,6 +2017,9 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
             checkPixels(presenter,color,readback,label,expected);
     };
     if (!pixels("directional diffuse plus ambient and material",0xff402010)) return false;
+    light.normalize=false;
+    if (!pixels("flat normal magnitude with normalization disabled",0xff30180c)) return false;
+    light.normalize=true;
     light.directions[0][0]=-1;
     if (!pixels("back-facing normal gets ambient only",0xff201008)) return false;
     world[0]=-2;
@@ -1971,7 +2040,87 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     light.enabled=false;
     if (!pixels("unlit texture unchanged",0xff804020)) return false;
     world[0]=0;
-    return !recomp_d3d_normal_transform(world,light.normal_transforms[0]);
+    if (recomp_d3d_normal_transform(world,light.normal_transforms[0])) return false;
+
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices; draw.blend_weight_count=0;
+    light={}; light.enabled=light.normalize=true; light.count=1;
+    for (unsigned c=0;c<3;++c) light.colors[0][c]=light.material_diffuse[c]=1;
+    for (unsigned i=0;i<4;++i) {
+        light.world_transforms[0][i*5]=light.normal_transforms[0][i*5]=1;
+        vertices[i][3]=0; vertices[i][5]=1;
+    }
+    light.world_transforms[0][14]=10;
+    light.positions[0][2]=30; light.positions[0][3]=1;
+    light.attenuation[0][0]=1; light.attenuation[0][1]=0.05f; light.attenuation[0][3]=100;
+    // Corner distances are sqrt(402) and sqrt(3602); the resulting UNORM colors round to 1/2 and 1/4.
+    if (!pixels("point light near attenuation in world space",0xff402010)) return false;
+    light.world_transforms[0][14]=-30;
+    if (!pixels("point light far attenuation",0xff201008)) return false;
+    for (auto &vertex : vertices) vertex[5]=-1;
+    if (!pixels("point light back-facing diffuse is zero",0xff000000)) return false;
+    for (auto &vertex : vertices) vertex[5]=1;
+    light.attenuation[0][3]=50;
+    if (!pixels("point light outside range is zero",0xff000000)) return false;
+    light.world_transforms[0][14]=10;
+    light.attenuation[0][1]=0; light.attenuation[0][2]=0.0025f;
+    if (!pixels("point light quadratic attenuation",0xff402010)) return false;
+    light.attenuation[0][0]=2; light.attenuation[0][2]=0;
+    if (!pixels("point light constant attenuation",0xff402010)) return false;
+    light.attenuation[0][0]=1; light.attenuation[0][1]=0.05f; light.attenuation[0][3]=100;
+    light.count=2; light.directions[1][2]=1;
+    for (unsigned c=0;c<3;++c) light.colors[1][c]=0.25f;
+    if (!pixels("mixed point and directional lights",0xff603018)) return false;
+    light.count=1;
+    for (unsigned i=0;i<4;++i) {
+        weighted[i][4]=0; weighted[i][6]=1;
+    }
+    draw.fvf=0x116; draw.vertex_stride=36; draw.vertex_bytes=weighted; draw.blend_weight_count=1;
+    std::memcpy(light.world_transforms[1],light.world_transforms[0],64);
+    std::memcpy(light.normal_transforms[1],light.normal_transforms[0],64);
+    light.world_transforms[0][14]=-50; light.world_transforms[1][14]=30;
+    if (!pixels("point light weighted world position uses remainder matrix",0xff402010)) return false;
+    draw.blend_weight_count=0;
+    if (!pixels("point light disabled blending uses world zero",0xff1a0d06)) return false;
+
+    // Half-byte gray must cover both neighboring bytes without changing alpha.
+    const uint32_t gray = 0x80ffffff;
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices;
+    draw.texture.data += 4; draw.texture_bytes=&gray;
+    light={}; light.enabled=true;
+    for (unsigned c=0;c<3;++c) light.ambient_emissive[c]=0.5f;
+    for (unsigned mode=0;mode<3;++mode) {
+        draw.blend.blend_enable=mode==1;
+        draw.blend.src_factor=RECOMP_D3D_BLEND_ONE;
+        draw.blend.dst_factor=RECOMP_D3D_BLEND_ZERO;
+        draw.blend.op=RECOMP_D3D_BLEND_OP_ADD;
+        draw.target.offscreen=draw.target.no_depth=mode==2;
+        draw.target.color=draw.texture;
+        draw.target.color.data += 4;
+        draw.target.color.width=draw.target.color.height=4;
+        if (submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK) return false;
+        ID3D11RenderTargetView *target=nullptr;
+        ID3D11Resource *resource=nullptr;
+        presenter->context->OMGetRenderTargets(1,&target,nullptr);
+        target->GetResource(&resource);
+        presenter->context->CopyResource(readback,resource);
+        releaseCom(resource); releaseCom(target);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(presenter->context->Map(readback,0,D3D11_MAP_READ,0,&mapped))) return false;
+        unsigned low=0, high=0;
+        for (unsigned y=0;y<4;++y) for (unsigned x=0;x<4;++x) {
+            const auto pixel=reinterpret_cast<const uint32_t *>(
+                static_cast<const uint8_t *>(mapped.pData)+y*mapped.RowPitch)[x];
+            low += pixel==0x807f7f7f;
+            high += pixel==0x80808080;
+        }
+        presenter->context->Unmap(readback,0);
+        if (mode==0 ? low!=8 || high!=8 : high!=16) {
+            std::fprintf(stderr,"FAIL dither mode=%u low=%u high=%u\n",mode,low,high);
+            return false;
+        }
+    }
+    std::puts("PASS half-LSB dither, unchanged alpha, blended/offscreen bypass");
+    return true;
 }
 
 static bool testSupersampledBackBuffer(RecompD3dPresenter *presenter)
@@ -2020,8 +2169,241 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testTextureAntialiasing()
+{
+    for (uint32_t samples : {1u, 4u}) {
+        RecompD3dPresenter presenter{};
+        presenter.msaa = samples;
+        if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0u, D3D11_SDK_VERSION,
+                &presenter.device, nullptr, &presenter.context))) return false;
+        ID3D11Texture2D *color = nullptr, *readback = nullptr, *resolved = nullptr;
+        const auto run = [&]() {
+            if (!createTestTargets(&presenter, &color, &readback)) return false;
+            D3D11_TEXTURE2D_DESC desc{};
+            color->GetDesc(&desc);
+            desc.SampleDesc.Count = 1u;
+            if (FAILED(presenter.device->CreateTexture2D(&desc, nullptr, &resolved))) return false;
+            /* A full-screen triangle eliminates geometric edge coverage.
+               The DXT3 alpha ramp is 0, 85, 170, 255 across each row. */
+            const float vertices[3][8] = {
+                {-1,-1,0, 0,0,1, 0,1}, {3,-1,0, 0,0,1, 2,1}, {-1,3,0, 0,0,1, 0,-1}};
+            const uint16_t indices[] = {0, 1, 2};
+            const uint8_t texels[] = {
+                0x50,0xfa,0x50,0xfa,0x50,0xfa,0x50,0xfa, 0,0xf8,0,0,0,0,0,0};
+            RecompD3dPresenterDrawCommand draw{};
+            draw.fvf = 0x112u;
+            draw.vertex_stride = sizeof vertices[0];
+            draw.vertex_count = draw.index_count = 3u;
+            draw.triangle_count = 1u;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLELIST;
+            draw.vertex_bytes = vertices;
+            draw.index_bytes = indices;
+            draw.has_transform = true;
+            draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+            draw.blend.color_write_mask = 15u;
+            draw.blend.src_factor = RECOMP_D3D_BLEND_ONE;
+            draw.blend.dst_factor = RECOMP_D3D_BLEND_ZERO;
+            draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+            draw.has_texture = draw.linear_mip_filter = true;
+            draw.texture.data = 0x00710000u;
+            draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT3;
+            draw.texture.width = draw.texture.height = 4u;
+            draw.texture.bits_per_pixel = 8u;
+            draw.texture_bytes = texels;
+            draw.texture_byte_count = sizeof texels;
+            draw.depth.alpha_test_enable = true;
+            const RecompD3dPresenterClearCommand clear = {true, true, false, 0xff000000u, 1, 0};
+            const auto checkSampler = [&](bool anisotropic) {
+                ID3D11SamplerState *sampler = nullptr;
+                presenter.context->PSGetSamplers(0u, 1u, &sampler);
+                D3D11_SAMPLER_DESC state{};
+                if (sampler) sampler->GetDesc(&state);
+                releaseCom(sampler);
+                return state.Filter == (anisotropic ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR) &&
+                    (!anisotropic || state.MaxAnisotropy == 16u);
+            };
+            /* Toggle blend and test states on the same cached pipeline. */
+            for (unsigned mode = 0; mode < 5; ++mode) {
+                draw.blend.blend_enable = mode == 1;
+                draw.depth.alpha_test_enable = mode != 2;
+                draw.depth.alpha_func = mode == 4 ? RECOMP_D3D_COMPARE_GREATER_EQUAL : RECOMP_D3D_COMPARE_GREATER;
+                draw.depth.alpha_ref = mode == 3 ? 0u : 85u;
+                if (submitClear(&presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+                    submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(true)) return false;
+                if (samples > 1u) {
+                    presenter.context->ResolveSubresource(resolved, 0u, color, 0u, desc.Format);
+                } else {
+                    presenter.context->CopyResource(resolved, color);
+                }
+                presenter.context->CopyResource(readback, resolved);
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                if (FAILED(presenter.context->Map(readback, 0u, D3D11_MAP_READ, 0u, &mapped))) return false;
+                bool passed = true;
+                for (unsigned y = 0; y < 4; ++y) {
+                    const auto *row = reinterpret_cast<const uint32_t *>(
+                        static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
+                    for (unsigned x = 0; x < 4; ++x) {
+                        const unsigned red = (row[x] >> 16u) & 255u;
+                        const bool partial = samples > 1u && (mode == 0 || mode == 4) && x == 1;
+                        const unsigned hard = mode == 2 || x >= 2 ||
+                            (x == 1 && (mode == 3 || mode == 4)) ? 255u : 0u;
+                        if ((partial ? red == 0 || red == 255 : red != hard) || (row[x] & 0xffffu)) {
+                            std::fprintf(stderr, "FAIL coverage samples=%u mode=%u pixel=(%u,%u) color=%08x\n",
+                                samples, mode, x, y, row[x]);
+                            passed = false;
+                        }
+                    }
+                }
+                presenter.context->Unmap(readback, 0u);
+                if (!passed) return false;
+            }
+            /* Unknown/point filter state and reflection retain the old sampler. */
+            draw.linear_mip_filter = false;
+            if (submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(false)) return false;
+            draw.linear_mip_filter = true;
+            draw.has_reflection = true;
+            draw.reflection_texture = draw.texture;
+            draw.reflection_bytes = texels;
+            draw.reflection_byte_count = sizeof texels;
+            if (submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(false)) return false;
+            draw.has_reflection = false;
+            draw.target.offscreen = draw.target.no_depth = true;
+            draw.target.color = draw.texture;
+            draw.target.color.data += 0x100u;
+            draw.target.color.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+            draw.target.color.bits_per_pixel = 32u;
+            if (submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK) return false;
+            ID3D11BlendState *blend = nullptr;
+            presenter.context->OMGetBlendState(&blend, nullptr, nullptr);
+            D3D11_BLEND_DESC blend_desc{};
+            if (blend) blend->GetDesc(&blend_desc);
+            const bool hard_offscreen = blend && !blend_desc.AlphaToCoverageEnable;
+            releaseCom(blend);
+            return hard_offscreen;
+        };
+        const bool passed = run();
+        releaseCom(resolved);
+        releaseCom(readback);
+        releaseCom(color);
+        releaseGraphics(&presenter);
+        if (!passed) return false;
+    }
+    std::printf("PASS anisotropic game sampler, 4x alpha coverage, 1x/blended hard edges\n");
+    return true;
+}
+
+static bool testPixelLightingShaders()
+{
+    const DrawPipeline pipeline{};
+    for (const uint32_t fvf : kBootDrawFvfs) {
+        RecompD3dVertexLayout layout;
+        std::string source;
+        if (!drawShaderSource(fvf, pipeline, layout, source, true)) return false;
+        for (const bool vertex : {true, false}) {
+            ID3DBlob *blob = nullptr;
+            const bool compiled = compileDrawShader(source.c_str(),
+                vertex ? "vs_main" : "ps_main", vertex ? "vs_4_0" : "ps_4_0", &blob);
+            releaseCom(blob);
+            if (!compiled) return false;
+        }
+    }
+    return true;
+}
+
+static bool testNormalCacheSpans()
+{
+    RecompD3dPresenter presenter{};
+    float vertices[5][8]{};
+    for (unsigned i=0; i<5; ++i) {
+        vertices[i][0]=float(i); vertices[i][1]=float(i&1u); vertices[i][5]=1;
+    }
+    uint16_t indices[] = {1,2,3};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.vertex_bytes=vertices; draw.vertex_count=5; draw.vertex_stride=32;
+    draw.index_bytes=indices; draw.index_count=3; draw.primitive_type=5;
+    draw.fvf=0x112; draw.directional.enabled=true;
+    RecompD3dVertexLayout layout;
+    if (!recomp_d3d_fvf_layout(draw.fvf, &layout)) return false;
+    const auto upload = [&] {
+        return static_cast<const uint8_t *>(smoothNormalVertices(&presenter, draw, layout, true));
+    };
+    if (std::memcmp(upload()+32, vertices[1], 96)) return false;
+    vertices[0][0]=42; vertices[4][0]=99; // Unreferenced animation cannot invalidate the span.
+    if (std::memcmp(upload()+32, vertices[1], 96) || presenter.smooth_normals.hits!=1) return false;
+    vertices[2][6]=0.75f; // A referenced UV edit must survive a normal-cache lookup.
+    if (std::memcmp(upload()+32, vertices[1], 96) || presenter.smooth_normals.misses!=2) return false;
+    indices[0]=0; indices[1]=1; indices[2]=2; // Unused tail still needs a full upload allocation.
+    const auto *tail = upload();
+    if (tail!=presenter.smooth_vertex_scratch.data() ||
+        presenter.smooth_vertex_scratch.size()<sizeof vertices || std::memcmp(tail, vertices, 96)) return false;
+    draw.program_count=1;
+    return upload()==draw.vertex_bytes;
+}
+
+static bool testReplacementFormats()
+{
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() /
+        ("recomp-texture-formats-" + std::to_string(GetCurrentProcessId()));
+    _putenv_s("RECOMP_TEXTURE_DUMP", "1");
+    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
+    RecompD3dPresenter presenter{};
+    _putenv_s("RECOMP_TEXTURE_DUMP", "");
+    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", "");
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+        &level, 1, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    bool passed = true;
+    const uint32_t formats[] = {RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8, RECOMP_D3D_TEXTURE_FORMAT_P8,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT1, RECOMP_D3D_TEXTURE_FORMAT_DXT3,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT5, RECOMP_D3D_TEXTURE_FORMAT_A8};
+    for (uint32_t format : formats) {
+        RecompD3dPresenterDrawCommand draw{};
+        const uint32_t bits = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ? 32 :
+            format == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 4 : 8;
+        draw.texture = {format, bits, false, false, false, 64, 64, 0, 0x900000u, 2};
+        // This descriptor flag means format capability, not rendered content.
+        draw.texture.render_target = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+        std::vector<uint8_t> bytes(recomp_d3d_texture_mip_span(&draw.texture), 0);
+        uint8_t palette[1024]{};
+        draw.texture_bytes = bytes.data(); draw.texture_byte_count = static_cast<uint32_t>(bytes.size());
+        draw.palette_bytes = palette; draw.palette_byte_count = sizeof palette;
+        auto *original = lookupTexture(&presenter, draw);
+        TextureIdentity identity;
+        identity.assign(draw);
+        passed &= original != nullptr;
+        const auto original_key = identity.key;
+        draw.texture.data += 0x10000u;
+        passed &= lookupTexture(&presenter, draw) != nullptr;
+        identity.assign(draw);
+        passed &= identity.key == original_key;
+        presenter.replacements.finishFrame(presenter.device, presenter.context, format);
+        passed &= fs::exists(root / "dump" / (original_key + ".png"));
+        bytes[11] = 1;
+        passed &= lookupTexture(&presenter, draw) != nullptr;
+        auto range = presenter.texture_index.equal_range(draw.texture.data);
+        bool changed = false;
+        for (auto it = range.first; it != range.second; ++it) {
+            const auto &entry = presenter.textures[it->second];
+            if (entry.format_byte == format) changed |= entry.identity.key != original_key;
+        }
+        passed &= changed;
+        presenter.replacements.finishFrame(presenter.device, presenter.context, format + 1);
+    }
+    releaseGraphics(&presenter);
+    std::error_code error;
+    fs::remove_all(root, error);
+    std::printf("%s replacement capture for six static formats on FL10\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main()
 {
+    if (!testTextureAntialiasing()) return 82;
+    if (!testNormalCacheSpans()) { std::fprintf(stderr, "FAIL normal cache spans\n"); return 1; }
+    if (!testPixelLightingShaders()) return 1;
+    if (!testReplacementFormats()) return 1;
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;
@@ -2050,9 +2432,10 @@ int main()
     }
     RecompD3dPresenter presenter{};
     D3D_FEATURE_LEVEL feature_level{};
+    const D3D_FEATURE_LEVEL requested_level = D3D_FEATURE_LEVEL_10_0;
     HRESULT result = D3D11CreateDevice(
         nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0u, D3D11_SDK_VERSION,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, &requested_level, 1u, D3D11_SDK_VERSION,
         &presenter.device, &feature_level, &presenter.context);
     if (FAILED(result)) {
         return finish(&presenter, 10, static_cast<uint32_t>(result));
@@ -2082,6 +2465,7 @@ int main()
     if (status == 0 && !testAlphaRendering(&presenter, color, readback)) {
         status = 60;
     }
+    if (status == 0 && !testFog(&presenter, color, readback)) status = 82;
     if (status == 0 && !testVertexBlending(&presenter, color, readback)) status = 80;
     if (status == 0 && !testLinearTextureUpdates(&presenter, readback)) status = 88;
     if (status == 0 && !testDrawPipelineEviction(&presenter)) status = 89;

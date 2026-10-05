@@ -62,7 +62,7 @@ typedef struct RecompD3dPresenterPresentCommand {
     uint32_t swap_counter;
 } RecompD3dPresenterPresentCommand;
 
-/* Directional diffuse/ambient lighting for the material-source path. */
+/* Directional and point diffuse/ambient lighting for the material-source path. */
 typedef struct RecompD3dDirectionalLighting {
     bool enabled;
     bool normalize;
@@ -72,6 +72,11 @@ typedef struct RecompD3dDirectionalLighting {
     float material_diffuse[4];
     float directions[8][4];
     float colors[8][4];
+    float world_transforms[4][16];
+    /* World position xyz; w is 1 for point lights, 0 for directional. */
+    float positions[8][4];
+    /* Constant, linear, quadratic attenuation, and range. */
+    float attenuation[8][4];
 } RecompD3dDirectionalLighting;
 
 typedef enum RecompD3dCullMode {
@@ -99,16 +104,25 @@ typedef struct RecompD3dPresenterDrawCommand {
     float program_mask_lod_bias;
     RecompD3dDirectionalLighting directional;
     const void *vertex_bytes;
+    /* Guest address of vertex_bytes; identifies the mesh across frames. */
+    uint32_t vertex_address;
     const void *index_bytes;
     /* World-view-projection rows, already composed by the adapter. */
     float transform[16];
     /* Additional world-view-projection matrices for 1..3 explicit weights. */
     float blend_transforms[3][16];
     uint32_t blend_weight_count;
+    /* The row-vector matrices behind those composites: world[0] is WORLD0 and
+       world[1 + i] feeds blend_transforms[i]; view_projection is shared. */
+    float world[4][16];
+    float view_projection[16];
     bool has_transform;
     /* Depth, stencil, and alpha-test state for this draw, already decoded by
        the render-state model so the presenter never sees a method number. */
     RecompD3dDepthState depth;
+    RecompD3dFogState fog;
+    bool fog_z; /* Affine projection uses Z; perspective uses clip W. */
+    float fog_world_view[4][16]; /* Only needed for range fog. */
     RecompD3dBlendState blend;
     /* Stage 0 selects this ARGB factor for both color and alpha. */
     bool use_texture_factor;
@@ -122,12 +136,17 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool zero_diffuse_rgb;
     /* Exact four-source register-combiner filter; uses all four UV sets. */
     bool four_tap_filter;
+    /* No original pixel shader; stage 0 is texture x diffuse, then at most the
+       texture-factor modulate. RTGI may sample the texture as bounce color. */
+    bool plain_texture_material;
     /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;
     bool has_texture;
     /* Guest D3DTADDRESS U/V for the texture's stage; 0 (unknown) wraps. */
     uint32_t address_u, address_v;
+    /* Guest min/mag/mip filters are all LINEAR; unknown states stay unchanged. */
+    bool linear_mip_filter;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     const void *texture_bytes;
@@ -158,6 +177,8 @@ typedef struct RecompD3dPresenterDrawCommand {
 
 typedef struct RecompD3dPresenterCommand {
     RecompD3dPresenterCommandType type;
+    /* Zero outside an opt-in frame capture; joins adapter and worker records. */
+    uint32_t capture_frame, capture_call;
     union {
         RecompD3dPresenterClearCommand clear;
         RecompD3dPresenterPresentCommand present;

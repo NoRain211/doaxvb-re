@@ -3,6 +3,14 @@
 #include "d3d_render_state_adapter.h"
 #include "d3d_frame_adapter.h"
 #include "d3d_texture_adapter.h"
+#include "d3d_frame_capture.h"
+#include "d3d_vblank.h"
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#define _mkdir(path) mkdir(path, 0700)
+#endif
 
 #include <inttypes.h>
 #include <errno.h>
@@ -311,25 +319,26 @@ slot_trace_done:
 }
 
 /* Xbox blend modes 1/3/5 consume 1/2/3 explicit weights and the
-   remaining weight. The game's matrix table selects WORLD0..WORLD3. */
+   remaining weight. The game's matrix table selects WORLD0..WORLD3. Also
+   records the world and view-projection matrices for host ray tracing. */
 static bool compose_blend_transforms(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dVertexLayout layout;
-    float view[16], projection[16], view_projection[16];
+    float view[16], projection[16];
 
-    if (!recomp_d3d_fvf_layout(draw->fvf, &layout)) return false;
+    if (!recomp_d3d_fvf_layout(draw->fvf, &layout) ||
+        !read_transform(device, D3D_TRANSFORM_WORLD, draw->world[0]) ||
+        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
+    multiply_transform(view, projection, draw->view_projection);
     draw->blend_weight_count = 0u;
     if (layout.blend_weight_count == 0u ||
         *recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) == 0u) return true;
     draw->blend_weight_count = layout.blend_weight_count;
-    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u ||
-        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
-        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
-    multiply_transform(view, projection, view_projection);
+    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u) return false;
     for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
-        float world[16];
-        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, world)) return false;
-        multiply_transform(world, view_projection, draw->blend_transforms[i]);
+        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, draw->world[i + 1u])) return false;
+        multiply_transform(draw->world[i + 1u], draw->view_projection, draw->blend_transforms[i]);
     }
     return true;
 }
@@ -383,23 +392,7 @@ static bool swizzled_byte_count(
     if (desc->linear || desc->width == 0u || desc->height == 0u) {
         return false;
     }
-    if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
-        uint64_t bytes = (uint64_t)desc->width * desc->height;
-        if (desc->bits_per_pixel != 8u || bytes > UINT32_MAX) return false;
-        *out = (uint32_t)bytes;
-        return true;
-    }
-    if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ||
-        desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) {
-        *out = desc->width * desc->height * (desc->bits_per_pixel / 8u);
-        return true;
-    }
-    if (desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT1 &&
-        desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT3 &&
-        desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) {
-        return false;
-    }
-    *out = recomp_d3d_texture_compressed_mip_span(desc);
+    *out = recomp_d3d_texture_mip_span(desc);
     return *out != 0u;
 }
 
@@ -442,11 +435,14 @@ static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
     }
     draw->texture = *desc;
     draw->has_texture = true;
-    /* D3D__TextureState[stage] starts with ADDRESSU, ADDRESSV. */
-    bytes = guest_span(0x001f2988u + stage * 0x80u, 8u);
+    /* Xbox texture states: ADDRESSU/V at 0/1, MAG/MIN/MIPFILTER at 3/4/5. */
+    bytes = guest_span(0x001f2988u + stage * 0x80u, 24u);
     if (bytes != NULL) {
         memcpy(&draw->address_u, bytes, sizeof draw->address_u);
         memcpy(&draw->address_v, bytes + 4u, sizeof draw->address_v);
+        uint32_t filters[3];
+        memcpy(filters, bytes + 12u, sizeof filters);
+        draw->linear_mip_filter = filters[0] == 2u && filters[1] == 2u && filters[2] == 2u;
     }
     if (!swizzled_byte_count(desc, &byte_count)) {
         /* A render target may have host-owned pixels without a CPU upload. */
@@ -774,27 +770,39 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     memcpy(result.material_diffuse, mat, 16);
     for (uint32_t c=0; c<3; ++c)
         result.ambient_emissive[c] = mat[12+c] + mat[4+c] * ((ambient >> (16-8*c)) & 255u) / 255.0f;
-    /* ponytail: eight directional lights; point/spot and vertex-color sources retain their existing path. */
+    /* ponytail: eight directional/point lights; spot and vertex-color sources retain their existing path. */
     while (light) {
         if (result.count == 8) return;
         const uint8_t *bytes = guest_span(light, 0x90u);
         if (!bytes) return;
         uint32_t type, next; float data[36];
         memcpy(&type, bytes, 4); memcpy(data, bytes, sizeof data); memcpy(&next, bytes+0x8c, 4);
-        if (type != 3) return;
-        float length = data[16]*data[16]+data[17]*data[17]+data[18]*data[18];
-        if (!isfinite(length) || length <= 0) return;
-        length = sqrtf(length);
+        if (type != 1 && type != 3) return;
+        if (type == 1) {
+            if (!isfinite(data[19]) || data[19] < 0) return;
+            for (uint32_t c=0; c<3; ++c) {
+                if (!isfinite(data[13+c]) || !isfinite(data[21+c]) || data[21+c] < 0) return;
+                result.positions[result.count][c] = data[13+c];
+                result.attenuation[result.count][c] = data[21+c];
+            }
+            result.positions[result.count][3] = 1;
+            result.attenuation[result.count][3] = data[19];
+        } else {
+            float length = data[16]*data[16]+data[17]*data[17]+data[18]*data[18];
+            if (!isfinite(length) || length <= 0) return;
+            length = sqrtf(length);
+            for (uint32_t c=0; c<3; ++c)
+                result.directions[result.count][c] = -data[16+c]/length;
+        }
         for (uint32_t c=0; c<3; ++c) {
             if (!isfinite(data[1+c]) || !isfinite(data[9+c])) return;
-            result.directions[result.count][c] = -data[16+c]/length;
             result.colors[result.count][c] = data[1+c];
             result.ambient_emissive[c] += mat[4+c]*data[9+c];
         }
         ++result.count; light=next;
     }
     for (uint32_t i=0; i<=draw->blend_weight_count; ++i) {
-        float world[16];
+        float *world = result.world_transforms[i];
         if (!read_transform(device, D3D_TRANSFORM_WORLD+i, world) ||
             !recomp_d3d_normal_transform(world, result.normal_transforms[i])) return;
     }
@@ -802,6 +810,32 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     result.normalize = recomp_d3d_render_state_adapter_model()->normalize_normals != 0;
     result.enabled = true;
     draw->directional = result;
+}
+
+static void attach_fog(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    /* The generated D3D8 setters retain deferred states in the render-state
+       array. Read at the draw seam; do not depend on emitted GPU methods. */
+    const uint8_t *words = guest_span(0x001f2b88u + 92u * 4u, 6u * 4u);
+    const uint8_t *color = guest_span(0x001f2b88u + 138u * 4u, 4u);
+    if (!words || !color) return;
+    uint32_t values[6], argb;
+    memcpy(values, words, sizeof values);
+    memcpy(&argb, color, sizeof argb);
+    recomp_d3d_fog_state(values, argb, &draw->fog);
+    if (!draw->fog.enabled || !draw->fog.mode || draw->program_count) return;
+    float projection[16];
+    if (!read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return;
+    draw->fog_z = projection[3] == 0 && projection[7] == 0 &&
+        projection[11] == 0 && projection[15] == 1;
+    if (draw->fog.range) {
+        float view[16], world[16];
+        if (!read_transform(device, D3D_TRANSFORM_VIEW, view)) return;
+        for (uint32_t i = 0; i <= draw->blend_weight_count; ++i) {
+            if (!read_transform(device, D3D_TRANSFORM_WORLD + i, world)) return;
+            multiply_transform(world, view, draw->fog_world_view[i]);
+        }
+    }
 }
 
 static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *draw)
@@ -831,7 +865,28 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
                 recomp_d3d_texture_factor_modulate_selected(stage1_arguments, next_color_op);
         }
     }
+    attach_fog(device, draw);
     attach_directional_lighting(device, draw);
+    {
+        const uint8_t *stage0 = guest_span(0x001f29b8u, 16u);
+        const uint8_t *stage1 = guest_span(0x001f2a38u, 4u);
+        const uint8_t *stage2 = guest_span(0x001f2ab8u, 4u);
+        const uint8_t *shader = guest_span(device + 0x370u, 4u);
+        const uint8_t *lighting_state = guest_span(0x001f2d20u, 4u);
+        if (stage0 && stage1 && stage2 && shader && lighting_state) {
+            uint32_t op[4], next, last, pixel_shader, lighting;
+            memcpy(op, stage0, sizeof op);
+            memcpy(&next, stage1, 4u); memcpy(&last, stage2, 4u);
+            memcpy(&pixel_shader, shader, 4u);
+            memcpy(&lighting, lighting_state, 4u);
+            /* Enabled but uncaptured lighting is not a white diffuse term. */
+            const bool known_diffuse = !lighting || draw->directional.enabled || draw->zero_diffuse_rgb;
+            /* Xbox D3DTOP: 1 DISABLE, 4 MODULATE; D3DTA: 0 DIFFUSE, 2 TEXTURE. */
+            draw->plain_texture_material = pixel_shader == 0u && known_diffuse &&
+                op[0] == 4u && op[2] == 2u && op[3] == 0u &&
+                (next == 1u || (draw->modulate_texture_factor && last == 1u));
+        }
+    }
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
     attach_backbuffer_texture(device, draw);
@@ -844,7 +899,10 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
 /* One opt-in diagnostic present, separate from the native screenshot cadence. */
 enum { CAPTURE_ROWS = 4096u, CAPTURE_INDICES = 262144u };
 static struct {
-    bool configured, done;
+    bool configured, done, whole;
+    uint32_t calls, checked_present;
+    const char *schedule;
+    char frame_path[1024];
     const char *path;
     FILE *file;
     uint32_t at, fvf, rows, draws, accepted, scans, partial;
@@ -858,6 +916,19 @@ typedef struct CaptureBounds {
     uint32_t finite, nonfinite;
 } CaptureBounds;
 
+static bool capture_scheduled(uint32_t present)
+{
+    const char *p = draw_capture.schedule;
+    while (p && *p) {
+        char *end;
+        unsigned long value = strtoul(p, &end, 10);
+        if (end == p || (*end && *end != ',')) break;
+        if (value == present) return true;
+        p = *end ? end + 1 : end;
+    }
+    return false;
+}
+
 static bool capture_open(uint32_t present, uint32_t fvf)
 {
     if (!draw_capture.configured) {
@@ -866,6 +937,10 @@ static bool capture_open(uint32_t present, uint32_t fvf)
         unsigned long value;
 
         draw_capture.configured = true;
+        const char *hotkey = getenv("RECOMP_D3D_CAPTURE_HOTKEY");
+        draw_capture.schedule = getenv("RECOMP_D3D_CAPTURE_AT");
+        draw_capture.whole = (hotkey && strcmp(hotkey, "1") == 0) || draw_capture.schedule;
+        if (draw_capture.whole) goto whole_frame;
         draw_capture.trigger = getenv("RECOMP_D3D_DRAW_CAPTURE_TRIGGER");
         draw_capture.path = getenv("RECOMP_D3D_DRAW_CAPTURE");
         if (draw_capture.path == NULL || *draw_capture.path == '\0' || at == NULL) {
@@ -882,6 +957,29 @@ static bool capture_open(uint32_t present, uint32_t fvf)
         draw_capture.at = (uint32_t)value;
         const char *filter = getenv("RECOMP_D3D_DRAW_CAPTURE_FVF");
         if (filter != NULL) draw_capture.fvf = (uint32_t)strtoul(filter, NULL, 0);
+    }
+whole_frame:
+    if (draw_capture.whole) {
+        if (draw_capture.checked_present != present) {
+            draw_capture.checked_present = present;
+            if (capture_scheduled(present)) draw_capture.at = present;
+        }
+        if (draw_capture.at != present || draw_capture.done) return false;
+        if (draw_capture.file == NULL) {
+            char directory[1024];
+            const char *root = getenv("RECOMP_D3D_CAPTURE_ROOT");
+            if (!root || !*root) { _mkdir("private"); root = "private/captures"; }
+            _mkdir(root);
+            if (!recomp_d3d_capture_path(directory, sizeof directory, present, "") ||
+                _mkdir(directory) != 0 ||
+                !recomp_d3d_capture_path(draw_capture.frame_path,
+                    sizeof draw_capture.frame_path, present, "calls.jsonl")) {
+                fprintf(stderr, "recomp d3d capture: cannot create new frame directory %u\n", present);
+                draw_capture.done = true;
+                return false;
+            }
+            draw_capture.path = draw_capture.frame_path;
+        }
     }
     if (!draw_capture.done && draw_capture.at == 0u && fvf != 0u &&
         draw_capture.trigger != NULL && draw_capture.trigger_checked_present != present) {
@@ -909,7 +1007,7 @@ static bool capture_open(uint32_t present, uint32_t fvf)
         setvbuf(draw_capture.file, draw_capture.buffer, _IOFBF, sizeof draw_capture.buffer);
         fprintf(draw_capture.file,
             "{\"kind\":\"begin\",\"present\":%u,\"row_cap\":%u,\"index_cap\":%u}\n",
-            present, CAPTURE_ROWS, CAPTURE_INDICES);
+            present, draw_capture.whole ? 0u : CAPTURE_ROWS, CAPTURE_INDICES);
     }
     return true;
 }
@@ -944,6 +1042,115 @@ static void capture_floats(const float *values, uint32_t count)
         else fputs("null", draw_capture.file);
     }
     fputc(']', draw_capture.file);
+}
+
+/* Retained D3D8 state, captured before a rejection can hide it. No texels. */
+static void capture_words(uint32_t base, uint32_t count)
+{
+    fputc('[', draw_capture.file);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (i) fputc(',', draw_capture.file);
+        capture_word_json(base, i * 4u);
+    }
+    fputc(']', draw_capture.file);
+}
+
+static void capture_resource(uint32_t object)
+{
+    uint32_t format, size, data;
+    RecompD3dTextureDesc desc;
+    if (!capture_word(object, 12u, &format) || !capture_word(object, 16u, &size) ||
+        !capture_word(object, 4u, &data)) { fputs("null", draw_capture.file); return; }
+    const uint8_t *info = guest_span(0x001f16b8u + ((format >> 8u) & 255u), 1u);
+    if (!info || !recomp_d3d_texture_describe(format, size, data, *info, &desc)) {
+        fputs("null", draw_capture.file); return;
+    }
+    fprintf(draw_capture.file, "{\"object\":%u,\"data\":%u,\"format\":%u,"
+        "\"width\":%u,\"height\":%u,\"pitch\":%u,\"mips\":%u,\"linear\":%u,\"depth\":%u}",
+        object, desc.data, desc.format_byte, desc.width, desc.height, desc.pitch,
+        desc.mip_levels, desc.linear, desc.depth);
+}
+
+static void capture_frame_state(uint32_t device, const RecompD3dPresenterDrawCommand *draw)
+{
+    if (!draw_capture.whole) return;
+    fprintf(draw_capture.file, ",\"call\":%u,\"present\":%u,\"viewport_words\":",
+        ++draw_capture.calls, draw_capture.at);
+    capture_words(device ? device + 0xa90u : 0u, 6u);
+    fputs(",\"render_targets\":[", draw_capture.file);
+    const uint32_t targets[] = {0x21b4u, 0x21b8u, 0x21c0u, 0x21ccu};
+    for (uint32_t i = 0; i < 4u; ++i) {
+        uint32_t object = 0u;
+        capture_word(device, targets[i], &object);
+        if (i) fputc(',', draw_capture.file);
+        capture_resource(object);
+    }
+    fputs("],\"texture_stages\":[", draw_capture.file);
+    for (uint32_t stage = 0; stage < 4u; ++stage) {
+        uint32_t object = 0u;
+        capture_word(device, 0xb38u + stage * 4u, &object);
+        if (stage) fputc(',', draw_capture.file);
+        fputs("{\"resource\":", draw_capture.file);
+        capture_resource(object);
+        fputs(",\"state\":", draw_capture.file);
+        capture_words(0x001f2988u + stage * 0x80u, 32u);
+        fputc('}', draw_capture.file);
+    }
+    /* Includes combiner inputs/outputs/constants, fog and point state. Effective
+       simple-method overrides must be read alongside these retained words. */
+    fputs("],\"render_state_words\":", draw_capture.file);
+    capture_words(0x001f2b88u, 166u);
+    fputs(",\"simple_overrides\":[", draw_capture.file);
+    const RecompD3dRenderStateModel *model = recomp_d3d_render_state_adapter_model();
+    bool comma = false;
+    for (uint32_t i = 0; i < RECOMP_D3D_SIMPLE_METHOD_COUNT; ++i) {
+        if (!(model->simple_present[i / 32u] & (1u << (i % 32u)))) continue;
+        fprintf(draw_capture.file, "%s[%u,%u]", comma ? "," : "", 0x40000u | (i * 4u), model->simple_values[i]);
+        comma = true;
+    }
+    RecompD3dDepthState depth;
+    RecompD3dBlendState blend;
+    recomp_d3d_depth_state(model, &depth);
+    recomp_d3d_blend_state(model, &blend);
+    fprintf(draw_capture.file, "],\"host_depth\":[%u,%u,%u],\"host_alpha_test\":[%u,%u,%u],"
+        "\"host_stencil\":[%u,%u,%u,%u,%u,%u,%u,%u],\"host_blend\":[%u,%u,%u,%u,%u,%u],\"guest_cull\":%u",
+        depth.depth_test_enable, depth.depth_write_enable, depth.depth_func,
+        depth.alpha_test_enable, depth.alpha_func, depth.alpha_ref,
+        depth.stencil_enable, depth.stencil_func, depth.stencil_ref, depth.stencil_read_mask,
+        depth.stencil_write_mask, depth.stencil_fail, depth.stencil_zfail, depth.stencil_pass,
+        blend.blend_enable, blend.src_factor, blend.dst_factor, blend.op, blend.color_write_mask,
+        blend.constant_color, model->cull_mode);
+    if (draw) fprintf(draw_capture.file,
+        ",\"host_fvf\":%u,\"program_count\":%u,\"triangles\":%u,\"host_features\":{"
+        "\"four_tap\":%u,\"reflection\":%u,\"alpha_mask\":%u,\"program_mask\":%u,"
+        "\"lighting\":%u,\"lights\":%u,\"texture_factor\":%u,\"factor_modulate\":%u,"
+        "\"texture\":%u,\"backbuffer_sample\":%u,\"offscreen\":%u}",
+        draw->fvf, draw->program_count, draw->triangle_count, draw->four_tap_filter,
+        draw->has_reflection, draw->has_alpha_mask, draw->program_alpha_mask,
+        draw->directional.enabled, draw->directional.count, draw->use_texture_factor,
+        draw->modulate_texture_factor, draw->has_texture, draw->texture_is_backbuffer, draw->target.offscreen);
+}
+
+void recomp_d3d_draw_adapter_capture_command(RecompD3dPresenterCommand *command)
+{
+    const uint32_t present = recomp_d3d_frame_adapter_swap_counter() +
+        (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT ? 0u : 1u);
+    if (!capture_open(present, draw_state.fvf) || !draw_capture.whole) return;
+    command->capture_frame = present;
+    command->capture_call = draw_capture.calls + 1u;
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
+        command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) return;
+    fprintf(draw_capture.file, "{\"kind\":\"%s\"",
+        command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR ? "clear" : "gamma");
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR) {
+        const RecompD3dPresenterClearCommand *c = &command->data.clear;
+        fprintf(draw_capture.file, ",\"clear\":[%u,%u,%u],\"color\":%u,\"z\":%.9g,\"stencil\":%u",
+            c->clear_color, c->clear_depth, c->clear_stencil, c->color, c->z, c->stencil);
+    }
+    uint32_t device = 0u;
+    capture_word(D3D_DEVICE_GLOBAL, 0u, &device);
+    capture_frame_state(device, NULL);
+    fputs("}\n", draw_capture.file);
 }
 
 static void capture_bounds_add(CaptureBounds *bounds, const float *values, uint32_t count)
@@ -990,7 +1197,7 @@ static void capture_draw(
 
     ++draw_capture.draws;
     if (strcmp(outcome, "accepted") == 0) ++draw_capture.accepted;
-    if (draw_capture.rows == CAPTURE_ROWS) return;
+    if (!draw_capture.whole && draw_capture.rows == CAPTURE_ROWS) return;
     ++draw_capture.rows;
     known = draw != NULL && recomp_d3d_fvf_layout(draw->fvf, &layout) &&
         layout.stride == draw->vertex_stride;
@@ -1280,21 +1487,30 @@ static void capture_draw(
     capture_word_json(device, D3D_CURRENT_RENDER_TARGET_OFFSET);
     fputc(',', draw_capture.file); capture_word_json(device, D3D_BACK_BUFFER_OFFSET);
     fputc(',', draw_capture.file); capture_word_json(device, 0x21b8u);
-    fputs("]}\n", draw_capture.file);
+    fputc(']', draw_capture.file);
+    capture_frame_state(device, draw);
+    fputs("}\n", draw_capture.file);
 }
 
 void recomp_d3d_draw_adapter_capture_present(uint32_t present, uint32_t presenter_error)
 {
-    if (!capture_open(present, 0u)) return;
-    fprintf(draw_capture.file,
-        "{\"kind\":\"end\",\"present\":%u,\"present_error\":%u,\"rows\":%u,"
-        "\"accepted\":%u,\"declined\":%u,\"rows_dropped\":%u,\"index_scans\":%u,\"partial_bounds\":%u}\n",
-        present, presenter_error, draw_capture.rows, draw_capture.accepted,
-        draw_capture.draws - draw_capture.accepted, draw_capture.draws - draw_capture.rows,
-        draw_capture.scans, draw_capture.partial);
-    fclose(draw_capture.file);
-    draw_capture.file = NULL;
-    draw_capture.done = true;
+    if (capture_open(present, 0u)) {
+        fprintf(draw_capture.file,
+            "{\"kind\":\"end\",\"present\":%u,\"present_error\":%u,\"rows\":%u,"
+            "\"accepted\":%u,\"declined\":%u,\"rows_dropped\":%u,\"index_scans\":%u,\"partial_bounds\":%u}\n",
+            present, presenter_error, draw_capture.rows, draw_capture.accepted,
+            draw_capture.draws - draw_capture.accepted, draw_capture.draws - draw_capture.rows,
+            draw_capture.scans, draw_capture.partial);
+        fclose(draw_capture.file);
+        draw_capture.file = NULL;
+        draw_capture.done = true;
+    }
+    if (draw_capture.whole) {
+        draw_capture.at = recomp_d3d_take_capture_request() ? present + 1u : 0u;
+        draw_capture.done = false;
+        draw_capture.calls = draw_capture.rows = draw_capture.draws = 0u;
+        draw_capture.accepted = draw_capture.scans = draw_capture.partial = 0u;
+    }
 }
 
 static bool attach_vertex_program(uint32_t handle, uint32_t device,
@@ -1892,6 +2108,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     command.data.draw.vertex_stride = result.plan.vertex_stride;
     command.data.draw.fvf = result.plan.fvf;
     command.data.draw.vertex_bytes = vertex_bytes;
+    command.data.draw.vertex_address = result.plan.vertex_data;
     command.data.draw.index_bytes = index_bytes;
     command.data.draw.has_transform = true;
     command.data.draw.has_reflection = reflective;
@@ -1906,6 +2123,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     }
     capture_command = &command.data.draw;
 
+    recomp_d3d_draw_adapter_capture_command(&command);
     if (recomp_d3d_presenter_submit(
             recomp_d3d_frame_adapter_presenter(), &command) !=
         RECOMP_D3D_PRESENTER_OK) {
@@ -1958,10 +2176,12 @@ static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *dr
     return true;
 }
 
-static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t vertices, uint32_t count, const char *decline)
+static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride,
+    uint32_t vertices, uint32_t count, uint32_t primitive, const char *decline,
+    const RecompD3dPresenterDrawCommand *draw)
 {
     if (!capture_open(recomp_d3d_frame_adapter_swap_counter() + 1u, fvf) ||
-        draw_capture.rows >= CAPTURE_ROWS) return;
+        (!draw_capture.whole && draw_capture.rows >= CAPTURE_ROWS)) return;
     ++draw_capture.rows;
     ++draw_capture.draws;
     if (decline == NULL) ++draw_capture.accepted;
@@ -1998,7 +2218,10 @@ static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t 
         if (i != 0u) fputc(',', draw_capture.file);
         capture_floats(position, 4u);
     }
-    fputs("]}\n", draw_capture.file);
+    fputc(']', draw_capture.file);
+    fprintf(draw_capture.file, ",\"primitive\":%u", primitive);
+    capture_frame_state(device, draw);
+    fputs("}\n", draw_capture.file);
 }
 
 static void recomp_d3d_draw_vertices_up_adapter(void)
@@ -2017,6 +2240,8 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
 
     /* Preserve the driver's UP state, push-buffer/fence work, and RET 0x10. */
     sub_001E7750();
+    device = *recomp_memory_u32(D3D_DEVICE_GLOBAL);
+    capture_word(device, D3D_VERTEX_SHADER_HANDLE_OFFSET, &fvf);
     if (primitive != RECOMP_D3D_PT_TRIANGLESTRIP || count != 4u) {
         decline = "up-shape";
         goto finished;
@@ -2068,6 +2293,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         decline = "up-alpha-mask";
         goto finished;
     }
+    recomp_d3d_draw_adapter_capture_command(&command);
     if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command) !=
         RECOMP_D3D_PRESENTER_OK) {
         decline = "up-presenter";
@@ -2083,10 +2309,13 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             command.data.draw.has_texture ? 1 : 0, command.data.draw.texture.format_byte);
     }
 finished:
-    if (device != 0u) capture_up(device, fvf, stride, vertices, count, decline);
+    capture_up(device, fvf, stride, vertices, count, primitive, decline,
+        decline == NULL ? &command.data.draw : NULL);
     if (decline != NULL) report_decline(decline);
 }
 
+/* Draws consume deferred fog state retained by generated D3D8 setters;
+   see docs/fog.md. Replacing those library setters remains open work. */
 RecompFunction recomp_d3d_draw_lookup_manual(uint32_t guest_address)
 {
     if (guest_address == D3D_DEVICE_DRAW_VERTICES_UP_ADDRESS) {

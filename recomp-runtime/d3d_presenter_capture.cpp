@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <cstdlib>
 #include <new>
 #include <stdexcept>
 
@@ -28,7 +29,13 @@ bool borrowed(const Draw &draw, size_t field)
 {
     const RecompD3dTextureDesc *desc = field == 2u ? &draw.texture
         : field == 4u ? &draw.alpha_mask : field == 6u ? &draw.reflection_texture : nullptr;
-    return desc != nullptr && desc->format_byte != 0x12u;
+    // Replacement identity and deferred dumps must observe the submitted bytes.
+    static const bool snapshot_textures = [] {
+        const char *dump = std::getenv("RECOMP_TEXTURE_DUMP");
+        const char *replace = std::getenv("RECOMP_TEXTURES");
+        return (dump && std::strcmp(dump, "1") == 0) || (replace && *replace);
+    }();
+    return !snapshot_textures && desc != nullptr && desc->format_byte != 0x12u;
 }
 
 void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand &from)
@@ -41,6 +48,8 @@ void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand 
     constexpr size_t head = offsetof(Draw, program);
     constexpr size_t tail = offsetof(Draw, program_alpha_mask);
     to.type = from.type;
+    to.capture_frame = from.capture_frame;
+    to.capture_call = from.capture_call;
     std::memcpy(&to.data.draw, &from.data.draw, head);
     std::memcpy(reinterpret_cast<char *>(&to.data.draw) + tail,
         reinterpret_cast<const char *>(&from.data.draw) + tail, sizeof(Draw) - tail);
