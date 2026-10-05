@@ -19,7 +19,10 @@ bool recomp_animation_split_enabled(void)
 static bool split_trace(void)
 {
     static int enabled = -1;
-    if (enabled < 0) enabled = getenv("RECOMP_SPLIT_TRACE") != NULL;
+    if (enabled < 0) {
+        const char *trace = getenv("RECOMP_SPLIT_TRACE");
+        enabled = trace != NULL && strcmp(trace, "present") != 0;
+    }
     return enabled != 0;
 }
 

@@ -19,9 +19,19 @@
 #include <system_error>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 
 namespace {
+
+struct SplitPresentRecord {
+    uint32_t frame;
+    float fraction;
+    unsigned camera_draws, pose_draws;
+    double deadline, start, end, published, picked;
+    double split_ms;
+    unsigned records;
+};
 
 struct PresenterThread {
     DWORD owner_thread = GetCurrentThreadId();
@@ -46,7 +56,14 @@ struct PresenterThread {
     double split_rate = 0, split_next = 0;
     uint32_t split_first_frame = 0;
     bool split_trace = false;
+    size_t split_trace_limit = 0;
     unsigned split_presents = 0, split_camera_draws = 0, split_pose_draws = 0;
+    double trace_split_ms = 0;
+    unsigned trace_records = 0;
+    // Buffered so tracing does not write to stderr while presents are paced.
+    std::vector<SplitPresentRecord> split_records;
+    double prepare_published = 0;
+    size_t prepare_cursor = 0;
     double last_frame_ms = 0.0;
     double frame_max_ms = 0.0;
     double queue_wait_ms = 0.0, seal_ms = 0.0, add_ms = 0.0, status_ms = 0.0;
@@ -57,6 +74,60 @@ struct PresenterThread {
 };
 
 PresenterThread *active_thread;
+double clock_ms();
+
+void dump_split_trace(PresenterThread &thread)
+{
+    if (!thread.split_trace) return;
+    FILETIME now;
+    GetSystemTimePreciseAsFileTime(&now);
+    const double local = (static_cast<double>((static_cast<uint64_t>(now.dwHighDateTime) << 32) | now.dwLowDateTime)/10000.0) - 11644473600000.0;
+    std::fprintf(stderr, "recomp split clock: steady_ms=%.3f unix_ms=%.3f\n", clock_ms(), local);
+    for (size_t i = 0; i < thread.split_records.size(); ++i) {
+        const auto &r = thread.split_records[i];
+        std::fprintf(stderr, "recomp split present: n=%zu frame=%u ms=%.3f fraction=%.4f camera_draws=%u pose_draws=%u "
+            "deadline=%.3f end=%.3f published=%.3f picked=%.3f split_ms=%.3f records=%u\n", i, r.frame, r.start, r.fraction,
+            r.camera_draws, r.pose_draws, r.deadline, r.end, r.published, r.picked, r.split_ms, r.records);
+    }
+    thread.split_trace = false;
+}
+
+/* Uses idle time before a split present to create the next packet's new
+   textures, so a camera cut does not upload them all inside one present.
+   Returns false when there is nothing left to do before the deadline. */
+bool prepare_next(PresenterThread &thread, RecompD3dPresenter *backend, double deadline)
+{
+    const D3dCapturePacket *next = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(thread.mutex);
+        if (thread.pending > 1) next = &thread.packets[(thread.front+1)%3];
+    }
+    if (next == nullptr) return false;
+    if (next->published_ms != thread.prepare_published) {
+        thread.prepare_published = next->published_ms;
+        thread.prepare_cursor = 0;
+    }
+    bool progressed = false;
+    while (thread.prepare_cursor < next->count() && deadline-clock_ms() > 1.5) {
+        const size_t i = thread.prepare_cursor;
+        if (next->record(i).kind == D3dCapturePacket::COMMAND) {
+            const auto &command = next->command(i);
+            // ponytail: upload cost estimated at ~4 ms per MiB of texels;
+            // anything longer than a present slot is left to its draw.
+            const double cost = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW
+                ? command.data.draw.texture_byte_count*4.0/1048576.0 : 0.0;
+            if (cost > 1000.0/thread.split_rate) {
+                ++thread.prepare_cursor;
+                continue;
+            }
+            if (deadline-clock_ms()-1.0 < cost) break;
+            d3d11_backend_prepare(backend, &command);
+        }
+        ++thread.prepare_cursor;
+        progressed = true;
+    }
+    return progressed;
+}
 
 RecompD3dPresenterError validate(RecompD3dPresenter *presenter)
 {
@@ -120,6 +191,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                 draw = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
                 if (fraction >= 0 && draw && command.data.draw.split_pose) {
                     const auto *split = static_cast<const RecompSplitDraw *>(command.data.draw.split_pose);
+                    const double split_start = thread.split_trace ? clock_ms() : 0;
                     thread.split_camera_draws += split->camera;
                     thread.split_pose_draws += split->pose;
                     const RecompBoneMatrix *bones = nullptr;
@@ -141,6 +213,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                         vertex_scratch.data(), &replay.data.draw)) {
                         fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return;
                     }
+                    if (thread.split_trace) thread.trace_split_ms += clock_ms()-split_start;
                     error = d3d11_backend_submit(backend, &replay);
                 } else if (phase >= 0 && draw && command.data.draw.pose_replay != nullptr) {
                     RecompD3dPresenterCommand replay;
@@ -172,6 +245,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                     }
                     error = d3d11_backend_submit(backend, &replay);
                 } else error = d3d11_backend_submit(backend, &command);
+                thread.trace_records += draw;
                 break;
             }
             case D3dCapturePacket::RELEASE:
@@ -249,6 +323,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
         }
         if (thread.split_rate && frame) {
             constexpr double tick_ms = 1000.0/60.0;
+            const double picked = clock_ms();
             if (!thread.split_first_frame) {
                 thread.split_first_frame = frame;
                 thread.split_next = clock_ms();
@@ -261,12 +336,27 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             // Only abandon the clock after a full simulation interval was missed.
             if (thread.split_next+tick_ms < now) thread.split_next = now;
             bool presented = false;
-            while (thread.split_next < end && status(thread) == RECOMP_D3D_PRESENTER_OK) {
+            // Past the tick, hold the end pose at each deadline until the next
+            // packet arrives and its new textures exist, so neither a late
+            // producer nor a camera cut's uploads stall present cadence. A
+            // packet waits at most one tick for preparation.
+            const auto next_ready = [&thread, tick_ms] {
+                std::lock_guard<std::mutex> lock(thread.mutex);
+                if (thread.shutdown) return true;
+                if (thread.pending < 2) return false;
+                const auto &next = thread.packets[(thread.front+1)%3];
+                return (next.published_ms == thread.prepare_published &&
+                        thread.prepare_cursor >= next.count()) ||
+                    clock_ms()-next.published_ms > tick_ms;
+            };
+            while ((thread.split_next < end || !next_ready()) &&
+                   status(thread) == RECOMP_D3D_PRESENTER_OK) {
                 for (;;) {
                     double remaining = thread.split_next-clock_ms();
                     if (remaining <= 0) break;
                     pump(thread);
                     if (status(thread) != RECOMP_D3D_PRESENTER_OK) break;
+                    if (prepare_next(thread, backend, thread.split_next)) continue;
                     if (remaining > 0.5 && thread.split_timer) {
                         LARGE_INTEGER due{};
                         due.QuadPart = -static_cast<LONGLONG>((remaining-0.5)*10000.0);
@@ -274,17 +364,23 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                             WaitForSingleObject(thread.split_timer, INFINITE);
                     } else YieldProcessor();
                 }
+                if (thread.split_next >= end && next_ready()) break;
                 double elapsed = (clock_ms()-start)/tick_ms;
                 float fraction = static_cast<float>((std::max)(0.0, (std::min)(elapsed, 0.999999)));
                 fraction_min = (std::min)(fraction_min, fraction);
                 fraction_max = (std::max)(fraction_max, fraction);
                 double draw_start = clock_ms();
+                const double deadline = thread.split_next;
                 thread.split_camera_draws = thread.split_pose_draws = 0;
+                thread.trace_split_ms = 0; thread.trace_records = 0;
                 execute(thread, backend, *packet, -1, fraction);
                 render_work += clock_ms()-draw_start; ++render_presents;
-                if (thread.split_trace) std::fprintf(stderr,
-                    "recomp split present: n=%u frame=%u ms=%.3f fraction=%.4f camera_draws=%u pose_draws=%u\n",
-                    thread.split_presents, frame, draw_start, fraction, thread.split_camera_draws, thread.split_pose_draws);
+                if (thread.split_trace) thread.split_records.push_back({frame, fraction,
+                    thread.split_camera_draws, thread.split_pose_draws, deadline, draw_start,
+                    clock_ms(), packet->published_ms, picked, thread.trace_split_ms,
+                    thread.trace_records});
+                if (thread.split_trace && thread.split_records.size() == thread.split_trace_limit)
+                    dump_split_trace(thread);
                 ++thread.split_presents;
                 presented = true;
                 thread.split_next += 1000.0/thread.split_rate;
@@ -345,6 +441,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
         thread.changed.notify_all();
     }
     thread.destroyed = d3d11_backend_destroy(&backend);
+    dump_split_trace(thread);
     std::fprintf(stderr, "recomp d3d presenter thread: draw declines=%u\n",
         thread.draw_declines);
 }
@@ -387,10 +484,13 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     });
     if (thread.pacing) notePacing(thread, wait_start_ms, clock_ms());
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
+    auto &packet = thread.packets[thread.open];
+    const bool verify = thread.verify_at && thread.capture_frame >= thread.verify_at &&
+        thread.capture_frame-thread.verify_at < thread.verify_count;
+    // The open slot is invisible to the worker until pending counts it, so
+    // copy textures without holding the lock the worker checks every present.
+    lock.unlock();
     try {
-        auto &packet = thread.packets[thread.open];
-        bool verify = thread.verify_at && thread.capture_frame >= thread.verify_at &&
-            thread.capture_frame-thread.verify_at < thread.verify_count;
         double seal_start = clock_ms();
         packet.seal(packet.hasPoseReplay() || verify || thread.split_rate != 0);
         thread.seal_ms += clock_ms()-seal_start;
@@ -400,6 +500,7 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     } catch (const std::length_error &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     }
+    lock.lock();
     thread.open = (thread.open + 1) % 3;
     ++thread.pending;
     lock.unlock();
@@ -425,7 +526,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     try {
         thread = std::make_unique<PresenterThread>();
         thread->split_rate = recomp_split_rate(std::getenv("RECOMP_SPLIT_RATE"));
+        d3d11_backend_set_split_presentation(thread->split_rate != 0);
         thread->split_trace = std::getenv("RECOMP_SPLIT_TRACE") != nullptr;
+        if (const char *limit = std::getenv("RECOMP_SPLIT_TRACE_LIMIT"))
+            thread->split_trace_limit = std::strtoul(limit, nullptr, 10);
         if (thread->split_rate) thread->split_timer = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
         if (thread->split_rate) std::fprintf(stderr, "recomp split rate: target=%.6g gameplay=60 visual_delay_ticks=1\n", thread->split_rate);
