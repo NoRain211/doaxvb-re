@@ -1,4 +1,5 @@
 #include "d3d_presenter_capture.h"
+#include "d3d_pose_replay.h"
 
 #include <cassert>
 #include <cstddef>
@@ -13,6 +14,7 @@ constexpr const void *Draw::*pointer_fields[] = {
     &Draw::vertex_bytes, &Draw::index_bytes, &Draw::texture_bytes,
     &Draw::palette_bytes, &Draw::alpha_mask_bytes,
     &Draw::alpha_mask_palette, &Draw::reflection_bytes,
+    &Draw::pose_replay,
 };
 // No readable guest span can exceed the runner's entire 64 MiB RAM region.
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
@@ -56,7 +58,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
 
-    uint64_t sizes[7]{};
+    uint64_t sizes[8]{};
     if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         const auto &draw = command.data.draw;
         sizes[0] = uint64_t(draw.vertex_count) * draw.vertex_stride;
@@ -66,6 +68,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         sizes[4] = draw.alpha_mask_byte_count;
         sizes[5] = draw.alpha_mask_palette_byte_count;
         sizes[6] = draw.reflection_byte_count;
+        sizes[7] = draw.pose_replay != nullptr ? sizeof(RecompD3dPoseReplay) : 0u;
         for (uint64_t size : sizes) {
             if (size > max_span_bytes) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
         }
@@ -73,13 +76,13 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
-    const void *inserted_sources[7]{};
+    const void *inserted_sources[8]{};
     size_t inserted_count = 0u;
     try {
         CapturedCommand &captured = commands_.emplace_back();
         copyCommand(captured.value, command);
         if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
-            for (size_t i = 0u; i < 7u; ++i) {
+            for (size_t i = 0u; i < 8u; ++i) {
                 const void *source = command.data.draw.*pointer_fields[i];
                 if (source != nullptr && borrowed(command.data.draw, i)) {
                     captured.offsets[i] = borrowed_offset;
@@ -114,6 +117,8 @@ RecompD3dPresenterError D3dCapturePacket::add(
             }
         }
         entries_.push_back({{COMMAND, 0u, 0u}, old_command_count});
+        if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && command.data.draw.pose_replay != nullptr)
+            pose_replay_ = true;
         return RECOMP_D3D_PRESENTER_OK;
     } catch (const std::bad_alloc &) {
     } catch (const std::length_error &) {
@@ -155,12 +160,39 @@ RecompD3dPresenterError D3dCapturePacket::addReport()
     return addRecord(REPORT, 0u, 0u);
 }
 
-void D3dCapturePacket::seal()
+void D3dCapturePacket::seal(bool own_textures)
 {
     if (sealed_) return;
+    if (own_textures) {
+        for (auto &captured : commands_) {
+            if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
+            const auto &draw = captured.value.data.draw;
+            const size_t sizes[] = {0u, 0u, draw.texture_byte_count, 0u,
+                draw.alpha_mask_byte_count, 0u, draw.reflection_byte_count, 0u};
+            for (size_t i = 0; i < 8; ++i) {
+                if (captured.offsets[i] != borrowed_offset) continue;
+                const void *source = draw.*pointer_fields[i];
+                const auto range = spans_.equal_range(source);
+                for (auto it = range.first; it != range.second; ++it)
+                    if (it->second.size == sizes[i] && (sizes[i] == 0 ||
+                        std::memcmp(source, payload_.data()+it->second.offset, sizes[i]) == 0)) {
+                        captured.offsets[i] = it->second.offset;
+                        break;
+                    }
+                if (captured.offsets[i] != borrowed_offset) continue;
+                const size_t offset = payload_.size();
+                const size_t words = sizes[i] == 0 ? 1u : (sizes[i]+7u)/8u;
+                payload_.resize(offset+words);
+                payload_.back() = 0;
+                if (sizes[i] != 0) std::memcpy(payload_.data()+offset, source, sizes[i]);
+                spans_.emplace(source, Span{sizes[i], offset});
+                captured.offsets[i] = offset;
+            }
+        }
+    }
     for (auto &captured : commands_) {
         if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
-        for (size_t i = 0u; i < 7u; ++i) {
+        for (size_t i = 0u; i < 8u; ++i) {
             if (captured.offsets[i] == borrowed_offset) continue;
             captured.value.data.draw.*pointer_fields[i] = captured.offsets[i] == null_offset
                 ? nullptr : payload_.data() + captured.offsets[i];
@@ -192,6 +224,7 @@ void D3dCapturePacket::clear()
     payload_.clear();
     spans_.clear();
     sealed_ = false;
+    pose_replay_ = false;
 }
 
 uint64_t D3dCapturePacket::bytes() const

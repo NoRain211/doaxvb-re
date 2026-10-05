@@ -1,4 +1,5 @@
 #include "animation_skeleton.h"
+#include "animation_rotation.h"
 
 #include <math.h>
 #include <string.h>
@@ -336,6 +337,17 @@ static bool finite_values(const float *values, unsigned count)
 {
     for (unsigned i = 0; i < count; ++i) if (!isfinite(values[i])) return false;
     return true;
+}
+
+void recomp_animation_sine_cosine(float angle, float *sine, float *cosine)
+{
+    sine_cosine(angle, sine, cosine);
+}
+
+void recomp_animation_blend_euler(const float a[3], const float b[3], float weight,
+    float output[3])
+{
+    rotation_angles(blend(euler(identity(), a), euler(identity(), b), weight), output);
 }
 
 bool recomp_animation_solve_skeleton(const RecompSkeletonTables *t, const float p[60],

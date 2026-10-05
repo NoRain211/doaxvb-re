@@ -1,5 +1,6 @@
 #include "d3d_presenter_capture.h"
 #include "d3d_presenter_d3d11_backend.h"
+#include "d3d_pose_replay.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +16,7 @@
 #include <mutex>
 #include <new>
 #include <system_error>
+#include <stdexcept>
 #include <thread>
 
 
@@ -90,8 +93,10 @@ void pump(PresenterThread &thread)
 }
 
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
-    const D3dCapturePacket &packet)
+    const D3dCapturePacket &packet, int phase = -1)
 {
+    unsigned replay_vertices = 0, visible_vertices = 0;
+    float transform_delta = 0;
     for (size_t i = 0; i < packet.count(); ++i) {
         if (status(thread) != RECOMP_D3D_PRESENTER_OK) break;
         const auto &record = packet.record(i);
@@ -102,7 +107,36 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
             case D3dCapturePacket::COMMAND: {
                 const auto &command = packet.command(i);
                 draw = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
-                error = d3d11_backend_submit(backend, &command);
+                if (phase >= 0 && draw && command.data.draw.pose_replay != nullptr) {
+                    RecompD3dPresenterCommand replay;
+                    replay.type = command.type;
+                    if (!recomp_d3d_pose_replay_draw(&command.data.draw,
+                            static_cast<unsigned>(phase), &replay.data.draw)) {
+                        fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+                        return;
+                    }
+                    const auto &draw = replay.data.draw;
+                    for (unsigned j = 0; j < 16; ++j)
+                        transform_delta = (std::max)(transform_delta,
+                            std::fabs(draw.transform[j]-command.data.draw.transform[j]));
+                    for (unsigned vertex = 0; vertex < draw.vertex_count; ++vertex) {
+                        const auto *p = reinterpret_cast<const float *>(
+                            static_cast<const uint8_t *>(draw.vertex_bytes)+size_t(vertex)*draw.vertex_stride);
+                        float point[4]{}, remaining = 1;
+                        for (unsigned bone = 0; bone <= draw.blend_weight_count; ++bone) {
+                            float weight = bone == draw.blend_weight_count ? remaining : p[3+bone];
+                            remaining -= weight;
+                            const float *m = bone == 0 ? draw.transform : draw.blend_transforms[bone-1];
+                            for (unsigned axis = 0; axis < 4; ++axis)
+                                point[axis] += weight*(p[0]*m[axis]+p[1]*m[4+axis]+p[2]*m[8+axis]+m[12+axis]);
+                        }
+                        ++replay_vertices;
+                        if (point[3] > 0 && std::fabs(point[0]) <= point[3] &&
+                            std::fabs(point[1]) <= point[3] && point[2] >= 0 && point[2] <= point[3])
+                            ++visible_vertices;
+                    }
+                    error = d3d11_backend_submit(backend, &replay);
+                } else error = d3d11_backend_submit(backend, &command);
                 break;
             }
             case D3dCapturePacket::RELEASE:
@@ -124,6 +158,9 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
             fail(thread, error);
         }
     }
+    if (phase >= 0) std::fprintf(stderr,
+        "recomp pose replay coverage: phase=%d vertices=%u inside_clip=%u transform_delta=%.9g\n",
+        phase, replay_vertices, visible_vertices, transform_delta);
 }
 
 void run(PresenterThread &thread, RecompD3dPresenterConfig config)
@@ -162,7 +199,27 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             }
             continue;
         }
-        execute(thread, backend, *packet);
+        if (packet->hasPoseReplay()) {
+            bool released = false;
+            unsigned draws = 0, frame = 0;
+            for (size_t i = 0; i < packet->count(); ++i) {
+                if (packet->record(i).kind == D3dCapturePacket::RELEASE) released = true;
+                if (packet->record(i).kind != D3dCapturePacket::COMMAND) continue;
+                const auto &command = packet->command(i);
+                if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && command.data.draw.pose_replay) {
+                    ++draws;
+                    frame = static_cast<const RecompD3dPoseReplay *>(command.data.draw.pose_replay)->frame;
+                }
+            }
+            if (released) {
+                std::fprintf(stderr, "recomp pose experiment: frame=%u rejected=resource-release\n", frame);
+                execute(thread, backend, *packet);
+            } else for (int phase = 0; phase < 3; ++phase) {
+                std::fprintf(stderr, "recomp pose experiment: frame=%u phase=%d draws=%u bytes=%llu\n",
+                    frame, phase, draws, static_cast<unsigned long long>(packet->bytes()));
+                execute(thread, backend, *packet, phase);
+            }
+        } else execute(thread, backend, *packet);
         packet->clear();
         {
             std::lock_guard<std::mutex> lock(thread.mutex);
@@ -211,7 +268,14 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     });
     if (thread.pacing) notePacing(thread, wait_start_ms, clock_ms());
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
-    thread.packets[thread.open].seal();
+    try {
+        auto &packet = thread.packets[thread.open];
+        packet.seal(packet.hasPoseReplay());
+    } catch (const std::bad_alloc &) {
+        return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+    } catch (const std::length_error &) {
+        return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+    }
     thread.open = (thread.open + 1) % 3;
     ++thread.pending;
     lock.unlock();

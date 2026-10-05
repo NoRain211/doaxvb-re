@@ -23,13 +23,14 @@ public:
     RecompD3dPresenterError add(const RecompD3dPresenterCommand &command);
     RecompD3dPresenterError addRelease(uint32_t base, uint32_t size);
     RecompD3dPresenterError addReport();
-    void seal();
+    void seal(bool own_textures = false);
     size_t count() const;
     const Record &record(size_t index) const;
     const RecompD3dPresenterCommand &command(size_t index) const;
     void clear();
     // Copied commands, records and aligned payload bytes, excluding capacity.
     uint64_t bytes() const;
+    bool hasPoseReplay() const { return pose_replay_; }
 
 private:
     // Default-initializes instead of zeroing; Debug builds rebind to proxy types.
@@ -56,7 +57,7 @@ private:
     struct CapturedCommand {
         CapturedCommand() {} // Skip zeroing: add() writes every field it uses.
         alignas(8) RecompD3dPresenterCommand value;
-        size_t offsets[7];
+        size_t offsets[8];
     };
     struct Span { size_t size; size_t offset; };
 
@@ -69,6 +70,7 @@ private:
     std::vector<uint64_t, NoInitAllocator<uint64_t>> payload_;
     std::unordered_multimap<const void *, Span> spans_;
     bool sealed_ = false;
+    bool pose_replay_ = false;
 };
 
 #endif

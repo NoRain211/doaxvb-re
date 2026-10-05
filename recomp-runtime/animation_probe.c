@@ -2,6 +2,8 @@
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "animation_skeleton.h"
+#include "animation_pose.h"
+#include "d3d_pose_replay.h"
 #include "d3d_frame_adapter.h"
 #include "stop_report.h"
 
@@ -16,9 +18,11 @@ void sub_000AF5C0(void);
 void sub_000636D0(void);
 void sub_000B01E0(void);
 void sub_00023B10(void);
+void sub_0017D520(void);
+void sub_0017D670(void);
 
-/* Diagnostic records remain private. These snapshots are observations, not
-   solver inputs or a substitute for reconstructing the palette independently. */
+/* Diagnostic records remain private. Oracle bone outputs enter comparisons
+   only; immutable rig, channel and controller snapshots feed the plain solver. */
 typedef struct PoseCapture {
     uint32_t version, frame, actor;
     uint32_t pose_address, offsets_address;
@@ -37,6 +41,38 @@ typedef struct PoseCapture {
 static RecompBoneMatrix solved_bones[4][32];
 static uint32_t solved_frame[4];
 static bool solved_valid[4];
+static PoseCapture experiment_previous;
+static bool experiment_previous_valid, experiment_ready;
+static RecompBoneMatrix experiment_bones[3][32];
+typedef struct PoseBinding {
+    uint32_t object;
+    RecompBoneMatrix original[4];
+    RecompD3dPoseReplay replay;
+} PoseBinding;
+static PoseBinding experiment_binding, experiment_bindings[128];
+static unsigned experiment_binding_count;
+
+static void remember_binding(void)
+{
+    if (experiment_binding_count == sizeof experiment_bindings/sizeof *experiment_bindings)
+        recomp_stop(1, "animation:experiment-bindings-full");
+    experiment_bindings[experiment_binding_count++] = experiment_binding;
+}
+
+static uint32_t experiment_frame(void)
+{
+    const char *text = getenv("RECOMP_POSE_EXPERIMENT_FRAME");
+    if (text == NULL) return 0;
+    char *end;
+    unsigned long frame = strtoul(text, &end, 10);
+    return *text != '\0' && *end == '\0' && frame > 0 && frame < UINT32_MAX ? (uint32_t)frame : 0;
+}
+
+static unsigned experiment_actor(void)
+{
+    const char *text = getenv("RECOMP_POSE_EXPERIMENT_ACTOR");
+    return text == NULL ? 0u : (unsigned)strtoul(text, NULL, 10);
+}
 
 static float guest_float(uint32_t address)
 {
@@ -136,6 +172,56 @@ static bool solve_capture(PoseCapture *c)
     return recomp_animation_solve_skeleton(&t, c->pose_before+3, s, c->solved);
 }
 
+static void prepare_experiment(const PoseCapture *current)
+{
+    uint32_t frame = experiment_frame();
+    if (frame == 0 || current->actor != experiment_actor()) return;
+    if (current->frame+1 == frame) {
+        experiment_previous = *current;
+        experiment_previous_valid = true;
+        return;
+    }
+    if (current->frame != frame || !experiment_previous_valid ||
+        experiment_previous.frame+1 != frame) return;
+    if (memcmp(current->offsets, experiment_previous.offsets, sizeof current->offsets) != 0 ||
+        memcmp(current->limbs, experiment_previous.limbs, sizeof current->limbs) != 0)
+        recomp_stop(1, "animation:experiment-rig-change");
+    void *guest_before = malloc(RECOMP_XBOX_RAM_SIZE);
+    if (guest_before == NULL) recomp_stop(1, "animation:experiment-snapshot");
+    memcpy(guest_before, recomp_memory(0, RECOMP_XBOX_RAM_SIZE), RECOMP_XBOX_RAM_SIZE);
+    RecompAnimationPose a, b, blended;
+    RecompAnimationGroup groups[24];
+    memcpy(&a, experiment_previous.pose_before, sizeof a);
+    memcpy(&b, current->pose_before, sizeof b);
+    blended = a;
+    recomp_guest_load(groups, 0x002cfb70u, sizeof groups);
+    if (!recomp_animation_pose_blend(groups, 24, &a, &b, 0.5f, &blended))
+        recomp_stop(1, "animation:experiment-blend");
+    PoseCapture half = experiment_previous;
+    memcpy(half.pose_before, &blended, sizeof blended);
+    float old_actor[96], new_actor[96];
+    memcpy(old_actor, half.actor_after, sizeof old_actor);
+    memcpy(new_actor, current->actor_after, sizeof new_actor);
+    for (unsigned i = 0; i < 3; ++i) old_actor[i] = (float)(((double)old_actor[i]+new_actor[i])*0.5);
+    const double pi = 3.14159265358979323846;
+    double angle = fmod((double)new_actor[3]-old_actor[3]+pi, 2*pi);
+    if (angle < 0) angle += 2*pi;
+    old_actor[3] = (float)(old_actor[3]+(angle-pi)*0.5);
+    memcpy(half.actor_after, old_actor, sizeof old_actor);
+    if (!solve_capture(&half)) recomp_stop(1, "animation:experiment-solve");
+    bool unchanged = memcmp(guest_before, recomp_memory(0, RECOMP_XBOX_RAM_SIZE), RECOMP_XBOX_RAM_SIZE) == 0;
+    free(guest_before);
+    if (!unchanged) recomp_stop(1, "animation:experiment-guest-write");
+    memcpy(experiment_bones[0], experiment_previous.solved, sizeof half.solved);
+    memcpy(experiment_bones[1], half.solved, sizeof half.solved);
+    memcpy(experiment_bones[2], current->solved, sizeof half.solved);
+    experiment_ready = true;
+    experiment_binding_count = 0;
+    fprintf(stderr, "recomp pose experiment prepared: frame=%u actor=%u guest_bytes_unchanged=%u midpoint_delta=%.9g\n",
+        frame, current->actor, RECOMP_XBOX_RAM_SIZE,
+        matrix_error(experiment_bones[0], experiment_bones[1], 32));
+}
+
 static void note(unsigned entry)
 {
     static uint32_t frame = UINT32_MAX;
@@ -164,15 +250,18 @@ static void build_palette(void)
     bool verify = getenv("RECOMP_SKELETON_VERIFY") != NULL && frame >= 1900u && frame < 2020u;
     uint8_t recipe[16];
     unsigned output_count = 0;
+    uint32_t object = 0;
     float offsets[24][4];
     RecompBoneMatrix bones[32], initial, expected[4], scratch;
     unsigned actor = (bank-0x004d3650u)/0x800u;
     bool actor_bank = bank >= 0x004d3650u && actor < 4u && (bank-0x004d3650u)%0x800u == 0;
+    bool experiment = frame == experiment_frame() && experiment_ready &&
+        actor_bank && actor == experiment_actor();
     note(3);
-    if (verify) {
+    if (verify || experiment) {
         uint32_t objects = *recomp_memory_u32(*recomp_ebp_register()-4u);
         unsigned ordinal = *(const uint8_t *)recomp_memory_i8(recomp_runtime.registers.esi);
-        uint32_t object = *recomp_memory_u32(objects+ordinal*4u);
+        object = *recomp_memory_u32(objects+ordinal*4u);
         output_count = *recomp_memory_u32(object+4u)+1u;
         if (output_count == 0 || output_count > 4u) recomp_stop(1, "animation:palette-influences");
         recomp_guest_load(recipe, 0x0033f988u+recipe_id*16u, sizeof recipe);
@@ -187,7 +276,7 @@ static void build_palette(void)
         }
     }
     sub_000636D0();
-    if (verify) {
+    if (verify || experiment) {
         RecompBoneMatrix actual[4], native[4];
         recomp_guest_load(actual, 0x00b25840u, output_count*sizeof *actual);
         float recipe_error = matrix_error(expected, actual, output_count);
@@ -200,9 +289,58 @@ static void build_palette(void)
         fprintf(stderr, "recomp animation palette: frame=%u recipe=%u count=%u actor=%u recipe_error=%.9g pose_error=%.9g\n",
             frame, recipe_id, output_count, actor_bank ? actor : UINT32_MAX, recipe_error, pose_error);
         if (recipe_error > 1e-5f || pose_error > 1e-4f) recomp_stop(1, "animation:palette-mismatch");
+        if (experiment) {
+            RecompD3dPoseReplay *replay = &experiment_binding.replay;
+            memset(replay, 0, sizeof *replay);
+            replay->frame = frame; replay->actor = actor;
+            replay->recipe = recipe_id; replay->count = output_count;
+            for (unsigned phase = 0; phase < 3; ++phase) {
+                if (!recomp_animation_build_palette(recipe, sizeof recipe, output_count,
+                    experiment_bones[phase], 32, offsets, 24, &initial, native, &scratch))
+                    recomp_stop(1, "animation:experiment-palette");
+                memcpy(replay->palettes[phase], native, output_count*sizeof *native);
+            }
+            experiment_binding.object = object;
+            memcpy(experiment_binding.original, actual, output_count*sizeof *actual);
+            remember_binding();
+        }
     }
 }
 static void build_camera(void) { note(5); sub_00023B10(); }
+
+static void bind_rigid_pose(void)
+{
+    if (!experiment_ready || recomp_d3d_frame_adapter_swap_counter() != experiment_frame()) return;
+    uint32_t context = recomp_runtime.registers.ebx;
+    uint32_t caller = *recomp_ebp_register();
+    if (context > RECOMP_XBOX_RAM_SIZE-0x2cu || caller < 8u || caller >= RECOMP_XBOX_RAM_SIZE) return;
+    uint32_t bank = *recomp_memory_u32(context+0x1cu);
+    uint32_t bone = *recomp_memory_u32(caller-8u);
+    if (bank != 0x004d3650u+experiment_actor()*0x800u ||
+        bone < bank || bone >= bank+0x800u || (bone-bank)%64u != 0) return;
+    RecompBoneMatrix original;
+    recomp_guest_load(&original, bone, sizeof original);
+    if (memcmp(&original, recomp_memory(0x00a24190u, sizeof original), sizeof original) != 0) return;
+    unsigned joint = (bone-bank)/64u;
+    RecompD3dPoseReplay *replay = &experiment_binding.replay;
+    memset(replay, 0, sizeof *replay);
+    replay->frame = experiment_frame(); replay->actor = experiment_actor();
+    replay->recipe = UINT32_MAX; replay->count = 1;
+    for (unsigned phase = 0; phase < 3; ++phase)
+        memcpy(replay->palettes[phase][0], experiment_bones[phase][joint].m, sizeof original);
+    experiment_binding.object = recomp_runtime.registers.ecx;
+    experiment_binding.original[0] = original;
+    remember_binding();
+    fprintf(stderr, "recomp pose rigid binding: frame=%u actor=%u joint=%u object=%08x\n",
+        replay->frame, replay->actor, joint, experiment_binding.object);
+}
+
+static void draw_rigid(void) { bind_rigid_pose(); sub_0017D520(); }
+static void draw_object(void)
+{
+    if ((recomp_runtime.registers.edx&1u) == 0) bind_rigid_pose();
+    sub_0017D670();
+}
 
 static void build_skeleton(void)
 {
@@ -213,7 +351,11 @@ static void build_skeleton(void)
     uint32_t state = 0x005e5fe8u + actor * 0x180u;
     uint32_t bank = 0x004d3650u + actor * 0x800u;
     bool verify = getenv("RECOMP_SKELETON_VERIFY") != NULL;
-    bool record = (prefix != NULL || verify) && actor < 4u && frame >= 1900u && frame < 2020u;
+    uint32_t experiment = experiment_frame();
+    bool experiment_capture = experiment > 0 && actor == experiment_actor() &&
+        (frame == experiment || frame+1 == experiment);
+    bool record = actor < 4u && (experiment_capture ||
+        ((prefix != NULL || verify) && frame >= 1900u && frame < 2020u));
 
     note(4);
     if (record) {
@@ -255,6 +397,7 @@ static void build_skeleton(void)
         solved_valid[actor] = solved;
         solved_frame[actor] = frame;
         if (solved) memcpy(solved_bones[actor], capture.solved, sizeof capture.solved);
+        if (solved) prepare_experiment(&capture);
         if (prefix != NULL) {
             int length = snprintf(path, sizeof path, "%s-%u-%u.bin", prefix, frame, actor);
             if (length < 0 || (size_t)length >= sizeof path) recomp_stop(1, "animation:capture-path");
@@ -268,14 +411,72 @@ static void build_skeleton(void)
 }
 #endif
 
+void recomp_animation_probe_capture_vertices(const struct RecompD3dPresenterDrawCommand *draw,
+    const float worlds[4][16], unsigned count)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    const char *prefix = getenv("RECOMP_POSE_VERTEX_CAPTURE");
+    if (!prefix || !experiment_frame() || (frame != experiment_frame() && frame+1 != experiment_frame())) return;
+    char path[1024];
+    int length = snprintf(path, sizeof path, "%s-%u.bin", prefix, frame);
+    if (length < 0 || length >= sizeof path) recomp_stop(1, "animation:vertex-path");
+    static uint32_t last_frame = UINT32_MAX;
+    FILE *file = fopen(path, frame == last_frame ? "ab" : "wb");
+    if (!file) recomp_stop(1, "animation:vertex-open");
+    last_frame = frame;
+    uint32_t header[8] = {frame, *recomp_memory_u32(0x00a2479cu), *recomp_memory_u32(0x00a247a8u),
+        draw->fvf, draw->vertex_stride, draw->vertex_count, draw->index_count, count};
+    bool ok = fwrite(header, sizeof header, 1, file) == 1 &&
+        fwrite(worlds, count*64u, 1, file) == 1 &&
+        fwrite(draw->vertex_bytes, draw->vertex_stride*draw->vertex_count, 1, file) == 1 &&
+        fwrite(draw->index_bytes, draw->index_count*2u, 1, file) == 1;
+    if (fclose(file) != 0 || !ok) recomp_stop(1, "animation:vertex-write");
+#else
+    (void)draw; (void)worlds; (void)count;
+#endif
+}
+
+bool recomp_animation_probe_pose_replay(const float worlds[4][16], unsigned count,
+    struct RecompD3dPoseReplay *output)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    if (!output || !experiment_ready || count > 4 ||
+        recomp_d3d_frame_adapter_swap_counter() != experiment_frame()) return false;
+    const PoseBinding *found = NULL;
+    uint32_t object = *recomp_memory_u32(0x00a2479cu);
+    /* The SDK queues copies of palettes for later passes. The copied address
+       is not provenance; object and exact original palette survive the queue. */
+    for (unsigned i = 0; i < experiment_binding_count; ++i) {
+        const PoseBinding *binding = experiment_bindings+i;
+        if (object != binding->object || count != binding->replay.count ||
+            memcmp(worlds, binding->original, count*sizeof *worlds) != 0) continue;
+        if (found && memcmp(found->replay.palettes, binding->replay.palettes,
+            sizeof binding->replay.palettes) != 0) recomp_stop(1, "animation:ambiguous-draw-binding");
+        found = binding;
+    }
+    if (!found) return false;
+    *output = found->replay;
+    return true;
+#else
+    (void)worlds; (void)count; (void)output;
+    return false;
+#endif
+}
+
 RecompFunction recomp_animation_probe_lookup_manual(uint32_t address)
 {
 #ifdef RECOMP_FULL_PROGRAM
     switch (address) {
+    /* Temporary SDK draw-library seam: observe the game's indirect callback
+       provenance, then execute the original once. Library replacement remains
+       open; the plain pose/palette models do not depend on these callbacks. */
+    case 0x0017d520u: return experiment_frame() ? draw_rigid : NULL;
+    case 0x0017d670u: return experiment_frame() ? draw_object : NULL;
     case 0x000af050u: case 0x000aeef0u: case 0x000af5c0u:
     case 0x000636d0u: case 0x000b01e0u: case 0x00023b10u:
         if (getenv("RECOMP_ANIMATION_DISPATCH_TRACE") == NULL &&
-            getenv("RECOMP_SKELETON_VERIFY") == NULL) return NULL;
+            getenv("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0) return NULL;
         break;
     default: return NULL;
     }

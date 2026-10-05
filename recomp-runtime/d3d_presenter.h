@@ -154,6 +154,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     float reflection_transform[16];
     float reflection_diffuse[4];
     RecompD3dPresenterTarget target;
+    /* Optional immutable RecompD3dPoseReplay, copied during submit. */
+    const void *pose_replay;
 } RecompD3dPresenterDrawCommand;
 
 typedef struct RecompD3dPresenterCommand {

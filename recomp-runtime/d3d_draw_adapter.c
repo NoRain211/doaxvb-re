@@ -3,6 +3,8 @@
 #include "d3d_render_state_adapter.h"
 #include "d3d_frame_adapter.h"
 #include "d3d_texture_adapter.h"
+#include "d3d_pose_replay.h"
+#include "animation_probe.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -1414,6 +1416,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     uint32_t vertex_data = 0u;
     RecompD3dDrawResult result;
     RecompD3dPresenterCommand command = {0};
+    RecompD3dPoseReplay pose_replay;
     const uint8_t *index_bytes;
     const uint8_t *vertex_bytes;
     uint32_t vertex_span;
@@ -1903,6 +1906,18 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     if (!attach_draw_state(device, &command.data.draw)) {
         decline = "render-target";
         goto finished;
+    }
+    if (command.data.draw.program_count == 0 && getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL) {
+        float worlds[4][16];
+        unsigned count = command.data.draw.blend_weight_count+1;
+        bool readable = count <= 4;
+        for (unsigned i = 0; readable && i < count; ++i)
+            readable = read_transform(device, D3D_TRANSFORM_WORLD+i, worlds[i]);
+        if (readable) recomp_animation_probe_capture_vertices(&command.data.draw, worlds, count);
+        if (readable && recomp_animation_probe_pose_replay(worlds, count, &pose_replay) &&
+            read_transform(device, D3D_TRANSFORM_VIEW, pose_replay.view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, pose_replay.projection))
+            command.data.draw.pose_replay = &pose_replay;
     }
     capture_command = &command.data.draw;
 
