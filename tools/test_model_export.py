@@ -7,6 +7,7 @@ import unittest
 from model_animation import decode_tangent, decode_value, parse_clip, parse_track
 from model_export import add_animation, build_document, rest_worlds, structural_check
 from model_format import companion_draws, palette_matrices, palette_operations, read_mesh
+from model_pose import sample_fk_clip
 
 
 def triangle_model():
@@ -152,6 +153,26 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'bind-space origin'):
             build_document(triangle_model(), [{'object': 0, 'palette': 0, 'flags': 1}],
                            rig, {0: ('synthetic', 'synthetic.png')})
+
+    def test_archive_track_to_fk_animation_and_encoded_time_validation(self):
+        bank = bytearray(4004 + 244 + 8)
+        struct.pack_into('<I', bank, 0, 4004)
+        struct.pack_into('<HH', bank, 4004, 2, 60)
+        struct.pack_into('<I', bank, 4004+8, 244)
+        struct.pack_into('<4H', bank, 4004+244, 5, 0, 0, 32768)
+        rig = synthetic_rig()
+        rig['joints'] += [{'parent': -1, 'translation': [0, 0, 0]} for _ in range(30)]
+        poses = sample_fk_clip(parse_clip(bank, 0), rig)
+        self.assertEqual(poses['frames'][1][2]['translation'], [0, 0.5, 0])
+        doc = build_document(triangle_model(), [{'object': 0, 'palette': 0, 'flags': 1}],
+                             rig, {0: ('synthetic', 'synthetic.png')}, poses)
+        structural_check(doc)
+        self.assertEqual(len(doc.json['animations'][0]['channels']), 64)
+        accessor = doc.json['animations'][0]['samplers'][0]['input']
+        view = doc.json['bufferViews'][doc.json['accessors'][accessor]['bufferView']]
+        struct.pack_into('<2f', doc.binary, view['byteOffset'], 0, 0)
+        with self.assertRaisesRegex(ValueError, 'animation times'):
+            structural_check(doc)
 
     def test_exported_inverse_bind_matches_rotating_draw_palette(self):
         rig = synthetic_rig()

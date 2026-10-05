@@ -3,8 +3,9 @@
 This describes the supported readers, not a complete character format or a
 validated animation replacement. The exporter produces a **primary-mesh bind
 preview** using a separately supplied private rig. It can write an animation
-from supplied solved local poses. It does not yet solve a motion bank into those
-poses, reproduce a captured gameplay palette, or export secondary geometry.
+from supplied solved local poses, or an explicitly incomplete FK approximation
+from a motion bank. It does not yet reproduce a captured gameplay skeleton or
+export secondary geometry.
 
 ## Geometry
 
@@ -205,3 +206,28 @@ frame identities differ. Only a matching actor and swap frame is accepted.
 Receipts and RAM snapshots remain private. The layer cursor can already have
 advanced beyond the sampled pose; verify archive sampling separately instead
 of equating it with the pose's tick.
+
+## Sampled FK animation
+
+Use `--motion`, `--slot` and `--fk-motion` to write integer samples as glTF
+translation and quaternion channels. The default is 60 samples per second;
+`--ticks-per-second` explicitly changes playback time. Missing scalar tracks use
+zero in this preview. Root placement is in place; gameplay root motion is not
+integrated. The output metadata marks the animation as incomplete.
+
+Primary FK covers trunk, neck, head, shoulder and eye transforms. Limbs remain
+in the supplied rest hierarchy, and terrain, look-at and derived-joint solving
+remain open. Standard sine/cosine also differs from the game's approximate
+trigonometry, so small residuals in directly keyed joints are expected until
+that numerical model is ported. Do not attribute every difference to IK.
+
+`tools/model_compare.py` accepts a paired capture, private rig and optional
+archive motion/slot/tick. It reports every differing numeric joint and palette
+entry at an explicit tolerance, plus the scalar residual. Archive sampling uses
+no captured output matrix. Captured actor placement and executable-owned rig
+inputs remain explicit dependencies. This is not an archive-only character
+reconstruction or a complete solver acceptance gate.
+
+The structural fallback checks encoded animation times, target uniqueness,
+accessor shapes, finite translations and unit quaternions, in addition to mesh
+buffer bounds. It is not a substitute for a visual animation review.

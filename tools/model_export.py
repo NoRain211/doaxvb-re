@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Export a private skinned bind preview; solved local poses can add animation.
+"""Export a private skinned preview with supplied poses or incomplete FK motion.
 
 Archive scalar channels are NOT joint rotations. --motion writes a diagnostic
-sidecar only. A complete animation needs the game's procedural pose solver.
+sidecar unless --fk-motion is selected. Complete motion needs the procedural solver.
 See docs/wayfinder/research/model-format.md for the explicit rig input contract.
 """
 import argparse
@@ -17,6 +17,7 @@ from urllib.parse import quote
 from afs_extract import private_output
 from model_animation import parse_clip
 from model_format import companion_draws, palette_matrices, read_mesh
+from model_pose import sample_fk_clip
 from texture_rip import texture_key, texture_payloads
 
 
@@ -219,6 +220,34 @@ def structural_check(doc):
             values = struct.unpack_from('<' + 'I' * a['count'], doc.binary, view['byteOffset'])
             if len(values) % 3 or max(values) >= count:
                 raise ValueError('Invalid triangle indices')
+    for animation in j.get('animations', []):
+        targets = set()
+        for channel in animation['channels']:
+            target = channel['target']
+            key = (target['node'], target['path'])
+            if key in targets or not 0 <= key[0] < len(j['nodes']):
+                raise ValueError('Duplicate or invalid animation target')
+            targets.add(key)
+            sampler = animation['samplers'][channel['sampler']]
+            time = j['accessors'][sampler['input']]
+            value = j['accessors'][sampler['output']]
+            kind = {'translation': 'VEC3', 'rotation': 'VEC4'}.get(key[1])
+            if (sampler['interpolation'] != 'LINEAR' or time['type'] != 'SCALAR'
+                    or value['type'] != kind or time['count'] != value['count']
+                    or time['componentType'] != 5126 or value['componentType'] != 5126):
+                raise ValueError('Invalid animation accessor contract')
+            view = j['bufferViews'][time['bufferView']]
+            times = struct.unpack_from('<' + 'f'*time['count'], doc.binary, view['byteOffset'])
+            if (any(not math.isfinite(t) or t < 0 for t in times)
+                    or any(a >= b for a, b in zip(times, times[1:]))):
+                raise ValueError('Invalid encoded animation times')
+            view = j['bufferViews'][value['bufferView']]
+            width = 4 if kind == 'VEC4' else 3
+            for row in struct.iter_unpack('<' + 'f'*width, doc.binary[
+                    view['byteOffset']:view['byteOffset'] + view['byteLength']]):
+                if (not all(math.isfinite(v) for v in row)
+                        or (width == 4 and abs(sum(v*v for v in row)-1) > 2e-5)):
+                    raise ValueError('Invalid encoded animation transform')
 
 
 def main():
@@ -230,6 +259,8 @@ def main():
     parser.add_argument('--pose-samples', type=Path)
     parser.add_argument('--motion', type=Path, help='Write decoded scalars; does not solve a skeleton')
     parser.add_argument('--slot', type=int, default=0)
+    parser.add_argument('--fk-motion', action='store_true', help='Export explicitly incomplete FK animation')
+    parser.add_argument('--ticks-per-second', type=float, default=60)
     args = parser.parse_args()
     try:
         output = private_output(args.output)
@@ -250,12 +281,20 @@ def main():
                 raise ValueError(f'Missing decoded texture ordinal {ordinal}')
             uris[ordinal] = (key, quote(os.path.relpath(png.resolve(), output).replace('\\', '/')))
         poses = json.loads(args.pose_samples.read_text()) if args.pose_samples else None
+        clip = parse_clip(args.motion.read_bytes(), args.slot) if args.motion else None
+        if args.fk_motion:
+            if clip is None or poses is not None:
+                raise ValueError('--fk-motion requires --motion and excludes --pose-samples')
+            poses = sample_fk_clip(clip, rig, args.ticks_per_second)
         doc = build_document(model, draws, rig, uris, poses)
         doc.json['extras']['ignored_draw_opcodes'] = ignored
+        if args.fk_motion:
+            doc.json['extras']['animation'] = poses['evaluation']
+            doc.json['extras']['ticks_per_second'] = args.ticks_per_second
+            doc.json['animations'][0]['name'] = 'fk_clip_incomplete'
         structural_check(doc)
         motion = None
-        if args.motion:
-            clip = parse_clip(args.motion.read_bytes(), args.slot)
+        if clip is not None:
             motion = {'nominal_ticks_per_second': 60, 'slot': args.slot,
                       'warning': 'Scalar channels, not joint transforms; nominal speed only',
                       'samples': [clip.sample(i) for i in range(clip.count)]}
