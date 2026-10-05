@@ -10,6 +10,7 @@ typedef struct RecompVisualPose {
     RecompAnimationPose channels[2];
     RecompSkeletonTargets targets[2];
     RecompBoneMatrix endpoints[2][32];
+    float net_displacement[2];
 } RecompVisualPose;
 
 #ifdef __cplusplus

@@ -218,6 +218,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
     if (created != RECOMP_D3D_PRESENTER_OK) return;
 
     double render_start = clock_ms(), render_work = 0;
+    float fraction_min = 1, fraction_max = 0;
     unsigned render_packets = 0, render_presents = 0;
     for (;;) {
         pump(thread);
@@ -271,6 +272,8 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 }
                 double elapsed = (clock_ms()-start)/tick_ms;
                 float fraction = static_cast<float>((std::max)(0.0, (std::min)(elapsed, 0.999999)));
+                fraction_min = (std::min)(fraction_min, fraction);
+                fraction_max = (std::max)(fraction_max, fraction);
                 double draw_start = clock_ms();
                 execute(thread, backend, *packet, -1, fraction);
                 render_work += clock_ms()-draw_start; ++render_presents;
@@ -317,9 +320,10 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             ++render_packets;
             double now = clock_ms();
             if (now-render_start >= 1000) {
-                std::fprintf(stderr, "recomp split workload: packets=%u presents=%u draw_ms=%.3f last_packet_bytes=%llu\n",
+                std::fprintf(stderr, "recomp split workload: packets=%u presents=%u draw_ms=%.3f last_packet_bytes=%llu fraction=%.3f..%.3f\n",
                     render_packets, render_presents, render_presents ? render_work/render_presents : 0,
-                    static_cast<unsigned long long>(packet->bytes()));
+                    static_cast<unsigned long long>(packet->bytes()), fraction_min, fraction_max);
+                fraction_min = 1; fraction_max = 0;
                 render_packets = render_presents = 0; render_work = 0; render_start = now;
             }
         }

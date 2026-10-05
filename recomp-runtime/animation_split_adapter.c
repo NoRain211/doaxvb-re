@@ -56,6 +56,8 @@ void recomp_animation_split_capture(unsigned actor, uint32_t frame,
     RecompVisualPose *pair = pairs+actor;
     ready[actor] = frames[actor]+1 == frame &&
         memcmp(&pair->tables, &snapshot->tables, sizeof pair->tables) == 0;
+    pair->net_displacement[0] = pair->net_displacement[1];
+    pair->net_displacement[1] = 0;
     pair->channels[0] = pair->channels[1];
     pair->targets[0] = pair->targets[1];
     memcpy(pair->endpoints[0], pair->endpoints[1], sizeof pair->endpoints[0]);
@@ -67,6 +69,18 @@ void recomp_animation_split_capture(unsigned actor, uint32_t frame,
     frames[actor] = frame;
 #else
     (void)actor; (void)frame; (void)snapshot;
+#endif
+}
+
+void recomp_animation_split_finish(unsigned actor, uint32_t frame, float displacement,
+    const RecompBoneMatrix bones[32])
+{
+#ifdef RECOMP_FULL_PROGRAM
+    if (actor >= 4 || frames[actor] != frame) return;
+    pairs[actor].net_displacement[1] = displacement;
+    memcpy(pairs[actor].endpoints[1], bones, sizeof pairs[actor].endpoints[1]);
+#else
+    (void)actor; (void)frame; (void)displacement; (void)bones;
 #endif
 }
 
@@ -155,6 +169,7 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
 {
 #ifdef RECOMP_FULL_PROGRAM
     if (!recomp_animation_split_enabled() || !draw || !count || count > 4 || !size) return NULL;
+    recomp_animation_probe_finish_split();
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     static uint32_t report_frame;
     static unsigned actor_draws[4], camera_draws, ball_draws, seam_draws;

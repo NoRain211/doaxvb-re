@@ -1,24 +1,26 @@
 # Split-rate animation and camera rendering
 
-Design: 2026-10-03. Decoder checkpoint: 2026-10-05. Split-rate rendering
-is not implemented or play-tested.
+Design: 2026-10-03. M4 checkpoint: 2026-10-05. Opt-in numeric split-rate
+presentation has passed the bounded replay, pose, pacing and smoke gates below.
+The local build is ready for a user play test; broader release coverage remains open.
 
 ## Recommendation and evidence limits
 
 Keep gameplay, root motion, physics, AI, input consumption, animation events and
-stateful effects at 60 ticks/s. Evaluate a separate visual pose and camera twice
-per tick and rasterize both frames through D3D11. The game already has fractional
+stateful effects at 60 ticks/s. Evaluate a separate visual pose and camera at
+each requested present time and rasterize through D3D11. The game already has fractional
 animation sampling, but its entry point also changes root-motion state. Calling
 the existing update twice is not a safe implementation.
 
 Prefer replay of a tagged, resource-safe draw packet over a second invocation of
-the character draw/update traversal. The existing packet is a useful transport,
-not yet a reusable scene description. Its matrices have lost bone/camera identity,
-some resources are borrowed, and the worker clears it after execution.
+the character draw/update traversal. At the initial checkpoint, the packet lacked bone/camera provenance and retained
+some borrowed resources. The milestones below add that provenance and ownership
+for bounded replay.
 
-This investigation used bounded read-only Ghidra queries, the configured local
-generated program, the tracked runtime, and a separate private model/animation
-survey. No runner was launched and no visual result is claimed. Ghidra image
+The initial investigation used bounded read-only Ghidra queries, the configured
+local generated program, the tracked runtime, and a separate private
+model/animation survey. It preceded the runtime observations recorded below.
+Ghidra image
 identity: SHA-256
 `053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54`,
 image base `0x00010000`. Addresses below refer to that image. Generated entry
@@ -804,14 +806,68 @@ warm-up, scale 2 with MSAA off and SMAA (1707 by 960) measured 239.949 fps and
 16.4 ms. These are observed host results, not universal 240 Hz guarantees.
 Host input was disabled for every timing run.
 
-Consecutive match captures contain motion on every pair, including odd presents;
-the nine compared pairs changed 5.88-5.99 million RGB pixels. Camera and ball
-motion are visible, and the inspected HUD remains single and stable. The tested
-arms and attachments remain coherent. Screenshots and detailed pacing logs stay
-private. Twenty-one CTest checks and the full tools suite cover the new path.
+Synchronous match captures showed coherent arms, attachments, camera and ball
+motion, with a single stable HUD. Their readback stalls disturbed sampling, so
+they establish image content rather than intermediate-present cadence. M4's
+deferred captures below supply that cadence evidence. Screenshots and detailed
+pacing logs stay private. Twenty-one CTest checks and the full tools suite cover
+the new path.
 
 Limits: secondary geometry remains frozen at its captured simulation tick;
 optional seam link streams still stop explicitly if encountered. General teleport,
 rig-topology and scene-cut coverage beyond the observed route remains unproven.
 The measurements are agent smoke results, not user gameplay acceptance. M4's
 controlled-input match and 300-present inspection are the remaining play-test gate.
+
+
+## M4: bounded play-test readiness
+
+The local play launcher accepts a numeric present rate, defaults to 120, and
+accepts `off` for ordinary presentation. It selects scale 4.5, MSAA 8, SMAA and
+vsync; the interactive route enables host input after the startup pulses. Timing
+and controlled smoke scripts keep host input disabled. All runs respect the
+machine-wide single-runner rule. The launcher and run artifacts remain private.
+
+The controlled route uses the ordinary Exhibition menus, character selections
+and match inputs. It exposed a post-skeleton net-contact correction at 0xAE4A0:
+the original game shifts every bone's world-Z translation after 0xB01E0. Replay
+now captures this completed 60 Hz displacement and interpolates its visual
+contribution after solving the pose. It does not rerun collision or move gameplay
+state. The adapter verifies all other matrix components remain bit-identical to
+the captured original post-skeleton bank, and verifies that every bone received
+the same Z shift. An unexplained post-solve transform still stops the run.
+For exporters, this is an optional uniform world-Z addition to all 32 output
+translations; it is separate from the rig/IK solver. The failing controlled
+pose then matched the final bone bank within 0.00000647, without relaxing the
+palette gate. Synthetic coverage checks fractional displacement independently.
+
+Synchronous BMP output was too intrusive for a cadence check: per-pixel stdio
+and readback waits biased samples toward tick boundaries. The writer now emits
+whole rows. For bounded motion evidence, `RECOMP_D3D_FRAME_DUMP_DEFER=1` queues
+owned staging copies and reads them after the requested frames were presented.
+The diagnostic caps the burst at 300 frames and 12 GiB of raw storage; a 4K
+burst uses about 10 GB. Saving pauses the runner after the burst, so this is not
+a pacing benchmark. A graphics test verifies ownership and order using three
+successive, distinct clear colors. Default rendering does not allocate this queue.
+
+The final attract and controlled-match captures each contain 300 consecutive
+3840 by 2160 presents at the 120 Hz target with MSAA 8 and SMAA. Their captured
+time spans were 2.515 and 2.656 seconds; allocation/copy overhead remains visible.
+Both runs exited normally with zero backend draw declines and no palette or
+camera mismatches. All 299 adjacent pairs in each sequence differ, including
+odd presents. Contact-sheet and full-frame inspection found no seam breaks,
+attachment separation, HUD doubling or flicker. Camera and ball are interpolated.
+These are bounded agent smoke observations, not a user gameplay acceptance claim.
+
+A final capture-free 120-second window recorded 14,401 presents (120.008 fps),
+with 120 fps median samples, 8.333 ms mean reported frame time and 60 Hz gameplay
+capture. The maximum interval was 24.0 ms; this is not a zero-jitter guarantee.
+The full 150-second run exited normally. The earlier 240 Hz measurements remain
+as reported in M3. All 21 CTest checks and the tools suite (21 tests, one skip)
+passed, and public export verification passed.
+
+The requested bounded gates are complete and the local build is ready for the
+requested user play test. Optional seam-link streams, wider secondary-geometry
+coverage and uncommon cuts/teleports remain limitations; their guards remain
+active. Revised estimate for broader release coverage is approximately one to
+two focused weeks, depending on what those additional scenes expose.
