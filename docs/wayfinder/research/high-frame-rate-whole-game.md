@@ -3,6 +3,48 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## M3: 120 Hz throughput and smoothness (2026-10-05)
+
+A flat instruction sampler (thread suspension plus a linker map, so no
+elevation or PDB was needed) found 54% of the 120 Hz title game thread inside
+two `getenv` calls. `d3d_draw_adapter.c` evaluated
+`RECOMP_POSE_EXPERIMENT_FRAME` and `RECOMP_POSE_STATE_CAPTURE_AT` for every
+draw without a vertex program; the second call arrived with the split-rate
+pose work. Each call scans the process environment, and the title world pass
+issues thousands of such draws. The adapter now reads both variables once.
+Nothing sets them during a run. This also explains the earlier comparison in
+which concurrent renderer work doubled world-render CPU time.
+
+All results below come from one executable with scale 4.5, MSAA 8, SMAA,
+vsync, Start pulses at polls 6 and 8 and live host input disabled.
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| 120 s real-paced run, mean / minimum per-second rate | 120.8 / 70 fps | 120.0 / 113 fps (run B), 120.0 / 101 fps (run C) |
+| Seconds below 118 fps | 67 of 126 | 2 of 124 (B), 5 of 124 (C) |
+| Present 6000 / 10800 | 56.92 s / 90.00 s | 49.998 s / 89.995 s (B), 49.997 s / 89.995 s (C) |
+
+The 60 Hz control on the same executable reached Swaps 3000 and 5400 at
+50.171 and 90.182 seconds. Both 120 Hz runs are therefore within -0.35% and
+-0.21% of equal game time; against the M1 reference they are -0.55% and
+-0.32%. M1 timing holds on the current tree.
+
+The remaining dips occur at the same two attract scenes in both runs, near
+presents 6700-6900 and 9600-9700. Frame work there briefly exceeds 8.3 ms;
+the retained-deadline pacer then catches up, so game time is unaffected.
+
+Three 40-present bursts at presents 1000, 4000 and 9000 decide smoothness. A
+moving frame differs from the present two earlier; a new state differs from
+the immediately preceding present. All 57 moving odd presents and all 57
+moving even presents showed new state (100%).
+
+The 240 Hz timing run (no pass required) averaged 206.5 fps and never fell
+below 119 fps. It reached presents 12000 and 21600 at 57.94 and 105.22
+seconds: +15.5% and +16.7% of the 60 Hz game time, versus 109.8 and 169.2
+seconds before the fix. The game thread remains the limit at 240 Hz.
+
+These are agent smoke measurements; captures and logs remain private.
+
 ## M2 passed: equal-game-time visual parity (2026-10-05)
 
 At equal game time, 60 Hz Swap N against 120 Hz present 2N, poses and
