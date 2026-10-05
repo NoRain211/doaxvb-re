@@ -1,4 +1,5 @@
 #include "game_scheduler.h"
+#include "game_input.h"
 #include "kernel_abi.h"
 #include "d3d_draw_adapter.h"
 
@@ -229,7 +230,8 @@ RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
     if (address == 0x80000080u && startup_clock_pending) {
         return startup_clock;
     }
-    if (address != 0x000bb290u && address != 0x000bb310u && address != 0x000b5680u) {
+    if (address != 0x000bb290u && address != 0x000bb310u &&
+        address != 0x000b5680u && address != 0x000b5870u) {
         return NULL;
     }
     const char *enabled = getenv("RECOMP_GAME_SCHEDULER");
@@ -245,6 +247,7 @@ RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
     case 0x000bb290u: return game_entry;
     case 0x000bb310u: return game_loop;
     case 0x000b5680u: return scheduler_adapter;
+    case 0x000b5870u: return recomp_game_input_update;
     default: return NULL;
     }
 }
