@@ -1,10 +1,12 @@
 #include "game_scheduler.h"
+#include "game_frame_replay.h"
 #include "game_input.h"
 #include "game_scene.h"
 #include "xapi_time_adapter.h"
 #include "kernel_abi.h"
 #include "d3d_draw_adapter.h"
 #include "d3d_frame_adapter.h"
+#include "stop_report.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +34,85 @@ static uint64_t phase_time[6];
 static const char *state_capture_path;
 static uint32_t state_capture_at;
 static bool main_present_pending;
+/* The pass that polled input; the others hold the authored tick. */
+static bool authored_pass = true;
+
+bool recomp_game_authored_pass(void) { return authored_pass; }
+static RecompGameFrameReplay frame_owner_draws;
+/* Per-port records 0x5F3088 (4 x 44 bytes) and the aggregate at 0x5F3138.
+   Polling, and so every press/release/repeat edge, happens on the authored
+   pass. A fiber that sleeps whole ticks may resume on another pass of the
+   tick; it receives that tick's edges once, as it would at 60 Hz. */
+enum {
+    INPUT_RECORDS = 0x005f3088u, INPUT_RECORD_BYTES = 5u * 44u,
+    /* The scene fiber's per-port copy (0x000A5030), refreshed every pass. */
+    SCENE_INPUT = 0x004d9540u, SCENE_INPUT_BYTES = 4u * 44u,
+};
+static uint8_t authored_input[INPUT_RECORD_BYTES];
+static uint8_t pass_input[INPUT_RECORD_BYTES];
+static uint8_t authored_scene_input[SCENE_INPUT_BYTES];
+static uint8_t pass_scene_input[SCENE_INPUT_BYTES];
+static bool tick_scope_active, tick_scope_input;
+static float pass_step;
+enum { STEP_SCALAR = 0x004d6fc4u };
+
+/* Once-per-tick work runs with the authored step: every-pass owners see
+   the step divided by the substep count, written each pass by the scene
+   fiber at STEP_SCALAR. Off the polling pass, it also sees the tick's input. */
+bool recomp_game_tick_scope_begin(void)
+{
+    if (tick_scope_active) return false;
+    tick_scope_active = true;
+    const unsigned steps = game_hz / 60u;
+    if (steps > 1u) {
+        recomp_guest_load(&pass_step, STEP_SCALAR, sizeof pass_step);
+        const float step = pass_step * (float)steps;
+        recomp_guest_store(STEP_SCALAR, &step, sizeof step);
+    }
+    tick_scope_input = !authored_pass;
+    if (tick_scope_input) {
+        recomp_guest_load(pass_input, INPUT_RECORDS, sizeof pass_input);
+        recomp_guest_store(INPUT_RECORDS, authored_input, sizeof authored_input);
+        recomp_guest_load(pass_scene_input, SCENE_INPUT, sizeof pass_scene_input);
+        recomp_guest_store(SCENE_INPUT, authored_scene_input, sizeof authored_scene_input);
+    }
+    return true;
+}
+
+void recomp_game_tick_scope_end(bool begun)
+{
+    if (!begun) return;
+    if (game_hz / 60u > 1u) recomp_guest_store(STEP_SCALAR, &pass_step, sizeof pass_step);
+    if (tick_scope_input) {
+        recomp_guest_store(INPUT_RECORDS, pass_input, sizeof pass_input);
+        recomp_guest_store(SCENE_INPUT, pass_scene_input, sizeof pass_scene_input);
+    }
+    tick_scope_active = false;
+}
+
+void recomp_game_tick_input_scene_copied(void)
+{
+    if (authored_pass)
+        recomp_guest_load(authored_scene_input, SCENE_INPUT, sizeof authored_scene_input);
+}
+
+static void record_frame_owner_draw(const struct RecompD3dPresenterDrawCommand *draw)
+{
+    if (!recomp_game_frame_replay_record(&frame_owner_draws, draw))
+        recomp_stop(1, "game:frame-replay-allocation");
+}
+
+static void replay_frame_owner_draws(void)
+{
+    RecompD3dPresenterCommand command = {.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+    /* As in the draw adapter, a rejected draw (including after close) is a
+       decline, not a runtime failure. */
+    for (unsigned i = 0; i < frame_owner_draws.count; ++i) {
+        command.data.draw = frame_owner_draws.draws[i];
+        if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command) !=
+            RECOMP_D3D_PRESENTER_OK) break;
+    }
+}
 
 static uint64_t timing_now(void)
 {
@@ -175,18 +256,29 @@ void recomp_game_scheduler_tick(void)
         if ((flags & 1u) != 0 && (flags & 0x20u) == 0) {
             int32_t ticks = (int32_t)*recomp_memory_u32(slot + 4u);
             const uint32_t callback = *recomp_memory_u32(slot + 12u);
-            /* Only the unconverted UI frame owner still uses one as a
-               per-present yield. Hand owners use an explicit zero yield;
+            /* The unconverted UI frame owner counts one per tick on the
+               polling pass, where input edges are visible; held passes
+               resubmit its draws. Hand owners use an explicit zero yield;
                their generated initialization sleeps retain authored time. */
             const bool frame_owner = callback == 0x0008a970u;
-            const bool resume = recomp_game_sleep_step(
+            const bool held_owner = frame_owner && game_hz > 60u;
+            const bool counted = ticks > 0;
+            if (held_owner && authored_pass) recomp_game_frame_replay_clear(&frame_owner_draws);
+            if (held_owner && !authored_pass) replay_frame_owner_draws();
+            const bool resume = (!held_owner || authored_pass) && recomp_game_sleep_step(
                 &ticks, &sleep_subticks[index], frame_owner ? 1u : game_hz / 60u);
             *recomp_memory_u32(slot + 4u) = (uint32_t)ticks;
             if (resume) {
                 const uint32_t draws_before = recomp_d3d_draw_adapter_submitted();
                 const uint32_t rng_before = trace_rng ? recomp_game_debug_rng_state() : 0;
                 const uint64_t started = timing_now();
+                if (held_owner) recomp_d3d_draw_adapter_observe(record_frame_owner_draw);
+                const bool tick_scope = counted && recomp_game_tick_scope_begin();
                 call_one(0x0018305au, *recomp_memory_u32(slot + 8u));
+                /* Also closes a scope opened inside a fiber that a scene
+                   transition replaced before it could restore the pass. */
+                recomp_game_tick_scope_end(tick_scope || tick_scope_active);
+                recomp_d3d_draw_adapter_observe(NULL);
                 if (trace_rng && recomp_game_debug_rng_state() != rng_before) {
                     fprintf(stderr, "recomp rng: pass=%u swap=%u slot=%u callback=%08x before=%08x after=%08x\n",
                         scheduler_pass, recomp_d3d_frame_adapter_swap_counter(), index, callback,
@@ -307,9 +399,12 @@ static void game_loop(void)
 
     for (;;) {
         uint64_t timed = timing_now();
+        authored_pass = poll_phase == 0;
         if (poll_phase == 0) call(0x000b57d0u);
         poll_phase = (poll_phase + 1u) % steps;
         call(0x000b5870u); /* Derive edges and repeats. */
+        if (authored_pass)
+            recomp_guest_load(authored_input, INPUT_RECORDS, sizeof authored_input);
         call(0x000b5aa0u); /* Service feedback. */
         phase_time[0] += timing_now() - timed;
         timed = timing_now();

@@ -48,6 +48,7 @@ void sub_001E78B0(void);
 
 static RecompD3dDrawState draw_state;
 static uint32_t draw_submitted;
+static RecompD3dDrawObserver draw_observer;
 static uint32_t draw_declined;
 static uint32_t draw_unbound;
 static uint32_t draw_unsupported_formats[256];
@@ -129,6 +130,11 @@ void recomp_d3d_draw_adapter_reset(void)
 uint32_t recomp_d3d_draw_adapter_submitted(void)
 {
     return draw_submitted;
+}
+
+void recomp_d3d_draw_adapter_observe(RecompD3dDrawObserver observer)
+{
+    draw_observer = observer;
 }
 
 uint32_t recomp_d3d_draw_adapter_declined(void)
@@ -1947,6 +1953,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         goto finished;
     }
     ++draw_submitted;
+    if (draw_observer) draw_observer(&command.data.draw);
     record_fvf(result.plan.fvf);
 finished:
     if (decline != NULL) report_decline(decline);
@@ -2111,6 +2118,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         goto finished;
     }
     ++draw_submitted;
+    if (draw_observer) draw_observer(&command.data.draw);
     record_fvf(fvf);
     if (reported < 8u) {
         ++reported;

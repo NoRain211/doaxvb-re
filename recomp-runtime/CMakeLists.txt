@@ -179,6 +179,7 @@ add_executable(recomp_runtime_test
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
     game_scheduler.c
+    game_frame_replay.c
     game_scene.c
     game_world.c
     game_world_timers.c
@@ -475,6 +476,7 @@ if(RECOMP_PROGRAM_DIR)
         program_adapters.c
         xapi_time_adapter.cpp
         game_scheduler.c
+        game_frame_replay.c
         game_scene.c
         game_world.c
         game_world_timers.c
