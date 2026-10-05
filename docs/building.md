@@ -63,9 +63,27 @@ To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
 stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
-(resolution, MSAA and SMAA, saved in `private/launcher.json`) or `RunGame.cmd`
+(graphics and audio settings, saved in `private/launcher.json`) or `RunGame.cmd`
 in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
+
+The launcher includes resolution, MSAA, SMAA, VRR, fog, volume, music shuffle,
+and texture pack and dump controls. Fog defaults on; the other new graphics
+options default off. Use **Folder...** to select a texture replacement pack;
+without a selection, the pack directory is `private/textures/replace`.
+See [texture replacement](texture-replacement.md) for supported files and dumps.
+Point lights, anisotropic filtering and alpha coverage apply automatically.
+
+**Experimental** contains per-pixel lighting, smooth normals and ray-traced GI
+(RTGI). RTGI needs DXR 1.1 support and an RTGI-enabled build; D3D11 remains the
+fallback. It can reduce frame rate during matches. Strength ranges from 0 to 4
+and defaults to 1; hit-point color defaults on when RTGI is enabled. The
+**Hotkeys** button lists live texture reload/dump and RTGI tuning shortcuts.
+Hotkey changes last for that run; the launcher remembers its own selections.
+
+To check launcher settings on Windows, run `tools/test_launcher.ps1` with both
+Windows PowerShell 5 and PowerShell 7. The checks use isolated synthetic
+settings, including older files and a locale with comma decimal separators.
 
 The direct PowerShell route accepts an explicit extractor path:
 

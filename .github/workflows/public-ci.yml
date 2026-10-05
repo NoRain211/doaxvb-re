@@ -38,6 +38,12 @@ jobs:
         run: cmake --build build/recomp-runtime --config Debug
       - name: Run public runtime tests
         run: ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
+      - name: Check launcher settings in PowerShell 5 and 7
+        run: |
+          powershell -NoProfile -File tools/test_launcher.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tools/test_launcher.ps1
+          exit $LASTEXITCODE
       - name: Prove partial authentication fails closed
         shell: pwsh
         run: |
