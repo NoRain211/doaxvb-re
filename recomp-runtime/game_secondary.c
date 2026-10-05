@@ -3,62 +3,28 @@
 
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 
-static bool authored_constraint_probe(void)
-{
-    static int enabled = -1;
-    if (enabled < 0) enabled = getenv("RECOMP_GAME_SECONDARY_AUTHORED") != NULL;
-    return enabled != 0;
-}
-
-void recomp_game_secondary_particle(float state[16], const float root[4],
+/* The tick model has no presentation state. At higher rates the whole
+   secondary cluster (chains, deformation and morph helpers) advances once per
+   authored tick; its generated helpers use per-tick constants, so stepping one
+   member fractionally would desynchronize it. */
+static void secondary_particle(float state[16], const float root[4],
     const float carry[4], const float force[4], float coupling, float damping,
-    float gravity, unsigned steps_per_tick)
+    float gravity)
 {
-    const double length = 1.0 / steps_per_tick;
     for (unsigned axis = 0; axis < 4; ++axis) {
         const float displacement = state[axis] - root[axis];
-        const float fall = axis == 1 ? gravity : 0;
-        if (steps_per_tick == 1) {
-            float velocity = state[8 + axis] + displacement;
-            velocity -= state[12 + axis];
-            velocity *= damping;
-            velocity -= fall;
-            float advance = displacement * coupling;
-            advance += velocity;
-            advance += carry[axis];
-            advance += force[axis];
-            state[4 + axis] += advance;
-            state[8 + axis] = velocity;
-            state[12 + axis] = displacement;
-        } else {
-            /* The stored velocity and root displacement retain authored-tick
-               units. Fractional powers preserve the affine recurrence for a
-               constant forcing interval, including its position update. */
-            const double root_velocity = displacement / length;
-            const double acceleration = (root_velocity - state[12 + axis]) / length;
-            const double drive = damping * acceleration - fall;
-            const double old_velocity = state[8 + axis];
-            double velocity, advance;
-            if (damping > 0 && damping != 1) {
-                const double decay = pow(damping, length);
-                const double terminal = drive / (1.0 - damping);
-                velocity = decay * old_velocity + terminal * (1.0 - decay);
-                advance = damping * (1.0 - decay) / (1.0 - damping) *
-                    (old_velocity - terminal) + length * terminal;
-            } else if (damping == 1) {
-                velocity = old_velocity + length * drive;
-                advance = length * old_velocity + length * (length + 1.0) * drive / 2.0;
-            } else {
-                velocity = damping * old_velocity + drive;
-                advance = length * velocity;
-            }
-            advance += length * (root_velocity * coupling + carry[axis] + force[axis]);
-            state[4 + axis] = (float)(state[4 + axis] + advance);
-            state[8 + axis] = (float)velocity;
-            state[12 + axis] = (float)root_velocity;
-        }
+        float velocity = state[8 + axis] + displacement;
+        velocity -= state[12 + axis];
+        velocity *= damping;
+        velocity -= axis == 1 ? gravity : 0;
+        float advance = displacement * coupling;
+        advance += velocity;
+        advance += carry[axis];
+        advance += force[axis];
+        state[4 + axis] += advance;
+        state[8 + axis] = velocity;
+        state[12 + axis] = displacement;
     }
 }
 
@@ -178,7 +144,6 @@ static void secondary_chain(void)
     *recomp_memory_u32(frame - 24) = 0;
     if (byte(record)) {
         push(saved_ebx); push(saved_esi);
-        const unsigned steps = authored_constraint_probe() ? 1 : recomp_game_scheduler_hz() / 60u;
         uint32_t particle = word(record + 0x64);
         for (unsigned i = 0; i < byte(record); ++i, particle += 64) {
             float state[16], origin[4], carry[4], force[4];
@@ -186,8 +151,8 @@ static void secondary_chain(void)
             recomp_guest_load(origin, root, sizeof origin);
             recomp_guest_load(carry, carry_address, sizeof carry);
             recomp_guest_load(force, 0x00499b38u, sizeof force);
-            recomp_game_secondary_particle(state, origin, carry, force,
-                scalar(record + 0xc), damping, gravity, steps);
+            secondary_particle(state, origin, carry, force,
+                scalar(record + 0xc), damping, gravity);
             recomp_guest_store(particle, state, sizeof state);
             for (unsigned axis = 0; axis < 4; ++axis) carry[axis] *= carry_decay;
             recomp_guest_store(carry_address, carry, sizeof carry);
@@ -237,7 +202,7 @@ static void morph_frame(void)
     push(0); call(frame, 0x000640a0u);
     *recomp_memory(0x004ca490u, 1) = byte(0x004d56efu);
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
-    if (authored_constraint_probe() && update && !byte(0x004d56efu)) {
+    if (update && !byte(0x004d56efu)) {
         phase = (phase + 1) % steps;
         if (phase) *recomp_memory(0x004ca490u, 1) = 1;
     }
@@ -311,7 +276,7 @@ static void secondary_owner(void)
     const uint8_t saved_pause = byte(0x004d56efu);
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
     bool complete = true;
-    if (authored_constraint_probe() && actor < 4 && !saved_pause) {
+    if (actor < 4 && !saved_pause) {
         phases[actor] = (phases[actor] + 1) % steps;
         complete = phases[actor] == 0;
         if (!complete) *recomp_memory(0x004d56efu, 1) = 1;

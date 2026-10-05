@@ -3,6 +3,54 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## M2 passed: equal-game-time visual parity (2026-10-05)
+
+At equal game time, 60 Hz Swap N against 120 Hz present 2N, poses and
+lighting match at all three checkpoints. Every capture used the same
+executable, the fixed startup seed and no live host input. The image runs
+used accelerated guest pacing because each frame is deterministic per
+present; timing gates use real pacing.
+
+| Checkpoint | Pixels differing by more than 8 of 255 | Where |
+| --- | ---: | --- |
+| Swap 300 / present 600 | 0.00% | None. |
+| Swap 3000 / present 6000 | 0.014% (1,142 pixels, max 75) | Sub-pixel outline shimmer on deforming cloth; shapes, pose and lighting identical. |
+| Swap 5400 / present 10800 | 0.56% (max 57) | 46,525 of 46,844 pixels lie in the waterfall; 319 elsewhere. |
+
+The 60 Hz hand path stayed byte-identical to generated dispatch at Swap 5400.
+
+Two changes closed the earlier pose difference:
+
+- The secondary cluster (chain solver `0x00057300`, its owner `0x00056E90`
+  and the morph owner `0x00064220`) now advances once per authored tick at
+  every rate. Its generated helpers use per-tick constants, so stepping only
+  the particle law fractionally desynchronized the cluster. This cut the
+  3000/6000 difference from 1.05% to 0.01% of pixels.
+- Held scenery substeps already set the game pause flag. A consumer under the
+  jungle scenery draw calls `rand()` without checking that flag, so held
+  draws now restore the CRT `rand()` state. A test covers the restore.
+
+Remaining differences and their owners:
+
+- **Waterfall splash timing.** The splash consumer `0x00073AF0`, dispatched
+  under jungle scenery effects (`0x00154A90`, `0x00075000`), spawns when a
+  particle crosses terrain height. From authored tick 1894 its `rand()` draw
+  lands one tick later at 120 Hz than at 60 Hz. The traces of the earlier
+  builds show the same first divergence, so it predates this change. Its
+  gating particle state is the open owner.
+- **Cloth outline shimmer.** Float rounding in the deformation and
+  fractional pose path moves some edge pixels; no visible pose change.
+
+A rejected variant put every owner on one shared pass phase, decrementing all
+fiber sleeps and deriving input edges only on one pass per tick. It moved the
+title Start edge by one present and the jungle transition by one tick; the
+3000/6000 difference rose to 11.8-17%, and it did not move the splash
+divergence. Each owner keeps its own tick phase.
+
+The attract path is converted. Match systems from the inventory below (ball
+flight and contacts, AI cadence, UI fades and feedback durations) are not yet
+exercised and belong to the M4 gate. These are agent smoke captures, not play
+testing.
 ## M1 passed: parameterized fixed game clock (2026-10-05)
 
 `RECOMP_GAME_HZ=60`, `120`, or `240` selects the hand scheduler, scene/frame
@@ -60,7 +108,7 @@ M2 is next: poses and lighting still differ. This experimental mode has passed
 M1 only; it is not gameplay acceptance. The requested extra 240 Hz timing run
 will occur after M2 passes. The older sections below record preceding attempts.
 
-## M2 investigation in progress (2026-10-05)
+## M2 investigation (2026-10-05, superseded by the result above)
 
 M2 has not passed. The hand camera and lighting owners now reproduce the
 60 Hz reference images byte for byte at swaps 300, 3000 and 5400. An earlier

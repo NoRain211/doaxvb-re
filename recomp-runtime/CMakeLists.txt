@@ -286,7 +286,6 @@ add_executable(recomp_runtime_test
     game_actor_transition.c
     game_scene_test.c
     game_actor_test.c
-    game_secondary_test.c
     game_world_test.c
     game_camera.c
     game_camera_smoothing.c
