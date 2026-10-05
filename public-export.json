@@ -48,6 +48,8 @@
     "tools/test_afs_extract.py",
     "tools/texture_rip.py",
     "tools/test_texture_rip.py",
+    "tools/texture_sort.py",
+    "tools/test_texture_sort.py",
     "tools/run_game.py",
     "tools/launcher.ps1",
     "tools/test_extract_iso.py",
