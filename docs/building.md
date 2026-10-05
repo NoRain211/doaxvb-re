@@ -72,6 +72,7 @@ and texture pack and dump controls. Fog defaults on; the other new graphics
 options default off. Use **Folder...** to select a texture replacement pack;
 without a selection, the pack directory is `private/textures/replace`.
 See [texture replacement](texture-replacement.md) for supported files and dumps.
+The launcher writes dumps under `private/textures/dump` in its own folder.
 Point lights, anisotropic filtering and alpha coverage apply automatically.
 
 **Experimental** contains per-pixel lighting, smooth normals and ray-traced GI

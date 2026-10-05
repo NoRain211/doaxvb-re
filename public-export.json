@@ -46,6 +46,7 @@
     "tools/extract_iso.py",
     "tools/run_game.py",
     "tools/launcher.ps1",
+    "tools/test_launcher.ps1",
     "tools/test_extract_iso.py",
     "tools/xboxrecomp",
     "tools/xboxrecomp-patches/**",

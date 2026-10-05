@@ -116,6 +116,7 @@ $env:RECOMP_D3D_VRR = if ($vrr.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_FOG = if ($fog.Checked) { '1' } else { '0' }
 $env:RECOMP_TEXTURES = if ($textures.Checked) { $textureFolder.Text } else { $null }
 $env:RECOMP_TEXTURE_DUMP = if ($textureDump.Checked) { '1' } else { '0' }
+$env:RECOMP_TEXTURE_DUMP_DIR = Join-Path $root 'private\textures'
 $env:RECOMP_D3D_PIXEL_LIGHTING = if ($pixelLighting.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_SMOOTH_NORMALS = if ($smoothNormals.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_RTGI = if ($rtgi.Checked) { '1' } else { '0' }
