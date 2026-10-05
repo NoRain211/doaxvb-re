@@ -38,6 +38,7 @@ struct PresenterThread {
     RecompD3dPresenterError status = RECOMP_D3D_PRESENTER_OK;
     RecompD3dPresenterError destroyed = RECOMP_D3D_PRESENTER_OK;
     unsigned draw_declines = 0;
+    uint32_t verify_at = 0, verify_count = 0, capture_frame = 0;
     // RECOMP_PERF_COUNTER pacing on the game side, reported once per second.
     bool pacing = false;
     double last_frame_ms = 0.0;
@@ -199,7 +200,25 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             }
             continue;
         }
-        if (packet->hasPoseReplay()) {
+        uint32_t frame = 0;
+        bool released = false;
+        for (size_t i = 0; i < packet->count(); ++i) {
+            if (packet->record(i).kind == D3dCapturePacket::RELEASE) released = true;
+            if (packet->record(i).kind == D3dCapturePacket::COMMAND &&
+                packet->command(i).type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT)
+                frame = packet->command(i).data.present.swap_counter;
+        }
+        if (thread.verify_at && frame >= thread.verify_at && frame-thread.verify_at < thread.verify_count) {
+            if (released || packet->hasPoseReplay()) {
+                std::fprintf(stderr, "recomp replay identity: frame=%u rejected=packet-kind\n", frame);
+                fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+            } else {
+                d3d11_backend_verify_replay(backend, frame, false);
+                execute(thread, backend, *packet);
+                d3d11_backend_verify_replay(backend, frame, true);
+                execute(thread, backend, *packet);
+            }
+        } else if (packet->hasPoseReplay()) {
             bool released = false;
             unsigned draws = 0, frame = 0;
             for (size_t i = 0; i < packet->count(); ++i) {
@@ -270,7 +289,9 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
     try {
         auto &packet = thread.packets[thread.open];
-        packet.seal(packet.hasPoseReplay());
+        bool verify = thread.verify_at && thread.capture_frame >= thread.verify_at &&
+            thread.capture_frame-thread.verify_at < thread.verify_count;
+        packet.seal(packet.hasPoseReplay() || verify);
     } catch (const std::bad_alloc &) {
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
     } catch (const std::length_error &) {
@@ -300,6 +321,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     std::unique_ptr<PresenterThread> thread;
     try {
         thread = std::make_unique<PresenterThread>();
+        if (const char *at = std::getenv("RECOMP_REPLAY_VERIFY_AT")) {
+            thread->verify_at = static_cast<uint32_t>(std::strtoul(at, nullptr, 10));
+            thread->verify_count = 120;
+        }
         const char *performance = std::getenv("RECOMP_PERF_COUNTER");
         thread->pacing = performance != nullptr && std::strcmp(performance, "1") == 0;
         thread->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -332,6 +357,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     error = status(thread);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     if (command == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT)
+        thread.capture_frame = command->data.present.swap_counter;
     error = thread.packets[thread.open].add(*command);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     return command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT

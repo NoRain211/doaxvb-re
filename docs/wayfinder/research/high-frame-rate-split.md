@@ -634,3 +634,47 @@ cut/topology invalidation and measured 120 Hz pacing are also outstanding.
 Revised planning estimate: 1-2 focused weeks to resolve the geometry gate, then
 4-8 weeks for useful integrated split-rate presentation. The breadth of the
 secondary/deformation owners makes that estimate uncertain.
+
+
+## M1: clean same-tick replay
+
+`RECOMP_REPLAY_VERIFY_AT=N` compares the ordinary captured packet for each of
+120 consecutive simulation ticks with a second execution of that same packet.
+The packet owns every submitted vertex/index span and all sampled texture
+payloads before the producer can advance. Thus CPU skinning, derived-joint,
+stitch, face and secondary-motion vertices retain their own tick's values,
+alongside that tick's palettes, camera and draw state. No pose substitution or
+half-tick evaluation participates in this gate. Resource-release packets and
+mixed pose experiments are rejected rather than silently skipped.
+
+Comparison reads the final 3840 by 2160 back buffer after MSAA resolve, SMAA and
+output rendering, before each flip. RGB pixels are compared directly; alpha
+padding is excluded. A mismatching pair is logged and stops verification. Two
+natural attract windows, ticks 4800..4919 and 6500..6619, each passed all 120
+comparisons with zero changed pixels and zero maximum channel difference.
+No noise allowance was needed. Each window compared 995,328,000 pixels at
+scale 4.5, MSAA 8, SMAA enabled and vsync. Host input was disabled; only the
+two deterministic startup pulses were supplied. Both runs exited normally.
+Screenshots confirm the intended match and close-up scene windows. These are
+agent smoke and pixel-identity observations, not gameplay acceptance.
+
+This corrects the earlier experiment's ownership assumption: a packet is a
+completed tick, not pose-independent geometry. Its N-1 picture had combined
+N-1 palettes with N vertices and was not a replay of the real N-1 frame.
+The capture layer owns all final draw payloads without depending on which
+CPU writer produced them; the following reconstruction work must preserve
+that same ownership boundary.
+
+The earlier two-tick capture identifies changing referenced rigid geometry
+near slots 4/5 and 10/11, alongside unchanged rigid controls using the same
+slots. Deferred head passes are a separate binding path. The secondary owner
+also mixes geometric output with history, velocities and collision updates.
+Reconstructing those writers from immutable inputs is M2 work; copying one
+tick's completed vertices proves M1 but does not prove fractional evaluation.
+
+For the remaining milestones the target rate is a numeric value supplied to
+`RECOMP_SPLIT_RATE`, not a boolean or a fixed double-rate mode. Presentation
+must sample an arbitrary fraction in [0,1) of the 60 Hz simulation interval.
+M2 additionally checks quarter and three-quarter poses. M3 retains the 120 Hz
+gate and adds 240 Hz measurements at reduced settings and at 2160p/MSAA 8/SMAA;
+the latter measurement is not required to pass. M2 through M4 remain open.

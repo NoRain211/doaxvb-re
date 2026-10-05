@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -154,7 +155,11 @@ static bool testClose(bool idle)
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testTicks() || !testCapturedDraw() || !testClose(false) || !testClose(true)) return 1;
+    if (!testTicks()) return 1;
+    _putenv_s("RECOMP_REPLAY_VERIFY_AT", "1");
+    bool captured = testCapturedDraw();
+    _putenv_s("RECOMP_REPLAY_VERIFY_AT", "");
+    if (!captured || !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }
