@@ -428,3 +428,141 @@ The next gate is a separate, immutable-input skeleton model covering body,
 terrain correction, look-at, limb IK and derived slots. The exporter can reuse
 that model's math only after its integer-pose comparison passes. No half-tick
 rendering or split-rate presenter mode is admitted by this dispatch checkpoint.
+
+
+## Pure skeleton model checkpoint
+
+[`animation_skeleton.h`](../../../recomp-runtime/animation_skeleton.h) defines:
+
+```c
+bool recomp_animation_solve_skeleton(const RecompSkeletonTables *tables,
+    const float channels[60], const RecompSkeletonTargets *targets,
+    RecompBoneMatrix output[32]);
+```
+
+The model has no guest-memory, rendering, interception or generated-code
+calls. Tables, channels and targets are immutable. It returns world-space
+bone matrices; a rejected or singular input leaves output unchanged. The
+caller supplies executable-owned rig tables privately. No rest-pose data is
+embedded in the implementation. This API does not advance the controllers
+that prepare its inputs at a simulation tick.
+
+Conventions match the generic model-format description: row vectors,
+translation in matrix elements 12..14, radians, and channel indices excluding
+the three-word clip header. Local rotations are applied Z, then Y, then X
+by premultiplication. Local translation adds the three basis rows, weighted
+by the offset, to the translation row. The original seventh-order quarter-turn
+sine approximation matters: substituting exact trigonometry changes the basis.
+The native implementation derives that series mathematically and uses standard
+C math for inverse trigonometry. Those choices require numerical comparison;
+bit identity is not assumed.
+
+| Assembly | Inputs and operation |
+|---|---|
+| Root 15 | Frozen actor position and heading about Y |
+| Hip 2 | Root, local Y channel 1, Euler channels 3..5 |
+| Spine 23, torso 0 | Offset 23 with channels 44..46; offset 0 with channels 6..8 |
+| Shoulder bases 20, 16 | Torso plus offsets; Y then Z using channels 51/50 and 53/52 |
+| Neck 19, head 1 | Offsets under torso/neck; Euler channels 47..49 and 9..11 |
+| Eyes 21, 17 | Head plus offsets, Y then X from four frozen eye-controller channels |
+
+Terrain heights are inputs sampled at the uncorrected hip, neck anchor and
+four clip-driven limb targets. Hip clearance between -0.1 and 0.5 controls
+body tilt; the horizontal neck-to-hip direction fades in over distance
+0.1..0.2. The resulting shortest swing rotates hip, spine and torso about
+the hip pivot before shoulders and head are assembled. The read-only diagnostic
+adapter reads the original bilinear height grid to prepare these inputs.
+
+Look-at transforms the target with the torso's transposed rotation after
+subtracting translation, then subtracts neck and head offsets. X/Y are halved;
+Z is clamped to at least 0.05, then replaced by `(Z+1)/2`. Pitch is limited
+to -60..10 degrees and yaw to -60..60. Neck receives 30 percent and head
+70 percent of these angles. Each is blended with the clip rotation by the
+frozen look weight using a relative axis-angle rotation, converted back to
+Euler angles, then assembled normally. Nonfinite look targets disable this
+correction. The controller's weight ramp remains a simulation responsibility.
+
+Each named 24-byte limb descriptor supplies the end, parent, proximal, middle
+and optional tip slots, channel indices, signed fixed quarter turns, bend sign,
+target-offset mask and morph group. The clip position is transformed by the
+root. Its height is adjusted by terrain minus the actor's ground height; a
+masked frozen target offset may then be added. The two pole channels describe
+`(cos(a)*sin(z), -sin(a), cos(a)*cos(z))`, rotated by the root. From the
+parent's translated proximal anchor, normalize the target direction as Z,
+remove its projection from the pole to obtain Y, then set X to `Y cross Z`.
+
+For distance `d`, link lengths `L1,L2` and stored squared difference `D`,
+solve `alpha=acos(clamp((d*d+D)/(2*d*L1)))` and
+`beta=acos(clamp((d*d-D)/(2*d*L2)))`. At distances no greater than 0.001,
+both angles are pi/2. An optional minimum bend clamps each to 0.1 radians;
+the descriptor controls their sign. Rotate the basis about Y by alpha for
+the proximal bone; advance along local Z by L1, then rotate by `-beta-alpha`
+for the middle bone. Descriptor quarter turns orient the stored matrices.
+Advance by L2 and replace orientation with the root orientation before applying
+the endpoint's clip Euler angles. The optional tip adds its offset and X angle.
+A coincident target or collinear pole is rejected instead of publishing NaNs.
+
+Morph weights mix the two offset tables and the lengths used in the angle
+solve. The upper-body anchor rebuilds hip/spine/torso offsets before the
+proximal offset; lower-body morph starts from the hip. The nominal proximal anchor and original link
+lengths still control translation between stored joints. This asymmetry is
+intentional and must survive a port of the solver.
+
+Derived slots use the shortest swing between the source and destination
+first basis rows. Slots 26/27 align 16/20 toward 8/14; slots 24/25 align 5/11
+toward 4/10. Translation comes from the destination. Slots 30/31 are halfway
+relative-axis-angle blends of 8/26 and 14/27. Slots 4/10 are blended halfway
+toward 24/25; 24/25 then either copy those results or perform another halfway
+blend, depending on the frozen flag. Slots 28/29 copy 24/25 orientation at
+5/11 translation. Relative rotation uses a transpose, not a general inverse;
+normalizing the approximate bases changes the original calculation.
+
+[`animation_palette.h`](../../../recomp-runtime/animation_palette.h) separately
+applies bounded draw recipes: load a bone, add/subtract a local rig offset,
+terminate an output. Scratch carries between outputs. The mesh supplies its required output count, so an unused declared suffix
+is not evaluated. It produces up to four matrices and fails atomically on
+invalid indices or a truncated used prefix. These
+are the matrices to compare with draw-time WORLD palettes, rather than assuming
+all 32 bone matrices are sent directly to the renderer.
+
+`RECOMP_SKELETON_VERIFY=1` invokes the generated tick once as a diagnostic oracle,
+then independently solves immutable inputs and compares both bones and draw
+palettes during a bounded window. Gameplay and rendered output remain generated
+in this mode. The root, morph ramps, eye controller and look-at ramp are still
+tick-owned and are not replaced by this checkpoint. This is a verification seam,
+not evidence that the entire stateful B01E0 entry has been replaced.
+
+A bounded natural attract smoke compared four actors at every simulation tick
+from frame 1900 through 2019: 480 complete 32-matrix poses. All 2,604 observed
+draw palettes (7,416 matrices, ten recipe IDs) were paired with a native pose
+from the same actor and frame. Maximum absolute element error was
+`6.9335103e-5` for both bones and draw palettes. Recipe evaluation from the
+original bone bank had maximum error `1.90734863e-6`. No comparison was skipped.
+A separate C invocation over the retained immutable inputs reproduced the
+results, with unchanged inputs and byte-identical repeated native outputs.
+
+The gate uses an absolute `1e-4` element budget for the independently implemented
+math, not bit identity. For an affine palette acting on a vertex `(x,y,z,1)`,
+this bounds each coordinate residual by `1e-4*(abs(x)+abs(y)+abs(z)+1)`; convex
+skinning weights do not increase that bound. It is a numerical compatibility
+gate for the observed window, not a guarantee for larger coordinates, negative
+weights, near-singular configurations or every clip. Inverse-trigonometric
+conditioning and intermediate rounding still limit wider equivalence claims.
+
+The window had zero look-at and morph weights, the additional derived blend
+disabled, and essentially level terrain. Those active branches have synthetic
+coverage but no natural-scene identity result. Median logged presentation was
+47 fps at the required rendering settings, with the verification and screenshot
+readback enabled. Closing the window ended with presenter status CLOSED; this
+is a smoke observation, not clean-exit or user gameplay acceptance. There is no
+120 Hz measurement.
+
+Synthetic tests exercise IK reach, world
+translation, look-at, morph, terrain, derived blending, repeatability, input
+immutability and atomic rejection. They do not establish natural-scene coverage
+of active look-at, morph or sloped terrain. Half-tick rendering and
+`RECOMP_SPLIT_RATE` are not implemented by this checkpoint. The remaining
+half-tick experiment needs independent clip/mirror/blend sampling, a frozen
+controller snapshot, tagged retained draws, and camera/pass binding. Planning
+estimate: 3-6 focused days for that visual experiment; 4-8 weeks for useful
+integrated split-rate presentation, conditional on broader branch coverage.
