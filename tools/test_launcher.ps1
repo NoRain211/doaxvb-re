@@ -8,6 +8,10 @@ $testRoot = Join-Path $privateRoot ('launcher-test-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path (Join-Path $testRoot 'tools') -Force | Out-Null
 $launcher = Join-Path $testRoot 'tools\launcher.ps1'
 $source = Get-Content (Join-Path $PSScriptRoot 'launcher.ps1') -Raw -Encoding UTF8
+foreach ($match in [regex]::Matches($source, '(?m)^\$env:(\w+)\s*=')) {
+    $name = $match.Groups[1].Value
+    $originalEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+}
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
@@ -28,10 +32,7 @@ function Check-Launch($json, $choose, $expected) {
     New-Item -ItemType Directory -Path (Split-Path $path) -Force | Out-Null
     Set-Content -LiteralPath $path -Value $json -Encoding UTF8
     # Opposite inherited values must not override the selected settings.
-    foreach ($name in $expected.Keys) {
-        if (!$originalEnv.ContainsKey($name)) { $originalEnv[$name] = [Environment]::GetEnvironmentVariable($name) }
-        [Environment]::SetEnvironmentVariable($name, 'inherited')
-    }
+    foreach ($name in $expected.Keys) { [Environment]::SetEnvironmentVariable($name, 'inherited') }
     $script:launched = $null
     try {
         . $launcher
