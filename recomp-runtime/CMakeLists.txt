@@ -182,6 +182,8 @@ add_executable(recomp_runtime_test
     animation_track.c
     animation_track_adapter.c
     animation_probe.c
+    animation_palette.c
+    animation_skeleton.c
     save_adapter.c
     ohci_model.c
     ohci_model_test.c
@@ -447,6 +449,8 @@ if(RECOMP_PROGRAM_DIR)
         animation_track.c
         animation_track_adapter.c
         animation_probe.c
+        animation_palette.c
+        animation_skeleton.c
         save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
@@ -571,8 +575,16 @@ if(NOT MSVC)
     target_link_libraries(recomp_animation_track_test PRIVATE m)
 endif()
 
+add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
+add_executable(recomp_animation_skeleton_test animation_skeleton.c animation_skeleton_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_skeleton_test PRIVATE m)
+endif()
+
 include(CTest)
 add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test)
+add_test(NAME recomp-runtime-animation-palette COMMAND recomp_animation_palette_test)
+add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
