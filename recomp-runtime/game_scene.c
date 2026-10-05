@@ -315,8 +315,8 @@ void recomp_game_scenery_draw(void)
         push(saved_ebx);
         recomp_runtime.registers.ebx = previous_context;
         if (byte(0x004d6fd4u)) {
-            const bool authored_tick = wind_phase == 0;
-            wind_phase = (wind_phase + 1) % (recomp_game_scheduler_hz() / 60u);
+            const bool authored_tick =
+                whole_tick(&wind_phase, recomp_game_scheduler_hz() / 60u);
             const bool hold_effects = !authored_tick && !byte(0x004d56efu) &&
                 (draw == 0x0014bbb0u || draw == 0x0016a400u || draw == 0x00154a90u);
             if (hold_effects) set_byte(0x004d56efu, 1);
