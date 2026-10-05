@@ -871,3 +871,57 @@ requested user play test. Optional seam-link streams, wider secondary-geometry
 coverage and uncommon cuts/teleports remain limitations; their guards remain
 active. Revised estimate for broader release coverage is approximately one to
 two focused weeks, depending on what those additional scenes expose.
+
+
+## S1: cuts and teleports
+
+Interpolating across a discontinuity would draw an invented in-between frame,
+so split replay now shows those ticks unblended. Each 60 Hz tick compares its
+step with the previous tick's step. A step more than eight times the previous
+one, plus a small floor, is a discontinuity. Cameras use eye/target travel
+relative to view distance and view-direction change. Actors use the root bone's
+translation and rotation. The main ball uses its position step, so serves and
+resets also snap. Nonconsecutive ticks and changed camera mode flags already
+invalidated history. Menus and FMV frames have no tagged draws and replay
+unchanged. After a jump, the next tick compares against the jump's real step,
+so continued fast motion is not flagged again.
+
+The thresholds come from a 120 Hz trace of the complete attract cycle. Every
+shot change scored at least 20 times its preceding step; continuous motion
+scored at most 4. `RECOMP_SPLIT_TRACE=1` logs per-tick camera and actor steps
+and, for each present, its fraction and the number of camera- and pose-blended
+draws.
+
+A second full cycle with the detector active (38,784 presents, ticks 1 to
+17,271, scale 4.5, MSAA 8, SMAA, host input off) contained 38 camera cuts.
+Thirty-six were flagged by the step test. Two (ticks 1848 and 8657) followed
+nonconsecutive ticks. The presents that span each cut tick had zero
+camera-blended draws. Seven scene entries after loads also replayed
+unblended. The detector reported no cuts that the offline scan had not found.
+Twenty-seven actor root jumps were snapped, including all four actors at the
+shot changes 3193, 5892 and 8195. The run exited normally with zero backend draw
+declines. Cut ticks and their present numbers in this run:
+
+| Tick | Presents | Tick | Presents | Tick | Presents |
+| --- | --- | --- | --- | --- | --- |
+| 1848 | 3707-3708 | 3773 | 7557-7558 | 6315 | 12641-12642 |
+| 1963 | 3937-3938 | 4053 | 8116-8117 | 6815 | 13641-13642 |
+| 2033 | 4077-4078 | 4293 | 8596-8597 | 6925 | 13861-13862 |
+| 2133 | 4277-4278 | 4716 | 9442-9444 | 6965 | 13941-13942 |
+| 2373 | 4757-4758 | 4963 | 9937-9938 | 7095 | 14201-14202 |
+| 2553 | 5117-5118 | 5333 | 10677-10678 | 7145 | 14301-14303 |
+| 2903 | 5817-5818 | 5491 | 10993-10994 | 7685 | 15382-15383 |
+| 3108 | 6226-6227 | 5575 | 11161-11162 | 7765 | 15542-15543 |
+| 3193 | 6396-6397 | 5688 | 11388-11389 | 7945 | 15902-15903 |
+| 3308 | 6626-6627 | 5838 | 11688-11689 | 7987 | 15986-15987 |
+| 3443 | 6897-6898 | 5892 | 11796-11797 | 8030 | 16072-16073 |
+| 3558 | 7127-7128 | 6015 | 12041-12042 | 8195 | 16402-16403 |
+| | | | | 8435 | 16880-16881 |
+| | | | | 8657 | 17324-17325 |
+
+A snapped tick holds the previous visual state for one 60 Hz interval, which is
+exactly the ordinary presentation. A fast real turn can occasionally exceed the
+ratio (for example a 24-degree root turn at tick 1999). That costs one
+unblended tick and causes no visual error. The ratio test is a heuristic. A cut
+between two nearly identical shots would not be detected, but it would also
+look the same either way.

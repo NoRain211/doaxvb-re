@@ -16,6 +16,48 @@ double recomp_split_rate(const char *text)
     return rate;
 }
 
+/* The full attract cycle scored >= 20 at every shot change and <= 4 for
+   continuous motion; floors keep motion starting from rest below the ratio. */
+bool recomp_split_discontinuity(float previous, float step, float floor)
+{
+    return !(step <= 8.0f*(previous+floor));
+}
+
+static double degrees_between(const double a[3], const double b[3])
+{
+    double dot = a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+    double length = sqrt((a[0]*a[0]+a[1]*a[1]+a[2]*a[2])*(b[0]*b[0]+b[1]*b[1]+b[2]*b[2]));
+    if (!(length > 0)) return 0;
+    return acos(fmax(-1.0, fmin(1.0, dot/length)))*(180.0/3.14159265358979323846);
+}
+
+void recomp_split_camera_motion(const RecompVisualCamera pair[2], float motion[2])
+{
+    double eye = 0, target = 0, distance = 0, view[2][3];
+    for (unsigned i = 0; i < 3; ++i) {
+        eye += ((double)pair[1].eye[i]-pair[0].eye[i])*((double)pair[1].eye[i]-pair[0].eye[i]);
+        target += ((double)pair[1].target[i]-pair[0].target[i])*((double)pair[1].target[i]-pair[0].target[i]);
+        for (unsigned j = 0; j < 2; ++j) view[j][i] = (double)pair[j].target[i]-pair[j].eye[i];
+        distance += view[1][i]*view[1][i];
+    }
+    motion[0] = (float)(sqrt(fmax(eye, target))/fmax(sqrt(distance), 1e-6));
+    motion[1] = (float)degrees_between(view[0], view[1]);
+}
+
+void recomp_split_bone_motion(const RecompBoneMatrix *from, const RecompBoneMatrix *to, float motion[2])
+{
+    double distance = 0, angle = 0;
+    for (unsigned i = 0; i < 3; ++i) {
+        double d = (double)to->m[12+i]-from->m[12+i];
+        distance += d*d;
+        double a[3] = {from->m[i*4], from->m[i*4+1], from->m[i*4+2]};
+        double b[3] = {to->m[i*4], to->m[i*4+1], to->m[i*4+2]};
+        angle = fmax(angle, degrees_between(a, b));
+    }
+    motion[0] = (float)sqrt(distance);
+    motion[1] = (float)angle;
+}
+
 void recomp_split_ball_matrix(const RecompSplitDraw *split, float fraction, float output[16])
 {
     float position[3], angles[3];
