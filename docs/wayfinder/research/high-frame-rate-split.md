@@ -1,6 +1,7 @@
 # Split-rate animation and camera rendering
 
-Date: 2026-10-03. Design research, not an implemented or play-tested feature.
+Design: 2026-10-03. Decoder checkpoint: 2026-10-05. Split-rate rendering
+is not implemented or play-tested.
 
 ## Recommendation and evidence limits
 
@@ -336,3 +337,61 @@ These are engineering estimates, not measured schedules. The main risks are
 generated-entry fragmentation, shared scratch state, root-motion/event coupling,
 rotation singularities, secondary geometry ownership, per-pass camera identity,
 resource reuse and CPU/GPU cost at two renders per tick.
+
+
+## Native decoder checkpoint
+
+The first implementation covers the game-owned scalar track coefficient builders,
+not the full sampling/blending cluster or the one-character rendering experiment.
+[`animation_track.c`](../../../recomp-runtime/animation_track.c) supplies pure
+value, tangent and curvature decoding, all four segment forms (Hermite, linear,
+quadratic and constant), and a bounded immutable integer scalar sampler. Float
+stores and double intermediates retain the generated runtime's rounding order.
+Absent tracks have an explicit default. Backward samples start a fresh scan;
+clip looping remains the caller's responsibility. This API does not substitute
+scalar interpolation for the channel-aware fractional pose blend.
+
+The [adapter](../../../recomp-runtime/animation_track_adapter.c) registers the
+four coefficient builders through `recomp_lookup_manual()`. The default remains
+generated behavior. `RECOMP_ANIMATION_TRACKS=1` enables the native builders;
+`RECOMP_ANIMATION_TRACKS=verify` compares native coefficients byte-for-byte with
+one normal invocation of the generated builder and stops on a mismatch. This
+verification path preserves the original register and scratch-memory effects.
+It is a game-owned diagnostic oracle, not a generated-library dependency in the
+native model. Neither switch changes gameplay or presentation timing.
+
+The numeric tests exhaust all 17,891,328 encodings across the three custom
+number formats. An additional private harness linked the unchanged generated
+source and found byte-identical decoded floats for every encoding and identical
+coefficient bytes for 100,000 synthetic records of each segment form. Synthetic
+public tests cover segment boundaries, backward reads, absent tracks, truncation,
+and adapter memory/register boundaries. These results establish decoder
+compatibility, not per-frame palette identity or visual pose correctness.
+
+A bounded natural attract smoke compared 24,558 Hermite and 5,739 linear
+segments over 693 reported frames with zero coefficient mismatches. The other
+two forms were not observed in that window. A separate native-builder smoke
+reached the character attract scene and closed normally. The median logged
+presentation rate was 60 fps; this is not a 120 Hz measurement or user gameplay
+acceptance. The later screenshot capture caused a substantial readback stall,
+so its pacing should not be treated as an uncaptured rendering benchmark.
+Per-frame palette comparison and the half-tick image remain unproven.
+
+A dispatch constraint needs resolving before the complete cluster can be replaced:
+direct calls in the current generated snapshot invoke generated symbols without
+consulting `recomp_lookup_manual()`. In particular, registering `0x000AF050`
+alone does not intercept its live callers. The four coefficient builders work
+because the walker calls them through a function table. Do not rewrite the
+generated callers by hand. Further integration needs lifter-supported direct-call
+replacement, or a coherent hand-written caller that reaches the sampler through
+manual dispatch. A lifter change must follow the existing pin/regeneration and
+play-test rules; broadening into the whole-game timing owner is not part of this
+split-rate change.
+
+The remaining first-experiment work is pose-cache/mirroring equivalence,
+channel-aware blending, scratch skeleton/IK and palette construction, and the
+normal/half/next-tick rasterized comparison with unchanged gameplay state.
+`RECOMP_SPLIT_RATE` is not implemented. No 120 Hz result follows from the scalar
+decoder tests. Revised planning estimate: 4-8 focused days for the first visual
+experiment, including dispatch integration; the integrated mode remains roughly
+4-8 weeks, conditional on palette identity and render-pass coverage.
