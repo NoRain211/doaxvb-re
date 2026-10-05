@@ -1,4 +1,9 @@
 #include "game_scene.h"
+#include "game_camera.h"
+#include "game_environment.h"
+#include "game_world.h"
+#include "game_actor.h"
+#include "game_secondary.h"
 #include "game_scheduler.h"
 #include "xapi_time_adapter.h"
 #include <stdio.h>
@@ -62,6 +67,34 @@ static void next_frame(void)
 static void scene_callback(uint8_t scene, unsigned event)
 {
     call(*recomp_memory_u32(0x002f5ed0u + (uint32_t)scene * 12u + event * 4u));
+}
+
+static void startup_movie(void)
+{
+    const uint32_t frame = *recomp_ebp_register();
+    const unsigned steps = recomp_game_scheduler_hz() / 60u;
+    unsigned phase = 0;
+    recomp_runtime.registers.eax = (recomp_runtime.registers.eax & ~0xffu) | 3u;
+    call(0x000a3cd0u);
+    recomp_runtime.registers.eax = 0;
+    *recomp_ebp_register() = frame;
+    call(0x000b4ea0u);
+    *recomp_ebp_register() = frame;
+    call(0x000b52a0u);
+    while (recomp_runtime.registers.eax == 0) {
+        bool input = (*recomp_memory_u32(0x005f2e78u) & 0xfu) != 0;
+        for (unsigned port = 0; port < 4; ++port) {
+            input |= (*recomp_memory_u32(0x005f3090u + port * 0x2cu) & 0xfff0u) != 0;
+        }
+        if (input) break;
+        next_frame();
+        if (whole_tick(&phase, steps)) ++*recomp_memory_u32(0x004d967cu);
+        *recomp_ebp_register() = frame;
+        call(0x000b52a0u);
+    }
+    *recomp_ebp_register() = frame;
+    call(0x000b53d0u);
+    recomp_runtime.registers.esp += 4u;
 }
 
 static void scene_fiber(void)
@@ -203,8 +236,10 @@ static void render_call(uint32_t frame, unsigned part, uint32_t address)
 {
     const bool timing = recomp_game_timing_enabled();
     const uint64_t start = timing ? recomp_xapi_performance_counter() : 0;
+    const uint32_t rng = recomp_game_debug_rng_state();
     *recomp_ebp_register() = frame;
     call(address);
+    if (rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp render rng: part=%u child=%08x before=%08x after=%08x\n", part, address, rng, recomp_game_debug_rng_state());
     if (timing) render_time[part] += recomp_xapi_performance_counter() - start;
 }
 
@@ -259,26 +294,99 @@ static void actor_frame_fiber(void)
     }
 }
 
+void recomp_game_scenery_draw(void)
+{
+    static unsigned wind_phase;
+    const uint32_t stack = recomp_runtime.registers.esp;
+    const uint32_t frame = *recomp_ebp_register();
+    const uint32_t saved_esi = recomp_runtime.registers.esi;
+    const uint32_t saved_edi = recomp_runtime.registers.edi;
+    const uint32_t saved_ebx = recomp_runtime.registers.ebx;
+    push(saved_esi); push(saved_edi);
+    const unsigned scene = byte(0x004d56e4u);
+    const unsigned kind = byte(0x004d92f0u + scene);
+    const uint32_t descriptor = *recomp_memory_u32(0x002961f0u + kind * 4);
+    recomp_runtime.registers.edi = scene;
+    recomp_runtime.registers.esi = descriptor;
+    if (descriptor && *recomp_memory_u32(descriptor + 4)) {
+        const uint32_t draw = *recomp_memory_u32(descriptor + 4);
+        const uint32_t previous_context = *recomp_memory_u32(0x00b25940u);
+        *recomp_memory_u32(0x00b25940u) = *recomp_memory_u32(0x002962c4u);
+        push(saved_ebx);
+        recomp_runtime.registers.ebx = previous_context;
+        if (byte(0x004d6fd4u)) {
+            const bool authored_tick = wind_phase == 0;
+            wind_phase = (wind_phase + 1) % (recomp_game_scheduler_hz() / 60u);
+            const bool hold_effects = !authored_tick && !byte(0x004d56efu) &&
+                (draw == 0x0014bbb0u || draw == 0x0016a400u || draw == 0x00154a90u);
+            if (hold_effects) set_byte(0x004d56efu, 1);
+            *recomp_ebp_register() = frame;
+            const uint32_t wind_rng = recomp_game_debug_rng_state();
+            if (authored_tick) call(0x001792e0u);
+            if (wind_rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp wind rng: before=%08x after=%08x\n", wind_rng, recomp_game_debug_rng_state());
+            push(scene);
+            *recomp_ebp_register() = frame;
+            const uint32_t scenery_rng = recomp_game_debug_rng_state();
+            call(draw);
+            if (scenery_rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp scenery rng: draw=%08x kind=%u before=%08x after=%08x\n", draw, kind, scenery_rng, recomp_game_debug_rng_state());
+            recomp_runtime.registers.esp += 4;
+            if (hold_effects) set_byte(0x004d56efu, 0);
+        }
+        *recomp_memory_u32(0x00b25940u) = previous_context;
+    }
+    recomp_runtime.registers.ebx = saved_ebx;
+    recomp_runtime.registers.esi = saved_esi;
+    recomp_runtime.registers.edi = saved_edi;
+    *recomp_ebp_register() = frame;
+    recomp_runtime.registers.esp = stack + 4;
+}
+
+static void actor_update_fiber(void)
+{
+    call(0x000af1b0u);
+    for (;;) {
+        call(0x000af220u);
+        if (byte(0x004d56efu) == 0) {
+            call(0x000ac070u);
+            call(0x000ae1a0u);
+            call(0x000adc30u);
+            call(0x000af2c0u);
+        }
+        call(0x0017fd20u);
+        next_frame();
+    }
+}
+
 /* Complete game-owned scene, authored-script and world-frame owners. Their
    generated D3D SetTransform and fence seams remain at 0x001e36d0,
    0x001e3870 and 0x001e39e0; wholesale D3D
    replacement remains open. See the whole-game high-frame-rate research page. */
 RecompFunction recomp_game_scene_lookup_manual(uint32_t address)
 {
-    if (address != 0x000a37f0u && address != 0x0006adb0u &&
+    RecompFunction camera = recomp_game_camera_lookup_manual(address);
+    if (camera == NULL) camera = recomp_game_environment_lookup_manual(address);
+    if (camera == NULL) camera = recomp_game_world_lookup_manual(address);
+    if (camera == NULL) camera = recomp_game_actor_lookup_manual(address);
+    if (camera == NULL) camera = recomp_game_secondary_lookup_manual(address);
+    if (camera == NULL && address != 0x000a37f0u && address != 0x0006adb0u &&
         address != 0x00079d00u && address != 0x000b42b0u &&
-        address != 0x000b4450u) {
+        address != 0x000b4450u && address != 0x000a4e00u &&
+        address != 0x000af160u && address != 0x001435a0u) {
         return NULL;
     }
     const char *enabled = getenv("RECOMP_GAME_SCENE");
     if ((enabled == NULL || strcmp(enabled, "1") != 0) &&
         recomp_game_requested_hz() == 0) return NULL;
+    if (camera != NULL) return camera;
     switch (address) {
     case 0x000a37f0u: return scene_fiber;
     case 0x0006adb0u: return scenario_fiber;
     case 0x00079d00u: return world_fiber;
     case 0x000b42b0u: return actor_frame_fiber;
     case 0x000b4450u: return actor_frame_draw;
+    case 0x000a4e00u: return startup_movie;
+    case 0x000af160u: return actor_update_fiber;
+    case 0x001435a0u: return recomp_game_scenery_draw;
     default: return NULL;
     }
 }

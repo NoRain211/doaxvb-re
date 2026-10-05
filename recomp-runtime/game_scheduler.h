@@ -9,6 +9,7 @@ bool recomp_game_sleep_step(int32_t *ticks, unsigned *subtick, unsigned steps);
 void recomp_game_scheduler_reset(unsigned hz);
 void recomp_game_scheduler_tick(void);
 unsigned recomp_game_scheduler_hz(void);
+uint32_t recomp_game_debug_rng_state(void);
 unsigned recomp_game_requested_hz(void);
 bool recomp_game_timing_enabled(void);
 void recomp_game_test_clock_begin(bool enabled);
