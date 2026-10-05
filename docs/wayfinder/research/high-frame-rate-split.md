@@ -566,3 +566,71 @@ half-tick experiment needs independent clip/mirror/blend sampling, a frozen
 controller snapshot, tagged retained draws, and camera/pass binding. Planning
 estimate: 3-6 focused days for that visual experiment; 4-8 weeks for useful
 integrated split-rate presentation, conditional on broader branch coverage.
+
+
+## Bounded half-pose replay experiment
+
+`RECOMP_POSE_EXPERIMENT_FRAME=N` and `RECOMP_POSE_EXPERIMENT_ACTOR=0..3`
+evaluate one actor between ordinary ticks N-1 and N. The native channel model
+blends translations, relative Euler rotations, spherical directions and wrapped
+angles using caller-supplied channel groups. It preserves destination mask and
+unselected channels and applies the original hip-angle quantization. A private
+comparison of 476 adjacent captured pairs against the original interpolation
+routine found exact translations and maximum wrapped angular error
+`9.590387e-5` radians, approximately one hip quantization unit. This is
+interpolation between sampled poses, not a completed replacement for the clip
+cache, mirror policy or all sampling entry points.
+
+The experiment evaluates the skeleton again from those channels, frozen
+controller inputs and interpolated visual root placement. It checks all 64 MiB
+of guest RAM before and after evaluation; no guest writes occurred. Root-motion
+updates, events and secondary integration still execute only at ordinary ticks.
+The render worker replays one owned command packet with native palettes at
+N-1, halfway and N. The camera and captured geometry remain fixed at N in all
+three pictures to isolate the pose experiment. This is not a 120 Hz mode or a
+one-tick-delay implementation.
+
+Palette and rigid-object observers attach actor/object provenance to draws.
+Rigid callbacks at 0x17D520 and 0x17D670 are temporary SDK-library seams: each
+observer calls the original exactly once, and wholesale library replacement
+remains open. The SDK queues copies of palettes for deferred passes, so bindings
+must survive the callback and match the object plus exact original palette,
+not a scratch-buffer address. Conflicting matches stop the experiment. Capture
+packets own replay matrices, vertices, indices and texture data for the replay;
+packets containing a resource-release record decline the experiment. Recomputed
+WVP, lighting-normal and reflection transforms leave the source command intact.
+
+The visible-actor smoke produced the requested three pictures and tagged 96
+draws after adding rigid and deferred bindings. All 53,760 tagged vertex
+instances were inside the clip volume; no backend draws were declined. The
+retained packet occupied 13,443,304 bytes. Median logged ordinary presentation
+was 60 fps at scale 4.5, MSAA 8 and SMAA, with vsync. Window close exited normally.
+These are smoke observations; they establish neither gameplay acceptance nor
+120 Hz pacing.
+
+**The visual gate failed.** N-1 and the midpoint still have elbow/wrist seams;
+N is coherent. The initial weighted-only replay also detached rigid parts, and
+a callback-lifetime binding missed deferred passes. Fixing those two binding
+errors improved the image but did not remove the remaining seams. A separate
+bounded diagnostic paired 499 draw calls across the two ordinary ticks by
+object, layout and identical indices. Referenced vertex data changed in 79
+pairs, including the selected actor's body and attachment draws. Comparing only
+palettes is therefore insufficient for this scene. Raw captures and screenshots
+remain private. `RECOMP_POSE_VERTEX_CAPTURE` optionally writes these two ticks'
+vertex/index records to a private output prefix for further diagnosis.
+
+The next prerequisite is an independently callable pose-dependent geometry
+stage with immutable secondary-state inputs. The 0x56E90 owner mixes simulation
+and geometry work: 0x57300 advances secondary state, whereas 0x57250 dispatches
+geometry writers 0x57660/0x57CB0; other deformation owners also occur below that
+owner. Do not rerun the entire owner at presentation frequency. Trace the
+remaining seam draws to their geometry writers, compare ordinary-tick geometry,
+then evaluate it with the new pose and frozen physics inputs. Do not hide the
+failure by interpolating final matrices or by silently omitting attachments.
+
+`RECOMP_SPLIT_RATE` remains unimplemented because its prerequisite visual gate
+has not passed. Camera evaluation, all-actor coverage, packet delay/lifetime,
+cut/topology invalidation and measured 120 Hz pacing are also outstanding.
+Revised planning estimate: 1-2 focused weeks to resolve the geometry gate, then
+4-8 weeks for useful integrated split-rate presentation. The breadth of the
+secondary/deformation owners makes that estimate uncertain.

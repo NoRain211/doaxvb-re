@@ -1,4 +1,5 @@
 #include "d3d_presenter_capture.h"
+#include "d3d_pose_replay.h"
 
 #include <algorithm>
 #include <array>
@@ -188,6 +189,28 @@ int main()
     }
     CHECK(packet.command(6).data.draw.texture_bytes == sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
-    std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");
+    packet.clear();
+    RecompD3dPoseReplay pose{};
+    pose.frame = 7;
+    pose.palettes[1][0][12] = 0.25f;
+    value = {};
+    value.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    value.data.draw.pose_replay = &pose;
+    value.data.draw.texture_bytes = sources[2].data();
+    value.data.draw.texture_byte_count = static_cast<uint32_t>(sources[2].size());
+    value.data.draw.texture.format_byte = 0;
+    CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
+    CHECK(packet.hasPoseReplay());
+    packet.seal(true);
+    pose = {};
+    std::fill(sources[2].begin(), sources[2].end(), 0x55);
+    const auto &frozen = packet.command(0).data.draw;
+    const auto *saved = static_cast<const RecompD3dPoseReplay *>(frozen.pose_replay);
+    CHECK(saved != &pose && saved->frame == 7 && saved->palettes[1][0][12] == 0.25f);
+    CHECK(frozen.texture_bytes != sources[2].data());
+    CHECK(static_cast<const uint8_t *>(frozen.texture_bytes)[0] != 0x55);
+    packet.clear();
+    CHECK(!packet.hasPoseReplay());
+    std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and replay snapshots");
     return 0;
 }
