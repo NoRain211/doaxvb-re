@@ -140,6 +140,7 @@ int recomp_game_scheduler_test(void)
             *recomp_memory_u32(slot) = i == 4 ? 0x21 : i == 5 ? 0 : 1;
             *recomp_memory_u32(slot + 4u) = i == 1 ? 2 : i >= 4 ? 7 : 0;
             *recomp_memory_u32(slot + 8u) = i + 1;
+            *recomp_memory_u32(slot + 12u) = i == 1 ? 0x000a37f0u : 0;
         }
         recomp_game_scheduler_tick();
         expect(resumed[0] == 1 && resumed[1] == 0 && resumed[2] == 1 &&

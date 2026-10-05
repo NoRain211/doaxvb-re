@@ -60,6 +60,51 @@ M2 is next: poses and lighting still differ. This experimental mode has passed
 M1 only; it is not gameplay acceptance. The requested extra 240 Hz timing run
 will occur after M2 passes. The older sections below record preceding attempts.
 
+## M2 investigation in progress (2026-10-05)
+
+M2 has not passed. The hand camera and lighting owners now reproduce the
+60 Hz reference images byte for byte at swaps 300, 3000 and 5400. An earlier
+lighting regression came from misidentified transition modes: mode 3 is idle,
+4 copies targets, 5 interpolates and 6 disables a record. Comparing each native
+record update against the generated owner located the first mismatch before
+changing the mode dispatch. That diagnostic oracle was then removed.
+
+Input acquisition now samples the first loop pass and then once per authored
+tick. Edge/repeat derivation remains per substep. Delaying the first sample had
+exposed uninitialized guest input during the startup movie. The startup movie's
+scene age now uses the configured steps per tick. Initialization and display
+changes issue additional Swaps outside the main loop; their presentation count
+now scales with the configured rate, preserving their authored duration.
+
+The title orbit, camera smoothing limits, lighting transition endpoints,
+world UV scroll and decorative angular rates have parameterized hand owners.
+The camera's approximate spherical conversion also loses radius each call;
+scaling that round-trip loss reduced the title checkpoint's radius error from
+0.657 to 0.003 units. This residual has not passed the visual gate.
+
+Later attract captures identify a separate scripted-camera clock. At swap
+3000 its script age is 97; the unconverted 120 Hz script reports 195 at present
+6000. At the later checkpoint the ages are 67 and 135. The corresponding image
+difference includes a changed camera viewpoint. Script, curve and command-queue
+owners are being converted together. A scoped authored clock for the existing
+actor update removed half-speed animation, but one checkpoint still has a
+one-tick actor phase offset. Full fractional actor advancement remains under
+test; secondary physics and animation-event cadence are not accepted.
+
+A private comparison build using the M1 renderer and the same current game
+sources reached presents 6000 and 10800 in 49.996424 and 89.997468 seconds.
+A separate 600-present profile measured 5.000331 seconds with that renderer
+versus 9.981532 seconds with the concurrent renderer work in the shared tree;
+world-render CPU time accounted for most of the difference. These comparisons
+isolate game-clock diagnosis; they do not establish M1 or M3 for a later shared
+binary. Live host input was disabled. Captures, state dumps and logs stay private.
+
+The new game owners retain generated game-math and command-parser neighbors.
+The world path also retains its existing generated drawing seams; whole library
+replacement remains open. Native owners publish their guest frame before each
+such dispatch. No generated C is edited. M2, the requested 240 Hz timing check,
+M3 and M4 remain gated; this work is smoke evidence, not play-test acceptance.
+
 ## Input edge/repeat owner (2026-10-05)
 
 The opt-in hand scheduler now dispatches the complete input edge/repeat owner
