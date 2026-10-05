@@ -1911,8 +1911,12 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         goto finished;
     }
     bool split_enabled = recomp_animation_split_enabled();
-    if (command.data.draw.program_count == 0 && (split_enabled || getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
-        getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL)) {
+    /* getenv scans the whole environment; per draw it dominated world rendering. */
+    static int pose_probe = -1;
+    if (pose_probe < 0)
+        pose_probe = getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
+            getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL;
+    if (command.data.draw.program_count == 0 && (split_enabled || pose_probe)) {
         float worlds[4][16];
         unsigned count = command.data.draw.blend_weight_count+1;
         bool readable = count <= 4;
