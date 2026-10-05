@@ -1,4 +1,5 @@
 #include "game_scheduler.h"
+#include "kernel_abi.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,43 @@ enum {
 
 static unsigned game_hz = 60;
 static unsigned sleep_half_ticks[FIBER_COUNT];
+static bool startup_clock_pending;
+
+#ifdef RECOMP_FULL_PROGRAM
+void sub_000BB290(void);
+#endif
+
+void recomp_game_test_clock_begin(bool enabled)
+{
+    startup_clock_pending = enabled;
+}
+
+static void startup_clock(void)
+{
+    /* The first system-time read inside game initialization seeds the CRT RNG.
+       Fix only that read for paired captures; later clocks remain live. */
+    const uint32_t output = kernel_arg(1u);
+    startup_clock_pending = false;
+    if (output != 0) {
+        *recomp_memory_u64(output) = (UINT64_C(11644473600) + 946684800) * 10000000;
+    }
+    fprintf(stderr, "recomp game test clock: startup Unix seconds=946684800\n");
+    kernel_return(1u, 0);
+}
+
+static bool test_clock_enabled(void)
+{
+    const char *enabled = getenv("RECOMP_GAME_TEST_CLOCK");
+    return enabled != NULL && strcmp(enabled, "1") == 0;
+}
+
+#ifdef RECOMP_FULL_PROGRAM
+static void generated_game_entry(void)
+{
+    recomp_game_test_clock_begin(test_clock_enabled());
+    sub_000BB290();
+}
+#endif
 
 bool recomp_game_sleep_step(int32_t *ticks, unsigned *half_tick, unsigned hz)
 {
@@ -161,6 +199,7 @@ static void game_loop(void)
 
 static void game_entry(void)
 {
+    recomp_game_test_clock_begin(test_clock_enabled());
     recomp_game_scheduler_reset(60);
     fprintf(stderr, "recomp game scheduler: hand source, hz=%u\n", game_hz);
     call(0x000bb2a0u);
@@ -172,11 +211,19 @@ static void game_entry(void)
    remains open; see docs/wayfinder/research/high-frame-rate-whole-game.md. */
 RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
 {
+    if (address == 0x80000080u && startup_clock_pending) {
+        return startup_clock;
+    }
     if (address != 0x000bb290u && address != 0x000bb310u && address != 0x000b5680u) {
         return NULL;
     }
     const char *enabled = getenv("RECOMP_GAME_SCHEDULER");
     if (enabled == NULL || strcmp(enabled, "1") != 0) {
+#ifdef RECOMP_FULL_PROGRAM
+        if (address == 0x000bb290u && test_clock_enabled()) {
+            return generated_game_entry;
+        }
+#endif
         return NULL;
     }
     switch (address) {
