@@ -79,6 +79,7 @@ static void check_scenery_clock(void)
     static uint8_t scene[256], enabled, kinds[4], table[4], context[4];
     static uint8_t current_context[4], descriptor[8], age[8], sunset_age[8], stack[256];
     static uint8_t thread[0x60], rng_pointer[4], rng[0x18];
+    static uint8_t body_points[128 * 32];
     const RecompMemoryRegion regions[] = {
         {0x004d5600u, sizeof scene, scene}, {0x004d6fd4u, 1, &enabled},
         {0x004d92f0u, sizeof kinds, kinds}, {0x002961f0u, sizeof table, table},
@@ -88,7 +89,7 @@ static void check_scenery_clock(void)
         {0x00a204c0u, sizeof sunset_age, sunset_age}, {0x02000000u, sizeof descriptor, descriptor},
         {0x01000000u, sizeof stack, stack},
         {0x00000000u, sizeof thread, thread}, {0x00eeb28cu, sizeof rng_pointer, rng_pointer},
-        {0x03000000u, sizeof rng, rng},
+        {0x03000000u, sizeof rng, rng}, {0x004d5700u, sizeof body_points, body_points},
     };
     const RecompFunctionEntry functions[] = {
         {0x001792e0u, advance_wind}, {0x0014bbb0u, draw_scenery},
@@ -103,7 +104,7 @@ static void check_scenery_clock(void)
         memset(rng, 0, sizeof rng);
         enabled = 1;
         scenery_draws = wind_ticks = 0;
-        recomp_runtime_init(regions, 13, NULL, 0, functions, 4);
+        recomp_runtime_init(regions, 14, NULL, 0, functions, 4);
         recomp_game_scheduler_reset(steps * 60);
         *recomp_memory_u32(0x28u) = 0x30u;
         *recomp_memory_u32(0x00eeb28cu) = 0x03000000u;
@@ -114,6 +115,7 @@ static void check_scenery_clock(void)
         *recomp_memory_u32(0x00b25940u) = 37;
         for (unsigned sample = 0; sample < 60 * steps; ++sample) {
             recomp_runtime.registers.esp = 0x010000e0u;
+            recomp_game_pass_begin();
             recomp_game_scenery_draw();
             expect(*recomp_memory_u32(scenery_clock) == (sample + 1) / steps,
                    "scenery age depends on presentation rate");
@@ -128,6 +130,7 @@ static void check_scenery_clock(void)
         scene[0xef] = 1;
         for (unsigned sample = 0; sample < steps; ++sample) {
             recomp_runtime.registers.esp = 0x010000e0u;
+            recomp_game_pass_begin();
             recomp_game_scenery_draw();
             expect(scene[0xef] == 1 && *recomp_memory_u32(scenery_clock) == 60,
                    "scenery advanced or unpaused during pause");
@@ -135,10 +138,12 @@ static void check_scenery_clock(void)
         expect(wind_ticks == 61, "wind's original pause-independent clock changed");
         if (steps > 1) {
             recomp_runtime.registers.esp = 0x010000e0u;
+            recomp_game_pass_begin();
             recomp_game_scenery_draw();
             scene[0xef] = 0;
             for (unsigned sample = 1; sample < steps; ++sample) {
                 recomp_runtime.registers.esp = 0x010000e0u;
+                recomp_game_pass_begin();
                 recomp_game_scenery_draw();
             }
             expect(wind_ticks == 62 && *recomp_memory_u32(scenery_clock) == 61,
