@@ -1043,9 +1043,35 @@ present (60 Hz stepping), single-present flicker, pops and repeated frames:
 | Sports shop | 111 | 50 | 0 | 0 | 0 |
 | Exhibition match | 1007 | 0 | 0 | 0 | 0 |
 
-The pool-hopping flicker presents and pops are in the last ten presents of
-the burst and cover the full frame, which matches a shot change. The 60 Hz
+The four pool-hopping flicker presents are in the last ten presents of the
+burst and cover the full frame, which matches a shot change. The seven pops
+were not located. The 60 Hz
 steps in pool hopping are spread over the water. In the shop they sit in one
 region at a ratio of 1.0, which fits the rotating item preview. Neither
 object is an actor or a single-bone rigid draw, so it gets the interpolated
 camera but keeps its 60 Hz motion. Both runs continued without a stop.
+
+
+## S4: 100, 144 and 240 Hz
+
+One 160-second Exhibition run per rate at scale 4.5 (3840 by 2160), MSAA 8
+and SMAA, with host input off and `RECOMP_SPLIT_TRACE=present`, measured
+from 35 s to 150 s after the first present. The window covers the menus, the
+match load and the start of the match.
+
+| Rate | Presents | Measured | Median | p99 | p99.9 | Max | Within 1 ms | Fraction step |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 100 | 11,430 | 99.390 | 10.00 ms | 11.10 ms | 13.02 ms | 375.1 ms | 97.1% | 0.600 |
+| 144 | 16,559 | 143.996 | 6.95 ms | 7.89 ms | 8.81 ms | 17.9 ms | 98.2% | 0.417 |
+| 240 | 27,593 | 239.940 | 4.15 ms | 5.70 ms | 6.34 ms | 15.1 ms | 93.1% | 0.250 |
+
+Each fraction step is the rate's own 60/rate, with a p99 deviation of at most
+0.003, so blending follows the configured rate. The 100 Hz maximum and three
+more intervals over 50 ms fall between 56 and 66 s, during the match load.
+The game thread itself took 113, 127 and 207 ms ticks there, so the
+presenter was waiting for late packets. The 144 and 240 Hz runs loaded the
+same scene with no tick over 17.4 ms. The 100 Hz run came first, right after
+another agent's runs, so a cold file cache is a possible cause; it is not
+tested. Excluding that load, the largest 100 Hz interval was 22.8 ms at the
+first second. At 240 Hz, 6.9% of intervals miss the target by more than
+1 ms and the p99 is 5.7 ms; the mean interval still holds the rate.
