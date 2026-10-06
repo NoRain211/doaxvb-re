@@ -66,6 +66,15 @@ through the end of the run. These are agent smoke runs; traces stay private.
 
 ## P1: indexed draws skip the generated D3D8 body (2026-10-05)
 
+Status on 2026-10-06: a stack profile of a 120 Hz match finds no generated
+D3D8 function above 0.6% of the game thread. Three appear in the top 200
+inclusive entries, each about 0.5%: the SetTransform seam `0x001E36D0`,
+`0x001E6DA0` and `0x001E3830`. Replacing them would save under 0.1 ms per
+pass, so the generated bookkeeping is no longer a throughput owner. The
+largest remaining owners are the generated actor render path and the
+presenter capture packet copy (14% inclusive), which belongs to the
+split-rate work.
+
 The draw adapter for `D3DDevice_DrawIndexedVertices` (`0x001E78B0`) no
 longer runs the generated driver body before its host draw. That body did
 three things. It flushed lazy D3D state through `0x001EECA0` and
@@ -134,9 +143,24 @@ At 60 Hz both changes are inactive: every pass is authored and the camera
 sees each state change once. These are agent smoke runs. The replayed
 players and ball still move once per tick at 120 Hz.
 
-## M4: menus and a served point at 120 Hz (2026-10-05, blocked)
+## M4: menus and a served point at 120 Hz (2026-10-05, passed 2026-10-06)
 
-M4 is not passed. In game time, the 120 Hz route matches 60 Hz through the
+The real-time blocker below is resolved. On 2026-10-06 a real-paced 120 Hz
+run of the scripted match route averaged 120.0 fps over the match, with a
+minimum of 119 and 0 of 26 seconds below 118. Fibers and draws (phase 2) cost
+5.56 ms per pass, down from 10.60 ms before P1. No other runner was active
+during the run. Game time therefore tracks the wall clock and audio through
+the match. The game-time comparison is unchanged, except that P2 now keeps the
+random sequence equal through match tick 650.
+
+A 240 Hz smoke run of the same route, with the game-clock audio fixture, did
+not crash; it ended at the time limit through the known shutdown race. Its
+random sequence matches 60 Hz in the same 648 draws as 120 Hz and splits at
+the same serve effect. The game thread costs 5.27 ms per pass against a
+4.17 ms budget, so the match ran at 189 fps (216 fps over the whole run) and
+game time trailed the wall clock.
+
+The original 2026-10-05 assessment follows. At that time M4 was not passed. In game time, the 120 Hz route matches 60 Hz through the
 menus, the serve and the rally. In wall time, the match runs below 120 fps
 on the test machine, so it plays 7-15% slower than 60 Hz and drifts against
 wall-clock audio. The throughput owners are outside the whole-game hand
