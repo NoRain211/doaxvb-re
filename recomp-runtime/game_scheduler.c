@@ -36,8 +36,22 @@ static uint32_t state_capture_at;
 static bool main_present_pending;
 /* The pass that polled input; the others hold the authored tick. */
 static bool authored_pass = true;
+static bool tick_end_pass = true;
+static unsigned poll_phase;
+static uint32_t game_pass;
 
 bool recomp_game_authored_pass(void) { return authored_pass; }
+bool recomp_game_tick_end_pass(void) { return tick_end_pass; }
+uint32_t recomp_game_pass(void) { return game_pass; }
+
+bool recomp_game_pass_begin(void)
+{
+    authored_pass = poll_phase == 0;
+    poll_phase = (poll_phase + 1u) % (game_hz / 60u);
+    tick_end_pass = poll_phase == 0;
+    ++game_pass;
+    return authored_pass;
+}
 static RecompGameFrameReplay frame_owner_draws;
 /* Per-port records 0x5F3088 (4 x 44 bytes) and the aggregate at 0x5F3138.
    Polling, and so every press/release/repeat edge, happens on the authored
@@ -204,6 +218,8 @@ void recomp_game_scheduler_reset(unsigned hz)
     state_capture_at = state_capture_path && capture_at ? (uint32_t)strtoul(capture_at, NULL, 10) : 0;
     main_present_pending = false;
     memset(sleep_subticks, 0, sizeof sleep_subticks);
+    poll_phase = 0;
+    authored_pass = tick_end_pass = true;
 }
 
 static void push(uint32_t value)
@@ -398,14 +414,10 @@ static void game_loop(void)
     recomp_runtime.registers.esp -= 20u;
     push(recomp_runtime.registers.esi);
     const uint32_t scratch = recomp_runtime.registers.esp;
-    unsigned poll_phase = 0;
-    const unsigned steps = game_hz / 60u;
 
     for (;;) {
         uint64_t timed = timing_now();
-        authored_pass = poll_phase == 0;
-        if (poll_phase == 0) call(0x000b57d0u);
-        poll_phase = (poll_phase + 1u) % steps;
+        if (recomp_game_pass_begin()) call(0x000b57d0u);
         call(0x000b5870u); /* Derive edges and repeats. */
         if (authored_pass)
             recomp_guest_load(authored_input, INPUT_RECORDS, sizeof authored_input);
@@ -437,7 +449,14 @@ static void game_loop(void)
         call(0x000b5680u);
         phase_time[2] += timing_now() - timed;
         timed = timing_now();
-        call(0x000bab70u);
+        /* The game's sound service counts voice ends and delays in calls, so
+           it runs once per tick, after the tick's last fiber pass. The match
+           introduction advances shots from those counts. */
+        if (tick_end_pass) {
+            const bool tick_scope = recomp_game_tick_scope_begin();
+            call(0x000bab70u);
+            recomp_game_tick_scope_end(tick_scope);
+        }
         phase_time[3] += timing_now() - timed;
         timed = timing_now();
         capture_game_state();
