@@ -38,6 +38,41 @@ presenter work shares it; both paths ran on the same executable. The
 candidate run ended with the existing shutdown race, a Clear submitted after
 the window closed, which earlier runs also show.
 
+## Replay camera at 120 Hz (2026-10-05)
+
+After a point, the game can show a slow-motion replay (match state 5) filmed
+by camera mode 19. At 120 Hz two things went wrong; both are fixed in
+`game_camera.c`.
+
+The camera stayed in replay mode after the replay. Entering state 5, the
+camera director (`0x0002F580`) saves the current camera mode as the one to
+return to (camera `+0xACD`) and requests mode 19. It does this on every
+camera pass that sees the state-change flag `0x004D5669`. The match state
+owner (`0x00099500`) raises that flag once per tick, and the flag stays
+raised until that owner runs again a tick later. At 120 Hz the camera runs
+twice in that window, so the second pass saved mode 19 over the saved mode.
+When the replay ended, the director found nothing to return to, and the
+replay camera filmed the next serve and rally until the point ended. Camera
+passes after the first one in a tick now see the flag clear; its value is
+restored after the camera tick.
+
+The replay camera also moved at double speed. Its plan step `0x00023040`
+advances a sweep whose speed itself accelerates, and ages the plan, once per
+call. Mode 19 (`0x00022F40`) is now hand source and runs that step on the
+authored pass only. The first call after mode entry builds the plan at once.
+Held passes keep the staged target, which the per-pass camera smoothing
+still follows. Replay playback itself advances once per tick at every rate,
+through the match state fiber.
+
+| 120 Hz match, scripted route | Before | After |
+| --- | --- | --- |
+| Camera mode after a replay ends | 19 until the point ends (4 of 4 runs with a replay) | 5, as at 60 Hz (2 of 2 replays) |
+| Replay plan steps per tick | 2 (one per pass) | 1.00 over a 177-tick replay |
+
+At 60 Hz both changes are inactive: every pass is authored and the camera
+sees each state change once. These are agent smoke runs. The replayed
+players and ball still move once per tick at 120 Hz.
+
 ## M4: menus and a served point at 120 Hz (2026-10-05, blocked)
 
 M4 is not passed. In game time, the 120 Hz route matches 60 Hz through the

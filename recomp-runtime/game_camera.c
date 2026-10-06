@@ -128,6 +128,28 @@ static void camera_prepare(void)
     recomp_runtime.registers.esp = stack + 4u;
 }
 
+/* 0x00099500 raises 0x004D5669 on the tick the match state changes; it
+   stays raised until that owner runs again a tick later. Camera passes after
+   the first one in that tick see it clear. Otherwise the director 0x0002F580,
+   entering replay, saves the replay mode it has just applied as the mode to
+   return to (camera+0xACD), and the replay camera stays on for the next
+   point. A flag left raised past its tick is seen once per tick. */
+static bool hide_repeated_state_edge(void)
+{
+    static uint32_t seen_tick;
+    static unsigned pass, seen_pass;
+    static bool seen;
+    const unsigned steps = recomp_game_scheduler_hz() / 60u;
+    ++pass;
+    if (steps <= 1 || *recomp_memory(0x004d5669u, 1) == 0) return false;
+    const uint32_t tick = *recomp_memory_u32(0x005d8984u);
+    if (seen && tick == seen_tick && pass - seen_pass < steps) return true;
+    seen = true;
+    seen_tick = tick;
+    seen_pass = pass;
+    return false;
+}
+
 static void camera_tick(void)
 {
     const uint32_t stack = recomp_runtime.registers.esp;
@@ -136,6 +158,9 @@ static void camera_tick(void)
     const uint32_t saved_ebx = recomp_runtime.registers.ebx;
     const uint32_t saved_esi = recomp_runtime.registers.esi;
     const uint32_t saved_edi = recomp_runtime.registers.edi;
+    const uint8_t state_edge = *recomp_memory(0x004d5669u, 1);
+    const bool hide_edge = hide_repeated_state_edge();
+    if (hide_edge) *recomp_memory(0x004d5669u, 1) = 0;
     push(saved_ecx);
     recomp_runtime.registers.eax = 0x0041a800u;
     camera_call(frame, 0x00020ff0u);
@@ -201,6 +226,7 @@ static void camera_tick(void)
     *recomp_memory_u32(stack - 4u) = recomp_runtime.registers.ebx;
     recomp_runtime.registers.esi = 0x0041a800u;
     camera_call(frame, 0x0002f2b0u);
+    if (hide_edge) *recomp_memory(0x004d5669u, 1) = state_edge;
     recomp_runtime.registers.edi = saved_edi;
     recomp_runtime.registers.esi = saved_esi;
     recomp_runtime.registers.ebx = saved_ebx;
@@ -292,6 +318,81 @@ static void stage_camera(void)
     recomp_runtime.registers.esp += 8u;
 }
 
+/* Replay camera, mode 19 (0x00022F40). Each call of its plan step
+   0x00023040 advances the sweep (0x0041A7A0 by the speed at 0x0041A7C8,
+   which itself accelerates) and ages the plan at 0x0041A798. Above 60 Hz
+   the step runs on the authored pass only; the first call after mode entry
+   builds the plan at once. Held passes keep the staged target, which the
+   per-pass smoothing still follows. */
+static void replay_camera(void)
+{
+    const uint32_t stack = recomp_runtime.registers.esp;
+    const uint32_t camera = *recomp_memory_u32(stack + 4u);
+    const uint32_t frame = *recomp_ebp_register();
+    const uint32_t saved_ebx = recomp_runtime.registers.ebx;
+    const uint32_t saved_esi = recomp_runtime.registers.esi;
+    const uint32_t saved_edi = recomp_runtime.registers.edi;
+    const uint32_t staged = camera + 0x148u;
+    const uint8_t entry = *recomp_memory(camera + 0xacau, 1);
+    push(saved_ebx); push(frame); push(saved_esi); push(saved_edi);
+    recomp_runtime.registers.edi = camera;
+    recomp_runtime.registers.ebx = 1;
+    recomp_runtime.registers.eax = (recomp_runtime.registers.eax & ~0xffu) | entry;
+    if (entry != 0) {
+        recomp_runtime.registers.eax = camera;
+        camera_call(staged, 0x0002da70u);
+        *recomp_memory(camera + 0xad5u, 1) = 0;
+        *recomp_memory(camera + 0xad2u, 1) = 1;
+        *recomp_memory(camera + 0xad3u, 1) = 1;
+        *recomp_memory(camera + 0x424u, 1) = 0;
+        *recomp_memory(camera + 0x425u, 1) = 1;
+        store_float(0x0041a7c8u, 1.0f);
+        *recomp_memory_u32(0x0041a798u) = 0;
+        *recomp_memory_u32(0x0041a79cu) = 0;
+        *recomp_memory_u32(0x0041a7ccu) = 0xffffffffu;
+        *recomp_memory_u32(0x0041a7d4u) = 0;
+        camera_call(staged, 0x00023a10u);
+        recomp_runtime.registers.eax = *recomp_memory(camera + 0xad9u, 1);
+        camera_call(staged, 0x000204c0u);
+    } else {
+        *recomp_memory(camera + 0xad3u, 1) = 0;
+    }
+    recomp_runtime.registers.esi = *recomp_memory(camera + 0xad9u, 1);
+    push(1);
+    if (*recomp_memory(0x004d9658u, 1) != 1) {
+        recomp_runtime.registers.edx = 1;
+    } else if (*recomp_memory(0x004d9661u, 1) != 1) {
+        recomp_runtime.registers.edx = 0;
+    } else {
+        const uint8_t option = *recomp_memory(0x004d9518u, 1);
+        recomp_runtime.registers.eax = (recomp_runtime.registers.eax & ~0xffu) | option;
+        recomp_runtime.registers.edx = option != 0;
+    }
+    camera_call(staged, 0x00020bd0u);
+    recomp_runtime.registers.esp += 4u;
+    recomp_runtime.registers.eax = camera;
+    camera_call(staged, 0x0002db70u);
+    /* The state machine raises 0x004D5669 on the tick it enters replay (5). */
+    if (*recomp_memory(0x004d5669u, 1) != 0 && *recomp_memory(0x004d56dau, 1) == 5)
+        *recomp_memory(camera + 0xad3u, 1) = 1;
+    *recomp_memory(camera + 0xad5u, 1) = 0;
+    float age;
+    recomp_guest_load(&age, 0x0041a798u, sizeof age);
+    if (recomp_game_authored_pass() || age == 0.0f) {
+        push(camera);
+        camera_call(staged, 0x00023040u);
+        recomp_runtime.registers.esp += 4u;
+    }
+    recomp_runtime.registers.eax = 1;
+    recomp_runtime.registers.esi = staged;
+    camera_call(staged, 0x0002dfe0u);
+    recomp_runtime.registers.edi = saved_edi;
+    recomp_runtime.registers.esi = saved_esi;
+    recomp_runtime.registers.ebx = saved_ebx;
+    *recomp_ebp_register() = frame;
+    recomp_runtime.registers.esp = stack + 4u;
+}
+
 static void orbit_parameters(uint32_t block)
 {
     store_float(block + 0x10u, 0);
@@ -363,6 +464,7 @@ RecompFunction recomp_game_camera_lookup_manual(uint32_t address)
     if (timers != NULL) return timers;
     switch (address) {
     case 0x000249f0u: return title_orbit;
+    case 0x00022f40u: return replay_camera;
     case 0x0002eec0u: return camera_fiber;
     case 0x0002ef20u: return camera_tick;
     case 0x0002f070u: return camera_prepare;
