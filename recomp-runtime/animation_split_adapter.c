@@ -69,8 +69,8 @@ typedef struct RigidState {
 } RigidState;
 enum { RIGID_SLOTS = 8192 };
 static RigidState rigid_tables[2][RIGID_SLOTS];
-/* Per (object, vertices) draw count this tick, stored with occurrence UINT32_MAX. */
-static RigidState rigid_counts[RIGID_SLOTS];
+/* Per (object, vertices) draw count per tick, stored with occurrence UINT32_MAX. */
+static RigidState rigid_counts[2][RIGID_SLOTS];
 static unsigned rigid_current;
 static uint32_t rigid_frame;
 
@@ -93,23 +93,31 @@ static RigidState *rigid_find(RigidState *table, uint32_t object, const void *ve
 }
 
 /* Records this tick's world and returns the previous tick's world when the
-   object moved continuously. Spawns, teleports and cuts are not blended. */
+   object moved continuously. Spawns, teleports and cuts are not blended.
+   Only a mesh drawn once in the previous tick is paired: repeated instances
+   (island palms) change draw order between ticks, and pairing them by order
+   blends one tree toward another. They keep the interpolated camera. */
 static bool rigid_pair(uint32_t frame, uint32_t object, const void *vertices,
     const float world[16], float previous[16])
 {
     if (frame != rigid_frame) {
         rigid_current ^= 1;
         memset(rigid_tables[rigid_current], 0, sizeof rigid_tables[rigid_current]);
-        memset(rigid_counts, 0, sizeof rigid_counts);
-        if (rigid_frame+1 != frame) memset(rigid_tables[rigid_current^1], 0, sizeof rigid_tables[0]);
+        memset(rigid_counts[rigid_current], 0, sizeof rigid_counts[rigid_current]);
+        if (rigid_frame+1 != frame) {
+            memset(rigid_tables[rigid_current^1], 0, sizeof rigid_tables[0]);
+            memset(rigid_counts[rigid_current^1], 0, sizeof rigid_counts[0]);
+        }
         rigid_frame = frame;
     }
-    RigidState *counter = rigid_find(rigid_counts, object, vertices, UINT32_MAX, true);
+    RigidState *counter = rigid_find(rigid_counts[rigid_current], object, vertices, UINT32_MAX, true);
     if (!counter) return false;
     uint32_t occurrence = (uint32_t)counter->motion[0]++;
     RigidState *state = rigid_find(rigid_tables[rigid_current], object, vertices, occurrence, true);
     if (!state) return false;
     memcpy(state->world, world, sizeof state->world);
+    const RigidState *before = rigid_find(rigid_counts[rigid_current^1], object, vertices, UINT32_MAX, false);
+    if (occurrence != 0 || !before || before->motion[0] != 1) return false;
     const RigidState *old = rigid_find(rigid_tables[rigid_current^1], object, vertices, occurrence, false);
     if (!old || memcmp(old->world, world, sizeof old->world) == 0) return false;
     recomp_split_bone_motion((const RecompBoneMatrix *)old->world, (const RecompBoneMatrix *)world, state->motion);
@@ -283,7 +291,14 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
         const SplitBinding *b = bindings+i;
         if (b->object == object && b->count == count &&
             memcmp(b->original, worlds, count*64) == 0) {
-            if (found && memcmp(found, b, sizeof *b)) recomp_stop(1, "split:ambiguous-binding");
+            if (found && memcmp(found, b, sizeof *b)) {
+                fprintf(stderr, "recomp split ambiguous binding: frame=%u object=0x%08x count=%u actor=%u/%u joint=%u/%u recipe=%d offsets=%d initial=%d\n",
+                    frame, object, count, found->actor, b->actor, found->joint, b->joint,
+                    memcmp(found->recipe, b->recipe, sizeof b->recipe) != 0,
+                    memcmp(found->offsets, b->offsets, sizeof b->offsets) != 0,
+                    memcmp(&found->initial, &b->initial, sizeof b->initial) != 0);
+                recomp_stop(1, "split:ambiguous-binding");
+            }
             found = b;
         }
     }
@@ -305,21 +320,6 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
         }
     }
     unsigned ball = 0;
-    if (!camera && getenv("RECOMP_SPLIT_UNBOUND") && frame%300 == 1) {
-        static uint32_t logged_frame; static unsigned logged;
-        if (logged_frame != frame) { logged_frame = frame; logged = 0; }
-        if (logged++ < 3) {
-            fprintf(stderr, "recomp split unbound: frame=%u object=0x%08x count=%u\n view:", frame, object, count);
-            for (unsigned j = 0; j < 16; ++j) fprintf(stderr, " %.4g", view[j]);
-            fprintf(stderr, "\n proj:");
-            for (unsigned j = 0; j < 16; ++j) fprintf(stderr, " %.4g", projection[j]);
-            for (unsigned i = 0; i < 5; ++i) {
-                fprintf(stderr, "\n slot%u f=%u r=%d view:", i, cameras[i].frame, cameras[i].ready);
-                for (unsigned j = 0; j < 16; ++j) fprintf(stderr, " %.4g", cameras[i].view[j]);
-            }
-            fprintf(stderr, "\n");
-        }
-    }
     if (count == 1 && *(const uint8_t *)recomp_memory_i8(0x0041831bu)) {
         if (object == *recomp_memory_u32(0x00b2d658u)) ball = 1;
         else if (object == *recomp_memory_u32(0x004ca4b0u)) ball = 2;
@@ -352,11 +352,6 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
         memcpy(split->rigid_worlds[0], rigid_previous, 64);
         memcpy(split->rigid_worlds[1], worlds[0], 64);
         ++rigid_draws;
-        if (frame%300 == 1)
-            fprintf(stderr, "recomp split rigid: frame=%u object=0x%08x vertices=%u camera=%d from=%.4g,%.4g,%.4g to=%.4g,%.4g,%.4g x0=%.4g,%.4g,%.4g x1=%.4g,%.4g,%.4g\n",
-                frame, object, draw->vertex_count, camera != NULL, rigid_previous[12], rigid_previous[13], rigid_previous[14],
-                worlds[0][12], worlds[0][13], worlds[0][14], rigid_previous[0], rigid_previous[1], rigid_previous[2],
-                worlds[0][0], worlds[0][1], worlds[0][2]);
     }
     memcpy(split->view, view, sizeof split->view);
     memcpy(split->projection, projection, sizeof split->projection);

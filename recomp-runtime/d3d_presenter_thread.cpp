@@ -21,7 +21,6 @@
 #include <thread>
 #include <vector>
 
-float debug_split_fraction = -1; uint32_t debug_split_frame = 0;
 
 namespace {
 
@@ -73,6 +72,8 @@ struct PresenterThread {
     double queue_wait_ms = 0.0, seal_ms = 0.0, add_ms = 0.0, status_ms = 0.0;
     unsigned captured_frames = 0;
     ULONGLONG pacing_start = 0u;
+    double pacing_cpu_ms = 0.0; // Game thread CPU time when the window began.
+    double capture_kb = 0.0, capture_records = 0.0;
 
     ~PresenterThread() { if (wake != nullptr) CloseHandle(wake); if (split_timer != nullptr) CloseHandle(split_timer); }
 };
@@ -223,10 +224,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                         vertex_scratch.data(), &replay.data.draw))
                         split_error = "draw";
                     if (thread.split_trace) thread.trace_split_ms += clock_ms()-split_start;
-                    static const bool debug_hold_camera = std::getenv("RECOMP_SPLIT_DEBUG_HOLD_CAMERA") != nullptr;
-                    if (debug_hold_camera && !split->pose && !split->ball && !split->rigid) {
-                        error = d3d11_backend_submit(backend, &command);
-                    } else if (split_error) {
+                    if (split_error) {
                         // Guest data can be degenerate (the island map draws an object whose
                         // world matrix holds NaN). Submit the captured draw unchanged, exactly
                         // as the 60 Hz path does, instead of stopping the presenter.
@@ -405,7 +403,6 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 const double deadline = thread.split_next;
                 thread.split_camera_draws = thread.split_pose_draws = 0;
                 thread.trace_split_ms = 0; thread.trace_records = 0;
-                debug_split_fraction = fraction; debug_split_frame = frame;
                 execute(thread, backend, *packet, -1, fraction);
                 render_work += clock_ms()-draw_start; ++render_presents;
                 if (thread.split_trace) thread.split_records.push_back({frame, fraction,
@@ -496,12 +493,21 @@ void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_m
     thread.last_frame_ms = wait_end_ms;
     thread.queue_wait_ms += wait_end_ms - wait_start_ms;
     const ULONGLONG now = GetTickCount64();
-    if (thread.pacing_start == 0u) thread.pacing_start = now;
+    // Game thread CPU time excludes the vblank timer sleep, so it measures game work.
+    FILETIME created, exited, kernel, user;
+    GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user);
+    const double cpu_ms = ((uint64_t(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime) +
+        (uint64_t(user.dwHighDateTime) << 32 | user.dwLowDateTime))/10000.0;
+    if (thread.pacing_start == 0u) { thread.pacing_start = now; thread.pacing_cpu_ms = cpu_ms; }
     if (now - thread.pacing_start < 1000u) return;
-    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f capture_fps=%.2f seal_ms=%.3f add_ms=%.3f status_ms=%.3f\n",
+    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f capture_fps=%.2f seal_ms=%.3f add_ms=%.3f status_ms=%.3f cpu_ms=%.3f packet_kb=%.0f records=%.0f\n",
         static_cast<unsigned long long>(now), thread.frame_max_ms, thread.queue_wait_ms,
-        thread.captured_frames*1000.0/(now-thread.pacing_start), thread.seal_ms/thread.captured_frames, thread.add_ms/thread.captured_frames, thread.status_ms/thread.captured_frames);
+        thread.captured_frames*1000.0/(now-thread.pacing_start), thread.seal_ms/thread.captured_frames, thread.add_ms/thread.captured_frames, thread.status_ms/thread.captured_frames,
+        (cpu_ms-thread.pacing_cpu_ms)/thread.captured_frames, thread.capture_kb/thread.captured_frames,
+        thread.capture_records/thread.captured_frames);
     thread.pacing_start = now;
+    thread.pacing_cpu_ms = cpu_ms;
+    thread.capture_kb = thread.capture_records = 0.0;
     thread.frame_max_ms = 0.0;
     thread.queue_wait_ms = 0.0;
     thread.seal_ms = thread.add_ms = thread.status_ms = 0.0; thread.captured_frames = 0;
@@ -518,6 +524,10 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     if (thread.pacing) notePacing(thread, wait_start_ms, clock_ms());
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
     auto &packet = thread.packets[thread.open];
+    if (thread.pacing) {
+        thread.capture_kb += packet.bytes()/1024.0;
+        thread.capture_records += double(packet.count());
+    }
     const bool verify = thread.verify_at && thread.capture_frame >= thread.verify_at &&
         thread.capture_frame-thread.verify_at < thread.verify_count;
     // The open slot is invisible to the worker until pending counts it, so

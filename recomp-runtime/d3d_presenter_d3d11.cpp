@@ -1,5 +1,4 @@
 #include "d3d_presenter_d3d11_backend.h"
-extern float debug_split_fraction; extern uint32_t debug_split_frame;
 #include "d3d_draw_model.h"
 #include "d3d_vertex_program.h"
 
@@ -2773,9 +2772,15 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         }
     }
     const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
-    const unsigned at = at_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(at_text, nullptr, 10))
+    // A comma list ("1800,3600,5400") takes dump k at the k-th listed present.
+    char *at_next = nullptr;
+    unsigned at = at_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(at_text, &at_next, 10))
         : 1u;
+    for (unsigned i = 0u; at_next != nullptr && *at_next == ',' &&
+            i < presenter->frame_dump_count - presenter->frame_dump_burst_base; ++i) {
+        at = static_cast<unsigned>(std::strtoul(at_next + 1, &at_next, 10));
+    }
     if (present_count < at) {
         return;
     }
@@ -2789,10 +2794,6 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         return;
     }
     const unsigned dump_index = presenter->frame_dump_count++;
-    {
-        std::fprintf(stderr, "recomp frame dump tag: index=%u frame=%u fraction=%.4f\n",
-            dump_index, ::debug_split_frame, ::debug_split_fraction);
-    }
 
     /* One name per frame in a burst; the single-dump case keeps the exact
        path it always used so existing gates and receipts still match. */
