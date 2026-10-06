@@ -121,12 +121,16 @@ static uint64_t timing_now(void)
 
 unsigned recomp_game_requested_hz(void)
 {
-    const char *rate = getenv("RECOMP_GAME_HZ");
-    if (rate == NULL) return 0;
-    if (strcmp(rate, "60") == 0) return 60;
-    if (strcmp(rate, "120") == 0) return 120;
-    if (strcmp(rate, "240") == 0) return 240;
-    return 0;
+    /* Manual lookups run on every dispatched call; read the setting once. */
+    static int requested = -1;
+    if (requested < 0) {
+        const char *rate = getenv("RECOMP_GAME_HZ");
+        requested = 0;
+        if (rate != NULL && strcmp(rate, "60") == 0) requested = 60;
+        if (rate != NULL && strcmp(rate, "120") == 0) requested = 120;
+        if (rate != NULL && strcmp(rate, "240") == 0) requested = 240;
+    }
+    return (unsigned)requested;
 }
 
 bool recomp_game_timing_enabled(void) { return trace_timing; }
@@ -502,9 +506,12 @@ RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
         address != 0x000b5680u && address != 0x000b5870u) {
         return NULL;
     }
-    const char *enabled = getenv("RECOMP_GAME_SCHEDULER");
-    if ((enabled == NULL || strcmp(enabled, "1") != 0) &&
-        recomp_game_requested_hz() == 0) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *setting = getenv("RECOMP_GAME_SCHEDULER");
+        enabled = (setting != NULL && strcmp(setting, "1") == 0) || recomp_game_requested_hz() != 0;
+    }
+    if (!enabled) {
 #ifdef RECOMP_FULL_PROGRAM
         if (address == 0x000bb290u && test_clock_enabled()) {
             return generated_game_entry;
