@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+float debug_split_fraction = -1; uint32_t debug_split_frame = 0;
 
 namespace {
 
@@ -55,9 +56,12 @@ struct PresenterThread {
     bool pacing = false;
     double split_rate = 0, split_next = 0;
     uint32_t split_first_frame = 0;
+    // Visual clock: when the last shown tick's interpolation started.
+    uint32_t split_clock_frame = 0;
+    double split_clock_start = 0;
     bool split_trace = false;
     size_t split_trace_limit = 0;
-    unsigned split_presents = 0, split_camera_draws = 0, split_pose_draws = 0;
+    unsigned split_presents = 0, split_camera_draws = 0, split_pose_draws = 0, split_fallbacks = 0;
     double trace_split_ms = 0;
     unsigned trace_records = 0;
     // Buffered so tracing does not write to stderr while presents are paced.
@@ -112,10 +116,15 @@ bool prepare_next(PresenterThread &thread, RecompD3dPresenter *backend, double d
         const size_t i = thread.prepare_cursor;
         if (next->record(i).kind == D3dCapturePacket::COMMAND) {
             const auto &command = next->command(i);
-            // ponytail: upload cost estimated at ~4 ms per MiB of texels;
+            // ponytail: upload cost estimated at ~4 ms per MiB of new texels;
             // anything longer than a present slot is left to its draw.
-            const double cost = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW
-                ? command.data.draw.texture_byte_count*4.0/1048576.0 : 0.0;
+            // Textures that already exist cost nothing.
+            const uint64_t bytes = d3d11_backend_prepare_bytes(backend, &command);
+            const double cost = bytes*4.0/1048576.0;
+            if (bytes == 0) {
+                ++thread.prepare_cursor;
+                continue;
+            }
             if (cost > 1000.0/thread.split_rate) {
                 ++thread.prepare_cursor;
                 continue;
@@ -195,26 +204,38 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                     thread.split_camera_draws += split->camera;
                     thread.split_pose_draws += split->pose;
                     const RecompBoneMatrix *bones = nullptr;
+                    const char *split_error = nullptr;
                     if (split->pose) {
-                        if (split->actor >= 4) { fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return; }
-                        if (!sampled_valid[split->actor]) {
-                            if (!recomp_animation_visual_sample(&split->visual, fraction, sampled[split->actor])) {
-                                fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return;
-                            }
+                        if (split->actor >= 4) split_error = "actor";
+                        else if (!sampled_valid[split->actor] &&
+                            !recomp_animation_visual_sample(&split->visual, fraction, sampled[split->actor]))
+                            split_error = "sample";
+                        else {
                             sampled_valid[split->actor] = true;
+                            bones = sampled[split->actor];
                         }
-                        bones = sampled[split->actor];
                     }
                     if (split->seam) vertex_scratch.resize(
                         size_t(command.data.draw.vertex_count)*command.data.draw.vertex_stride);
                     RecompD3dPresenterCommand replay;
                     replay.type = command.type;
-                    if (!recomp_d3d_split_draw(&command.data.draw, fraction, bones,
-                        vertex_scratch.data(), &replay.data.draw)) {
-                        fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT); return;
-                    }
+                    if (!split_error && !recomp_d3d_split_draw(&command.data.draw, fraction, bones,
+                        vertex_scratch.data(), &replay.data.draw))
+                        split_error = "draw";
                     if (thread.split_trace) thread.trace_split_ms += clock_ms()-split_start;
-                    error = d3d11_backend_submit(backend, &replay);
+                    static const bool debug_hold_camera = std::getenv("RECOMP_SPLIT_DEBUG_HOLD_CAMERA") != nullptr;
+                    if (debug_hold_camera && !split->pose && !split->ball && !split->rigid) {
+                        error = d3d11_backend_submit(backend, &command);
+                    } else if (split_error) {
+                        // Guest data can be degenerate (the island map draws an object whose
+                        // world matrix holds NaN). Submit the captured draw unchanged, exactly
+                        // as the 60 Hz path does, instead of stopping the presenter.
+                        if (thread.split_fallbacks++ < 16)
+                            std::fprintf(stderr, "recomp split: fallback reason=%s camera=%u pose=%u seam=%u ball=%u\n",
+                                split_error, unsigned(split->camera), unsigned(split->pose),
+                                unsigned(split->seam), unsigned(split->ball));
+                        error = d3d11_backend_submit(backend, &command);
+                    } else error = d3d11_backend_submit(backend, &replay);
                 } else if (phase >= 0 && draw && command.data.draw.pose_replay != nullptr) {
                     RecompD3dPresenterCommand replay;
                     replay.type = command.type;
@@ -328,9 +349,19 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 thread.split_first_frame = frame;
                 thread.split_next = clock_ms();
             }
-            double start = packet->published_ms;
             double now = clock_ms();
+            // Interpolation for a tick starts a fixed lead after its packet is
+            // published, so idle time before the switch can prepare it. Consecutive
+            // ticks continue one clock exactly one tick apart; publish jitter would
+            // otherwise make visual steps uneven. Resynchronize after a gap or drift.
+            constexpr double lead_ms = 4.0;
+            double start = packet->published_ms+lead_ms;
+            const double continued = thread.split_clock_start+tick_ms;
+            if (frame == thread.split_clock_frame+1 && std::fabs(continued-start) < tick_ms/4)
+                start = continued;
             if (start+tick_ms <= now) start = now;
+            thread.split_clock_frame = frame;
+            thread.split_clock_start = start;
             double end = start+tick_ms;
             // A slightly late producer must not discard an otherwise due present.
             // Only abandon the clock after a full simulation interval was missed.
@@ -365,7 +396,8 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                     } else YieldProcessor();
                 }
                 if (thread.split_next >= end && next_ready()) break;
-                double elapsed = (clock_ms()-start)/tick_ms;
+                // Sample at the scheduled display time; wake-up jitter is not motion.
+                double elapsed = (thread.split_next-start)/tick_ms;
                 float fraction = static_cast<float>((std::max)(0.0, (std::min)(elapsed, 0.999999)));
                 fraction_min = (std::min)(fraction_min, fraction);
                 fraction_max = (std::max)(fraction_max, fraction);
@@ -373,6 +405,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 const double deadline = thread.split_next;
                 thread.split_camera_draws = thread.split_pose_draws = 0;
                 thread.trace_split_ms = 0; thread.trace_records = 0;
+                debug_split_fraction = fraction; debug_split_frame = frame;
                 execute(thread, backend, *packet, -1, fraction);
                 render_work += clock_ms()-draw_start; ++render_presents;
                 if (thread.split_trace) thread.split_records.push_back({frame, fraction,

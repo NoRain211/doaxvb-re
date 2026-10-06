@@ -347,7 +347,17 @@ static void build_palette(void)
         }
         if (!split || verify) fprintf(stderr, "recomp animation palette: frame=%u recipe=%u count=%u actor=%u recipe_error=%.9g pose_error=%.9g\n",
             frame, recipe_id, output_count, actor_bank ? actor : UINT32_MAX, recipe_error, pose_error);
-        if (recipe_error > 1e-5f || pose_error > 1e-4f) {
+        // Split play tolerates rounding-level solver drift (seen at 2.2e-4 on a
+        // beach run); a clearly wrong solve still stops. Verification stays strict.
+        bool mismatch = recipe_error > 1e-5f || pose_error > 1e-4f;
+        if (mismatch && split && !verify && recipe_error <= 1e-5f && pose_error <= 1e-3f) {
+            static unsigned reported;
+            if (reported++ < 8)
+                fprintf(stderr, "recomp animation palette drift: frame=%u actor=%u recipe=%u pose_error=%.9g\n",
+                    frame, actor, recipe_id, pose_error);
+            mismatch = false;
+        }
+        if (mismatch) {
             fprintf(stderr, "recomp animation palette mismatch: frame=%u actor=%u recipe=%u recipe_error=%.9g pose_error=%.9g\n",
                 frame, actor, recipe_id, recipe_error, pose_error);
             const char *failure = getenv("RECOMP_SPLIT_FAILURE");

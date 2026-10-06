@@ -9,6 +9,8 @@ RecompD3dPresenterError d3d11_backend_submit(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
 /* Optional idle-time work: creates textures a later draw will need. */
 void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
+/* Texel bytes d3d11_backend_prepare would upload; 0 when every texture exists. */
+uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
 RecompD3dPresenterError d3d11_backend_release_memory(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
 RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);
