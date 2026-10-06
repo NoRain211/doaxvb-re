@@ -44,6 +44,23 @@ int main(void)
     CHECK(!recomp_d3d_split_draw(&source,1,NULL,NULL,&output)); CHECK(memcmp(&output,&before,sizeof output)==0);
     source.split_pose_size=sizeof split-1;
     CHECK(!recomp_d3d_split_draw(&source,.2f,NULL,NULL,&output));
+    float from[16], to[16], mid[16];
+    identity(from); identity(to);
+    from[0]=from[5]=from[10]=2; from[12]=1;
+    to[0]=to[10]=0; to[2]=-3; to[8]=3; to[5]=3; to[13]=4; /* 90 degrees about y, scale 3 */
+    CHECK(recomp_split_rigid_matrix(from,to,0,mid));
+    for(unsigned i=0;i<16;++i) CHECK(fabsf(mid[i]-from[i])<1e-6f);
+    CHECK(recomp_split_rigid_matrix(from,to,1,mid));
+    for(unsigned i=0;i<16;++i) CHECK(fabsf(mid[i]-to[i])<1e-6f);
+    CHECK(recomp_split_rigid_matrix(from,to,.5f,mid));
+    CHECK(fabsf(mid[0]-2.5f*cosf(.785398163f))<1e-5f && fabsf(mid[2]+2.5f*sinf(.785398163f))<1e-5f);
+    CHECK(fabsf(mid[5]-2.5f)<1e-5f && fabsf(mid[12]-.5f)<1e-6f && fabsf(mid[13]-2)<1e-6f);
+    to[1]=1; CHECK(!recomp_split_rigid_matrix(from,to,.5f,mid)); /* shear */
+    to[1]=0; to[0]=-1; to[2]=0; to[8]=0; to[10]=1; CHECK(!recomp_split_rigid_matrix(from,to,.5f,mid)); /* mirror */
+    identity(to); to[12]=8; split.ball=0; split.rigid=true;
+    memcpy(split.rigid_worlds[0],split.worlds[0],64); memcpy(split.rigid_worlds[1],to,64);
+    source.split_pose_size=sizeof split;
+    CHECK(recomp_d3d_split_draw(&source,.25f,NULL,NULL,&output) && fabsf(output.transform[12]-2)<1e-6f);
     RecompVisualPose input={0}, unchanged;
     input.targets[0].terrain_disabled=1;
     const unsigned slots[4][4]={{3,5,4,6},{7,8,9,255},{12,11,10,13},{18,14,22,255}};

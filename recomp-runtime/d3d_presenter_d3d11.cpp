@@ -1,4 +1,5 @@
 #include "d3d_presenter_d3d11_backend.h"
+extern float debug_split_fraction; extern uint32_t debug_split_frame;
 #include "d3d_draw_model.h"
 #include "d3d_vertex_program.h"
 
@@ -483,7 +484,12 @@ struct RecompD3dPresenter {
     std::vector<double> present_gaps;
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
+    unsigned frame_dump_burst_base = 0u;
+    unsigned frame_dump_burst_count = 0u;
     std::vector<DeferredFrameDump> deferred_dumps;
+    // Staging textures created when a triggered burst starts, so capturing
+    // during the burst is only a GPU copy and does not disturb pacing.
+    std::vector<std::unique_ptr<ID3D11Texture2D, DumpTextureRelease>> dump_pool;
     uint32_t replay_verify_frame = 0;
     bool replay_verify_second = false;
     std::vector<uint8_t> replay_reference;
@@ -2698,8 +2704,12 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
 }
 
 /* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
-   INTERVAL_MS optionally spaces captures in host time. Capture stays inside
-   the renderer, without cross-process window painting or missed-frame bursts. */
+   INTERVAL_MS optionally spaces captures in host time. TRIGGER names a file
+   whose appearance starts each burst of the length it contains; the file is
+   deleted once the burst is written, so scripted navigation can capture
+   several scenes in one run.
+   Capture stays inside the renderer, without cross-process window painting
+   or missed-frame bursts. */
 void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
 {
     const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
@@ -2711,15 +2721,56 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
        burst of consecutive presents so successive back buffers can be
        compared against each other. Default 1 keeps existing gates identical. */
     const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
-    const unsigned count = count_text != nullptr
+    unsigned count = count_text != nullptr
         ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
         : 1u;
-    if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
+    const char *trigger = std::getenv("RECOMP_D3D_FRAME_DUMP_TRIGGER");
+    if (trigger != nullptr) {
+        count = presenter->frame_dump_burst_count;
+    }
+    if (presenter->frame_dump_count - presenter->frame_dump_burst_base >=
+            (count == 0u ? 1u : count)) {
         // Flush on the following frame so every captured frame was presented first.
         for (const auto &dump : presenter->deferred_dumps)
             writeFrameDump(presenter, dump.texture.get(), dump.path.c_str(), dump.present, dump.captured_ms);
         presenter->deferred_dumps.clear();
+        if (trigger != nullptr) {
+            DeleteFileA(trigger);
+            presenter->frame_dump_burst_base = presenter->frame_dump_count;
+            presenter->frame_dump_burst_count = 0u;
+        }
         return;
+    }
+    if (trigger != nullptr && count == 0u) {
+        FILE *file = std::fopen(trigger, "rb");
+        if (file == nullptr) {
+            return;
+        }
+        unsigned requested = 0u;
+        if (std::fscanf(file, "%u", &requested) != 1 || requested == 0u) {
+            requested = 1u;
+        }
+        std::fclose(file);
+        count = presenter->frame_dump_burst_count = requested;
+        const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+        ID3D11Texture2D *back_buffer = nullptr;
+        if (defer && std::strcmp(defer, "1") == 0 && requested <= 300 && SUCCEEDED(
+                presenter->swap_chain->GetBuffer(0u, __uuidof(ID3D11Texture2D),
+                    reinterpret_cast<void **>(&back_buffer)))) {
+            D3D11_TEXTURE2D_DESC desc{};
+            back_buffer->GetDesc(&desc);
+            back_buffer->Release();
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0u;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            desc.MiscFlags = 0u;
+            for (unsigned i = 0u; i < requested; ++i) {
+                ID3D11Texture2D *staging = nullptr;
+                if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) break;
+                presenter->dump_pool.emplace_back(staging);
+            }
+            return; // Start the burst on the next present, after the allocation hitch.
+        }
     }
     const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
     const unsigned at = at_text != nullptr
@@ -2738,11 +2789,15 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         return;
     }
     const unsigned dump_index = presenter->frame_dump_count++;
+    {
+        std::fprintf(stderr, "recomp frame dump tag: index=%u frame=%u fraction=%.4f\n",
+            dump_index, ::debug_split_frame, ::debug_split_fraction);
+    }
 
     /* One name per frame in a burst; the single-dump case keeps the exact
        path it always used so existing gates and receipts still match. */
     char burst_path[1024];
-    if (count > 1u) {
+    if (count > 1u || trigger != nullptr) {
         std::snprintf(
             burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
         path = burst_path;
@@ -2762,7 +2817,10 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     desc.MiscFlags = 0u;
 
     ID3D11Texture2D *staging = nullptr;
-    if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
+    if (!presenter->dump_pool.empty()) {
+        staging = presenter->dump_pool.back().release();
+        presenter->dump_pool.pop_back();
+    } else if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
         back_buffer->Release();
         return;
     }
@@ -3283,22 +3341,24 @@ RecompD3dPresenterError d3d11_backend_create(
 /* Creates a cache-miss texture before its draw needs it. Addresses already
    cached, render targets and dynamic linear textures are skipped, so entries
    the packet on screen still uses are not replaced. */
-void prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+bool textureMissing(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     const RecompD3dTextureDesc &desc = draw.texture;
-    if (draw.texture_is_backbuffer || desc.linear || draw.texture_bytes == nullptr ||
-        presenter->texture_index.count(desc.data) != 0u ||
-        findRenderTarget(presenter, desc) != nullptr) return;
-    lookupTexture(presenter, draw);
+    return !draw.texture_is_backbuffer && !desc.linear && draw.texture_bytes != nullptr &&
+        presenter->texture_index.count(desc.data) == 0u &&
+        findRenderTarget(presenter, desc) == nullptr;
 }
 
-void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+void prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
-    if (presenter == nullptr || presenter != active_presenter || command == nullptr ||
-        GetCurrentThreadId() != presenter->owner_thread ||
-        command->type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) return;
-    const RecompD3dPresenterDrawCommand &draw = command->data.draw;
-    if (draw.has_texture) prepareTexture(presenter, draw);
+    if (textureMissing(presenter, draw)) lookupTexture(presenter, draw);
+}
+
+/* The draw's main texture plus its alpha mask or reflection texture, as drawn. */
+template <typename Visit>
+void visitPrepareTextures(const RecompD3dPresenterDrawCommand &draw, Visit visit)
+{
+    if (draw.has_texture) visit(draw);
     RecompD3dPresenterDrawCommand extra{};
     if (draw.has_alpha_mask) {
         extra.texture = draw.alpha_mask;
@@ -3306,13 +3366,38 @@ void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresent
         extra.texture_byte_count = draw.alpha_mask_byte_count;
         extra.palette_bytes = draw.alpha_mask_palette;
         extra.palette_byte_count = draw.alpha_mask_palette_byte_count;
-        prepareTexture(presenter, extra);
+        visit(extra);
     } else if (draw.has_reflection || draw.program_alpha_mask) {
         extra.texture = draw.reflection_texture;
         extra.texture_bytes = draw.reflection_bytes;
         extra.texture_byte_count = draw.reflection_byte_count;
-        prepareTexture(presenter, extra);
+        visit(extra);
     }
+}
+
+bool prepareAllowed(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    return presenter != nullptr && presenter == active_presenter && command != nullptr &&
+        GetCurrentThreadId() == presenter->owner_thread &&
+        command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+}
+
+void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    if (!prepareAllowed(presenter, command)) return;
+    visitPrepareTextures(command->data.draw, [presenter](const RecompD3dPresenterDrawCommand &draw) {
+        prepareTexture(presenter, draw);
+    });
+}
+
+uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    uint64_t bytes = 0;
+    if (!prepareAllowed(presenter, command)) return 0;
+    visitPrepareTextures(command->data.draw, [presenter, &bytes](const RecompD3dPresenterDrawCommand &draw) {
+        if (textureMissing(presenter, draw)) bytes += draw.texture_byte_count;
+    });
+    return bytes;
 }
 
 RecompD3dPresenterError d3d11_backend_submit(

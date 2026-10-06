@@ -88,6 +88,67 @@ void recomp_split_ball_matrix(const RecompSplitDraw *split, float fraction, floa
     }
 }
 
+static bool rotation_quaternion(const float m[16], double scale[3], double q[4])
+{
+    double r[3][3];
+    for (unsigned i = 0; i < 3; ++i) {
+        scale[i] = sqrt((double)m[i*4]*m[i*4]+(double)m[i*4+1]*m[i*4+1]+(double)m[i*4+2]*m[i*4+2]);
+        if (!(scale[i] > 1e-12) || !isfinite(scale[i]) || !isfinite(m[12+i])) return false;
+        for (unsigned j = 0; j < 3; ++j) r[i][j] = m[i*4+j]/scale[i];
+    }
+    for (unsigned i = 0; i < 3; ++i) for (unsigned j = i+1; j < 3; ++j)
+        if (fabs(r[i][0]*r[j][0]+r[i][1]*r[j][1]+r[i][2]*r[j][2]) > 1e-3) return false;
+    double det = r[0][0]*(r[1][1]*r[2][2]-r[1][2]*r[2][1])-r[0][1]*(r[1][0]*r[2][2]-r[1][2]*r[2][0])+
+        r[0][2]*(r[1][0]*r[2][1]-r[1][1]*r[2][0]);
+    if (det < 0.999 || det > 1.001) return false;
+    double trace = r[0][0]+r[1][1]+r[2][2];
+    if (trace > 0) {
+        double s = sqrt(trace+1)*2;
+        q[0] = s/4; q[1] = (r[2][1]-r[1][2])/s; q[2] = (r[0][2]-r[2][0])/s; q[3] = (r[1][0]-r[0][1])/s;
+    } else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) {
+        double s = sqrt(1+r[0][0]-r[1][1]-r[2][2])*2;
+        q[0] = (r[2][1]-r[1][2])/s; q[1] = s/4; q[2] = (r[0][1]+r[1][0])/s; q[3] = (r[0][2]+r[2][0])/s;
+    } else if (r[1][1] > r[2][2]) {
+        double s = sqrt(1+r[1][1]-r[0][0]-r[2][2])*2;
+        q[0] = (r[0][2]-r[2][0])/s; q[1] = (r[0][1]+r[1][0])/s; q[2] = s/4; q[3] = (r[1][2]+r[2][1])/s;
+    } else {
+        double s = sqrt(1+r[2][2]-r[0][0]-r[1][1])*2;
+        q[0] = (r[1][0]-r[0][1])/s; q[1] = (r[0][2]+r[2][0])/s; q[2] = (r[1][2]+r[2][1])/s; q[3] = s/4;
+    }
+    return true;
+}
+
+bool recomp_split_rigid_matrix(const float from[16], const float to[16], float fraction, float output[16])
+{
+    double scale[2][3], q[2][4];
+    if (!isfinite(fraction) || !rotation_quaternion(from, scale[0], q[0]) ||
+        !rotation_quaternion(to, scale[1], q[1])) return false;
+    double dot = q[0][0]*q[1][0]+q[0][1]*q[1][1]+q[0][2]*q[1][2]+q[0][3]*q[1][3];
+    double sign = dot < 0 ? -1 : 1, a = 1-fraction, b = fraction;
+    dot = fabs(dot);
+    if (dot < 0.9995) {
+        double angle = acos(fmin(dot, 1.0)), s = sin(angle);
+        a = sin((1-fraction)*angle)/s; b = sin(fraction*angle)/s;
+    }
+    double r[4], length = 0;
+    for (unsigned i = 0; i < 4; ++i) { r[i] = a*q[0][i]+b*sign*q[1][i]; length += r[i]*r[i]; }
+    length = sqrt(length);
+    double w = r[0]/length, x = r[1]/length, y = r[2]/length, z = r[3]/length;
+    const double m[3][3] = {
+        {1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)},
+        {2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)},
+        {2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)},
+    };
+    for (unsigned i = 0; i < 3; ++i) {
+        double s = scale[0][i]+(scale[1][i]-scale[0][i])*fraction;
+        for (unsigned j = 0; j < 3; ++j) output[i*4+j] = (float)(m[i][j]*s);
+        output[i*4+3] = 0;
+        output[12+i] = (float)(from[12+i]+((double)to[12+i]-from[12+i])*fraction);
+    }
+    output[15] = 1;
+    return true;
+}
+
 bool recomp_d3d_split_draw(const RecompD3dPresenterDrawCommand *source,
     float fraction, const RecompBoneMatrix bones[32], void *vertices,
     RecompD3dPresenterDrawCommand *output)
@@ -104,6 +165,8 @@ bool recomp_d3d_split_draw(const RecompD3dPresenterDrawCommand *source,
     memcpy(pose.palettes[0], split->worlds, sizeof split->worlds);
     if (split->camera && !recomp_animation_camera_sample(split->cameras, fraction, pose.view, pose.projection)) return false;
     if (split->ball) recomp_split_ball_matrix(split, fraction, pose.palettes[0][0]);
+    if (split->rigid && !recomp_split_rigid_matrix(split->rigid_worlds[0], split->rigid_worlds[1],
+        fraction, pose.palettes[0][0])) return false;
     if (split->pose) {
         if (!bones) return false;
         if (split->joint < 32) memcpy(pose.palettes[0][0], bones[split->joint].m, 64);
