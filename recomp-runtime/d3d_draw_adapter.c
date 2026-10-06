@@ -44,7 +44,6 @@ enum {
 };
 
 void sub_001E7750(void);
-void sub_001E78B0(void);
 
 static RecompD3dDrawState draw_state;
 static uint32_t draw_submitted;
@@ -1434,11 +1433,14 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     const char *decline = NULL;
     const RecompD3dPresenterDrawCommand *capture_command = NULL;
 
-    /* Run the guest's own driver body first so all push-buffer and fence
-       bookkeeping stays byte-identical to the uninterceped run; the host
-       draw is added alongside it, never in place of it. This also leaves
-       ESP adjusted exactly as the generated body leaves it. */
-    sub_001E78B0();
+    /* Seam: D3DDevice_DrawIndexedVertices (0x001E78B0) is hand-owned and
+       never runs its generated body. That body flushed lazy D3D state and
+       copied indices into the push buffer, which the hand KickOff model
+       discards. Only generated D3D8 code reads what it wrote; game state and
+       frames match with or without it. The dirty mask (0x001F2984) now
+       accumulates until a remaining generated D3D8 entry point flushes it.
+       Retire the stdcall frame: return slot plus three arguments. */
+    recomp_runtime.registers.esp += 16u;
 
     draw_state.stream0.stride = *recomp_memory_u32(D3D_STREAM0_STRIDE);
     vertex_buffer = *recomp_memory_u32(D3D_STREAM0_BUFFER);

@@ -3,6 +3,41 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## P1: indexed draws skip the generated D3D8 body (2026-10-05)
+
+The draw adapter for `D3DDevice_DrawIndexedVertices` (`0x001E78B0`) no
+longer runs the generated driver body before its host draw. That body did
+three things. It flushed lazy D3D state through `0x001EECA0` and
+`0x001EEC20`, a chain of about 75 generated functions. It copied the index
+list into the push buffer, which the hand KickOff model discards. It set and
+cleared bits `0x800`/`0x1000` at device `+8`, and inserted a fence when
+`0x1000` was already set. The adapter now only retires the stdcall frame.
+
+Seam: the indexed draw is hand-owned at its manual lookup in
+`d3d_draw_adapter.c`. The rest of D3D8 is still generated. The dirty mask at
+`0x001F2984` now accumulates until another generated entry point, such as
+`DrawVerticesUP`, flushes it. Wholesale D3D8 replacement remains open work.
+
+All checks used one executable that could select either path, with the 60 Hz
+attract route and live host input disabled:
+
+| Check | Result |
+| --- | --- |
+| Frames at Swaps 300, 3000, 5400 | 0 differing pixels at each |
+| Game state ranges (actors, ball, camera, scene) at the same Swaps | byte-identical |
+| Fence counter (device `+0x30`) and dirty mask at the same Swaps | identical |
+| Whole guest RAM at Swap 3000, beyond two-control noise | push buffer, device bookkeeping, stack below ESP, wall-clock audio and feedback buffers |
+| 120 Hz match, game-thread ms per pass (phases 0-3) | 10.89 before, 7.72 after (-29%) |
+| 120 Hz match, phase 2 (fibers and draws) | 10.60 before, 7.43 after |
+| 120 Hz match rate | 91.1 fps (24 of 26 s below 118) before, 120.1 fps (1 of 26 s) after |
+
+The changed bytes are D3D8 bookkeeping, guest stack scratch, or buffers that
+follow the wall clock; game state and frames did not change. The control
+match on this tree is slower than the M4 numbers below because uncommitted
+presenter work shares it; both paths ran on the same executable. The
+candidate run ended with the existing shutdown race, a Clear submitted after
+the window closed, which earlier runs also show.
+
 ## M4: menus and a served point at 120 Hz (2026-10-05, blocked)
 
 M4 is not passed. In game time, the 120 Hz route matches 60 Hz through the
