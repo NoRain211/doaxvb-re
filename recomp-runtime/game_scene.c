@@ -296,9 +296,25 @@ static void actor_frame_draw(void)
 static void actor_frame_fiber(void)
 {
     call(0x000b42f0u);
-    for (;;) {
+    uint64_t time[2] = {0};
+    for (unsigned pass = 1;; ++pass) {
+        const bool timing = recomp_game_timing_enabled();
+        uint64_t start = timing ? recomp_xapi_performance_counter() : 0;
         call(0x000b4380u);
+        if (timing) {
+            const uint64_t now = recomp_xapi_performance_counter();
+            time[0] += now - start;
+            start = now;
+        }
         call(0x000b4450u);
+        if (timing) {
+            time[1] += recomp_xapi_performance_counter() - start;
+            if (pass % 300 == 0) {
+                fprintf(stderr, "recomp actor frame timing: pass=%u update_ms=%.3f draw_ms=%.3f\n",
+                    pass, time[0] / 1e6, time[1] / 1e6);
+                time[0] = time[1] = 0;
+            }
+        }
         next_frame();
     }
 }
@@ -389,9 +405,13 @@ RecompFunction recomp_game_scene_lookup_manual(uint32_t address)
         address != 0x000af160u && address != 0x001435a0u) {
         return NULL;
     }
-    const char *enabled = getenv("RECOMP_GAME_SCENE");
-    if ((enabled == NULL || strcmp(enabled, "1") != 0) &&
-        recomp_game_requested_hz() == 0) return NULL;
+    /* This lookup runs on every dispatched call to a hand owner. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *setting = getenv("RECOMP_GAME_SCENE");
+        enabled = (setting != NULL && strcmp(setting, "1") == 0) || recomp_game_requested_hz() != 0;
+    }
+    if (!enabled) return NULL;
     if (camera != NULL) return camera;
     switch (address) {
     case 0x000a37f0u: return scene_fiber;
