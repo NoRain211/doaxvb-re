@@ -23,6 +23,18 @@ void sub_00023B10(void);
 void sub_0017D520(void);
 void sub_0017D670(void);
 
+/* Lookups and pose hooks run on every dispatch; read each setting once. */
+static const char *setting(const char *name)
+{
+    static struct { const char *name, *value; } cache[16];
+    static unsigned count;
+    for (unsigned i = 0; i < count; ++i)
+        if (strcmp(cache[i].name, name) == 0) return cache[i].value;
+    const char *value = getenv(name);
+    if (count < sizeof cache / sizeof *cache) { cache[count].name = name; cache[count].value = value; ++count; }
+    return value;
+}
+
 /* Diagnostic records remain private. Oracle bone outputs enter comparisons
    only; immutable rig, channel and controller snapshots feed the plain solver. */
 typedef struct PoseCapture {
@@ -64,7 +76,7 @@ static void remember_binding(void)
 
 static uint32_t experiment_frame(void)
 {
-    const char *text = getenv("RECOMP_POSE_EXPERIMENT_FRAME");
+    const char *text = setting("RECOMP_POSE_EXPERIMENT_FRAME");
     if (text == NULL) return 0;
     char *end;
     unsigned long frame = strtoul(text, &end, 10);
@@ -73,13 +85,13 @@ static uint32_t experiment_frame(void)
 
 static unsigned experiment_actor(void)
 {
-    const char *text = getenv("RECOMP_POSE_EXPERIMENT_ACTOR");
+    const char *text = setting("RECOMP_POSE_EXPERIMENT_ACTOR");
     return text == NULL ? 0u : (unsigned)strtoul(text, NULL, 10);
 }
 
 static uint32_t state_capture_frame(void)
 {
-    const char *text = getenv("RECOMP_POSE_STATE_CAPTURE_AT");
+    const char *text = setting("RECOMP_POSE_STATE_CAPTURE_AT");
     if (!text) return 0;
     char *end;
     unsigned long frame = strtoul(text, &end, 10);
@@ -280,7 +292,7 @@ static void prepare_experiment(const PoseCapture *current)
 
 static void note(unsigned entry)
 {
-    if (recomp_animation_split_enabled() && !experiment_frame() && !getenv("RECOMP_ANIMATION_DISPATCH_TRACE")) return;
+    if (recomp_animation_split_enabled() && !experiment_frame() && !setting("RECOMP_ANIMATION_DISPATCH_TRACE")) return;
     static uint32_t frame = UINT32_MAX;
     static uint32_t counts[6];
     uint32_t current = recomp_d3d_frame_adapter_swap_counter();
@@ -305,7 +317,7 @@ static void build_palette(void)
     uint32_t bank = *recomp_memory_u32(recomp_runtime.registers.esp+4u);
     uint32_t offset_address = recomp_runtime.registers.edi;
     uint32_t recipe_id = recomp_runtime.registers.eax;
-    bool verify = getenv("RECOMP_SKELETON_VERIFY") != NULL && frame >= 1900u && frame < 2020u;
+    bool verify = setting("RECOMP_SKELETON_VERIFY") != NULL && frame >= 1900u && frame < 2020u;
     uint8_t recipe[16];
     unsigned output_count = 0;
     uint32_t object = 0;
@@ -360,7 +372,7 @@ static void build_palette(void)
         if (mismatch) {
             fprintf(stderr, "recomp animation palette mismatch: frame=%u actor=%u recipe=%u recipe_error=%.9g pose_error=%.9g\n",
                 frame, actor, recipe_id, recipe_error, pose_error);
-            const char *failure = getenv("RECOMP_SPLIT_FAILURE");
+            const char *failure = setting("RECOMP_SPLIT_FAILURE");
             if (failure && actor < 4) {
                 FILE *file = fopen(failure, "wb");
                 if (file) {
@@ -442,11 +454,11 @@ static void build_skeleton(void)
 {
     uint32_t actor = recomp_runtime.registers.eax;
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
-    const char *prefix = getenv("RECOMP_POSE_CAPTURE");
+    const char *prefix = setting("RECOMP_POSE_CAPTURE");
     PoseCapture capture;
     uint32_t state = 0x005e5fe8u + actor * 0x180u;
     uint32_t bank = 0x004d3650u + actor * 0x800u;
-    bool verify = getenv("RECOMP_SKELETON_VERIFY") != NULL;
+    bool verify = setting("RECOMP_SKELETON_VERIFY") != NULL;
     uint32_t experiment = experiment_frame();
     bool experiment_capture = experiment > 0 && actor == experiment_actor() &&
         (frame == experiment || frame+1 == experiment);
@@ -526,7 +538,7 @@ void recomp_animation_probe_capture_frame(uint32_t frame)
 {
 #ifdef RECOMP_FULL_PROGRAM
     uint32_t target = state_capture_frame();
-    const char *prefix = getenv("RECOMP_POSE_STATE_CAPTURE");
+    const char *prefix = setting("RECOMP_POSE_STATE_CAPTURE");
     if (!target || !prefix || (frame != target && frame+1 != target)) return;
     char path[1024];
     int length = snprintf(path, sizeof path, "%s-%u.bin", prefix, frame);
@@ -546,7 +558,7 @@ void recomp_animation_probe_capture_vertices(const struct RecompD3dPresenterDraw
 {
 #ifdef RECOMP_FULL_PROGRAM
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
-    const char *prefix = getenv("RECOMP_POSE_VERTEX_CAPTURE");
+    const char *prefix = setting("RECOMP_POSE_VERTEX_CAPTURE");
     uint32_t target = state_capture_frame() ? state_capture_frame() : experiment_frame();
     if (!prefix || !target || (frame != target && frame+1 != target)) return;
     char path[1024];
@@ -741,8 +753,8 @@ RecompFunction recomp_animation_probe_lookup_manual(uint32_t address)
     case 0x0017d670u: return (experiment_frame() || recomp_animation_split_enabled()) ? draw_object : NULL;
     case 0x000af050u: case 0x000aeef0u: case 0x000af5c0u:
     case 0x000636d0u: case 0x000b01e0u: case 0x00023b10u:
-        if (getenv("RECOMP_ANIMATION_DISPATCH_TRACE") == NULL &&
-            getenv("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0 && !recomp_animation_split_enabled()) return NULL;
+        if (setting("RECOMP_ANIMATION_DISPATCH_TRACE") == NULL &&
+            setting("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0 && !recomp_animation_split_enabled()) return NULL;
         break;
     default: return NULL;
     }

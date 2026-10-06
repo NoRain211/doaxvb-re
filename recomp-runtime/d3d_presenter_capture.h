@@ -5,7 +5,6 @@
 
 #include <cstddef>
 #include <new>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -61,15 +60,24 @@ private:
         size_t offsets[10];
     };
     struct Span { size_t size; size_t offset; };
+    // Open-addressed span index reused by every packet that occupies this slot.
+    // A slot is live only in the current generation, so clear() and add()
+    // allocate nothing once the table has grown to a frame's span count.
+    struct SpanSlot { const void *source; Span span; uint32_t generation; };
 
     RecompD3dPresenterError addRecord(Kind kind, uint32_t base, uint32_t size);
+    size_t findSpan(const void *source, size_t size) const;
+    void insertSpan(const void *source, Span span);
+    size_t copySpan(const void *source, size_t size);
 
     std::vector<Entry> entries_;
     std::vector<CapturedCommand> commands_;
     // Word storage keeps indices and vertex data aligned after relocation.
     // resize() appends uninitialized words; add() overwrites the used bytes.
     std::vector<uint64_t, NoInitAllocator<uint64_t>> payload_;
-    std::unordered_multimap<const void *, Span> spans_;
+    std::vector<SpanSlot> span_slots_;
+    size_t span_count_ = 0;
+    uint32_t span_generation_ = 1;
     bool sealed_ = false;
     bool pose_replay_ = false;
 };

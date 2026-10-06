@@ -982,3 +982,40 @@ worker to MMCSS "Games" scheduling and raising the D3D GPU thread priority did
 not change the outlier count, so neither was kept. A quiet machine, or a
 measurement that excludes host interference, is needed to show whether
 anything in the runtime still causes isolated stalls.
+
+
+## S5: game-thread capture cost
+
+Each tick the game thread copies its draw data into a presenter packet. The
+span index that deduplicates those copies was an `unordered_multimap` that
+allocated on every insert and was freed with every packet. It is now an
+open-addressed table owned by the packet slot. `clear()` starts a new
+generation, so a slot allocates nothing once its table has grown to a tick's
+span count. The animation probe also read its diagnostic settings with
+`getenv` on every dispatch and draw; it now reads each setting once.
+
+Runs on the Exhibition match route (scale 4.5, MSAA 8, SMAA, host input off)
+averaged pacing seconds 80 to 147 and alternated the two builds:
+
+| Build | Split | Game thread | Copy (`add`) | Seal |
+| --- | --- | --- | --- | --- |
+| before | off | 8.22, 8.03 ms | 1.00, 1.03 ms | 0.02 ms |
+| S5 | off | 7.99, 8.46 ms | 0.91, 0.97 ms | 0.02 ms |
+| before | 120 Hz | 9.60, 10.07 ms | 1.45, 1.42 ms | 1.04, 1.11 ms |
+| S5 | 120 Hz | 9.58, 9.17 ms | 1.26, 1.32 ms | 0.91, 0.91 ms |
+
+Copy and seal each fell by about 0.15 ms at 120 Hz. Game-thread totals vary
+by up to 0.5 ms between runs of one build, so the total gain is within noise.
+The remaining copy is mostly vertex and index bytes the game rewrites each
+tick; borrowing them from guest memory would race with the next tick.
+
+Two attract runs of the unchanged build, dumped at ticks 1800, 3600 and 5400,
+differed by 0.73, 0.27 and 0.12 mean luma levels, with 2.1%, 1.1% and 0.3% of
+pixels differing by more than 8. The S5 build against each of them differed by
+0.61 to 0.70, 0.14 to 0.29 and 0.11 to 0.16, with 1.6 to 1.9%, 0.5 to 1.2%
+and 0.3 to 0.7%. The S5 image differences are within that run-to-run noise.
+
+One 120 Hz S5 run ended with `d3d-clear:presenter:9` (presenter closed)
+when the script closed the window at 150 s. The game thread submitted a
+Clear after the presenter had shut down. That is an exit-ordering race in
+the frame adapter, not an in-play failure.
