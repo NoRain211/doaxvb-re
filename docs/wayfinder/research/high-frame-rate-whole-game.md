@@ -3,7 +3,13 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
-## M4: menus and a served point at 120 Hz (2026-10-05)
+## M4: menus and a served point at 120 Hz (2026-10-05, blocked)
+
+M4 is not passed. In game time, the 120 Hz route matches 60 Hz through the
+menus, the serve and the rally. In wall time, the match runs below 120 fps
+on the test machine, so it plays 7-15% slower than 60 Hz and drifts against
+wall-clock audio. The throughput owners are outside the whole-game hand
+source; see the end of this section.
 
 A scripted Exhibition route now reaches a real match at 120 Hz: title,
 Start, the menus, character selection, the match introduction, a serve and
@@ -53,9 +59,10 @@ ball position at `0x00416630`:
 | Rally ends (ball lands) | tick 1189 after six exchanges | tick 1156 after six exchanges |
 | Gravity per tick | -0.0027 | -0.00265 |
 
-Ball flight therefore runs at authored speed. The rally that follows differs
-in its random choices. Two 60 Hz runs with the same inputs also diverge
-later in the match, so the rally is compared by its timing, not its outcome.
+Ball flight therefore takes the same number of game ticks. The rally that
+follows differs in its random choices, through the effect owner described
+below. Two 60 Hz runs on one executable produce identical audio cues through
+the rally. Earlier 60 Hz mismatches came from runs on different builds.
 
 For audio, every DirectSound Play was logged with its present count and
 converted to game ticks. The title loop cue repeats every 240 ticks at both
@@ -80,13 +87,39 @@ ticks after match start, adds one at 36, and moves the 8-value bursts later.
 The RNG state is identical before the first missed burst. A discrete spawn
 test evaluated on each substep is the likely mechanism; it has not been
 located. The changed random sequence then alters later AI and rally choices
-and which effect sounds play.
+and which effect sounds play. Two 120 Hz runs agree through the first 320
+ticks of the match. They then diverge at a streamed-audio refill that lands
+one tick apart, which is expected while game time trails the wall clock.
 
 `private/PlayHfr.cmd` launches the play-test build at 60, 120 or 240 Hz,
 or `off` for the default path. It is a local helper and is not tracked.
 
+The match fails the real-time part of the gate. The 60 Hz match holds 60 fps
+with about 18% of each frame spent waiting for vblank, so a match frame costs
+about 13.7 ms. At 120 Hz each pass costs 9.1-9.8 ms against an 8.3 ms budget,
+and the match runs at 102-111 fps (13-20 of 23 seconds below 118 fps). The
+attract demo holds 120 fps, as measured for M3.
+
+The scene and scheduler manual lookups read the environment on every
+dispatched call to a hand owner. They now read it once. A stack-walking
+profile of the match then attributes the game thread as follows:
+
+| Owner | Share of game thread |
+| --- | --- |
+| Generated D3D8 indexed draw (`0x001E78B0`), run by the draw adapter for byte-identical push-buffer bookkeeping | 29% |
+| `animation_probe.c` manual lookup reading the environment on every dispatch | 11% sampled; at most 0.3 ms per pass in an interleaved A/B |
+| Presenter capture packet copy and allocation per draw | 8% |
+| Guest memory helpers (`recomp_memory`, `recomp_guest_load`) | 6% |
+| Whole-game hand source (excluding the generated work it calls) | under 2% |
+
+A cached-settings patch for the probe is prepared privately. It applies to
+HEAD, but the file belongs to the split-rate work and was not changed here.
+Passing the gate needs another 10-15% from the D3D8 draw path or the
+presenter capture copy: the wholesale D3D8 replacement already listed as open
+work, or a cheaper capture packet.
+
 These are agent smoke runs. They show that the route reaches the match and
-that the measured timings agree; they are not a user play test. Captures,
+that game-time timings agree; they are not a user play test. Captures,
 traces and logs remain private.
 
 ## M3: 120 Hz throughput and smoothness (2026-10-05)
