@@ -286,20 +286,24 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
     }
     ++draws;
     uint32_t object = *recomp_memory_u32(0x00a2479cu);
+    // Palettes are built inside each object's draw, so when several bindings
+    // match (one object drawn twice with equal matrices) the newest is this draw's.
     const SplitBinding *found = NULL;
-    for (unsigned i = 0; binding_frame == frame && i < binding_count; ++i) {
+    for (unsigned i = binding_frame == frame ? binding_count : 0; i-- > 0;) {
         const SplitBinding *b = bindings+i;
         if (b->object == object && b->count == count &&
             memcmp(b->original, worlds, count*64) == 0) {
-            if (found && memcmp(found, b, sizeof *b)) {
-                fprintf(stderr, "recomp split ambiguous binding: frame=%u object=0x%08x count=%u actor=%u/%u joint=%u/%u recipe=%d offsets=%d initial=%d\n",
-                    frame, object, count, found->actor, b->actor, found->joint, b->joint,
+            if (!found) { found = b; continue; }
+            static unsigned reported;
+            if (memcmp(found, b, sizeof *b) && reported < 16) {
+                ++reported;
+                fprintf(stderr, "recomp split ambiguous binding: frame=%u object=0x%08x count=%u newest=%u/%u actor=%u/%u joint=%u/%u recipe=%d offsets=%d initial=%d\n",
+                    frame, object, count, (unsigned)(found-bindings), i, found->actor, b->actor, found->joint, b->joint,
                     memcmp(found->recipe, b->recipe, sizeof b->recipe) != 0,
                     memcmp(found->offsets, b->offsets, sizeof b->offsets) != 0,
                     memcmp(&found->initial, &b->initial, sizeof b->initial) != 0);
-                recomp_stop(1, "split:ambiguous-binding");
             }
-            found = b;
+            break;
         }
     }
     unsigned actor = found ? found->actor : UINT32_MAX;

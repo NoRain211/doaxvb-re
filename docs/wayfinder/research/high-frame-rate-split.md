@@ -1019,3 +1019,33 @@ One 120 Hz S5 run ended with `d3d-clear:presenter:9` (presenter closed)
 when the script closed the window at 150 s. The game thread submitted a
 Clear after the presenter had shut down. That is an exit-ordering race in
 the frame adapter, not an in-play failure.
+
+
+## S3: pool hopping, shops and the match
+
+Pool hopping stopped with `split:ambiguous-binding`. With the binding
+details logged, a 120 Hz run showed one girl (actor 0, one object, four
+palette influences) building three palettes per tick with the same recipe,
+offsets and output matrices. Only the `initial` matrix differed, so the
+game draws her three times per tick with different pass transforms, most
+likely the girl and her pool reflections. Each draw builds its palette just
+before drawing, so the newest matching binding belongs to the current draw.
+The draw lookup now searches newest first and logs the first 16 ties instead
+of stopping.
+
+Agent smoke runs at 120 Hz, scale 2, MSAA 8 and SMAA, checked 240-present
+bursts with `s3check.py`, which flags blocks that change only every second
+present (60 Hz stepping), single-present flicker, pops and repeated frames:
+
+| Scene | Moving blocks | 60 Hz stepped | Flicker presents | Pops | Repeats |
+| --- | --- | --- | --- | --- | --- |
+| Pool hopping | 300 | 83 | 4 (burst end) | 7 | 0 |
+| Sports shop | 111 | 50 | 0 | 0 | 0 |
+| Exhibition match | 1007 | 0 | 0 | 0 | 0 |
+
+The pool-hopping flicker presents and pops are in the last ten presents of
+the burst and cover the full frame, which matches a shot change. The 60 Hz
+steps in pool hopping are spread over the water. In the shop they sit in one
+region at a ratio of 1.0, which fits the rotating item preview. Neither
+object is an actor or a single-bone rigid draw, so it gets the interpolated
+camera but keeps its 60 Hz motion. Both runs continued without a stop.
