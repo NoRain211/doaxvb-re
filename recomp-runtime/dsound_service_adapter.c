@@ -3,6 +3,7 @@
 #include "stop_report.h"
 #include "audio_output.h"
 #include "xbox_adpcm.h"
+#include "game_scheduler.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -143,12 +144,27 @@ static uint64_t buffer_now_ms(void)
 #ifdef RECOMP_DSOUND_TEST_CLOCK
     uint64_t recomp_test_dsound_now_ms(void);
     return recomp_test_dsound_now_ms();
-#elif defined(_WIN32)
+#else
+    /* Paired-run fixture: buffers play in authored game ticks, so audio-timed
+       events, such as the match introduction's shot changes, land on the
+       same tick at every rate. Playback then drifts from the host output. */
+    static int game_clock = -1;
+    if (game_clock < 0) {
+        const char *setting = getenv("RECOMP_DSOUND_GAME_CLOCK");
+        game_clock = setting != NULL && strcmp(setting, "1") == 0;
+    }
+    if (game_clock) {
+        const unsigned hz = recomp_game_scheduler_hz();
+        const unsigned steps = hz > 60u ? hz / 60u : 1u;
+        return (uint64_t)((recomp_game_pass() + steps - 1u) / steps) * 1000u / 60u;
+    }
+#ifdef _WIN32
     return GetTickCount64();
 #else
     struct timespec now;
     timespec_get(&now, TIME_UTC);
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+#endif
 #endif
 }
 

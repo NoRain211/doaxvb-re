@@ -53,6 +53,23 @@ static bool whole_tick(unsigned *phase, unsigned steps)
     return true;
 }
 
+/* Draw-time effects advance once per tick, on its last pass, where the actors
+   have completed the tick. The first draw of a scene runs them at once: it
+   seeds the effects from rand(), which a held pass would discard. */
+static bool effects_authored(void)
+{
+    static uint32_t last_pass;
+    static bool authored, ran_early;
+    const uint32_t pass = recomp_game_pass();
+    if (pass == last_pass) return authored;
+    const bool first = pass != last_pass + 1u;
+    const bool tick_end = recomp_game_tick_end_pass();
+    last_pass = pass;
+    authored = first || (tick_end && !ran_early);
+    ran_early = first ? !tick_end : ran_early && !tick_end;
+    return authored;
+}
+
 static void next_frame(void)
 {
     const uint32_t slot = 0x005f2c38u + *recomp_memory_u32(0x005f2e5cu) * 32u;
@@ -283,7 +300,14 @@ static void actor_frame_draw(void)
         }
     }
     render_call(frame, 10, 0x000c12b0u);
+    /* Its layer callbacks advance pause-aware effects that draw from rand(). */
+    const bool hold = !effects_authored() && !byte(0x004d56efu);
+    const uint32_t rng = hold ? recomp_game_rng_address() : 0;
+    const uint32_t rng_state = rng ? *recomp_memory_u32(rng) : 0;
+    if (hold) set_byte(0x004d56efu, 1);
     render_call(frame, 11, 0x0017ef70u);
+    if (hold) set_byte(0x004d56efu, 0);
+    if (rng) *recomp_memory_u32(rng) = rng_state;
     recomp_runtime.registers.esp += 4u;
     if (recomp_game_timing_enabled() && ++render_pass % 300 == 0) {
         fprintf(stderr, "recomp render timing: pass=%u part_ms=", render_pass);
@@ -321,7 +345,14 @@ static void actor_frame_fiber(void)
 
 void recomp_game_scenery_draw(void)
 {
-    static unsigned wind_phase;
+    /* Body points, 4 actors x 32 of {current xyzw, previous xyzw}. The actor
+       update fiber refreshes them every pass; the effect spawn test
+       (0x0006D2E0) compares current with previous, so above 60 Hz it is given
+       the points from the previous authored tick. */
+    enum { BODY_POINTS = 0x004d5700u, BODY_POINT_BYTES = 128u * 32u };
+    static uint8_t tick_points[BODY_POINT_BYTES];
+    static uint32_t tick_points_pass;
+    static bool tick_points_valid;
     const uint32_t stack = recomp_runtime.registers.esp;
     const uint32_t frame = *recomp_ebp_register();
     const uint32_t saved_esi = recomp_runtime.registers.esi;
@@ -340,10 +371,17 @@ void recomp_game_scenery_draw(void)
         push(saved_ebx);
         recomp_runtime.registers.ebx = previous_context;
         if (byte(0x004d6fd4u)) {
-            const bool authored_tick =
-                whole_tick(&wind_phase, recomp_game_scheduler_hz() / 60u);
-            const bool hold_effects = !authored_tick && !byte(0x004d56efu) &&
-                (draw == 0x0014bbb0u || draw == 0x0016a400u || draw == 0x00154a90u);
+            const uint32_t pass = recomp_game_pass();
+            const bool authored_tick = effects_authored();
+            const bool effects = draw == 0x0014bbb0u || draw == 0x0016a400u ||
+                draw == 0x00154a90u || draw == 0x00163710u;
+            const bool hold_effects = !authored_tick && !byte(0x004d56efu) && effects;
+            const bool whole_tick_points =
+                authored_tick && effects && recomp_game_scheduler_hz() > 60u;
+            /* Points saved more than one tick ago, e.g. before a scene
+               change, would read as a jump. */
+            const bool use_tick_points = whole_tick_points && tick_points_valid &&
+                tick_points_pass + recomp_game_scheduler_hz() / 60u == pass;
             if (hold_effects) set_byte(0x004d56efu, 1);
             *recomp_ebp_register() = frame;
             const uint32_t wind_rng = recomp_game_debug_rng_state();
@@ -357,7 +395,22 @@ void recomp_game_scenery_draw(void)
                shared rand() state is restored as well. */
             const uint32_t rng = hold_effects ? recomp_game_rng_address() : 0;
             const uint32_t rng_state = rng ? *recomp_memory_u32(rng) : 0;
+            uint8_t points[BODY_POINT_BYTES];
+            if (whole_tick_points) {
+                recomp_guest_load(points, BODY_POINTS, sizeof points);
+                if (use_tick_points)
+                    for (uint32_t i = 0; i < BODY_POINT_BYTES; i += 32u)
+                        recomp_guest_store(BODY_POINTS + i + 16u, tick_points + i, 16u);
+            }
             call(draw);
+            if (whole_tick_points) {
+                if (use_tick_points)
+                    for (uint32_t i = 0; i < BODY_POINT_BYTES; i += 32u)
+                        recomp_guest_store(BODY_POINTS + i + 16u, points + i + 16u, 16u);
+                memcpy(tick_points, points, sizeof points);
+                tick_points_pass = pass;
+            }
+            if (authored_tick) tick_points_valid = whole_tick_points;
             if (rng) *recomp_memory_u32(rng) = rng_state;
             if (scenery_rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp scenery rng: draw=%08x kind=%u before=%08x after=%08x\n", draw, kind, scenery_rng, recomp_game_debug_rng_state());
             recomp_runtime.registers.esp += 4;

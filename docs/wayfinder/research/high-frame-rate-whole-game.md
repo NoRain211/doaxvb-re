@@ -3,6 +3,67 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## P2: 120 Hz match logic against 60 Hz (2026-10-06, partial)
+
+Gate: the match introduction keeps its audio timing at 60 Hz. The random
+sequence must match 60 Hz through the first introduction shot, and from
+match start the per-tick logic must match 60 Hz, with the audio-timed shot
+changes excluded. The first part passes. The second part holds through the
+introduction and the start of the serve, then fails at match tick 650.
+
+Comparisons use the scripted Exhibition route with poll-indexed inputs and
+the per-fiber `rand()` trace. A draw matches when the same fiber leaves the
+same `rand()` state on the same match tick.
+
+| Pair | First differing draw |
+| --- | --- |
+| 60 Hz vs 60 Hz, wall-clock audio | tick 303 or 462, at an introduction shot change |
+| 60 Hz vs 60 Hz, `RECOMP_DSOUND_GAME_CLOCK=1` | none through the end of the run (1822 draws) |
+| 120 Hz vs 60 Hz, game-clock audio, before the sound-service change | tick 302: the shot changes one tick early |
+| 120 Hz vs 60 Hz, game-clock audio, after | tick 650, an effect burst during the serve (648 equal draws) |
+| 120 Hz wall-clock audio vs 60 Hz game-clock audio | tick 650 (648 equal draws) |
+
+Three owners changed:
+
+- **Draw-time effects.** The effect layer callbacks under `0x0017EF70` and the
+  scenery draws, now including `0x00163710`, advance once per tick on its last
+  pass, where the actors have finished the tick. The first draw of a scene
+  still runs them at once, because it seeds the effects from `rand()`. On the
+  advancing pass, the effect spawn test (`0x0006D2E0`) reads the previous tick's
+  body points (`0x004D5700`, 4 actors x 32 points) instead of the previous
+  pass's. Held passes keep the pause flag and the `rand()` state.
+- **Sound service `0x000BAB70`.** The main loop called it on every pass, so at
+  120 Hz it ran twice per tick. It counts the delay after a voice ends in calls
+  (`0x00B3BAD4` up to 60), and the introduction advances a shot from that count
+  (`0x0009BA90`), so the shot came one tick early. It now runs once per tick,
+  after the tick's last fiber pass, inside the tick scope.
+- **Pass bookkeeping.** `recomp_game_pass_begin()` starts each game-loop pass
+  and records the authored pass and the tick's last pass. The draw-time effects
+  and the unit test use it instead of the D3D swap counter.
+
+`RECOMP_DSOUND_GAME_CLOCK=1` is a test fixture. It drives the DirectSound
+buffer clock from authored game ticks, so voices end on the same tick at every
+rate. Without it the buffer clock is `GetTickCount64`, whose 10-16 ms
+resolution moves introduction shot changes by a tick even between two 60 Hz
+runs. Playback then drifts from the host output, so it is for paired runs only.
+
+The tick-650 split is a borderline spawn in `0x00163710`: one particle fewer at
+120 Hz on tick 650 and no 34-draw burst on tick 651. The body points at a
+tick's last pass already differ from 60 Hz by one float ulp (2.4e-7) in x and z
+from the first match ticks. At the same tick end, the actor records at
+`0x004D6FF0` (`0xBC` per actor) differ by 1e-4 to 3e-3 in position, and the
+field at +0x34 reads 22.5 against 22. The per-pass actor update therefore does
+not land on the authored state at the tick end. Effects share `rand()` with
+gameplay, so later AI and rally choices follow the changed sequence. Making the
+clip cursor reach its tick-end value in one sum (the same arithmetic as 60 Hz)
+did not change the body points and was dropped. The next step is an actor
+update whose tick-end pass reproduces the authored step from the tick-start
+state, with held passes only for presentation.
+
+At 60 Hz every pass is authored and ends a tick, so none of these paths
+changes behavior: a 60 Hz run on the new build matches the earlier 60 Hz runs
+through the end of the run. These are agent smoke runs; traces stay private.
+
 ## P1: indexed draws skip the generated D3D8 body (2026-10-05)
 
 The draw adapter for `D3DDevice_DrawIndexedVertices` (`0x001E78B0`) no

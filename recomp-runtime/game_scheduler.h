@@ -11,6 +11,12 @@ void recomp_game_scheduler_tick(void);
 unsigned recomp_game_scheduler_hz(void);
 /* True on the pass that polled input, which starts an authored tick. */
 bool recomp_game_authored_pass(void);
+/* True on the last pass of a tick, where game time equals the 60 Hz tick. */
+bool recomp_game_tick_end_pass(void);
+/* Starts a game-loop pass; true when it is the tick's authored pass. */
+bool recomp_game_pass_begin(void);
+/* Passes started since boot; consecutive passes differ by one. */
+uint32_t recomp_game_pass(void);
 /* Once-per-tick work sees the authored step and, on a pass that did not
    poll, the tick's input edges; end restores this pass's values. */
 bool recomp_game_tick_scope_begin(void);
