@@ -1,4 +1,5 @@
 #include "kernel_abi.h"
+#include "xbox_memory_layout.h"
 
 #include <stdio.h>
 #include <time.h>
@@ -13,7 +14,7 @@ enum {
 static const uint32_t STATUS_SUCCESS = 0x00000000u;
 static const uint32_t STATUS_INVALID_HANDLE = 0xc0000008u;
 static const uint32_t STATUS_INVALID_PARAMETER = 0xc000000du;
-static const uint32_t SYNTHETIC_THREAD_OBJECT = 0x00740300u;
+static const uint32_t SYNTHETIC_THREAD_OBJECT = XBOX_KERNEL_DATA_BASE + 0x300u;
 
 typedef struct SyntheticEvent {
     uint32_t handle;

@@ -6,6 +6,7 @@
 #include "xapi_time_adapter.h"
 #include "program_manual.h"
 #include "runtime.h"
+#include "xbox_memory_layout.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -18,7 +19,7 @@ enum {
     TEST_CALL_SIZE = 0x00001000u,
     TEST_ENTRY_ESP = TEST_CALL_BASE + 0x100u,
     TEST_DEVICE = 0x001f3120u,
-    TEST_KERNEL_DATA_BASE = 0x00740000u,
+    TEST_KERNEL_DATA_BASE = XBOX_KERNEL_DATA_BASE,
     TEST_KERNEL_DATA_SIZE = 0x00001000u,
     TEST_KE_TICK_COUNT = TEST_KERNEL_DATA_BASE + 0x40u,
 };
