@@ -1,8 +1,69 @@
 # Split-rate animation and camera rendering
 
-Design: 2026-10-03. M4 checkpoint: 2026-10-05. Opt-in numeric split-rate
-presentation has passed the bounded replay, pose, pacing and smoke gates below.
-The local build is ready for a user play test; broader release coverage remains open.
+Design: 2026-10-03. M4 checkpoint: 2026-10-05. Release candidate: 2026-10-06.
+Opt-in split-rate presentation is implemented. It has passed the bounded
+replay, pose, pacing and smoke gates below and awaits a user play test. The
+sections after "Current state" are a dated log; statements in them describe
+the code at their checkpoint.
+
+## Current state
+
+Gameplay, input, physics, animation events and sound keep the game's 60 Hz
+tick. The render worker presents each captured tick several times. At each
+present it interpolates the camera, skinned character poses, the ball and
+singly drawn rigid props between the previous tick and the current one, so
+the picture is one tick behind the simulation.
+
+Settings:
+
+| Variable | Effect |
+| --- | --- |
+| `RECOMP_SPLIT_RATE` | Unset, `0` or invalid: off, and presentation is the ordinary 60 Hz path. `auto`: the primary display's refresh rate. A number from 60 to 1000: that present rate. |
+| `RECOMP_SPLIT_STRICT=1` | Stop on any unexpected split-rate state instead of falling back. For agent gates. |
+| `RECOMP_SPLIT_TRACE=1` | Log per-tick camera and actor steps and cut decisions. |
+| `RECOMP_SPLIT_TRACE=present` | Buffer one record per present and write them at exit, or after `RECOMP_SPLIT_TRACE_LIMIT` presents. Without a limit the buffer grows for the whole run. |
+| `RECOMP_SPLIT_FAILURE=path` | Write the inputs of a palette mismatch to `path`. |
+
+The rate must equal the display's refresh rate. At startup the presenter
+reads the primary display's refresh rate from the compositor. A requested rate
+within 1% of it is replaced by the exact display rate, so `120` on a
+119.88 Hz mode does not drift. With `--vsync`, a rate above the display
+rate is lowered to it. A lower rate is kept with a warning: on a fixed-rate
+display it produces uneven frame intervals. Variable refresh is untested;
+presentation always waits for vblank with `--vsync`. Do not combine split
+rate with a whole-game rate setting.
+
+Split rate changes only presentation. When the game reaches a state the
+interpolation does not model, such as an untested seam stream, a camera that
+the native camera model does not reproduce, or a palette that differs from
+the solved pose, the affected draws or actor are shown at their 60 Hz state
+for that tick. The reason is logged once as
+`recomp split: fallback reason=...`. `RECOMP_SPLIT_STRICT=1` turns these
+into stops for test gates. Closing the window exits normally whichever
+presenter call notices the close first.
+
+Known limitations:
+
+- Draws that use a vertex program are not interpolated, including the camera.
+  This most likely explains why the pool water steps at 60 Hz. Those draws
+  also lag the interpolated camera by up to one tick while it moves.
+- Objects that are neither characters, the ball nor singly drawn rigid props
+  move at 60 Hz: the rotating shop preview, repeated props such as palm
+  trees, particles, scrolling textures and the HUD. They show the current
+  tick from the start of its interval, so they lead the interpolated
+  characters by up to one tick.
+- A camera slot built several times in one tick, such as an offscreen
+  reflection pass, is paired only for its last build.
+- Cuts and teleports are detected from the ratio of successive steps. A cut
+  between two very similar shots is not detected; it also looks the same.
+- A resource release in a tick is applied on each of its presents, so its
+  textures are uploaded again on each.
+- Interpolation adds one 60 Hz tick of display latency plus the extra swap
+  chain buffer. The total has not been measured.
+- Only the primary display's refresh rate is read.
+
+The release review of this track is
+[high-frame-rate-split-review.md](high-frame-rate-split-review.md).
 
 ## Recommendation and evidence limits
 
@@ -393,7 +454,7 @@ split-rate change.
 The remaining first-experiment work is pose-cache/mirroring equivalence,
 channel-aware blending, scratch skeleton/IK and palette construction, and the
 normal/half/next-tick rasterized comparison with unchanged gameplay state.
-`RECOMP_SPLIT_RATE` is not implemented. No 120 Hz result follows from the scalar
+At this checkpoint `RECOMP_SPLIT_RATE` did not exist yet. No 120 Hz result follows from the scalar
 decoder tests. Revised planning estimate: 4-8 focused days for the first visual
 experiment, including dispatch integration; the integrated mode remains roughly
 4-8 weeks, conditional on palette identity and render-pass coverage.
@@ -563,7 +624,7 @@ Synthetic tests exercise IK reach, world
 translation, look-at, morph, terrain, derived blending, repeatability, input
 immutability and atomic rejection. They do not establish natural-scene coverage
 of active look-at, morph or sloped terrain. Half-tick rendering and
-`RECOMP_SPLIT_RATE` are not implemented by this checkpoint. The remaining
+`RECOMP_SPLIT_RATE` did not exist yet at this checkpoint. The remaining
 half-tick experiment needs independent clip/mirror/blend sampling, a frozen
 controller snapshot, tagged retained draws, and camera/pass binding. Planning
 estimate: 3-6 focused days for that visual experiment; 4-8 weeks for useful
@@ -630,8 +691,8 @@ remaining seam draws to their geometry writers, compare ordinary-tick geometry,
 then evaluate it with the new pose and frozen physics inputs. Do not hide the
 failure by interpolating final matrices or by silently omitting attachments.
 
-`RECOMP_SPLIT_RATE` remains unimplemented because its prerequisite visual gate
-has not passed. Camera evaluation, all-actor coverage, packet delay/lifetime,
+At this checkpoint `RECOMP_SPLIT_RATE` was not yet implemented because its prerequisite visual gate
+had not passed. Camera evaluation, all-actor coverage, packet delay/lifetime,
 cut/topology invalidation and measured 120 Hz pacing are also outstanding.
 Revised planning estimate: 1-2 focused weeks to resolve the geometry gate, then
 4-8 weeks for useful integrated split-rate presentation. The breadth of the
@@ -749,7 +810,7 @@ existing presenter-close error path; this is not a clean-exit claim. Private
 captures retain the images and numeric checks. Twenty CTest checks and the
 full tools suite passed; public export verification passed. These are bounded
 agent smoke observations, not user gameplay acceptance. M3 and M4 remain open;
-`RECOMP_SPLIT_RATE` is not enabled by this milestone.
+`RECOMP_SPLIT_RATE` was not yet enabled at this milestone.
 
 
 ## M3: numeric split-rate presentation
@@ -762,7 +823,8 @@ Do not combine it with the separate whole-game high-rate setting.
 
 The worker owns the completed packet, clip-channel endpoints, skeleton tables,
 actor targets, palette recipes, seam inputs and camera endpoints. It samples
-the actual elapsed fraction of the 60 Hz interval at each present, clamped to
+the fraction of the 60 Hz interval at each present's scheduled time (the
+elapsed time at the time of this checkpoint; S2 changed it), clamped to
 [0,1). There is no midpoint or double-rate assumption in evaluation. Presentation
 has one tick of visual delay. Gameplay root motion, events, collision, IK target
 updates and secondary simulation continue at 60 Hz; only visual root position,
@@ -919,8 +981,8 @@ declines. Cut ticks and their present numbers in this run:
 | | | | | 8435 | 16880-16881 |
 | | | | | 8657 | 17324-17325 |
 
-A snapped tick holds the previous visual state for one 60 Hz interval, which is
-exactly the ordinary presentation. A fast real turn can occasionally exceed the
+A snapped tick shows its own unblended state for the whole 60 Hz interval,
+which is exactly the ordinary presentation. A fast real turn can occasionally exceed the
 ratio (for example a 24-degree root turn at tick 1999). That costs one
 unblended tick and causes no visual error. The ratio test is a heuristic. A cut
 between two nearly identical shots would not be detected, but it would also
@@ -977,7 +1039,7 @@ packets at the end of the attract demo (tick 8662). It took 16.7, 16.8 and
 **The S2 gate is not met.** The remaining outliers are single slow presents
 that do not repeat at the same ticks across runs. GPU load stayed at 33 to 39%.
 Per-process sampling showed other desktop programs active at those moments,
-for example Discord at 118 to 160% CPU during two of the stalls. Raising the
+one of them above one full core during two of the stalls. Raising the
 worker to MMCSS "Games" scheduling and raising the D3D GPU thread priority did
 not change the outlier count, so neither was kept. A quiet machine, or a
 measurement that excludes host interference, is needed to show whether
@@ -1018,7 +1080,8 @@ and 0.3 to 0.7%. The S5 image differences are within that run-to-run noise.
 One 120 Hz S5 run ended with `d3d-clear:presenter:9` (presenter closed)
 when the script closed the window at 150 s. The game thread submitted a
 Clear after the presenter had shut down. That is an exit-ordering race in
-the frame adapter, not an in-play failure.
+the frame adapter, not an in-play failure. The release candidate routes every
+presenter call through the Swap close path, so such a close now exits normally.
 
 
 ## S3: pool hopping, shops and the match
@@ -1034,8 +1097,9 @@ The draw lookup now searches newest first and logs the first 16 ties instead
 of stopping.
 
 Agent smoke runs at 120 Hz, scale 2, MSAA 8 and SMAA, checked 240-present
-bursts with `s3check.py`, which flags blocks that change only every second
-present (60 Hz stepping), single-present flicker, pops and repeated frames:
+bursts of frame dumps with a local script. It divides each frame into blocks
+and flags blocks that change only on every second present (60 Hz stepping),
+single-present flicker, sudden pops and repeated frames:
 
 | Scene | Moving blocks | 60 Hz stepped | Flicker presents | Pops | Repeats |
 | --- | --- | --- | --- | --- | --- |
@@ -1049,7 +1113,9 @@ were not located. The 60 Hz
 steps in pool hopping are spread over the water. In the shop they sit in one
 region at a ratio of 1.0, which fits the rotating item preview. Neither
 object is an actor or a single-bone rigid draw, so it gets the interpolated
-camera but keeps its 60 Hz motion. Both runs continued without a stop.
+camera but keeps its 60 Hz motion. Both runs continued without a stop. The
+release review later found that vertex-program draws receive no camera
+interpolation either; if the water is such a draw, that explains its steps.
 
 
 ## S4: 100, 144 and 240 Hz

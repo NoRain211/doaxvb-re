@@ -9,6 +9,22 @@ runtime claim below is a falsifiable hypothesis with a proposed check.
 
 Line numbers refer to `406b367`.
 
+## Status on the split-rate branch
+
+The split commits were ported alone onto `origin/main` as
+`codex/split-rate`, which resolves H3. The whole-game scheduler, scene,
+camera, world and sound work stays on its own track. The `aed179d`
+checkpoint was ported because it touches only split-rate files.
+
+| Finding | Resolution |
+| --- | --- |
+| H1 | Split guards fall back to the captured 60 Hz draw or actor state and log each reason once. `RECOMP_SPLIT_STRICT=1` restores the stops for gates. Verification and pose experiments still stop. |
+| H2 | Every frame-adapter presenter call, including the kernel's memory release, takes the Swap close path. |
+| M1 | `RECOMP_SPLIT_RATE=auto` uses the primary display refresh. A rate within 1% snaps to it; with `--vsync` a higher rate is lowered to it, and a lower rate warns. Variable refresh remains untested. |
+| Docs | The design notes have a current-state section with settings and known limitations, and the errors listed below are corrected. |
+
+M2 to M6 and L1 to L5 remain open.
+
 ## Summary
 
 The core design is sound and matches standard practice. Gameplay keeps its
