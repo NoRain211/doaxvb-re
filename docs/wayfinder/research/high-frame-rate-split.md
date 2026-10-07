@@ -1141,3 +1141,33 @@ another agent's runs, so a cold file cache is a possible cause; it is not
 tested. Excluding that load, the largest 100 Hz interval was 22.8 ms at the
 first second. At 240 Hz, 6.9% of intervals miss the target by more than
 1 ms and the p99 is 5.7 ms; the mean interval still holds the rate.
+
+
+## Release candidate smoke and display timing
+
+Agent smoke runs on 2026-10-07 used the release candidate on its own branch.
+Each ran the attract route for 75 seconds with host input off, scale 4.5
+(3840 by 2160), MSAA 8, SMAA and `--vsync`, then closed the window. The
+primary display ran at 239.992 Hz, as read from the compositor. PresentMon
+2.6.0 recorded 30 seconds of each run, starting 30 seconds after launch.
+
+| Setting | Presenter rate | Presents | Displayed | Displayed rate | Median | p99 | Over 1.5x mean | Present to display (median) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| off | 60 | 1,798 | 1,798 | 60.04/s | 16.67 ms | 21.74 ms | 3 | 9.2 ms |
+| `auto` | 239.992 | 7,190 | 7,040 | 234.82/s | 4.17 ms | 8.65 ms | 307 | 15.9 ms |
+| `144` | 144 (warned) | 5,423 | 4,154 | 138.63/s | 8.32 ms | 11.80 ms | 98 | 9.3 ms |
+
+All three runs exited with `host-window-close` and exit code 0. Each had
+zero backend draw declines and logged no split fallback. `auto` selected
+the display rate. `144` kept its rate and logged the mismatch warning.
+
+Display-side timing confirms the review's pacing concern. At 144 Hz on the
+240 Hz display, 23% of presents never reached the screen. The rest alternated
+between one and two refresh intervals (median 8.32 ms, twice the refresh). One
+interval took 462 ms; it was not investigated. At the matching 240 Hz rate, 2%
+of presents were dropped and 4.3% of intervals exceeded 6.4 ms. Every frame
+went through desktop composition ("Composed: Flip"), not independent flip.
+Composition, together with the third buffer, adds latency: the median
+present-to-display time was 15.9 ms against 9.2 ms with split rate off.
+Variable refresh, and a 120 or 144 Hz display mode, were not measured. These
+are agent smoke observations, not a user play test.
