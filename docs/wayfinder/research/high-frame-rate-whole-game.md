@@ -37,6 +37,29 @@ W2 must handle discontinuities, and W3 must measure and reduce the cost of the
 hidden authoritative render plus visible renders. The first profile identifies
 actor rendering, secondary deformation and native draw-packet copies as owners.
 
+## W2: camera cuts and teleports (2026-10-07)
+
+Display passes show the newer completed tick unchanged when the game signals a
+discontinuity. Every sample snaps after a scene change or when the active view
+selector at 0x0041efe7 changes. A camera block snaps when its mode or active byte
+changes, its age counter resets, or its eye or target moves farther in one tick
+than the larger of 1 unit and a quarter of its eye-to-target distance. An
+actor snaps when its active or type byte changes or its root moves more than
+0.5 units; the ball snaps beyond 2 units. Samples whose endpoints are equal are
+copied without interpolation.
+
+The scripted Exhibition smoke at 120 Hz logged 32 cut ticks and 46 display
+frames inside them. None were blended: each cut frame's camera words equal the
+completed tick. These cuts include the replay and serve cuts at ticks 5748 and
+5772. An 80-frame capture covering ticks 5721-5790 was taken for review. Root
+and bone positions still had zero overshoots over 13,923 frames, and all 8,567
+ticks matched the 60 Hz run.
+
+Both W2 runs ended with `d3d-clear:presenter:9` when the harness closed the
+window. A `Clear` call reached the closed presenter before the next present did.
+`Clear` now handles a closed presenter as a normal window close, the same way
+present does.
+
 ## G1-G3: 60 Hz ticks with rolled-back display passes (2026-10-07)
 
 The pass design replaces the substep design below. Every tick runs the

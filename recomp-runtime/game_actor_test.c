@@ -27,6 +27,9 @@ int recomp_game_actor_test(void)
     if (recomp_game_display_angle(65530, 6, 0.5f) != 0 ||
         recomp_game_display_lerp(3, 2, -1) != 3 ||
         recomp_game_display_lerp(3, 2, 2) != 2) return 0;
+    const float origin[3] = {0, 0, 0}, nearby[3] = {0.1f, 0, 0}, jump[3] = {1, 0, 0};
+    if (recomp_game_display_jump(origin, nearby, 0.5f) ||
+        !recomp_game_display_jump(origin, jump, 0.5f)) return 0;
     for (unsigned steps = 1; steps <= 4; steps *= 2) {
         uint16_t age = 0;
         unsigned phase = 0;
