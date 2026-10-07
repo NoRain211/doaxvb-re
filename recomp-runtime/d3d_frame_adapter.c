@@ -97,6 +97,18 @@ RecompD3dPresenter *recomp_d3d_frame_adapter_presenter(void)
     return presenter;
 }
 
+void recomp_d3d_frame_adapter_check(const char *site, RecompD3dPresenterError error)
+{
+    if (error == RECOMP_D3D_PRESENTER_OK) return;
+    if (error == RECOMP_D3D_PRESENTER_CLOSED) {
+        recomp_d3d_frame_adapter_reset();
+        fprintf(stderr, "recomp runner: window closed; exiting normally\n");
+        recomp_stop(0, "host-window-close");
+    }
+    fprintf(stderr, "recomp d3d: %s presenter failed (%u)\n", site, (unsigned)error);
+    recomp_stop(2, "%s:presenter:%u", site, (unsigned)error);
+}
+
 bool recomp_d3d_frame_adapter_target(RecompD3dPresenterTarget *target)
 {
     uint32_t color;
@@ -181,12 +193,7 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
-    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
-        recomp_stop(
-            2,
-            "d3d-reset:presenter:%u",
-            (unsigned)presenter_error);
-    }
+    recomp_d3d_frame_adapter_check("d3d-reset", presenter_error);
 }
 
 void recomp_d3d_clear_adapter(void)
@@ -215,16 +222,7 @@ void recomp_d3d_clear_adapter(void)
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
-    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
-        fprintf(
-            stderr,
-            "recomp d3d: Clear presenter failed (%u)\n",
-            (unsigned)presenter_error);
-        recomp_stop(
-            2,
-            "d3d-clear:presenter:%u",
-            (unsigned)presenter_error);
-    }
+    recomp_d3d_frame_adapter_check("d3d-clear", presenter_error);
 
     recomp_runtime.registers.eax = saved_eax;
     recomp_runtime.registers.esp = entry_esp + 28u;
@@ -357,21 +355,7 @@ void recomp_d3d_swap_adapter(void)
         presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(
         result.command.data.present.swap_counter, (uint32_t)presenter_error);
-    if (presenter_error == RECOMP_D3D_PRESENTER_CLOSED) {
-        recomp_d3d_frame_adapter_reset();
-        fprintf(stderr, "recomp runner: window closed; exiting normally\n");
-        recomp_stop(0, "host-window-close");
-    }
-    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
-        fprintf(
-            stderr,
-            "recomp d3d: Swap presenter failed (%u)\n",
-            (unsigned)presenter_error);
-        recomp_stop(
-            2,
-            "d3d-swap:presenter:%u",
-            (unsigned)presenter_error);
-    }
+    recomp_d3d_frame_adapter_check("d3d-swap", presenter_error);
 
 #ifdef _WIN32
     if (InterlockedCompareExchange(&console_break_requested, 0, 0) != 0 &&
@@ -1390,9 +1374,7 @@ static void set_gamma_ramp(void)
     command.type = RECOMP_D3D_PRESENTER_COMMAND_GAMMA;
     memcpy(command.data.gamma, ramp, sizeof command.data.gamma);
     error = recomp_d3d_presenter_submit(presenter, &command);
-    if (error != RECOMP_D3D_PRESENTER_OK) {
-        recomp_stop(2, "d3d-gamma:presenter:%u", (unsigned)error);
-    }
+    recomp_d3d_frame_adapter_check("d3d-gamma", error);
     recomp_runtime.registers.esp = entry_esp + 12u;
 }
 
