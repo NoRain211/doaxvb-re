@@ -181,7 +181,8 @@ def build(args, verify_parity=True, lifter_revision=None):
             selected = ROOT / "private" / ("active-build-" + uuid.uuid4().hex + ".tmp")
             selected.write_text(json.dumps({"receipt": str(receipt_path.relative_to(ROOT))}) + "\n", encoding="utf-8")
             selected.replace(ROOT / "private/active-build.json")
-            print("Setup complete. Open Launcher.cmd to play this build.", flush=True)
+            print("Setup complete. " + ("Open Launcher.cmd" if windows else "Run ./RunGame.sh")
+                  + " to play this build.", flush=True)
         print(f"Build receipt: {receipt_path}", flush=True)
 
 
