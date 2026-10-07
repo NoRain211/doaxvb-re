@@ -31,6 +31,7 @@ typedef struct RecompHostFiber {
 } RecompHostFiber;
 
 static RecompFiberModel fiber_model;
+static RecompFiberModel checkpoint_model;
 static RecompHostFiber host_fibers[RECOMP_FIBER_MAX_COUNT];
 static RecompHostFiber *current_host_fiber;
 static bool converted_thread;
@@ -665,4 +666,20 @@ RecompFunction recomp_fiber_lookup_manual(uint32_t guest_address)
     default:
         return NULL;
     }
+}
+
+void recomp_fiber_adapter_checkpoint(void)
+{
+    checkpoint_model = fiber_model;
+}
+
+void recomp_fiber_adapter_rollback(void)
+{
+    for (unsigned i = 0; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (checkpoint_model.fibers[i].active != fiber_model.fibers[i].active ||
+            checkpoint_model.fibers[i].guest_handle != fiber_model.fibers[i].guest_handle) {
+            fail_fiber("display-pass-changed-fibers", fiber_model.fibers[i].guest_handle);
+        }
+    }
+    fiber_model = checkpoint_model;
 }

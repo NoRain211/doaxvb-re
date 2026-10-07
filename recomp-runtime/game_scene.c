@@ -46,28 +46,62 @@ static void set_scalar(uint32_t address, float value)
     recomp_guest_store(address, &value, sizeof value);
 }
 
-static bool whole_tick(unsigned *phase, unsigned steps)
+static bool startup_movie_playing;
+
+bool recomp_game_startup_movie_playing(void) { return startup_movie_playing; }
+
+/* The match update (fibre 0x000BB420) integrates the ball by a whole tick per
+   call, and 0x0001B9E0 first keeps the position it starts from at 0x0041663C.
+   The first display pass of a tick runs that update ahead; each display
+   substep shows the ball the matching part of the way. */
+void recomp_game_ball_display(bool advanced, unsigned substep, unsigned steps)
 {
-    if (++*phase < steps) return false;
-    *phase = 0;
-    return true;
+    enum { BALL = 0x00416630u, BALL_START = 0x0041663cu };
+    static float start[3], end[3];
+    static uint32_t tick;
+    if (advanced) {
+        recomp_guest_load(start, BALL_START, sizeof start);
+        recomp_guest_load(end, BALL, sizeof end);
+        tick = recomp_game_tick();
+    }
+    if (tick != recomp_game_tick()) return;
+    for (unsigned i = 0; i < 3; ++i)
+        set_scalar(BALL + i * 4u, (float)(start[i] + ((double)end[i] - start[i]) * substep / steps));
 }
 
-/* Draw-time effects advance once per tick, on its last pass, where the actors
-   have completed the tick. The first draw of a scene runs them at once: it
-   seeds the effects from rand(), which a held pass would discard. */
-static bool effects_authored(void)
+/* Fibre 0x00099100 moves each actor's root (record +0x1C) by a whole tick
+   through several per-state routines, and running that fibre ahead can
+   create or end fibres, which a display pass cannot undo. A display substep
+   therefore carries each actor on along its last tick's move; the next tick
+   pass shows the authored position. A jump is a placement, not motion. */
+enum { ACTOR_COUNT = 4, ACTOR_ENABLED = 0x004d6fd0u, ACTOR_ROOT = 0x004d700cu, ACTOR_STRIDE = 0xbcu };
+
+void recomp_game_actor_display(bool tick, unsigned substep, unsigned steps)
 {
-    static uint32_t last_pass;
-    static bool authored, ran_early;
-    const uint32_t pass = recomp_game_pass();
-    if (pass == last_pass) return authored;
-    const bool first = pass != last_pass + 1u;
-    const bool tick_end = recomp_game_tick_end_pass();
-    last_pass = pass;
-    authored = first || (tick_end && !ran_early);
-    ran_early = first ? !tick_end : ran_early && !tick_end;
-    return authored;
+    static float previous[ACTOR_COUNT][3], current[ACTOR_COUNT][3];
+    static uint32_t current_tick = UINT32_MAX;
+    static bool moving;
+    if (tick) {
+        memcpy(previous, current, sizeof previous);
+        moving = current_tick + 1u == recomp_game_tick();
+        current_tick = recomp_game_tick();
+        for (unsigned actor = 0; actor < ACTOR_COUNT; ++actor)
+            recomp_guest_load(current[actor], ACTOR_ROOT + actor * ACTOR_STRIDE, sizeof current[actor]);
+        return;
+    }
+    if (!moving || current_tick != recomp_game_tick()) return;
+    for (unsigned actor = 0; actor < ACTOR_COUNT; ++actor) {
+        if (byte(ACTOR_ENABLED + actor) == 0) continue;
+        double step[3], squared = 0;
+        for (unsigned i = 0; i < 3; ++i) {
+            step[i] = (double)current[actor][i] - previous[actor][i];
+            squared += step[i] * step[i];
+        }
+        if (squared > 0.25) continue;
+        for (unsigned i = 0; i < 3; ++i)
+            set_scalar(ACTOR_ROOT + actor * ACTOR_STRIDE + i * 4u,
+                       (float)(current[actor][i] + step[i] * substep / steps));
+    }
 }
 
 static void next_frame(void)
@@ -89,8 +123,7 @@ static void scene_callback(uint8_t scene, unsigned event)
 static void startup_movie(void)
 {
     const uint32_t frame = *recomp_ebp_register();
-    const unsigned steps = recomp_game_scheduler_hz() / 60u;
-    unsigned phase = 0;
+    startup_movie_playing = true;
     recomp_runtime.registers.eax = (recomp_runtime.registers.eax & ~0xffu) | 3u;
     call(0x000a3cd0u);
     recomp_runtime.registers.eax = 0;
@@ -105,10 +138,11 @@ static void startup_movie(void)
         }
         if (input) break;
         next_frame();
-        if (whole_tick(&phase, steps)) ++*recomp_memory_u32(0x004d967cu);
+        ++*recomp_memory_u32(0x004d967cu);
         *recomp_ebp_register() = frame;
         call(0x000b52a0u);
     }
+    startup_movie_playing = false;
     *recomp_ebp_register() = frame;
     call(0x000b53d0u);
     recomp_runtime.registers.esp += 4u;
@@ -116,8 +150,6 @@ static void startup_movie(void)
 
 static void scene_fiber(void)
 {
-    unsigned phase = 0;
-    const unsigned steps = recomp_game_scheduler_hz() / 60u;
     push(recomp_runtime.registers.ebx);
     call(0x000a3950u);
     scene_callback(byte(0x005dece0u), 0);
@@ -125,14 +157,13 @@ static void scene_fiber(void)
     call(0x000a4e00u);
     for (;;) {
         set_byte(0x004d6fc0u, byte(0x005dece0u));
-        /* Per-actor event bytes last one authored tick. Clearing them on a
-           held pass would hide an event raised this tick from owners whose
-           tick work falls on that pass. */
+        /* Per-actor event bytes last one tick; a display pass leaves them. */
         if (recomp_game_authored_pass())
             for (unsigned i = 0; i < 4; ++i) set_byte(0x004d704cu + i * 188u, 0);
         next_frame();
+        const unsigned steps = recomp_game_scheduler_hz() / 60u;
+        const bool tick = recomp_game_authored_pass();
         call(0x000a5030u);
-        recomp_game_tick_input_scene_copied();
         if (scalar(0x005ded50u) != scalar(0x005ded58u)) {
             const float speed = scalar(0x005decf0u) * scalar(0x005ded50u);
             set_scalar(0x005ded58u, scalar(0x005ded50u));
@@ -151,9 +182,10 @@ static void scene_fiber(void)
                 scalar(0x005decf0u) * scalar(0x005ded50u) / steps);
         }
         set_byte(0x005ded55u, byte(0x005dece0u));
-        if (whole_tick(&phase, steps)) ++*recomp_memory_u32(0x004d967cu);
+        if (tick) ++*recomp_memory_u32(0x004d967cu);
         scene_callback(byte(0x005dece0u), 1);
-        if (byte(0x005ded55u) != byte(0x005dece0u) || byte(0x005ded5cu) != 0) {
+        /* Scene changes load and create fibres; the tick pass makes them. */
+        if (tick && (byte(0x005ded55u) != byte(0x005dece0u) || byte(0x005ded5cu) != 0)) {
             scene_callback(byte(0x005dece0u), 2);
             scene_callback(byte(0x005ded55u), 0);
             call(0x0009c2f0u);
@@ -204,17 +236,11 @@ static void scenario_tick(void)
 
 static void scenario_fiber(void)
 {
-    unsigned phase = 0;
-    const unsigned steps = recomp_game_scheduler_hz() / 60u;
     set_byte(0x004d9534u, 0);
     call(0x00097eb0u);
     for (;;) {
         next_frame();
-        if (whole_tick(&phase, steps)) {
-            const bool input = recomp_game_tick_scope_begin();
-            scenario_tick();
-            recomp_game_tick_scope_end(input);
-        }
+        if (recomp_game_authored_pass()) scenario_tick();
     }
 }
 
@@ -300,14 +326,11 @@ static void actor_frame_draw(void)
         }
     }
     render_call(frame, 10, 0x000c12b0u);
-    /* Its layer callbacks advance pause-aware effects that draw from rand(). */
-    const bool hold = !effects_authored() && !byte(0x004d56efu);
-    const uint32_t rng = hold ? recomp_game_rng_address() : 0;
-    const uint32_t rng_state = rng ? *recomp_memory_u32(rng) : 0;
+    /* Its layer callbacks advance pause-aware effects once per tick. */
+    const bool hold = !recomp_game_authored_pass() && !byte(0x004d56efu);
     if (hold) set_byte(0x004d56efu, 1);
     render_call(frame, 11, 0x0017ef70u);
     if (hold) set_byte(0x004d56efu, 0);
-    if (rng) *recomp_memory_u32(rng) = rng_state;
     recomp_runtime.registers.esp += 4u;
     if (recomp_game_timing_enabled() && ++render_pass % 300 == 0) {
         fprintf(stderr, "recomp render timing: pass=%u part_ms=", render_pass);
@@ -345,14 +368,6 @@ static void actor_frame_fiber(void)
 
 void recomp_game_scenery_draw(void)
 {
-    /* Body points, 4 actors x 32 of {current xyzw, previous xyzw}. The actor
-       update fiber refreshes them every pass; the effect spawn test
-       (0x0006D2E0) compares current with previous, so above 60 Hz it is given
-       the points from the previous authored tick. */
-    enum { BODY_POINTS = 0x004d5700u, BODY_POINT_BYTES = 128u * 32u };
-    static uint8_t tick_points[BODY_POINT_BYTES];
-    static uint32_t tick_points_pass;
-    static bool tick_points_valid;
     const uint32_t stack = recomp_runtime.registers.esp;
     const uint32_t frame = *recomp_ebp_register();
     const uint32_t saved_esi = recomp_runtime.registers.esi;
@@ -371,17 +386,11 @@ void recomp_game_scenery_draw(void)
         push(saved_ebx);
         recomp_runtime.registers.ebx = previous_context;
         if (byte(0x004d6fd4u)) {
-            const uint32_t pass = recomp_game_pass();
-            const bool authored_tick = effects_authored();
+            const bool authored_tick = recomp_game_authored_pass();
             const bool effects = draw == 0x0014bbb0u || draw == 0x0016a400u ||
                 draw == 0x00154a90u || draw == 0x00163710u;
+            /* Effects advance once per tick; a display pass draws them held. */
             const bool hold_effects = !authored_tick && !byte(0x004d56efu) && effects;
-            const bool whole_tick_points =
-                authored_tick && effects && recomp_game_scheduler_hz() > 60u;
-            /* Points saved more than one tick ago, e.g. before a scene
-               change, would read as a jump. */
-            const bool use_tick_points = whole_tick_points && tick_points_valid &&
-                tick_points_pass + recomp_game_scheduler_hz() / 60u == pass;
             if (hold_effects) set_byte(0x004d56efu, 1);
             *recomp_ebp_register() = frame;
             const uint32_t wind_rng = recomp_game_debug_rng_state();
@@ -390,28 +399,7 @@ void recomp_game_scenery_draw(void)
             push(scene);
             *recomp_ebp_register() = frame;
             const uint32_t scenery_rng = recomp_game_debug_rng_state();
-            /* A held substep draws without advancing game state. An indirect
-               consumer under the jungle draw ignores the pause flag, so the
-               shared rand() state is restored as well. */
-            const uint32_t rng = hold_effects ? recomp_game_rng_address() : 0;
-            const uint32_t rng_state = rng ? *recomp_memory_u32(rng) : 0;
-            uint8_t points[BODY_POINT_BYTES];
-            if (whole_tick_points) {
-                recomp_guest_load(points, BODY_POINTS, sizeof points);
-                if (use_tick_points)
-                    for (uint32_t i = 0; i < BODY_POINT_BYTES; i += 32u)
-                        recomp_guest_store(BODY_POINTS + i + 16u, tick_points + i, 16u);
-            }
             call(draw);
-            if (whole_tick_points) {
-                if (use_tick_points)
-                    for (uint32_t i = 0; i < BODY_POINT_BYTES; i += 32u)
-                        recomp_guest_store(BODY_POINTS + i + 16u, points + i + 16u, 16u);
-                memcpy(tick_points, points, sizeof points);
-                tick_points_pass = pass;
-            }
-            if (authored_tick) tick_points_valid = whole_tick_points;
-            if (rng) *recomp_memory_u32(rng) = rng_state;
             if (scenery_rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp scenery rng: draw=%08x kind=%u before=%08x after=%08x\n", draw, kind, scenery_rng, recomp_game_debug_rng_state());
             recomp_runtime.registers.esp += 4;
             if (hold_effects) set_byte(0x004d56efu, 0);

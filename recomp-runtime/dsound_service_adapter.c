@@ -154,9 +154,7 @@ static uint64_t buffer_now_ms(void)
         game_clock = setting != NULL && strcmp(setting, "1") == 0;
     }
     if (game_clock) {
-        const unsigned hz = recomp_game_scheduler_hz();
-        const unsigned steps = hz > 60u ? hz / 60u : 1u;
-        return (uint64_t)((recomp_game_pass() + steps - 1u) / steps) * 1000u / 60u;
+        return (uint64_t)recomp_game_tick() * 1000u / 60u;
     }
 #ifdef _WIN32
     return GetTickCount64();

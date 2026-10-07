@@ -1,16 +1,25 @@
 #include "game_scheduler.h"
 #include "game_frame_replay.h"
 #include "game_input.h"
+#include "game_rollback.h"
 #include "game_scene.h"
 #include "xapi_time_adapter.h"
 #include "kernel_abi.h"
 #include "d3d_draw_adapter.h"
 #include "d3d_frame_adapter.h"
+#include "d3d_vblank.h"
 #include "stop_report.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#define Sleep(ms) ((void)0)
+#define YieldProcessor() ((void)0)
+#endif
 
 enum {
     FIBER_COUNT = 17,
@@ -22,7 +31,6 @@ enum {
 };
 
 static unsigned game_hz = 60;
-static unsigned sleep_subticks[FIBER_COUNT];
 static bool startup_clock_pending;
 static bool trace_scheduler;
 static bool trace_rng;
@@ -30,85 +38,32 @@ static unsigned scheduler_pass;
 static bool trace_timing;
 static uint64_t fiber_time[17], fiber_peak[17];
 static unsigned fiber_calls[17];
-static uint64_t phase_time[6];
+/* Loop phases; 6 is tick pacing and 7 rollback, both also inside 0 or 5. */
+static uint64_t phase_time[8];
 static const char *state_capture_path;
 static uint32_t state_capture_at;
 static bool main_present_pending;
-/* The pass that polled input; the others hold the authored tick. */
+/* A tick pass runs the authored 60 Hz update. A display pass presents
+   substep pass_substep + 1 of pass_steps of the following tick and is then
+   undone (game_rollback.h), so the next tick pass starts from the tick. */
 static bool authored_pass = true;
-static bool tick_end_pass = true;
-static unsigned poll_phase;
-static uint32_t game_pass;
+static unsigned pass_steps = 1, pass_substep;
+static uint32_t game_pass, game_tick;
 
 bool recomp_game_authored_pass(void) { return authored_pass; }
-bool recomp_game_tick_end_pass(void) { return tick_end_pass; }
 uint32_t recomp_game_pass(void) { return game_pass; }
+uint32_t recomp_game_tick(void) { return game_tick; }
+unsigned recomp_game_substep(void) { return pass_substep; }
 
-bool recomp_game_pass_begin(void)
+void recomp_game_pass_begin(bool tick, unsigned steps, unsigned substep)
 {
-    authored_pass = poll_phase == 0;
-    poll_phase = (poll_phase + 1u) % (game_hz / 60u);
-    tick_end_pass = poll_phase == 0;
+    authored_pass = tick;
+    pass_steps = tick || steps == 0 ? 1u : steps;
+    pass_substep = tick ? 0u : substep;
     ++game_pass;
-    return authored_pass;
+    if (tick) ++game_tick;
 }
 static RecompGameFrameReplay frame_owner_draws;
-/* Per-port records 0x5F3088 (4 x 44 bytes) and the aggregate at 0x5F3138.
-   Polling, and so every press/release/repeat edge, happens on the authored
-   pass. A fiber that sleeps whole ticks may resume on another pass of the
-   tick; it receives that tick's edges once, as it would at 60 Hz. */
-enum {
-    INPUT_RECORDS = 0x005f3088u, INPUT_RECORD_BYTES = 5u * 44u,
-    /* The scene fiber's per-port copy (0x000A5030), refreshed every pass. */
-    SCENE_INPUT = 0x004d9540u, SCENE_INPUT_BYTES = 4u * 44u,
-};
-static uint8_t authored_input[INPUT_RECORD_BYTES];
-static uint8_t pass_input[INPUT_RECORD_BYTES];
-static uint8_t authored_scene_input[SCENE_INPUT_BYTES];
-static uint8_t pass_scene_input[SCENE_INPUT_BYTES];
-static bool tick_scope_active, tick_scope_input;
-static float pass_step;
-enum { STEP_SCALAR = 0x004d6fc4u };
-
-/* Once-per-tick work runs with the authored step: every-pass owners see
-   the step divided by the substep count, written each pass by the scene
-   fiber at STEP_SCALAR. Off the polling pass, it also sees the tick's input. */
-bool recomp_game_tick_scope_begin(void)
-{
-    if (tick_scope_active) return false;
-    tick_scope_active = true;
-    const unsigned steps = game_hz / 60u;
-    if (steps > 1u) {
-        recomp_guest_load(&pass_step, STEP_SCALAR, sizeof pass_step);
-        const float step = pass_step * (float)steps;
-        recomp_guest_store(STEP_SCALAR, &step, sizeof step);
-    }
-    tick_scope_input = !authored_pass;
-    if (tick_scope_input) {
-        recomp_guest_load(pass_input, INPUT_RECORDS, sizeof pass_input);
-        recomp_guest_store(INPUT_RECORDS, authored_input, sizeof authored_input);
-        recomp_guest_load(pass_scene_input, SCENE_INPUT, sizeof pass_scene_input);
-        recomp_guest_store(SCENE_INPUT, authored_scene_input, sizeof authored_scene_input);
-    }
-    return true;
-}
-
-void recomp_game_tick_scope_end(bool begun)
-{
-    if (!begun) return;
-    if (game_hz / 60u > 1u) recomp_guest_store(STEP_SCALAR, &pass_step, sizeof pass_step);
-    if (tick_scope_input) {
-        recomp_guest_store(INPUT_RECORDS, pass_input, sizeof pass_input);
-        recomp_guest_store(SCENE_INPUT, pass_scene_input, sizeof pass_scene_input);
-    }
-    tick_scope_active = false;
-}
-
-void recomp_game_tick_input_scene_copied(void)
-{
-    if (authored_pass)
-        recomp_guest_load(authored_scene_input, SCENE_INPUT, sizeof authored_scene_input);
-}
 
 static void record_frame_owner_draw(const struct RecompD3dPresenterDrawCommand *draw)
 {
@@ -139,17 +94,16 @@ unsigned recomp_game_requested_hz(void)
     static int requested = -1;
     if (requested < 0) {
         const char *rate = getenv("RECOMP_GAME_HZ");
-        requested = 0;
-        if (rate != NULL && strcmp(rate, "60") == 0) requested = 60;
-        if (rate != NULL && strcmp(rate, "120") == 0) requested = 120;
-        if (rate != NULL && strcmp(rate, "240") == 0) requested = 240;
+        char *end = NULL;
+        const unsigned long hz = rate != NULL ? strtoul(rate, &end, 10) : 0;
+        requested = end != rate && end != NULL && *end == '\0' && hz >= 60 && hz <= 360 ? (int)hz : 0;
     }
     return (unsigned)requested;
 }
 
 bool recomp_game_timing_enabled(void) { return trace_timing; }
 
-unsigned recomp_game_scheduler_hz(void) { return game_hz; }
+unsigned recomp_game_scheduler_hz(void) { return 60u * pass_steps; }
 
 #ifdef RECOMP_FULL_PROGRAM
 void sub_000BB290(void);
@@ -217,9 +171,9 @@ void recomp_game_scheduler_reset(unsigned hz)
     const char *capture_at = getenv("RECOMP_GAME_STATE_AT");
     state_capture_at = state_capture_path && capture_at ? (uint32_t)strtoul(capture_at, NULL, 10) : 0;
     main_present_pending = false;
-    memset(sleep_subticks, 0, sizeof sleep_subticks);
-    poll_phase = 0;
-    authored_pass = tick_end_pass = true;
+    authored_pass = true;
+    pass_steps = 1;
+    pass_substep = 0;
 }
 
 static void push(uint32_t value)
@@ -276,32 +230,29 @@ void recomp_game_scheduler_tick(void)
         if ((flags & 1u) != 0 && (flags & 0x20u) == 0) {
             int32_t ticks = (int32_t)*recomp_memory_u32(slot + 4u);
             const uint32_t callback = *recomp_memory_u32(slot + 12u);
-            /* The unconverted UI frame owner counts one per tick on the
-               polling pass, where input edges are visible; held passes
-               resubmit its draws. Hand owners use an explicit zero yield;
-               their generated initialization sleeps retain authored time. */
-            const bool frame_owner = callback == 0x0008a970u;
-            const bool held_owner = frame_owner && game_hz > 60u;
-            const bool counted = ticks > 0;
-            if (held_owner && authored_pass) recomp_game_frame_replay_clear(&frame_owner_draws);
-            if (held_owner && !authored_pass) replay_frame_owner_draws();
-            const bool resume = (!held_owner || authored_pass) && recomp_game_sleep_step(
-                &ticks, &sleep_subticks[index], frame_owner ? 1u : game_hz / 60u);
+            /* Hand owners that draw every pass yield zero ticks. A display
+               pass also runs the match motion fibre, which moves the ball and
+               the actors, and resubmits the UI frame owner's tick draws. */
+            const bool replay_owner = callback == 0x0008a970u && game_hz > 60u;
+            const bool match_motion = callback == 0x000bb420u;
+            const bool actor_motion = callback == 0x00099100u;
+            if (replay_owner && authored_pass) recomp_game_frame_replay_clear(&frame_owner_draws);
+            if (replay_owner && !authored_pass) replay_frame_owner_draws();
+            unsigned subtick = 0;
+            const bool resume = authored_pass ? recomp_game_sleep_step(&ticks, &subtick, 1u) :
+                ticks == 0 || (match_motion && ticks == 1 && pass_substep == 0);
             *recomp_memory_u32(slot + 4u) = (uint32_t)ticks;
             if (resume) {
                 const uint32_t draws_before = recomp_d3d_draw_adapter_submitted();
-                const uint32_t rng_before = trace_rng ? recomp_game_debug_rng_state() : 0;
+                const bool trace = trace_rng && authored_pass;
+                const uint32_t rng_before = trace ? recomp_game_debug_rng_state() : 0;
                 const uint64_t started = timing_now();
-                if (held_owner) recomp_d3d_draw_adapter_observe(record_frame_owner_draw);
-                const bool tick_scope = counted && recomp_game_tick_scope_begin();
+                if (replay_owner) recomp_d3d_draw_adapter_observe(record_frame_owner_draw);
                 call_one(0x0018305au, *recomp_memory_u32(slot + 8u));
-                /* Also closes a scope opened inside a fiber that a scene
-                   transition replaced before it could restore the pass. */
-                recomp_game_tick_scope_end(tick_scope || tick_scope_active);
                 recomp_d3d_draw_adapter_observe(NULL);
-                if (trace_rng && recomp_game_debug_rng_state() != rng_before) {
-                    fprintf(stderr, "recomp rng: pass=%u swap=%u slot=%u callback=%08x before=%08x after=%08x\n",
-                        scheduler_pass, recomp_d3d_frame_adapter_swap_counter(), index, callback,
+                if (trace && recomp_game_debug_rng_state() != rng_before) {
+                    fprintf(stderr, "recomp rng: tick=%u pass=%u swap=%u slot=%u callback=%08x before=%08x after=%08x\n",
+                        game_tick, scheduler_pass, recomp_d3d_frame_adapter_swap_counter(), index, callback,
                         rng_before, recomp_game_debug_rng_state());
                 }
                 if (trace_timing) {
@@ -325,8 +276,8 @@ void recomp_game_scheduler_tick(void)
                     }
                 }
             }
-        } else if ((flags & 1u) == 0) {
-            sleep_subticks[index] = 0;
+            if (match_motion && !authored_pass) recomp_game_ball_display(resume, pass_substep + 1u, pass_steps);
+            if (actor_motion) recomp_game_actor_display(authored_pass, pass_substep + 1u, pass_steps);
         }
         ++*recomp_memory_u32(CURRENT_SLOT);
     }
@@ -391,17 +342,90 @@ static void capture_game_state(void)
 }
 
 /* Initialization and render-target changes also issue synchronous Swaps.
-   Those remain authored-duration operations while the main loop produces
-   one new frame per substep. Delivery stays in the native D3D adapter. */
+   Those keep their authored duration at the presentation rate. Delivery
+   stays in the native D3D adapter. */
 static void game_swap(void)
 {
     const uint32_t stack = recomp_runtime.registers.esp;
-    const unsigned presents = main_present_pending ? 1u : game_hz / 60u;
+    const unsigned presents = main_present_pending ? 1u : (game_hz + 30u) / 60u;
     main_present_pending = false;
     for (unsigned i = 0; i < presents; ++i) {
         recomp_runtime.registers.esp = stack;
         recomp_d3d_swap_adapter();
     }
+}
+
+enum { TICK_NS = 1000000000 / 60, MAX_DISPLAY_STEPS = 4 };
+static bool display_ready;
+static int64_t next_tick_ns, pass_start_ns, tick_pass_ns, display_pass_ns;
+static uint64_t pass_start_waited_ns;
+static unsigned display_steps = 1, display_done;
+static bool timing_tick_pass;
+
+static int64_t now_ns(void) { return (int64_t)recomp_xapi_performance_counter(); }
+
+/* Ticks follow the wall clock at 60 Hz. The passes between two ticks present
+   substeps of the next one; the substep count is what the measured tick
+   pass leaves of the tick, so a slow pass costs display passes, never game
+   time. Tick passes cost more (the update and its commit), so the two
+   kinds are averaged apart. */
+static bool next_pass_is_tick(void)
+{
+    const int64_t interval = 1000000000 / game_hz;
+    int64_t now = now_ns();
+    if (pass_start_ns != 0) {
+        /* Work only: vblank waits stretch every pass to a refresh. */
+        const int64_t last = now - pass_start_ns -
+            (int64_t)(recomp_d3d_vblank_waited_ns() - pass_start_waited_ns);
+        int64_t *average = timing_tick_pass ? &tick_pass_ns : &display_pass_ns;
+        *average = *average ? (*average * 7 + last) / 8 : last;
+    }
+    if (next_tick_ns == 0) next_tick_ns = now;
+    const bool display = display_ready && game_hz > 60u &&
+        *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
+    if (display && display_done + 1u < display_steps && now < next_tick_ns - interval / 2) {
+        ++display_done;
+        pass_start_ns = now;
+        pass_start_waited_ns = recomp_d3d_vblank_waited_ns();
+        timing_tick_pass = false;
+        return false;
+    }
+    /* Under vsync the present already paces the loop, and the tick clock
+       drifts against the vblank. A tick within one refresh of its slot runs
+       now; waiting would miss that vblank. Deadlines still advance by a
+       whole tick, so game time never runs ahead. */
+    while ((now = now_ns()) < next_tick_ns - interval * 3 / 2) {
+        if (next_tick_ns - interval * 3 / 2 - now > 2000000) Sleep(1);
+        else YieldProcessor();
+    }
+    pass_start_ns = now;
+    pass_start_waited_ns = recomp_d3d_vblank_waited_ns();
+    timing_tick_pass = true;
+    /* ponytail: a stall longer than four ticks (a load) is not caught up. */
+    if (now - next_tick_ns > 4 * (int64_t)TICK_NS) next_tick_ns = now;
+    next_tick_ns += TICK_NS;
+    const unsigned most = game_hz / 60u + (game_hz % 60u != 0);
+    /* A display pass does part of a tick pass's work. The cap also retires
+       a slow sample (a load) that no later display pass would replace. */
+    int64_t display_ns = display_pass_ns > 0 ? display_pass_ns : interval;
+    if (tick_pass_ns > 0 && display_ns > tick_pass_ns) display_ns = tick_pass_ns;
+    const int64_t spare = TICK_NS - tick_pass_ns;
+    unsigned steps = 1u + (spare > 0 ? (unsigned)(spare / display_ns) : 0u);
+    if (steps > most) steps = most;
+    if (steps > MAX_DISPLAY_STEPS) steps = MAX_DISPLAY_STEPS;
+    display_steps = steps ? steps : 1u;
+    display_done = 0;
+    static int64_t report_ns;
+    static uint32_t report_tick, report_pass;
+    if (trace_timing && game_tick % 300u == 0) {
+        if (report_ns != 0)
+            fprintf(stderr, "recomp game ticks: tick=%u ticks_per_s=%.3f passes_per_s=%.1f steps=%u tick_ms=%.2f display_ms=%.2f\n",
+                game_tick, (game_tick - report_tick) * 1e9 / (double)(now - report_ns),
+                (game_pass - report_pass) * 1e9 / (double)(now - report_ns), display_steps,
+                tick_pass_ns / 1e6, display_pass_ns / 1e6);
+        report_ns = now; report_tick = game_tick; report_pass = game_pass;
+    }
+    return true;
 }
 
 /* This replaces the complete main-loop owner, including its movie branch.
@@ -414,14 +438,20 @@ static void game_loop(void)
     recomp_runtime.registers.esp -= 20u;
     push(recomp_runtime.registers.esi);
     const uint32_t scratch = recomp_runtime.registers.esp;
+    bool displayed = false;
 
     for (;;) {
         uint64_t timed = timing_now();
-        if (recomp_game_pass_begin()) call(0x000b57d0u);
-        call(0x000b5870u); /* Derive edges and repeats. */
-        if (authored_pass)
-            recomp_guest_load(authored_input, INPUT_RECORDS, sizeof authored_input);
-        call(0x000b5aa0u); /* Service feedback. */
+        const bool tick = next_pass_is_tick();
+        phase_time[6] += timing_now() - timed;
+        const uint64_t rollback_started = timing_now();
+        if (tick && displayed) recomp_game_rollback_restore();
+        phase_time[7] += timing_now() - rollback_started;
+        displayed = !tick;
+        recomp_game_pass_begin(tick, display_steps, display_done - 1u);
+        if (tick) call(0x000b57d0u);
+        call(0x000b5870u); /* Derive edges and repeats; none without a poll. */
+        if (tick) call(0x000b5aa0u); /* Service feedback. */
         phase_time[0] += timing_now() - timed;
         timed = timing_now();
         call(0x001f90e0u);
@@ -450,13 +480,9 @@ static void game_loop(void)
         phase_time[2] += timing_now() - timed;
         timed = timing_now();
         /* The game's sound service counts voice ends and delays in calls, so
-           it runs once per tick, after the tick's last fiber pass. The match
-           introduction advances shots from those counts. */
-        if (tick_end_pass) {
-            const bool tick_scope = recomp_game_tick_scope_begin();
-            call(0x000bab70u);
-            recomp_game_tick_scope_end(tick_scope);
-        }
+           it runs once per tick. The match introduction advances shots from
+           those counts. */
+        if (tick) call(0x000bab70u);
         phase_time[3] += timing_now() - timed;
         timed = timing_now();
         capture_game_state();
@@ -482,10 +508,15 @@ static void game_loop(void)
                 recomp_runtime.registers.esp += 4u;
             }
         }
+        if (tick && display_ready) {
+            const uint64_t commit_started = timing_now();
+            recomp_game_rollback_commit();
+            phase_time[7] += timing_now() - commit_started;
+        }
         phase_time[5] += timing_now() - timed;
         if (trace_timing && scheduler_pass % 300 == 0) {
             fprintf(stderr, "recomp game timing: pass=%u phase_ms=", scheduler_pass);
-            for (unsigned i = 0; i < 6; ++i) fprintf(stderr, "%s%.3f", i ? "," : "", phase_time[i] / 1e6);
+            for (unsigned i = 0; i < 8; ++i) fprintf(stderr, "%s%.3f", i ? "," : "", phase_time[i] / 1e6);
             fprintf(stderr, "\n");
             for (unsigned i = 0; i < 17; ++i) if (fiber_calls[i]) {
                 fprintf(stderr, "recomp fiber timing: pass=%u slot=%u callback=%08x calls=%u total_ms=%.3f max_ms=%.3f\n",
@@ -505,7 +536,8 @@ static void game_entry(void)
     recomp_game_test_clock_begin(test_clock_enabled());
     const unsigned hz = recomp_game_requested_hz();
     recomp_game_scheduler_reset(hz != 0 ? hz : 60);
-    fprintf(stderr, "recomp game scheduler: hand source, hz=%u\n", game_hz);
+    display_ready = game_hz > 60u && recomp_game_rollback_begin();
+    fprintf(stderr, "recomp game scheduler: hand source, hz=%u display_passes=%d\n", game_hz, display_ready);
     call(0x000bb2a0u);
     call(0x000bb310u);
 }

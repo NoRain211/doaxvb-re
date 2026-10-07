@@ -27,16 +27,20 @@ static int check_camera_publication(void)
             publish(); /* Inactive cameras discard the preceding run's history. */
             *recomp_memory(0x0041b2d8u, 1) = 1;
             *recomp_memory(0x0041b2ccu, 1) = variant ? 8 : 1;
-            for (unsigned sample = 1; sample <= 60 * steps; ++sample) {
-                const float staged = (float)(sample - 1u) / steps;
+            /* A tick pass publishes the preceding tick's staged camera; display
+               substep k publishes k/steps of the way to the tick's camera. */
+            for (unsigned sample = 0; sample < 60 * steps; ++sample) {
+                const unsigned tick = sample / steps + 1u, k = sample % steps;
+                recomp_game_pass_begin(k == 0, steps, k - 1u);
+                const float staged = k == 0 ? (float)(tick - 1u) : tick + (float)(k - 1u) / steps;
                 recomp_guest_store(0x0041a980u, &staged, sizeof staged);
-                *recomp_memory_u32(0x0041b154u) = sample / steps;
+                *recomp_memory_u32(0x0041b154u) = tick;
                 recomp_runtime.registers.eax = 0x0041a800u;
                 recomp_runtime.registers.esp = 0x010000e0u;
                 publish();
                 float observed;
                 recomp_guest_load(&observed, 0x0041a800u, sizeof observed);
-                const float expected = sample <= steps ? 0 : (float)(sample - steps) / steps;
+                const float expected = tick - 1u + (float)k / steps;
                 if (observed != expected || recomp_runtime.registers.esp != 0x010000e4u) {
                     fprintf(stderr, "game camera: publication latency or stack changed\n");
                     recomp_runtime_init(NULL, 0, NULL, 0, NULL, 0);

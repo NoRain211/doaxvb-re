@@ -12,23 +12,17 @@ int recomp_game_actor_test(void)
         fprintf(stderr, "game actor: frame conversion rounded the stored float\n");
         return 0;
     }
+    if (recomp_game_pose_display_time(2, 3, 1, 4, true, 9) != 2.25f ||
+        recomp_game_pose_display_time(2, 3, 3, 4, true, 9) != 2.75f) {
+        fprintf(stderr, "game actor: display pose lost its authored latency\n");
+        return 0;
+    }
+    if (recomp_game_pose_display_time(30, 1, 1, 2, true, 9) != 30 ||
+        recomp_game_pose_display_time(2, 3, 1, 2, false, 9) != 9) {
+        fprintf(stderr, "game actor: clip loop or change reused a prior cursor\n");
+        return 0;
+    }
     for (unsigned steps = 1; steps <= 4; steps *= 2) {
-        float history[4] = {0};
-        unsigned position = 0;
-        for (unsigned sample = 1; sample <= 60 * steps; ++sample) {
-            const float cursor = (float)(sample - 1u) / steps;
-            const float observed = recomp_game_pose_sample_time(history, &position,
-                cursor, steps, sample == 1);
-            const float expected = sample <= steps ? 0 : (float)(sample - steps) / steps;
-            if (observed != expected) {
-                fprintf(stderr, "game actor: pose sampling lost its authored latency\n");
-                return 0;
-            }
-        }
-        if (recomp_game_pose_sample_time(history, &position, 40, steps, true) != 40) {
-            fprintf(stderr, "game actor: clip change reused a prior cursor\n");
-            return 0;
-        }
         uint16_t age = 0;
         unsigned phase = 0;
         float blend = 0, cursor = 0;

@@ -8,21 +8,20 @@
 bool recomp_game_sleep_step(int32_t *ticks, unsigned *subtick, unsigned steps);
 void recomp_game_scheduler_reset(unsigned hz);
 void recomp_game_scheduler_tick(void);
+/* 60 times the substeps per tick of the current pass: 60 on a tick pass. */
 unsigned recomp_game_scheduler_hz(void);
-/* True on the pass that polled input, which starts an authored tick. */
+/* True on a tick pass, which polls input and runs the authored update. */
 bool recomp_game_authored_pass(void);
-/* True on the last pass of a tick, where game time equals the 60 Hz tick. */
-bool recomp_game_tick_end_pass(void);
-/* Starts a game-loop pass; true when it is the tick's authored pass. */
-bool recomp_game_pass_begin(void);
+/* Substeps of the following tick that precede this display pass; 0 on a
+   tick pass. A display pass shows substep recomp_game_substep() + 1. */
+unsigned recomp_game_substep(void);
+/* Starts a game-loop pass. A display pass presents substep + 1 of steps
+   of the following tick and is undone before the next tick pass. */
+void recomp_game_pass_begin(bool tick, unsigned steps, unsigned substep);
 /* Passes started since boot; consecutive passes differ by one. */
 uint32_t recomp_game_pass(void);
-/* Once-per-tick work sees the authored step and, on a pass that did not
-   poll, the tick's input edges; end restores this pass's values. */
-bool recomp_game_tick_scope_begin(void);
-void recomp_game_tick_scope_end(bool begun);
-/* The scene fiber refreshed its copy of the input records. */
-void recomp_game_tick_input_scene_copied(void);
+/* Tick passes started since boot. */
+uint32_t recomp_game_tick(void);
 uint32_t recomp_game_debug_rng_state(void);
 /* Guest address of the CRT rand() state, or 0 before the CRT has one. */
 uint32_t recomp_game_rng_address(void);

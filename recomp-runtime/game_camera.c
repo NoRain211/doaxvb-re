@@ -10,6 +10,24 @@ static struct {
     uint32_t previous[14], next[14];
 } title_steps[5];
 
+/* Camera blocks (eye, focus, angles, distance, field of view): words 8-10
+   are 16-bit angles that take the short way; the others are floats. */
+static void camera_block_lerp(uint32_t out[14], const uint32_t before[14],
+    const uint32_t after[14], unsigned completed, unsigned steps)
+{
+    for (unsigned i = 0; i < 14; ++i) {
+        if (i >= 8 && i <= 10) {
+            const int32_t delta = (int16_t)(after[i] - before[i]);
+            out[i] = before[i] + delta * (int32_t)completed / (int32_t)steps;
+        } else {
+            float a, b, sample;
+            memcpy(&a, &before[i], 4); memcpy(&b, &after[i], 4);
+            sample = (float)(a + ((double)b - a) * completed / steps);
+            memcpy(&out[i], &sample, 4);
+        }
+    }
+}
+
 unsigned recomp_game_camera_smoothing_steps(uint32_t camera)
 {
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
@@ -61,10 +79,9 @@ static void camera_call(uint32_t frame, uint32_t address)
 
 static void camera_prepare(void)
 {
-    static uint32_t history[5][4][14];
-    static unsigned position[5];
-    static uint8_t previous_mode[5];
-    static uint32_t previous_age[5];
+    static uint32_t tick_published[5][14], tick_staged[5][14];
+    static uint8_t tick_mode[5];
+    static uint32_t tick_age[5];
     static bool ready[5];
     const uint32_t base = recomp_runtime.registers.eax;
     const uint32_t stack = recomp_runtime.registers.esp;
@@ -92,23 +109,23 @@ static void camera_prepare(void)
         const uint32_t age = *recomp_memory_u32(camera + 0x954u);
         uint32_t staged[14];
         recomp_guest_load(staged, camera + 0x180u, sizeof staged);
-        if (steps > 1 && (mode == 8 || mode == 1)) {
-            /* Publication consumes the preceding authored tick's camera.
-               A smaller tick must not shorten that existing pipeline delay. */
-            if (!ready[i] || previous_mode[i] != mode || age < previous_age[i]) {
-                for (unsigned j = 0; j < steps - 1u; ++j) memcpy(history[i][j], staged, sizeof staged);
-                position[i] = 0;
-                ready[i] = true;
+        if (steps > 1) {
+            /* Publication consumes the preceding tick's camera. A display
+               substep publishes between what the tick pass published and the
+               camera that tick staged; a new shot publishes the staged one. */
+            if (recomp_game_substep() == 0) memcpy(tick_staged[i], staged, sizeof staged);
+            if (ready[i] && tick_mode[i] == mode && age >= tick_age[i]) {
+                camera_block_lerp(staged, tick_published[i], tick_staged[i],
+                    recomp_game_substep() + 1u, steps);
             }
-            recomp_guest_store(camera, history[i][position[i]], sizeof staged);
-            memcpy(history[i][position[i]], staged, sizeof staged);
-            position[i] = (position[i] + 1u) % (steps - 1u);
+            recomp_guest_store(camera, staged, sizeof staged);
         } else {
             recomp_guest_store(camera, staged, sizeof staged);
-            ready[i] = false;
+            memcpy(tick_published[i], staged, sizeof staged);
+            tick_mode[i] = mode;
+            tick_age[i] = age;
+            ready[i] = true;
         }
-        previous_mode[i] = mode;
-        previous_age[i] = age;
         if (mode == 20) recomp_guest_memcpy(camera + 0x38u, camera + 0x28cu, 16u);
     }
     for (unsigned actor = 0; actor < 4; ++actor) {
@@ -129,25 +146,12 @@ static void camera_prepare(void)
 }
 
 /* 0x00099500 raises 0x004D5669 on the tick the match state changes; it
-   stays raised until that owner runs again a tick later. Camera passes after
-   the first one in that tick see it clear. Otherwise the director 0x0002F580,
-   entering replay, saves the replay mode it has just applied as the mode to
-   return to (camera+0xACD), and the replay camera stays on for the next
-   point. A flag left raised past its tick is seen once per tick. */
+   stays raised until that owner runs again a tick later. Display passes see
+   it clear: the director 0x0002F580, entering replay, would otherwise save
+   the replay mode it has just applied as the mode to return to. */
 static bool hide_repeated_state_edge(void)
 {
-    static uint32_t seen_tick;
-    static unsigned pass, seen_pass;
-    static bool seen;
-    const unsigned steps = recomp_game_scheduler_hz() / 60u;
-    ++pass;
-    if (steps <= 1 || *recomp_memory(0x004d5669u, 1) == 0) return false;
-    const uint32_t tick = *recomp_memory_u32(0x005d8984u);
-    if (seen && tick == seen_tick && pass - seen_pass < steps) return true;
-    seen = true;
-    seen_tick = tick;
-    seen_pass = pass;
-    return false;
+    return !recomp_game_authored_pass() && *recomp_memory(0x004d5669u, 1) != 0;
 }
 
 static void camera_tick(void)
@@ -258,6 +262,7 @@ static void stage_camera(void)
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
     const unsigned index = (camera - 0x0041a800u) / 0xae0u;
     const bool title = steps > 1 && index < 5 && *recomp_memory(camera + 0xaccu, 1) == 1;
+    if (steps == 1 && index < 5) title_steps[index].phase = 0;
     if (title && title_steps[index].phase != 0) {
         recomp_guest_store(camera + 0x110u, title_steps[index].next, sizeof title_steps[index].next);
     }
@@ -290,21 +295,10 @@ static void stage_camera(void)
         }
         const unsigned completed = title_steps[index].phase + 1;
         if (completed != steps) {
-            for (unsigned i = 0; i < 14; ++i) {
-                uint32_t value;
-                const uint32_t before = title_steps[index].previous[i];
-                const uint32_t after = title_steps[index].next[i];
-                if (i >= 8 && i <= 10) {
-                    const int32_t delta = (int16_t)(after - before);
-                    value = before + delta * (int32_t)completed / (int32_t)steps;
-                } else {
-                    float a, b, sample;
-                    memcpy(&a, &before, 4); memcpy(&b, &after, 4);
-                    sample = (float)(a + ((double)b - a) * completed / steps);
-                    memcpy(&value, &sample, 4);
-                }
-                *recomp_memory_u32(camera + 0x110u + i * 4) = value;
-            }
+            uint32_t block[14];
+            camera_block_lerp(block, title_steps[index].previous,
+                title_steps[index].next, completed, steps);
+            recomp_guest_store(camera + 0x110u, block, sizeof block);
         }
         title_steps[index].phase = completed % steps;
     }

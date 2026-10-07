@@ -34,7 +34,7 @@ static int check_guest_delivery(void)
     recomp_guest_load(&state, 0x005f3088u, sizeof state);
     recomp_guest_load(&aggregate, 0x005f3138u, sizeof aggregate);
     int passed = state.held == 0x10110 && state.pressed == 0x10110 &&
-        state.repeated == 0x110 && state.repeat_delay == 40 &&
+        state.repeated == 0x110 && state.repeat_delay == 20 &&
         state.pressure[0] == 0 && state.pressure[1] == 128 &&
         state.axes[0] == 8192 && state.axes[1] == 0 &&
         state.axes[2] == -8192 && state.axes[3] == 0 &&

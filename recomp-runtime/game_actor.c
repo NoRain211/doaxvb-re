@@ -2,10 +2,7 @@
 #include "game_actor_transition.h"
 #include "game_scheduler.h"
 
-static unsigned cooldown_phase[4];
-static unsigned clip_phase[8];
-static float pose_cursor_history[8][4];
-static unsigned pose_cursor_slot[8];
+static float pose_tick_sample[8], pose_tick_cursor[8];
 static bool pose_cursor_ready[8];
 
 RecompGameClipAdvance recomp_game_clip_advance(float cursor, double increment,
@@ -16,18 +13,12 @@ RecompGameClipAdvance recomp_game_clip_advance(float cursor, double increment,
     return result;
 }
 
-float recomp_game_pose_sample_time(float history[4], unsigned *position,
-    float cursor, unsigned steps_per_tick, bool reset)
+float recomp_game_pose_display_time(float tick_sample, float tick_cursor,
+    unsigned substep, unsigned steps, bool valid, float fallback)
 {
-    if (steps_per_tick == 1) return cursor;
-    if (reset) {
-        for (unsigned j = 0; j < steps_per_tick - 1u; ++j) history[j] = cursor;
-        *position = 0;
-    }
-    const float result = history[*position];
-    history[*position] = cursor;
-    *position = (*position + 1u) % (steps_per_tick - 1u);
-    return result;
+    if (!valid) return fallback;
+    if (tick_cursor < tick_sample) return tick_sample;
+    return (float)(tick_sample + ((double)tick_cursor - tick_sample) * substep / steps);
 }
 
 static uint8_t byte(uint32_t address) { return *recomp_memory(address, 1); }
@@ -68,9 +59,7 @@ static void layer_clock(void)
     *recomp_memory_u32(0x005e4800u) = layer;
     /* The authored tick tests the clip end before advancing a whole tick.
        Testing it on every substep would start the next clip early. */
-    unsigned *phase = clip_phase + (actor * 2u + recomp_runtime.registers.eax) % 8u;
-    const bool tick_start = *phase == 0;
-    *phase = (*phase + 1u) % steps;
+    const bool tick_start = recomp_game_substep() == 0;
     if (byte(layer + 0x70u) == 0) {
         if (byte(layer + 0x78u) != 0) {
             set_byte(layer + 0x71u, 0);
@@ -160,15 +149,17 @@ static void actor_animation(void)
         }
         if (byte(layer + 0x73u) != 0) {
             const uint32_t cursor_word = word(layer + 0x48u);
+            const unsigned slot = actor * 2u + i;
+            const float cursor = scalar(layer + 0x48u);
             if (steps > 1) {
-                const unsigned slot = actor * 2u + i;
-                const float cursor = scalar(layer + 0x48u);
-                /* The authored loop samples before advancing its clock.
-                   Preserve that one-tick latency when the tick is subdivided. */
-                const float sample = recomp_game_pose_sample_time(pose_cursor_history[slot],
-                    &pose_cursor_slot[slot], cursor, steps, !pose_cursor_ready[slot]);
-                pose_cursor_ready[slot] = true;
+                if (recomp_game_substep() == 0) pose_tick_cursor[slot] = cursor;
+                const float sample = recomp_game_pose_display_time(pose_tick_sample[slot],
+                    pose_tick_cursor[slot], recomp_game_substep() + 1u, steps,
+                    pose_cursor_ready[slot], cursor);
                 recomp_guest_store(layer + 0x48u, &sample, sizeof sample);
+            } else {
+                pose_tick_sample[slot] = cursor;
+                pose_cursor_ready[slot] = true;
             }
             cdecl_one(layer, 0x000aeef0u, actor);
             *recomp_memory_u32(layer + 0x48u) = cursor_word;
@@ -196,10 +187,8 @@ static void actor_animation(void)
         call(last_layer, 0x000adfb0u);
     }
     *recomp_memory_u32(0x005dfa24u) = 0;
-    if (++cooldown_phase[actor] == steps) {
-        cooldown_phase[actor] = 0;
-        if (*recomp_memory_u16(work + 0x56u) > 0) --*recomp_memory_u16(work + 0x56u);
-    }
+    if (recomp_game_substep() + 1u == steps && *recomp_memory_u16(work + 0x56u) > 0)
+        --*recomp_memory_u16(work + 0x56u);
     recomp_runtime.registers.ebx = saved_ebx;
     recomp_runtime.registers.esi = saved_esi;
     recomp_runtime.registers.edi = actor;

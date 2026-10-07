@@ -172,6 +172,7 @@ static unsigned scheduler_steps_per_tick(void)
 static uint16_t world_counter_increment(unsigned steps_per_tick)
 {
     const unsigned steps = normalize_steps(steps_per_tick);
+    if (steps == 1) counter_remainder = 0;
     const unsigned accumulated = counter_remainder + 22u;
     counter_remainder = accumulated % steps;
     return (uint16_t)(accumulated / steps);
