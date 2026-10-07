@@ -3,6 +3,11 @@
 #include "d3d_split_pose.h"
 
 bool recomp_animation_split_enabled(void);
+/* Split rate is presentation only: an unexpected guest state drops
+   interpolation for the affected draw or tick and logs the reason once.
+   RECOMP_SPLIT_STRICT=1 stops instead, for agent gates. */
+void recomp_split_fallback(const char *reason);
+void recomp_animation_split_invalidate(unsigned actor);
 void recomp_animation_split_capture(unsigned actor, uint32_t frame,
     const RecompVisualPose *snapshot);
 void recomp_animation_split_palette(unsigned actor, uint32_t frame, uint32_t object,

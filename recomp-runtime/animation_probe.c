@@ -98,12 +98,25 @@ static uint32_t state_capture_frame(void)
     return *text && !*end && frame < UINT32_MAX ? (uint32_t)frame : 0;
 }
 
+/* Ordinary split play, as opposed to a verification or experiment gate. */
+static bool split_play(void)
+{
+    return recomp_animation_split_enabled() && !experiment_frame() &&
+        setting("RECOMP_SKELETON_VERIFY") == NULL;
+}
+
+static bool height_failed;
+
 static uint32_t seam_record(uint32_t object, unsigned actor)
 {
     if (actor >= 4) return 0;
     unsigned count = *(const uint8_t *)recomp_memory_i8(0x004cb644u+actor);
     unsigned mask = *(const uint8_t *)recomp_memory_i8(0x004cb640u+actor);
-    if (count > 32) recomp_stop(1, "animation:seam-record-count");
+    if (count > 32) {
+        if (!split_play()) recomp_stop(1, "animation:seam-record-count");
+        recomp_split_fallback("animation:seam-record-count");
+        return 0;
+    }
     for (unsigned i = 0; i < count; ++i) {
         uint32_t record = 0x004ca640u+actor*0x400u+i*32u;
         if (*recomp_memory_u32(record) == object &&
@@ -150,7 +163,12 @@ static float ground_height(float x, float z)
     float base = guest_float(0x009ef7ecu), cell = guest_float(0x009ef7e8u);
     if (x < xmin || x > guest_float(0x009ef7e4u) ||
         z < zmin || z > guest_float(0x009ef808u)) return base;
-    if (!isfinite(x) || !isfinite(z) || cell <= 0) recomp_stop(1, "animation:height-input");
+    if (!isfinite(x) || !isfinite(z) || cell <= 0) {
+        if (!split_play()) recomp_stop(1, "animation:height-input");
+        recomp_split_fallback("animation:height-input");
+        height_failed = true;
+        return base;
+    }
     double inverse = 1.0/(double)cell;
     unsigned ix = (unsigned)(((double)x-xmin)*inverse);
     unsigned iz = (unsigned)(((double)z-zmin)*inverse);
@@ -210,6 +228,7 @@ static bool solve_capture(PoseCapture *c)
     s->minimum_bend = (c->actor_after[0x173]&2u) != 0;
     s->terrain_disabled = c->terrain_disabled;
     s->derived_blend = c->derived_enabled;
+    height_failed = false;
     /* The first solve supplies query positions before terrain correction. All
        matrices here are independently calculated, never copied from the oracle. */
     if (!recomp_animation_solve_skeleton(&t, c->pose_before+3, s, c->solved)) return false;
@@ -228,7 +247,7 @@ static bool solve_capture(PoseCapture *c)
                 (double)c->pose_before[3+t.limbs[limb].position_channels[2]]*root[8+i] + root[12+i]);
         s->limb_height[limb] = ground_height(point[0], point[2]);
     }
-    return recomp_animation_solve_skeleton(&t, c->pose_before+3, s, c->solved);
+    return !height_failed && recomp_animation_solve_skeleton(&t, c->pose_before+3, s, c->solved);
 }
 
 static void evaluate_experiment_pose(const PoseCapture *previous, const PoseCapture *current,
@@ -328,13 +347,23 @@ static void build_palette(void)
     bool experiment = frame == experiment_frame() && experiment_ready &&
         actor_bank && actor == experiment_actor();
     bool split = recomp_animation_split_enabled() && actor_bank;
+    /* Split play drops this palette's binding on a model mismatch (the draw
+       keeps its 60 Hz palette); verification and experiments still stop. */
+    const bool gate = verify || experiment;
+    bool check = gate || split;
     note(3);
-    if (verify || experiment || split) {
+    if (check) {
         uint32_t objects = *recomp_memory_u32(*recomp_ebp_register()-4u);
         unsigned ordinal = *(const uint8_t *)recomp_memory_i8(recomp_runtime.registers.esi);
         object = *recomp_memory_u32(objects+ordinal*4u);
         output_count = *recomp_memory_u32(object+4u)+1u;
-        if (output_count == 0 || output_count > 4u) recomp_stop(1, "animation:palette-influences");
+        if (output_count == 0 || output_count > 4u) {
+            if (gate) recomp_stop(1, "animation:palette-influences");
+            recomp_split_fallback("animation:palette-influences");
+            check = split = false;
+        }
+    }
+    if (check) {
         recomp_guest_load(recipe, 0x0033f988u+recipe_id*16u, sizeof recipe);
         recomp_guest_load(bones, bank, sizeof bones);
         recomp_guest_load(offsets, offset_address, sizeof offsets);
@@ -343,19 +372,24 @@ static void build_palette(void)
             &initial, expected, &scratch)) {
             fprintf(stderr, "recomp animation palette rejected: frame=%u recipe=%u declared=%u used=%u\n",
                 frame, recipe_id, recipe[0], output_count);
-            recomp_stop(1, "animation:palette-recipe");
+            if (gate) recomp_stop(1, "animation:palette-recipe");
+            recomp_split_fallback("animation:palette-recipe");
+            check = split = false;
         }
     }
     sub_000636D0();
-    if (verify || experiment || split) {
+    if (check) {
         RecompBoneMatrix actual[4], native[4];
         recomp_guest_load(actual, 0x00b25840u, output_count*sizeof *actual);
         float recipe_error = matrix_error(expected, actual, output_count);
         float pose_error = -1;
         if (actor_bank && solved_valid[actor] && solved_frame[actor] == frame) {
             if (!recomp_animation_build_palette(recipe, sizeof recipe, output_count, solved_bones[actor], 32,
-                offsets, 24, &initial, native, &scratch)) recomp_stop(1, "animation:solved-palette-recipe");
-            pose_error = matrix_error(native, actual, output_count);
+                offsets, 24, &initial, native, &scratch)) {
+                if (gate) recomp_stop(1, "animation:solved-palette-recipe");
+                recomp_split_fallback("animation:solved-palette-recipe");
+                split = false;
+            } else pose_error = matrix_error(native, actual, output_count);
         }
         if (!split || verify) fprintf(stderr, "recomp animation palette: frame=%u recipe=%u count=%u actor=%u recipe_error=%.9g pose_error=%.9g\n",
             frame, recipe_id, output_count, actor_bank ? actor : UINT32_MAX, recipe_error, pose_error);
@@ -387,7 +421,10 @@ static void build_palette(void)
                     fclose(file);
                 }
             }
-            recomp_stop(1, "animation:palette-mismatch");
+            if (gate) recomp_stop(1, "animation:palette-mismatch");
+            recomp_split_fallback("animation:palette-mismatch");
+            split = false;
+            recomp_animation_split_invalidate(actor);
         }
         if (split) recomp_animation_split_palette(actor, frame, object, output_count, recipe, offsets, &initial, actual);
         if (experiment) {
@@ -711,23 +748,30 @@ void recomp_animation_probe_finish_split(void)
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     for (unsigned actor = 0; actor < 4; ++actor) {
         if (!solved_valid[actor] || solved_frame[actor] != frame || finished[actor] == frame) continue;
+        finished[actor] = frame;
         const PoseCapture *capture = split_captures+actor;
         RecompBoneMatrix final[32];
         recomp_guest_load(final, 0x004d3650u+actor*0x800u, sizeof final);
         float displacement = final[0].m[14]-capture->bones_after[0][14];
-        for (unsigned bone = 0; bone < 32; ++bone) {
+        const char *error = isfinite(displacement) ? NULL : "split:nonuniform-net-displacement";
+        for (unsigned bone = 0; !error && bone < 32; ++bone) {
             for (unsigned component = 0; component < 16; ++component) {
                 if (component != 14 && memcmp(&final[bone].m[component],
                     &capture->bones_after[bone][component], sizeof(float)))
-                    recomp_stop(1, "split:unknown-post-solve-transform");
+                    error = "split:unknown-post-solve-transform";
             }
             float expected = capture->bones_after[bone][14]+displacement;
-            if (!isfinite(displacement) || fabsf(expected-final[bone].m[14]) > 1e-5f)
-                recomp_stop(1, "split:nonuniform-net-displacement");
-            solved_bones[actor][bone].m[14] += displacement;
+            if (fabsf(expected-final[bone].m[14]) > 1e-5f) error = "split:nonuniform-net-displacement";
         }
+        if (error) {
+            // The pose came from a transform the replay does not model; show it at 60 Hz.
+            recomp_split_fallback(error);
+            solved_valid[actor] = false;
+            recomp_animation_split_invalidate(actor);
+            continue;
+        }
+        for (unsigned bone = 0; bone < 32; ++bone) solved_bones[actor][bone].m[14] += displacement;
         recomp_animation_split_finish(actor, frame, displacement, solved_bones[actor]);
-        finished[actor] = frame;
     }
 #endif
 }

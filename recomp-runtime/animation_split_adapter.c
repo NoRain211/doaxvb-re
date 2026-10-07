@@ -26,6 +26,22 @@ static bool split_trace(void)
     return enabled != 0;
 }
 
+void recomp_split_fallback(const char *reason)
+{
+    static int strict = -1;
+    if (strict < 0) {
+        const char *setting = getenv("RECOMP_SPLIT_STRICT");
+        strict = setting != NULL && strcmp(setting, "1") == 0;
+    }
+    if (strict) recomp_stop(1, "%s", reason);
+    static const char *reported[32];
+    static unsigned count;
+    for (unsigned i = 0; i < count; ++i)
+        if (strcmp(reported[i], reason) == 0) return;
+    if (count < 32) reported[count++] = reason;
+    fprintf(stderr, "recomp split: fallback reason=%s; affected draws keep their 60 Hz state\n", reason);
+}
+
 #ifdef RECOMP_FULL_PROGRAM
 static RecompVisualPose pairs[4];
 static uint32_t frames[4];
@@ -53,7 +69,10 @@ static CameraPair cameras[5];
 static SplitBinding *add_binding(uint32_t frame)
 {
     if (frame != binding_frame) { binding_count = 0; binding_frame = frame; }
-    if (binding_count == 512) recomp_stop(1, "split:binding-capacity");
+    if (binding_count == 512) {
+        recomp_split_fallback("split:binding-capacity");
+        return NULL;
+    }
     SplitBinding *binding = bindings+binding_count++;
     memset(binding, 0, sizeof *binding);
     return binding;
@@ -176,6 +195,15 @@ void recomp_animation_split_finish(unsigned actor, uint32_t frame, float displac
 #endif
 }
 
+void recomp_animation_split_invalidate(unsigned actor)
+{
+#ifdef RECOMP_FULL_PROGRAM
+    if (actor < 4) { ready[actor] = false; actor_motion[actor][0] = actor_motion[actor][1] = 0; }
+#else
+    (void)actor;
+#endif
+}
+
 void recomp_animation_split_palette(unsigned actor, uint32_t frame, uint32_t object,
     unsigned count, const uint8_t recipe[16], const float offsets[24][4],
     const RecompBoneMatrix *initial, const RecompBoneMatrix original[4])
@@ -183,6 +211,7 @@ void recomp_animation_split_palette(unsigned actor, uint32_t frame, uint32_t obj
 #ifdef RECOMP_FULL_PROGRAM
     if (actor >= 4 || !ready[actor] || frames[actor] != frame) return;
     SplitBinding *binding = add_binding(frame);
+    if (!binding) return;
     binding->object = object; binding->actor = actor;
     binding->joint = UINT32_MAX; binding->count = count;
     memcpy(binding->recipe, recipe, sizeof binding->recipe);
@@ -208,6 +237,7 @@ void recomp_animation_split_rigid(void)
         frames[actor] != frame || bone < bank || bone >= bank+0x800u || (bone-bank)%64) return;
     if (memcmp(recomp_memory(bone, 64), recomp_memory(0x00a24190u, 64), 64)) return;
     SplitBinding *binding = add_binding(frame);
+    if (!binding) return;
     binding->object = recomp_runtime.registers.ecx; binding->actor = actor;
     binding->joint = (bone-bank)/64; binding->count = 1;
     recomp_guest_load(binding->original, bone, 64);
@@ -256,7 +286,9 @@ void recomp_animation_split_camera(uint32_t address)
     }
     if (error > 0.0001f) {
         fprintf(stderr, "recomp split camera mismatch: frame=%u slot=%u error=%.9g roll=%.9g eye=%.9g,%.9g,%.9g target=%.9g,%.9g,%.9g\n", frame, slot, error, input->roll, input->eye[0], input->eye[1], input->eye[2], input->target[0], input->target[1], input->target[2]);
-        recomp_stop(1, "split:camera-mismatch");
+        recomp_split_fallback("split:camera-mismatch");
+        camera->ready = camera->continuous = false;
+        return;
     }
     if (split_trace()) fprintf(stderr, "recomp split camera: frame=%u slot=%u ready=%d cut=%d step=%.6g turn=%.6g eye=%.6g,%.6g,%.6g target=%.6g,%.6g,%.6g fov=%.6g\n",
         frame, slot, camera->ready, cut, motion[0], motion[1], input->eye[0], input->eye[1], input->eye[2],
@@ -340,9 +372,15 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
     }
     if (actor >= 4 && !camera && !ball && !rigid) return NULL;
     size_t bytes = sizeof(RecompSplitDraw)+(seam ? (size_t)draw->vertex_count*sizeof(RecompSplitVertex) : 0);
-    if (bytes > RECOMP_XBOX_RAM_SIZE) recomp_stop(1, "split:payload-size");
+    if (bytes > RECOMP_XBOX_RAM_SIZE) {
+        recomp_split_fallback("split:payload-size");
+        return NULL;
+    }
     RecompSplitDraw *split = calloc(1, bytes);
-    if (!split) recomp_stop(1, "split:allocation");
+    if (!split) {
+        recomp_split_fallback("split:allocation");
+        return NULL;
+    }
     split->frame = frame; split->actor = actor; split->joint = joint; split->count = count;
     split->pose = actor < 4;
     if (split->pose) split->visual = pairs[actor];
@@ -393,8 +431,11 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
         split->initial = found->initial;
     }
     if (seam) {
-        if (*recomp_memory_u32(seam+24) || *recomp_memory_u32(seam+28))
-            recomp_stop(1, "split:seam-links-unimplemented");
+        const char *seam_error = NULL;
+        if (*recomp_memory_u32(seam+24) || *recomp_memory_u32(seam+28)) {
+            seam_error = "split:seam-links-unimplemented";
+            goto seam_fallback;
+        }
         split->seam = true;
         split->seam_destination = *(const uint8_t *)recomp_memory_i8(seam+12);
         split->seam_source = *(const uint8_t *)recomp_memory_i8(seam+13);
@@ -420,16 +461,25 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
                 while ((address = *recomp_memory_u32(cursor)) != UINT32_MAX) {
                     address &= RECOMP_XBOX_RAM_SIZE-1;
                     if (address >= first && address-first < span) {
-                        if ((address-first)%draw->vertex_stride) recomp_stop(1, "split:seam-vertex-alignment");
+                        if ((address-first)%draw->vertex_stride) {
+                            seam_error = "split:seam-vertex-alignment";
+                            goto seam_fallback;
+                        }
                         vertices[(address-first)/draw->vertex_stride] = vertex;
                     }
                     cursor += 4;
-                    if (++words > 100000) recomp_stop(1, "split:seam-stream-limit");
+                    if (++words > 100000) { seam_error = "split:seam-stream-limit"; goto seam_fallback; }
                 }
                 cursor += 4;
-                if (++words > 100000) recomp_stop(1, "split:seam-stream-limit");
+                if (++words > 100000) { seam_error = "split:seam-stream-limit"; goto seam_fallback; }
             } while (*recomp_memory_u32(cursor) != UINT32_MAX);
             cursor += 4;
+        }
+seam_fallback:
+        if (seam_error) {
+            recomp_split_fallback(seam_error);
+            free(split);
+            return NULL;
         }
     }
     if (split->pose) ++actor_draws[actor];
