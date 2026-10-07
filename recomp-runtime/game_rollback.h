@@ -3,9 +3,9 @@
 
 #include <stdbool.h>
 
-/* Whole-game display passes present a substep of the next tick and are then
+/* Whole-game display passes interpolate completed ticks and are then
    undone. Commit records the authored state after a tick pass; restore puts
-   it back before the next one. Guest RAM must have been allocated with write
+   it back before the next pass. Guest RAM must have been allocated with write
    tracking; otherwise begin fails and every pass stays a tick pass. */
 bool recomp_game_rollback_begin(void);
 void recomp_game_rollback_commit(void);

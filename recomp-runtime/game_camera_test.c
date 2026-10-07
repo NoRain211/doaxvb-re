@@ -27,8 +27,8 @@ static int check_camera_publication(void)
             publish(); /* Inactive cameras discard the preceding run's history. */
             *recomp_memory(0x0041b2d8u, 1) = 1;
             *recomp_memory(0x0041b2ccu, 1) = variant ? 8 : 1;
-            /* A tick pass publishes the preceding tick's staged camera; display
-               substep k publishes k/steps of the way to the tick's camera. */
+            /* Publication preserves the game's staged block exactly;
+               completed-tick interpolation lives at the display boundary. */
             for (unsigned sample = 0; sample < 60 * steps; ++sample) {
                 const unsigned tick = sample / steps + 1u, k = sample % steps;
                 recomp_game_pass_begin(k == 0, steps, k - 1u);
@@ -40,7 +40,7 @@ static int check_camera_publication(void)
                 publish();
                 float observed;
                 recomp_guest_load(&observed, 0x0041a800u, sizeof observed);
-                const float expected = tick - 1u + (float)k / steps;
+                const float expected = staged;
                 if (observed != expected || recomp_runtime.registers.esp != 0x010000e4u) {
                     fprintf(stderr, "game camera: publication latency or stack changed\n");
                     recomp_runtime_init(NULL, 0, NULL, 0, NULL, 0);

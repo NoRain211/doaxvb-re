@@ -1,3 +1,4 @@
+#include "game_scheduler.h"
 #include "d3d_frame_adapter.h"
 #include "cri_service_adapter.h"
 #include "d3d_draw_adapter.h"
@@ -276,6 +277,12 @@ void recomp_d3d_swap_adapter(void)
         if (tick_count != NULL) {
             *tick_count += MILLISECONDS_PER_SWAP;
         }
+    }
+
+    if (recomp_game_tick_hidden()) {
+        recomp_runtime.registers.eax = result.command.data.present.swap_counter;
+        recomp_runtime.registers.esp = entry_esp + 8u;
+        return;
     }
 
     /* Round 27. Rounds 22-26 measured every guest selector the scene and

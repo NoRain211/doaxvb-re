@@ -1,5 +1,6 @@
 #include "game_world_wave.h"
 #include "game_scheduler.h"
+#include "game_display.h"
 
 #include <string.h>
 
@@ -72,6 +73,7 @@ static void surface_scroll_model(unsigned steps)
             push(i < 4 ? delta : 0);
             push(i < 4 ? 0 : delta);
             push(word(context + offsets[i]));
+            recomp_game_display_uv(*recomp_memory_u32(recomp_runtime.registers.esp));
             call(frame, 0x0017d0a0u);
         }
         const uint32_t half = (uint32_t)((int32_t)counter / 2);

@@ -16,4 +16,6 @@ RecompFunction recomp_game_camera_smoothing_lookup_manual(uint32_t address);
 
 RecompFunction recomp_game_camera_timers_lookup_manual(uint32_t address);
 
+void recomp_game_camera_display(void);
+
 #endif

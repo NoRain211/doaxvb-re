@@ -50,60 +50,6 @@ static bool startup_movie_playing;
 
 bool recomp_game_startup_movie_playing(void) { return startup_movie_playing; }
 
-/* The match update (fibre 0x000BB420) integrates the ball by a whole tick per
-   call, and 0x0001B9E0 first keeps the position it starts from at 0x0041663C.
-   The first display pass of a tick runs that update ahead; each display
-   substep shows the ball the matching part of the way. */
-void recomp_game_ball_display(bool advanced, unsigned substep, unsigned steps)
-{
-    enum { BALL = 0x00416630u, BALL_START = 0x0041663cu };
-    static float start[3], end[3];
-    static uint32_t tick;
-    if (advanced) {
-        recomp_guest_load(start, BALL_START, sizeof start);
-        recomp_guest_load(end, BALL, sizeof end);
-        tick = recomp_game_tick();
-    }
-    if (tick != recomp_game_tick()) return;
-    for (unsigned i = 0; i < 3; ++i)
-        set_scalar(BALL + i * 4u, (float)(start[i] + ((double)end[i] - start[i]) * substep / steps));
-}
-
-/* Fibre 0x00099100 moves each actor's root (record +0x1C) by a whole tick
-   through several per-state routines, and running that fibre ahead can
-   create or end fibres, which a display pass cannot undo. A display substep
-   therefore carries each actor on along its last tick's move; the next tick
-   pass shows the authored position. A jump is a placement, not motion. */
-enum { ACTOR_COUNT = 4, ACTOR_ENABLED = 0x004d6fd0u, ACTOR_ROOT = 0x004d700cu, ACTOR_STRIDE = 0xbcu };
-
-void recomp_game_actor_display(bool tick, unsigned substep, unsigned steps)
-{
-    static float previous[ACTOR_COUNT][3], current[ACTOR_COUNT][3];
-    static uint32_t current_tick = UINT32_MAX;
-    static bool moving;
-    if (tick) {
-        memcpy(previous, current, sizeof previous);
-        moving = current_tick + 1u == recomp_game_tick();
-        current_tick = recomp_game_tick();
-        for (unsigned actor = 0; actor < ACTOR_COUNT; ++actor)
-            recomp_guest_load(current[actor], ACTOR_ROOT + actor * ACTOR_STRIDE, sizeof current[actor]);
-        return;
-    }
-    if (!moving || current_tick != recomp_game_tick()) return;
-    for (unsigned actor = 0; actor < ACTOR_COUNT; ++actor) {
-        if (byte(ACTOR_ENABLED + actor) == 0) continue;
-        double step[3], squared = 0;
-        for (unsigned i = 0; i < 3; ++i) {
-            step[i] = (double)current[actor][i] - previous[actor][i];
-            squared += step[i] * step[i];
-        }
-        if (squared > 0.25) continue;
-        for (unsigned i = 0; i < 3; ++i)
-            set_scalar(ACTOR_ROOT + actor * ACTOR_STRIDE + i * 4u,
-                       (float)(current[actor][i] + step[i] * substep / steps));
-    }
-}
-
 static void next_frame(void)
 {
     const uint32_t slot = 0x005f2c38u + *recomp_memory_u32(0x005f2e5cu) * 32u;
