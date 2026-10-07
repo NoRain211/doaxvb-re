@@ -233,6 +233,9 @@ static void transition_entry(void)
 {
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
     model_from_guest();
+    if (steps == 1)
+        for (unsigned slot = 0; slot < GAME_ENVIRONMENT_RECORDS; ++slot)
+            environment_model.interpolation[slot].phase = 0;
     game_environment_model_step(&environment_model, steps);
     model_to_guest();
     recomp_runtime.registers.esp += 4u;

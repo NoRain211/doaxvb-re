@@ -28,7 +28,8 @@ std::chrono::nanoseconds interval(1000000000 / 60);
 Clock::time_point probe_start;
 unsigned probe_waits;
 bool probe_enabled;
-bool preserve_elapsed;
+bool keep_debt;
+std::chrono::nanoseconds waited{0};
 constexpr auto spin_window = std::chrono::microseconds(500);
 
 void sleepUntil(Clock::time_point deadline)
@@ -120,13 +121,12 @@ void recomp_d3d_vblank_reset(void)
 {
     const char *rate = std::getenv("RECOMP_GUEST_VBLANK_HZ");
     if (rate == nullptr) rate = std::getenv("RECOMP_GAME_HZ");
-    probe_enabled = rate != nullptr &&
-        (std::strcmp(rate, "60") == 0 || std::strcmp(rate, "120") == 0 ||
-         std::strcmp(rate, "240") == 0);
-    const unsigned hz = probe_enabled ? static_cast<unsigned>(std::atoi(rate)) : 60;
-    const char *game_rate = std::getenv("RECOMP_GAME_HZ");
-    preserve_elapsed = game_rate != nullptr &&
-        (std::strcmp(game_rate, "120") == 0 || std::strcmp(game_rate, "240") == 0);
+    char *end = nullptr;
+    const unsigned long requested = rate != nullptr ? std::strtoul(rate, &end, 10) : 0;
+    probe_enabled = end != rate && end != nullptr && *end == '\0' &&
+        requested >= 60 && requested <= 360;
+    const unsigned hz = probe_enabled ? static_cast<unsigned>(requested) : 60;
+    keep_debt = std::getenv("RECOMP_GAME_HZ") != nullptr && hz > 60;
     interval = std::chrono::nanoseconds(1000000000 / hz);
     last_vblank = Clock::now();
     probe_start = last_vblank;
@@ -134,8 +134,13 @@ void recomp_d3d_vblank_reset(void)
     if (probe_enabled) {
         std::fprintf(stderr, "recomp vblank probe: hz=%u; elapsed starts at reset\n", hz);
     } else if (rate != nullptr) {
-        std::fprintf(stderr, "recomp vblank probe: expected 60, 120 or 240; using 60 Hz\n");
+        std::fprintf(stderr, "recomp vblank probe: expected 60 to 360; using 60 Hz\n");
     }
+}
+
+uint64_t recomp_d3d_vblank_waited_ns(void)
+{
+    return static_cast<uint64_t>(waited.count());
 }
 
 void recomp_d3d_wait_vblank(void)
@@ -152,14 +157,16 @@ void recomp_d3d_wait_vblank(void)
         sleepUntil(Clock::now() + interval);
         if (pollHotkeys()) break;
     }
-    // The opt-in fixed game clock keeps elapsed time through late frames.
-    // The original presentation-only path continues to discard timing debt.
+    // Whole-game passes keep up to one refresh of debt: a tick pass that
+    // overruns its refresh is made up by the display pass after it, so both
+    // fit in one tick. Longer stalls (loads) are dropped, not replayed.
     const auto now = Clock::now();
     const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
         last_vblank - now).count();
-    last_vblank = now + std::chrono::nanoseconds(recomp_game_pacing_delay_ns(
-        remaining, interval.count(), preserve_elapsed));
+    const int64_t delay = recomp_game_pacing_delay_ns(remaining, interval.count(), keep_debt);
+    last_vblank = now + std::chrono::nanoseconds(std::max<int64_t>(delay, -interval.count()));
     sleepUntil(last_vblank);
+    waited += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - now);
 }
 
 void recomp_d3d_sleep_until(long long steady_ns)

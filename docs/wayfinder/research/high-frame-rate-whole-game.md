@@ -3,6 +3,52 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## G1-G3: 60 Hz ticks with rolled-back display passes (2026-10-07)
+
+The pass design replaces the substep design below. Every tick runs the
+authored 60 Hz update once. The passes between two ticks are display passes:
+each presents substep k of n of the next tick, and the runtime then undoes
+every guest write that pass made. Game logic therefore no longer depends on
+the display rate, and the drift that made match tick 650 differ is gone.
+
+- **Rollback.** Guest RAM is allocated with `MEM_WRITE_WATCH`
+  (`runner.cpp`). `game_rollback.c` copies the pages a tick wrote into a
+  shadow and copies the shadow back over the pages a display pass wrote. It
+  also checkpoints the fiber model and FPU context. A display pass that
+  creates or ends a fiber stops the runtime, because that cannot be undone.
+  In a match, about 420 pages are committed per tick and 140 restored.
+- **Display motion.** The ball (`0x00416630`) is moved by match fiber
+  `0x000BB420`. The first display pass of a tick runs that fiber ahead, and
+  each substep shows the ball part of the way from `0x0041663C`. Actor roots
+  (`0x004D6FF0 + 0xBC * actor + 0x1C`) are moved by fiber `0x00099100`
+  through several per-state routines (`0x0009A230`, `0x0009A450`,
+  `0x0009A3B0`). Running it ahead created a fiber, so a display substep
+  carries each actor along its last tick's move instead. A move of more than
+  0.5 units is treated as a placement and shown unchanged. The camera
+  interpolates from the block the tick published to the block it staged.
+- **Pacing.** Ticks follow a 60 Hz QPC deadline. The number of display passes
+  per tick is what the measured tick pass leaves of the tick, divided by the
+  measured display pass. Both are measured without guest vblank waits. At
+  rates above 60 Hz, the guest vblank timer keeps up to one refresh of
+  timing debt, so a display pass can make up for a tick pass that overran
+  its refresh. A slow machine loses display passes, never game time.
+
+Results from agent smoke runs (scripted Exhibition route, 4.5 scale, 8x
+MSAA, SMAA, `RECOMP_DSOUND_GAME_CLOCK=1`). The match starts near game tick
+4337.
+
+| Gate | Result |
+| --- | --- |
+| G1: no trailing copies at 120 Hz | On display passes the ball, the actors and the camera eye move by the expected fraction of their tick move (median error 0.000 to 0.005). In 16 consecutive 4K frames during a rally, no screen tile alternates more than 1.39x in frame-to-frame change between even and odd frames. The old design had a tile at 3.45x. |
+| G2: 120 Hz matches 60 Hz past match tick 3000 | RNG draws are identical through game tick 8291 (4893 draws, about match tick 3950). Tick-pass ball, actor and camera words are bit-identical over ticks 5000-7400. |
+| G3: 240 Hz keeps game time | Ticks per second stay 60.00 +- 0.05 in every 5 s window over 65 s of match, while passes run at 120-206/s. RNG draws are identical to 60 Hz through tick 8320, and tick-pass camera state through tick 7400. |
+| 100 and 144 Hz | 100 Hz holds 100 passes/s; 144 Hz reaches 126-139 passes/s. Both hold 60 ticks/s. |
+| 120 Hz throughput | 103-120 passes/s in the match. The dips occur where a tick pass and a display pass together cost about 16 ms. |
+| Camera words 20-22 | They follow the staged camera, not the display. The published block (words 0-13) is what the frame uses, and it interpolates correctly. |
+
+The previous 240 Hz camera fault came from the substep design. Tick-pass
+camera state now matches 60 Hz exactly. These are smoke runs: the gameplay,
+smoothness and ghosting acceptance is the user's play test.
 ## P2: 120 Hz match logic against 60 Hz (2026-10-06, partial)
 
 Gate: the match introduction keeps its audio timing at 60 Hz. The random

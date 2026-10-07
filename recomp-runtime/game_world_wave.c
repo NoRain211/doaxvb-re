@@ -104,6 +104,7 @@ static void wind_strength_model(unsigned steps)
     recomp_runtime.registers.esp -= 8;
     if (!byte(0x004d56efu)) {
         push(saved_esi);
+        if (steps == 1) phase = 0;
         const unsigned completed = phase + 1;
         for (uint32_t record = 0x005c3770u; record < 0x005c37b8u; record += 8) {
             recomp_runtime.registers.esi = record + 4;

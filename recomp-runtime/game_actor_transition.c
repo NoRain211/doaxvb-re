@@ -49,6 +49,8 @@ static void actor_transition(unsigned steps)
     const uint32_t saved_ebx = recomp_runtime.registers.ebx;
     const uint32_t entry_stack = recomp_runtime.registers.esp;
     unsigned *phase = &transition_phase[actor % 4u];
+    /* A tick pass is one whole step; display passes count on from it. */
+    if (steps == 1) *phase = 0;
     push(actor);
     push(saved_ebx);
 
