@@ -2,23 +2,12 @@
 #include "game_actor_transition.h"
 #include "game_scheduler.h"
 
-static float pose_tick_sample[8], pose_tick_cursor[8];
-static bool pose_cursor_ready[8];
-
 RecompGameClipAdvance recomp_game_clip_advance(float cursor, double increment,
     float epsilon, unsigned steps_per_tick)
 {
     const double advanced = increment + (double)epsilon / steps_per_tick + cursor;
     const RecompGameClipAdvance result = {(float)advanced, (int32_t)advanced};
     return result;
-}
-
-float recomp_game_pose_display_time(float tick_sample, float tick_cursor,
-    unsigned substep, unsigned steps, bool valid, float fallback)
-{
-    if (!valid) return fallback;
-    if (tick_cursor < tick_sample) return tick_sample;
-    return (float)(tick_sample + ((double)tick_cursor - tick_sample) * substep / steps);
 }
 
 static uint8_t byte(uint32_t address) { return *recomp_memory(address, 1); }
@@ -145,24 +134,9 @@ static void actor_animation(void)
             set_byte(layer + 0x74u, 0);
             set_byte(layer + 0x73u, 1);
             cdecl_one(layer, 0x000aec80u, actor);
-            pose_cursor_ready[actor * 2u + i] = false;
         }
         if (byte(layer + 0x73u) != 0) {
-            const uint32_t cursor_word = word(layer + 0x48u);
-            const unsigned slot = actor * 2u + i;
-            const float cursor = scalar(layer + 0x48u);
-            if (steps > 1) {
-                if (recomp_game_substep() == 0) pose_tick_cursor[slot] = cursor;
-                const float sample = recomp_game_pose_display_time(pose_tick_sample[slot],
-                    pose_tick_cursor[slot], recomp_game_substep() + 1u, steps,
-                    pose_cursor_ready[slot], cursor);
-                recomp_guest_store(layer + 0x48u, &sample, sizeof sample);
-            } else {
-                pose_tick_sample[slot] = cursor;
-                pose_cursor_ready[slot] = true;
-            }
             cdecl_one(layer, 0x000aeef0u, actor);
-            *recomp_memory_u32(layer + 0x48u) = cursor_word;
         }
     }
     const uint32_t last_layer = first_layer + 0x80u;

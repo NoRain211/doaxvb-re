@@ -1,5 +1,6 @@
 #include "game_actor.h"
 #include "game_actor_transition.h"
+#include "game_display.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -12,16 +13,20 @@ int recomp_game_actor_test(void)
         fprintf(stderr, "game actor: frame conversion rounded the stored float\n");
         return 0;
     }
-    if (recomp_game_pose_display_time(2, 3, 1, 4, true, 9) != 2.25f ||
-        recomp_game_pose_display_time(2, 3, 3, 4, true, 9) != 2.75f) {
-        fprintf(stderr, "game actor: display pose lost its authored latency\n");
-        return 0;
+    /* Stops, reversals and rates with unequal display spacing stay bounded. */
+    const float positions[] = {0, 1, 1, -1, -1, 0};
+    for (unsigned i = 1; i < sizeof positions / sizeof positions[0]; ++i) {
+        for (unsigned hz = 60; hz <= 360; ++hz) {
+            for (unsigned frame = 0; frame <= hz; ++frame) {
+                const float a = positions[i-1], b = positions[i];
+                const float value = recomp_game_display_lerp(a, b, (float)frame / hz);
+                if (value < fminf(a, b) || value > fmaxf(a, b)) return 0;
+            }
+        }
     }
-    if (recomp_game_pose_display_time(30, 1, 1, 2, true, 9) != 30 ||
-        recomp_game_pose_display_time(2, 3, 1, 2, false, 9) != 9) {
-        fprintf(stderr, "game actor: clip loop or change reused a prior cursor\n");
-        return 0;
-    }
+    if (recomp_game_display_angle(65530, 6, 0.5f) != 0 ||
+        recomp_game_display_lerp(3, 2, -1) != 3 ||
+        recomp_game_display_lerp(3, 2, 2) != 2) return 0;
     for (unsigned steps = 1; steps <= 4; steps *= 2) {
         uint16_t age = 0;
         unsigned phase = 0;
