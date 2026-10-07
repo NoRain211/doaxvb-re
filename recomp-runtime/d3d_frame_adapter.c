@@ -216,6 +216,11 @@ void recomp_d3d_clear_adapter(void)
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
+    if (presenter_error == RECOMP_D3D_PRESENTER_CLOSED) {
+        recomp_d3d_frame_adapter_reset();
+        fprintf(stderr, "recomp runner: window closed; exiting normally\n");
+        recomp_stop(0, "host-window-close");
+    }
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
