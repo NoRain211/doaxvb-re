@@ -784,12 +784,22 @@ std::vector<AnalogPulse> inputAnalogPulses;
         std::cerr << "recomp runner: " << error << '\n';
         return 1;
     }
+    /* Whole-game display passes find and undo their guest writes through
+       write tracking, which only VirtualAlloc can provide. */
+    auto *ram = static_cast<std::uint8_t *>(VirtualAlloc(nullptr, memory.size(),
+        MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
+    if (ram == nullptr) {
+        std::cerr << "recomp runner: guest RAM allocation failed\n";
+        return 1;
+    }
+    std::memcpy(ram, memory.data(), memory.size());
 
     const RecompMemoryRegion region = {
         0u,
         memory.size(),
-        memory.data(),
+        ram,
     };
+    std::vector<std::uint8_t>().swap(memory);
 #ifndef RECOMP_FULL_PROGRAM
     std::vector<RecompMemoryAccess> accesses(4096u);
     const RecompFunctionEntry functions[] = {

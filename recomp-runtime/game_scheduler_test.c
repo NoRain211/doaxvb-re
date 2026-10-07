@@ -173,8 +173,7 @@ int recomp_game_scheduler_test(void)
                *recomp_memory_u32(0x005f2c98u) == 0,
                "completed fiber cleanup differs");
         recomp_game_scheduler_tick();
-        expect(resumed[0] == (hz == 60 ? 2u : 1u) &&
-               resumed[1] == (hz == 60 ? 1u : 0u),
+        expect(resumed[0] == 2 && resumed[1] == 1,
                "one-tick or two-tick sleep resumed at wrong time");
         expect(timestamps == 36 && timestamp_addresses[0] == 0x005f2c48u &&
                timestamp_addresses[17] == 0x005f2e68u &&
@@ -189,6 +188,11 @@ int recomp_game_scheduler_test(void)
         expect(*recomp_memory_u32(0x005f2cbcu) == 7 &&
                *recomp_memory_u32(0x005f2cdcu) == 7,
                "paused/inactive sleep changed");
+        recomp_game_pass_begin(false, hz / 60u, 0);
+        recomp_game_scheduler_tick();
+        expect(resumed[0] == 2 && *recomp_memory_u32(0x005f2c3cu) == 1,
+               "display pass resumed or aged a sleeping fiber");
+        recomp_game_pass_begin(true, 1, 0);
     }
     recomp_runtime_init(NULL, 0, NULL, 0, NULL, 0);
     return passed;

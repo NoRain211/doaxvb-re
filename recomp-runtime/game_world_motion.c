@@ -84,6 +84,7 @@ static void world_motion(unsigned steps)
     const uint32_t saved_esi = recomp_runtime.registers.esi;
     const uint32_t saved_edi = recomp_runtime.registers.edi;
     recomp_runtime.registers.esp -= 16u;
+    if (steps == 1) motion_phase = 0;
     if (byte(0x004d56efu) == 0) {
         if (motion_phase == 0) {
             recomp_guest_load(position_start, 0x00327cd0u, sizeof position_start);
@@ -167,6 +168,7 @@ static void boat_motion(unsigned steps)
     const uint32_t saved_edi = recomp_runtime.registers.edi;
     recomp_runtime.registers.esp -= 20;
     push(saved_ebx); push(saved_esi); push(saved_edi);
+    if (steps == 1) phase = 0;
     if (!byte(0x004d56efu)) {
         if (phase == 0) {
             for (unsigned i = 0; i < 3; ++i) {
