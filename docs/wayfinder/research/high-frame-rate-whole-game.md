@@ -60,6 +60,54 @@ window. A `Clear` call reached the closed presenter before the next present did.
 `Clear` now handles a closed presenter as a normal window close, the same way
 present does.
 
+## W3: pass cost (2026-10-07)
+
+The 120 Hz match has not reached the gate of at least 118 fps in every second.
+The best result is close. Over the 28 match seconds of the scripted
+Exhibition route, the final build averaged 119.3 fps with a minimum of 115 fps;
+4 seconds fell below 118. The W2 build averaged 91.6 fps with a minimum of
+68 fps, and every match second fell below 118. Both are untraced single runs.
+Runs that overlapped an unrelated compile measured 10-20 fps lower, so compare
+only idle-machine runs.
+
+Three changes produced the gain:
+
+- Hidden authoritative ticks still run every guest draw call, but backbuffer
+  draws and clears skip host command building and presenter submission. The
+  next display pass redraws that backbuffer. Offscreen targets and recorded
+  frame-owner draws keep the full path. This change gave most of the gain.
+- Display passes skip `actor_frame_prepare`'s scene setup and morph update.
+  They reuse the completed tick's results and only advance the draw stamp, so
+  palettes still rebuild for the interpolated pose.
+- `recomp_program_lookup` caches resolved non-kernel addresses per thread.
+  The manual lookup chain had taken about 5% of the game thread. Every manual
+  result is fixed after its one-time environment read. Kernel thunks stay
+  uncached because the startup clock thunk is time-dependent and the kernel
+  lookup counts calls.
+
+Paired 145-second runs with game-clock audio (`RECOMP_DSOUND_GAME_CLOCK=1`)
+matched at all 8,658 ticks and on all 5,381 shared RNG events. Positions
+had no overshoots over 206,100 root-coordinate checks, and bones had none
+either. Without game-clock audio, 60 Hz runs drift by an audio-timed event
+(here at tick 4636), so the determinism check requires it.
+
+The scheduler trace shows the remaining limit. A match tick costs 6-7.5 ms of
+work and a display pass 2.6-4.9 ms. Both refreshes of a tick therefore need
+15-16 ms of a 16.7 ms budget. The pacing already carries one refresh of debt.
+About 85% of the game thread runs drawing fibers, and nearly all of that is
+generated game rendering: actors take about 2.1 ms per pass, world and scenery
+about 1.3 ms, and the effect layer about 0.8 ms. A hidden tick's render cannot
+be dropped: it consumes RNG, integrates secondary chains and advances effect
+timers inside the same calls that draw.
+
+The next candidate removes one display pass per tick. A hidden tick's frame
+is exactly the interpolated frame at alpha 1. The presenter could hold that
+captured packet and present it one refresh later, which leaves one tick and
+one display pass per 16.7 ms at 120 Hz. This needs packets that stay valid
+across another frame's texture uploads, releases and rollbacks. The presenter
+packet path is shared with split rate, so the change must keep split rate
+unchanged.
+
 ## G1-G3: 60 Hz ticks with rolled-back display passes (2026-10-07)
 
 The pass design replaces the substep design below. Every tick runs the
