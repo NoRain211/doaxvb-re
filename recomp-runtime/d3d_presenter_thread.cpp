@@ -5,6 +5,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -23,6 +24,19 @@
 
 
 namespace {
+
+bool vsync_presents;
+
+/* The compositor's refresh rate for the primary display, 0 when unknown. */
+double display_refresh_hz()
+{
+    // ponytail: primary display only; a window on another monitor needs its output's rate.
+    DWM_TIMING_INFO info{};
+    info.cbSize = sizeof info;
+    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &info)) || info.rateRefresh.uiDenominator == 0)
+        return 0;
+    return double(info.rateRefresh.uiNumerator)/info.rateRefresh.uiDenominator;
+}
 
 struct SplitPresentRecord {
     uint32_t frame;
@@ -568,7 +582,14 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     std::unique_ptr<PresenterThread> thread;
     try {
         thread = std::make_unique<PresenterThread>();
-        thread->split_rate = recomp_split_rate(std::getenv("RECOMP_SPLIT_RATE"));
+        const char *requested = std::getenv("RECOMP_SPLIT_RATE");
+        if (recomp_split_requested(requested)) {
+            const double display = display_refresh_hz();
+            const char *note = nullptr;
+            thread->split_rate = recomp_split_display_rate(requested, display, vsync_presents, &note);
+            std::fprintf(stderr, "recomp split rate: requested=%s display=%.3f\n", requested, display);
+            if (note) std::fprintf(stderr, "recomp split rate: %s\n", note);
+        }
         d3d11_backend_set_split_presentation(thread->split_rate != 0);
         thread->split_trace = std::getenv("RECOMP_SPLIT_TRACE") != nullptr;
         if (const char *limit = std::getenv("RECOMP_SPLIT_TRACE_LIMIT"))
@@ -661,6 +682,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presen
 
 void recomp_d3d_presenter_set_immediate_present(bool enabled)
 {
+    vsync_presents = !enabled;
     d3d11_backend_set_immediate_present(enabled);
 }
 

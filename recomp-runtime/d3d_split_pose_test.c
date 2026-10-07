@@ -11,6 +11,17 @@ int main(void)
     CHECK(recomp_split_rate("119.88") == 119.88);
     CHECK(recomp_split_rate(NULL)==0 && recomp_split_rate("1")==0 && recomp_split_rate("nan")==0);
     CHECK(recomp_split_rate("120junk")==0 && recomp_split_rate("0")==0);
+    const char *note;
+    CHECK(recomp_split_requested("auto") && recomp_split_requested("144") && !recomp_split_requested(NULL));
+    CHECK(recomp_split_display_rate("auto",143.981,true,&note)==143.981 && !note);
+    CHECK(recomp_split_display_rate("auto",0,true,&note)==0 && note);
+    CHECK(recomp_split_display_rate("auto",50,true,&note)==0 && note);
+    CHECK(recomp_split_display_rate("120",119.88,true,&note)==119.88 && !note);
+    CHECK(recomp_split_display_rate("240",144,true,&note)==144 && note);
+    CHECK(recomp_split_display_rate("240",144,false,&note)==240 && note);
+    CHECK(recomp_split_display_rate("100",144,true,&note)==100 && note);
+    CHECK(recomp_split_display_rate("120",0,true,&note)==120 && !note);
+    CHECK(recomp_split_display_rate(NULL,144,true,&note)==0 && !note);
     CHECK(!recomp_split_discontinuity(.21f,.13f,.01f) && !recomp_split_discontinuity(0,.07f,.01f));
     CHECK(recomp_split_discontinuity(.0015f,6.2f,.01f) && recomp_split_discontinuity(0,NAN,.01f));
     RecompVisualCamera camera[2] = {0};

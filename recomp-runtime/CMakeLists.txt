@@ -534,7 +534,7 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+        bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
     target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
     if(WIN32)
         recomp_use_sdl3(recomp_program_runner)
@@ -575,7 +575,7 @@ if(WIN32)
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
-        d3d11 d3dcompiler dxgi user32)
+        d3d11 d3dcompiler dwmapi dxgi user32)
     add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     target_link_libraries(recomp_input_host_test PRIVATE user32)

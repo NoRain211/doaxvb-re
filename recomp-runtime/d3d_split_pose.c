@@ -16,6 +16,35 @@ double recomp_split_rate(const char *text)
     return rate;
 }
 
+bool recomp_split_requested(const char *text)
+{
+    return (text && strcmp(text, "auto") == 0) || recomp_split_rate(text) != 0;
+}
+
+double recomp_split_display_rate(const char *text, double display_hz, bool vsync,
+    const char **note)
+{
+    *note = NULL;
+    const bool known = isfinite(display_hz) && display_hz >= 30 && display_hz <= 1000;
+    if (text && strcmp(text, "auto") == 0) {
+        if (known && display_hz >= 60) return display_hz;
+        *note = known ? "display refresh is below 60 Hz; split rate off" :
+            "display refresh unknown; split rate off";
+        return 0;
+    }
+    double rate = recomp_split_rate(text);
+    if (!rate || !known) return rate;
+    // A nominal rate such as 120 on a 119.88 Hz mode would drift a frame every
+    // few seconds; within 1% the display's exact rate is what was meant.
+    if (fabs(rate-display_hz) <= display_hz*0.01) return display_hz;
+    if (vsync && rate > display_hz) {
+        *note = "rate exceeds the display refresh; using the display refresh";
+        return display_hz;
+    }
+    *note = "rate differs from the display refresh; motion will judder unless the display is variable refresh";
+    return rate;
+}
+
 /* The full attract cycle scored >= 20 at every shot change and <= 4 for
    continuous motion; floors keep motion starting from rest below the ratio. */
 bool recomp_split_discontinuity(float previous, float step, float floor)

@@ -35,6 +35,13 @@ typedef struct RecompSplitDraw {
 extern "C" {
 #endif
 double recomp_split_rate(const char *text);
+/* True for a numeric rate or "auto" (the display's refresh rate). */
+bool recomp_split_requested(const char *text);
+/* The present rate for RECOMP_SPLIT_RATE on a display refreshing at
+   display_hz (0 when unknown). Presents wait for vblank when vsync is set.
+   Sets *note to a reason when the result differs from the request. */
+double recomp_split_display_rate(const char *text, double display_hz, bool vsync,
+    const char **note);
 /* True when a one-tick step is far larger than the previous tick's step:
    a camera cut, teleport or respawn. Such a tick is shown unblended. */
 bool recomp_split_discontinuity(float previous, float step, float floor);

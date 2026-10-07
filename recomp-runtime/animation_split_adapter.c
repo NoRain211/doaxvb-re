@@ -12,7 +12,7 @@
 bool recomp_animation_split_enabled(void)
 {
     static int enabled = -1;
-    if (enabled < 0) enabled = recomp_split_rate(getenv("RECOMP_SPLIT_RATE")) != 0;
+    if (enabled < 0) enabled = recomp_split_requested(getenv("RECOMP_SPLIT_RATE"));
     return enabled != 0;
 }
 
