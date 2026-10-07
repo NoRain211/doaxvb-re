@@ -11,6 +11,7 @@
 #endif
 #include "stop_report.h"
 #include "save_transaction.h"
+#include "xbox_memory_layout.h"
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -266,8 +267,7 @@ void recomp_d3d_swap_adapter(void)
        swap model, which must stay free of host and kernel knowledge. */
     {
         enum {
-            KERNEL_DATA_BASE = 0x00740000u,
-            KE_TICK_COUNT_ADDRESS = KERNEL_DATA_BASE + 0x40u,
+            KE_TICK_COUNT_ADDRESS = XBOX_KERNEL_DATA_BASE + 0x40u,
             MILLISECONDS_PER_SWAP = 16u,
         };
         uint32_t *tick_count = recomp_memory_u32(KE_TICK_COUNT_ADDRESS);

@@ -1,4 +1,5 @@
 #include "kernel_abi.h"
+#include "xbox_memory_layout.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -7,7 +8,7 @@ enum {
     TEST_MEMORY_BASE = 0x29000000u,
     TEST_MEMORY_SIZE = 0x00001000u,
     TEST_ENTRY_ESP = TEST_MEMORY_BASE + 0x100u,
-    TEST_THREAD = 0x00740300u,
+    TEST_THREAD = XBOX_KERNEL_DATA_BASE + 0x300u,
 };
 
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)

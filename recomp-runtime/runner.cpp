@@ -58,7 +58,7 @@ BOOL WINAPI handleConsoleControl(DWORD event)
 
 constexpr std::size_t kRamSize = 64u * 1024u * 1024u;
 constexpr std::uint32_t kStackTop = 0x00f7fff0u;
-constexpr std::uint32_t kKernelDataBase = 0x00740000u;
+constexpr std::uint32_t kKernelDataBase = XBOX_KERNEL_DATA_BASE;
 std::uint64_t inputHostAfterPoll = 0u;
 std::uint64_t inputWaitAfterPoll = 0u;
 std::string inputResumeFile;
@@ -299,6 +299,11 @@ bool materializeKernelDataExports(
 {
     if (kKernelDataBase + 0x420u > memory.size()) {
         error = "kernel data area leaves guest RAM";
+        return false;
+    }
+    if (static_cast<std::uint64_t>(metadata.header.baseAddress) +
+            metadata.header.sizeImage > kKernelDataBase) {
+        error = "kernel data area overlaps the XBE image";
         return false;
     }
 
