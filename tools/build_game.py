@@ -128,6 +128,11 @@ def build(args, verify_parity=True, lifter_revision=None):
         for recovery in recipe["recoveries"]:
             generate.extend(["--recover-functions", ROOT / recovery])
         command(generate, LIFTER, work / "generate.log")
+        if not windows:
+            # The lifter writes text files, so Python ends lines with the platform's
+            # newline. The recipe authenticates the Windows (CRLF) bytes.
+            for path in generated.glob("*.[ch]"):
+                path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         summary = json.loads((metadata / "summary.json").read_text(encoding="utf-8"))
         if summary["failed"] or summary["total"] != summary["translated"]:
             raise ValueError("Generation failed; see generate.log")
