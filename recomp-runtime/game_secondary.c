@@ -236,6 +236,13 @@ static void actor_frame_prepare(void)
 {
     const uint32_t stack = recomp_runtime.registers.esp;
     const uint32_t frame = *recomp_ebp_register();
+    if (!recomp_game_authored_pass()) {
+        /* Display passes reuse the completed tick's scene setup and morph
+           state. A new draw stamp still rebuilds palettes for the shown pose. */
+        ++*recomp_memory_u32(0x004c9790u);
+        recomp_runtime.registers.esp = stack + 4;
+        return;
+    }
     const uint8_t mode = byte(0x004d56dau);
     if (byte(0x005e69b5u) != mode) {
         const uint8_t previous = byte(0x005e69b4u);

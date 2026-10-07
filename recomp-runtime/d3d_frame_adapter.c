@@ -214,8 +214,11 @@ void recomp_d3d_clear_adapter(void)
     if (!recomp_d3d_frame_adapter_target(&result.command.data.clear.target)) {
         recomp_stop(2, "d3d-clear:render-target");
     }
-    presenter_error = recomp_d3d_presenter_submit(
-        presenter, &result.command);
+    /* A hidden tick's backbuffer is redrawn by the next display pass. */
+    presenter_error = recomp_game_tick_hidden() &&
+            !result.command.data.clear.target.offscreen
+        ? RECOMP_D3D_PRESENTER_OK
+        : recomp_d3d_presenter_submit(presenter, &result.command);
     if (presenter_error == RECOMP_D3D_PRESENTER_CLOSED) {
         recomp_d3d_frame_adapter_reset();
         fprintf(stderr, "recomp runner: window closed; exiting normally\n");

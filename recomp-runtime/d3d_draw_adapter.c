@@ -6,6 +6,7 @@
 #include "d3d_pose_replay.h"
 #include "animation_split_adapter.h"
 #include "animation_probe.h"
+#include "game_scheduler.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -134,6 +135,16 @@ uint32_t recomp_d3d_draw_adapter_submitted(void)
 void recomp_d3d_draw_adapter_observe(RecompD3dDrawObserver observer)
 {
     draw_observer = observer;
+}
+
+/* A hidden authoritative tick still runs every guest draw call, but display
+   passes redraw the backbuffer before it is shown. Only host work is skipped;
+   offscreen targets and recorded frame-owner draws keep the full path. */
+static bool hidden_backbuffer_draw(uint32_t device)
+{
+    return device != 0u && draw_observer == NULL && recomp_game_tick_hidden() &&
+        *recomp_memory_u32(device + D3D_CURRENT_RENDER_TARGET_OFFSET) ==
+            *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET);
 }
 
 uint32_t recomp_d3d_draw_adapter_declined(void)
@@ -1441,6 +1452,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
        accumulates until a remaining generated D3D8 entry point flushes it.
        Retire the stdcall frame: return slot plus three arguments. */
     recomp_runtime.registers.esp += 16u;
+    if (hidden_backbuffer_draw(device)) return;
 
     draw_state.stream0.stride = *recomp_memory_u32(D3D_STREAM0_STRIDE);
     vertex_buffer = *recomp_memory_u32(D3D_STREAM0_BUFFER);
@@ -2063,6 +2075,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
 
     /* Preserve the driver's UP state, push-buffer/fence work, and RET 0x10. */
     sub_001E7750();
+    if (hidden_backbuffer_draw(*recomp_memory_u32(D3D_DEVICE_GLOBAL))) return;
     if (primitive != RECOMP_D3D_PT_TRIANGLESTRIP || count != 4u) {
         decline = "up-shape";
         goto finished;
