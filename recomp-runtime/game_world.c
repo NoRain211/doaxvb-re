@@ -3,6 +3,7 @@
 #include "game_world_motion.h"
 #include "game_world_wave.h"
 #include "game_scheduler.h"
+#include "game_display.h"
 #include "xapi_time_adapter.h"
 
 #include <stdio.h>
@@ -239,6 +240,7 @@ static void world_uv_update_model(unsigned steps_per_tick)
         push(0u);
         push(scaled_float_argument(0xba03126fu, steps_per_tick));
         push(recomp_runtime.registers.ecx);
+        recomp_game_display_uv(*recomp_memory_u32(recomp_runtime.registers.esp));
         call_at_frame(caller_frame, 0x0017d0a0u);
 
         /* This stack slot is the frame counter saved above at entry ESP-4. */
@@ -265,6 +267,7 @@ static void world_uv_update_model(unsigned steps_per_tick)
         push(0u);
         push(scaled_float_argument(0xbba3d70au, steps_per_tick));
         push(recomp_runtime.registers.ecx);
+        recomp_game_display_uv(*recomp_memory_u32(recomp_runtime.registers.esp));
         call_at_frame(caller_frame, 0x0017d0a0u);
 
         recomp_runtime.registers.edi = pop();

@@ -3,6 +3,40 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## W1: completed-tick interpolation (2026-10-07)
+
+The extrapolating G1-G3 display design below is superseded. Authoritative
+60 Hz ticks still run their entire original update and draw-side state changes.
+Their frames are hidden. All visible passes interpolate between the two most
+recent completed ticks using elapsed time since tick completion, clamped to
+[0, 1]. This adds one tick of presentation latency. It also avoids showing the
+current endpoint before an intermediate frame, which would move backward.
+
+`game_display.c` samples ball position/rotation, actor roots/headings, completed
+bone matrices and body points, published camera blocks, environment outputs,
+world/boat transforms, foliage/decorative angles and UVs used by the scrolling
+helpers. It reuses the existing plain matrix interpolation model without
+changing split-rate behavior. Display passes run drawing fibers with simulation
+paused; they do not run gameplay, animation or camera controllers. Camera
+matrices are rebuilt from the sampled inputs. Guest writes, fibers and FPU state
+are restored before every following pass, including the next authoritative tick.
+
+The scripted Exhibition smoke at a requested 120 Hz logged 13,326 displayed
+frames, including 8 character stops and 364 reversals. All 159,912 root-coordinate
+checks stayed between the completed endpoints; the same check on rendered
+bone-root translations found no overshoot. Against a fresh 60 Hz run from the
+same executable, ball/actor/camera words and bone hashes were identical through
+tick 8124, past match tick 3000. All 4,714 recorded per-fiber RNG events matched.
+Both paired runs used game-clock audio and exited normally. Numeric checks,
+traces and the initial CPU profile stay private; these are agent smoke results,
+not gameplay or visual acceptance.
+
+All 21 public tests pass, including interpolation bounds and angle-wrap checks.
+Wrong function SHA and wrong generated manifest configurations still reject.
+W2 must handle discontinuities, and W3 must measure and reduce the cost of the
+hidden authoritative render plus visible renders. The first profile identifies
+actor rendering, secondary deformation and native draw-packet copies as owners.
+
 ## G1-G3: 60 Hz ticks with rolled-back display passes (2026-10-07)
 
 The pass design replaces the substep design below. Every tick runs the

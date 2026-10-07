@@ -79,10 +79,6 @@ static void camera_call(uint32_t frame, uint32_t address)
 
 static void camera_prepare(void)
 {
-    static uint32_t tick_published[5][14], tick_staged[5][14];
-    static uint8_t tick_mode[5];
-    static uint32_t tick_age[5];
-    static bool ready[5];
     const uint32_t base = recomp_runtime.registers.eax;
     const uint32_t stack = recomp_runtime.registers.esp;
     const uint32_t frame = *recomp_ebp_register();
@@ -102,30 +98,13 @@ static void camera_prepare(void)
     for (unsigned i = 0; i < 5; ++i) {
         const uint32_t camera = base + i * 0xae0u;
         if (*recomp_memory(camera + 0xad8u, 1) == 0) {
-            ready[i] = false;
             continue;
         }
         const uint8_t mode = *recomp_memory(camera + 0xaccu, 1);
         const uint32_t age = *recomp_memory_u32(camera + 0x954u);
         uint32_t staged[14];
         recomp_guest_load(staged, camera + 0x180u, sizeof staged);
-        if (steps > 1) {
-            /* Publication consumes the preceding tick's camera. A display
-               substep publishes between what the tick pass published and the
-               camera that tick staged; a new shot publishes the staged one. */
-            if (recomp_game_substep() == 0) memcpy(tick_staged[i], staged, sizeof staged);
-            if (ready[i] && tick_mode[i] == mode && age >= tick_age[i]) {
-                camera_block_lerp(staged, tick_published[i], tick_staged[i],
-                    recomp_game_substep() + 1u, steps);
-            }
-            recomp_guest_store(camera, staged, sizeof staged);
-        } else {
-            recomp_guest_store(camera, staged, sizeof staged);
-            memcpy(tick_published[i], staged, sizeof staged);
-            tick_mode[i] = mode;
-            tick_age[i] = age;
-            ready[i] = true;
-        }
+        recomp_guest_store(camera, staged, sizeof staged);
         if (mode == 20) recomp_guest_memcpy(camera + 0x38u, camera + 0x28cu, 16u);
     }
     for (unsigned actor = 0; actor < 4; ++actor) {
@@ -236,6 +215,22 @@ static void camera_tick(void)
     recomp_runtime.registers.ebx = saved_ebx;
     recomp_runtime.registers.ecx = 0x0041efe2u;
     recomp_runtime.registers.esp = stack + 4u;
+}
+
+void recomp_game_camera_display(void)
+{
+    const RecompRegisters saved = recomp_runtime.registers;
+    const uint32_t frame = *recomp_ebp_register();
+    for (unsigned i = 0; i < 5; ++i) {
+        const uint32_t camera = 0x0041a800u + i * 0xae0u;
+        if (!*recomp_memory(camera + 0xad8u, 1)) continue;
+        recomp_runtime.registers.eax = camera;
+        camera_call(frame, 0x00023b10u);
+    }
+    recomp_runtime.registers.esi = 0x0041a800u;
+    camera_call(frame, 0x0002f2b0u);
+    recomp_runtime.registers = saved;
+    *recomp_ebp_register() = frame;
 }
 
 static void camera_fiber(void)
