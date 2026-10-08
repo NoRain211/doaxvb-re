@@ -3,6 +3,27 @@
 Date: 2026-10-03. Research and an opt-in pacing probe; not a supported 120 Hz
 mode or gameplay acceptance.
 
+## W4: palm sway on display passes (2026-10-07)
+
+A 120 Hz play test showed title-screen trees popping in and out. Draw counts
+per mesh were stable, but on nearly every display pass the summed world
+positions of the repeated palm meshes fell outside both completed ticks (for
+example 445 against 556.5 on each tick). W1 sampled the foliage sway words
+(records +44 and +56) and the decorative counters as 16-bit angles. They are
+signed or wrapping 32-bit integers, so a negative sway became about +65,000 and
+threw palms far from their place on display passes only. Those words now
+interpolate as 32-bit integers. Over 60 seconds of the title screen at 120 Hz,
+and 30 seconds at 240 Hz, no palm mesh left its tick range. The remaining
+angle samples were checked: their consumers use 16-bit angles.
+
+Display passes still draw the effect layer's particles (0x00072E20) one tick
+ahead, because a particle's frame and position come from an age that the tick
+has already advanced. That motion is monotonic, so it does not pop.
+
+60 Hz and 120 Hz runs with game-clock audio matched at all 8,648 shared ticks
+and on every shared RNG event. Match medians stayed at 117-119 fps against 118
+for the previous build, under background load. These are agent smoke results.
+
 ## W1: completed-tick interpolation (2026-10-07)
 
 The extrapolating G1-G3 display design below is superseded. Authoritative
