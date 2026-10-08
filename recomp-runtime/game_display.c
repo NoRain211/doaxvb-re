@@ -8,7 +8,9 @@
 
 /* Only continuous render inputs are sampled. Pointers, scripts and clocks
    remain at the completed tick. The main loop rolls every display write back. */
-enum { FLOATS, ANGLES, MATRIX, MAX_SAMPLES = 8192 };
+/* ANGLES are 16-bit angles in 32-bit words; WORDS are signed or wrapping
+   32-bit integers such as foliage sway offsets and decorative counters. */
+enum { FLOATS, ANGLES, WORDS, MATRIX, MAX_SAMPLES = 8192 };
 typedef struct Sample {
     uint32_t address, kind, count;
     uint32_t before[16], after[16];
@@ -169,8 +171,8 @@ void recomp_game_display_commit(void)
             const unsigned count = *recomp_memory_u16(descriptor + 16);
             const uint32_t records = *recomp_memory_u32(descriptor);
             for (unsigned i = 0; records && i < count; ++i) {
-                sample(records + i * 64u + 44u, 1, ANGLES);
-                sample(records + i * 64u + 56u, 1, ANGLES);
+                sample(records + i * 64u + 44u, 1, WORDS);
+                sample(records + i * 64u + 56u, 1, WORDS);
             }
         }
         descriptor = *recomp_memory_u32(0x00327408u + group * 4u);
@@ -178,7 +180,7 @@ void recomp_game_display_commit(void)
             const int count = (int16_t)*recomp_memory_u16(descriptor + 4);
             const uint32_t records = *recomp_memory_u32(descriptor);
             for (int i = 0; records && i < count; ++i)
-                sample(records + i * 0x2cu + 0x24u, 2, ANGLES);
+                sample(records + i * 0x2cu + 0x24u, 2, WORDS);
         }
     }
     if (uv_tick == recomp_game_tick())
@@ -205,6 +207,8 @@ void recomp_game_display_apply(float alpha)
         } else for (unsigned i = 0; i < s->count; ++i) {
             if (s->kind == ANGLES)
                 out[i] = recomp_game_display_angle(s->before[i], s->after[i], display_alpha);
+            else if (s->kind == WORDS)
+                out[i] = s->before[i] + (uint32_t)(int32_t)((int32_t)(s->after[i] - s->before[i]) * (double)display_alpha);
             else {
                 float a, b, value;
                 memcpy(&a, s->before + i, 4); memcpy(&b, s->after + i, 4);
