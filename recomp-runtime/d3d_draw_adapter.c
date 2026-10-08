@@ -675,21 +675,28 @@ static bool attach_four_tap_filter(
 static void attach_backbuffer_texture(
     uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
-    const uint8_t *bytes = (uint64_t)device + D3D_BACK_BUFFER_OFFSET + 4u <= UINT32_MAX
-        ? guest_span(device + D3D_BACK_BUFFER_OFFSET, 4u) : NULL;
-    RecompD3dTextureDesc backbuffer;
-    uint32_t resource, format;
+    /* Dword 0x871 is the front buffer, the last presented frame. Scene
+       transitions copy it into a texture and show it while loading. */
+    for (uint32_t front = 0u; front < 2u; ++front) {
+        const uint32_t offset = D3D_BACK_BUFFER_OFFSET + front * 4u;
+        const uint8_t *bytes = (uint64_t)device + offset + 4u <= UINT32_MAX
+            ? guest_span(device + offset, 4u) : NULL;
+        RecompD3dTextureDesc backbuffer;
+        uint32_t resource, format;
 
-    if (!draw->has_texture || bytes == NULL) return;
-    memcpy(&resource, bytes, sizeof resource);
-    bytes = resource != 0u ? guest_span(resource, 20u) : NULL;
-    if (bytes == NULL) return;
-    memcpy(&format, bytes + 12u, sizeof format);
-    if (guest_span(0x001f16b8u + ((format >> 8u) & 0xffu), 1u) == NULL) return;
-    if (recomp_d3d_texture_adapter_describe(resource, &backbuffer) &&
-        backbuffer.data != 0u && !backbuffer.depth &&
-        same_texture_storage(&draw->texture, &backbuffer)) {
-        draw->texture_is_backbuffer = true;
+        if (!draw->has_texture || bytes == NULL) return;
+        memcpy(&resource, bytes, sizeof resource);
+        bytes = resource != 0u ? guest_span(resource, 20u) : NULL;
+        if (bytes == NULL) continue;
+        memcpy(&format, bytes + 12u, sizeof format);
+        if (guest_span(0x001f16b8u + ((format >> 8u) & 0xffu), 1u) == NULL) continue;
+        if (recomp_d3d_texture_adapter_describe(resource, &backbuffer) &&
+            backbuffer.data != 0u && !backbuffer.depth &&
+            same_texture_storage(&draw->texture, &backbuffer)) {
+            if (front) draw->texture_is_frontbuffer = true;
+            else draw->texture_is_backbuffer = true;
+            return;
+        }
     }
 }
 

@@ -424,6 +424,8 @@ struct RecompD3dPresenter {
     bool gamma_enabled = false;
     ID3D11Texture2D *back_buffer_copy = nullptr;
     ID3D11ShaderResourceView *back_buffer_sample = nullptr;
+    ID3D11Texture2D *front_buffer_copy = nullptr;
+    ID3D11ShaderResourceView *front_buffer_sample = nullptr;
     ID3D11Texture2D *depth_texture = nullptr;
     ID3D11DepthStencilView *depth_view = nullptr;
     ID3D11Buffer *draw_vertex_buffer = nullptr;
@@ -629,6 +631,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->render_target_view);
     releaseCom(presenter->back_buffer_sample);
     releaseCom(presenter->back_buffer_copy);
+    releaseCom(presenter->front_buffer_sample);
+    releaseCom(presenter->front_buffer_copy);
     releaseCom(presenter->swap_chain);
     releaseCom(presenter->context);
     releaseCom(presenter->device);
@@ -1881,6 +1885,30 @@ void copyGuestBuffer(RecompD3dPresenter *presenter, ID3D11Resource *target)
     releaseCom(source);
 }
 
+bool createBufferCopy(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *&copy, ID3D11ShaderResourceView *&sample)
+{
+    if (copy != nullptr) return true;
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_desc.Width = mainWidth(presenter);
+    texture_desc.Height = mainHeight(presenter);
+    texture_desc.MipLevels = texture_desc.ArraySize = 1u;
+    texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texture_desc.SampleDesc.Count = 1u;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    HRESULT result = presenter->device->CreateTexture2D(&texture_desc, nullptr, &copy);
+    if (SUCCEEDED(result)) {
+        result = presenter->device->CreateShaderResourceView(copy, nullptr, &sample);
+    }
+    if (FAILED(result)) {
+        releaseCom(sample);
+        releaseCom(copy);
+        return false;
+    }
+    return true;
+}
+
 ID3D11ShaderResourceView *lookupBackBufferTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dTextureDesc &desc)
@@ -1894,27 +1922,8 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
         desc.height % presenter->config.height != 0u ||
         presenter->render_target_view == nullptr) return nullptr;
 
-    if (presenter->back_buffer_copy == nullptr) {
-        D3D11_TEXTURE2D_DESC texture_desc{};
-        texture_desc.Width = mainWidth(presenter);
-        texture_desc.Height = mainHeight(presenter);
-        texture_desc.MipLevels = texture_desc.ArraySize = 1u;
-        texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        texture_desc.SampleDesc.Count = 1u;
-        texture_desc.Usage = D3D11_USAGE_DEFAULT;
-        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        HRESULT result = presenter->device->CreateTexture2D(
-            &texture_desc, nullptr, &presenter->back_buffer_copy);
-        if (SUCCEEDED(result)) {
-            result = presenter->device->CreateShaderResourceView(
-                presenter->back_buffer_copy, nullptr, &presenter->back_buffer_sample);
-        }
-        if (FAILED(result)) {
-            releaseCom(presenter->back_buffer_sample);
-            releaseCom(presenter->back_buffer_copy);
-            return nullptr;
-        }
-    }
+    if (!createBufferCopy(presenter, presenter->back_buffer_copy,
+            presenter->back_buffer_sample)) return nullptr;
     /* Sampling observes the current render buffer at this draw, even if the
        preceding draw sampled an older copy. Keep the copy outside the FIFO. */
     ID3D11ShaderResourceView *none = nullptr;
@@ -1977,6 +1986,7 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
+    if (draw.texture_is_frontbuffer) return presenter->front_buffer_sample;
 
     if (palettized && (draw.palette_bytes == nullptr ||
         draw.palette_byte_count != kPaletteBytes)) {
@@ -3041,6 +3051,16 @@ RecompD3dPresenterError submitPresent(
        changed. Pace to one refresh unless immediate presenting is asked for. */
     if (!renderOutput(presenter, presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    // Keep the presented frame for draws that sample the guest front buffer.
+    if (createBufferCopy(presenter, presenter->front_buffer_copy,
+            presenter->front_buffer_sample)) {
+        if (presenter->gamma_enabled || presenter->smaa) {
+            presenter->context->CopyResource(
+                presenter->front_buffer_copy, presenter->back_buffer_copy);
+        } else {
+            copyGuestBuffer(presenter, presenter->front_buffer_copy);
+        }
     }
     // Capture the rendered buffer before flip presentation releases it.
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
