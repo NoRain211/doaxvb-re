@@ -40,6 +40,8 @@ bool recomp_d3d_pose_replay_draw(const RecompD3dPresenterDrawCommand *source,
             for (unsigned j = 0; j < 16; ++j)
                 if (!isfinite(result.blend_transforms[i-1][j])) return false;
         }
+        memcpy(result.directional.world_transforms[i], pose->palettes[phase][i],
+            sizeof result.directional.world_transforms[i]);
         if (result.directional.enabled && !recomp_d3d_normal_transform(
             pose->palettes[phase][i], result.directional.normal_transforms[i])) return false;
     }

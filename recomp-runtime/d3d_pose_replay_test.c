@@ -40,6 +40,9 @@ int main(void)
         CHECK(result.reflection_world_view[12] == phase);
         CHECK(result.directional.normal_transforms[0][0] == 1);
         CHECK(result.directional.normal_transforms[1][5] == 1);
+        for (unsigned i = 0; i < pose.count; ++i)
+            CHECK(memcmp(result.directional.world_transforms[i],
+                pose.palettes[phase][i], sizeof pose.palettes[phase][i]) == 0);
         CHECK(result.reflection_normal[10] == 1);
         CHECK(result.vertex_bytes == vertices);
         CHECK(memcmp(&source, &before, sizeof source) == 0);
