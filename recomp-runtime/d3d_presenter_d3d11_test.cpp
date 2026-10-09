@@ -2011,25 +2011,51 @@ static bool testBackBufferMips(RecompD3dPresenter *presenter)
         if (passed) scaled.context->GenerateMips(view);
         scaled.context->ClearRenderTargetView(scaled.render_target_view, blue);
     }
-    const auto checkMip = [&](uint32_t expected) {
-        if (lookupTexture(&scaled, draw) == nullptr) return false;
+    const auto checkMip = [&](const char *label, uint32_t expected) {
+        if (lookupTexture(&scaled, draw) == nullptr) {
+            std::fprintf(stderr, "FAIL %s lookup\n", label);
+            return false;
+        }
         scaled.context->CopySubresourceRegion(readback, 0u, 0u, 0u, 0u,
             scaled.back_buffer_copy, 1u, nullptr);
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (FAILED(scaled.context->Map(readback, 0u, D3D11_MAP_READ, 0u, &mapped))) return false;
-        const bool matched = *static_cast<const uint32_t *>(mapped.pData) == expected;
+        if (FAILED(scaled.context->Map(readback, 0u, D3D11_MAP_READ, 0u, &mapped))) {
+            std::fprintf(stderr, "FAIL %s readback\n", label);
+            return false;
+        }
+        bool matched = true;
+        for (unsigned y = 0u; y < 3u; ++y) {
+            const auto *row = reinterpret_cast<const uint32_t *>(
+                static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
+            for (unsigned x = 0u; x < 4u; ++x) {
+                if (row[x] != expected) {
+                    std::fprintf(stderr, "FAIL %s pixel=(%u,%u) got=%08x expected=%08x\n",
+                        label, x, y, row[x], expected);
+                    matched = false;
+                }
+            }
+        }
         scaled.context->Unmap(readback, 0u);
         return matched;
     };
+    passed = passed && checkMip("main-target snapshot refresh", 0xff0000ffu);
+    if (passed) scaled.context->ClearRenderTargetView(scaled.render_target_view, red);
     draw.target.offscreen = true;
     draw.target.color.width = 8u; draw.target.color.height = 6u;
-    passed = passed && checkMip(0xffff0000u); // 1:1 host read leaves the mip alone.
+    passed = passed && checkMip("host-sized snapshot refresh", 0xffff0000u);
+    if (passed) {
+        uint32_t texels[6][8];
+        for (unsigned y = 0u; y < 6u; ++y)
+            for (unsigned x = 0u; x < 8u; ++x)
+                texels[y][x] = y % 2u ? 0xff0000ffu : 0xffff0000u;
+        scaled.context->UpdateSubresource(source, 0u, nullptr, texels, sizeof texels[0], 0u);
+    }
     draw.target.color.width = 4u; draw.target.color.height = 3u;
-    passed = passed && checkMip(0xff0000ffu); // Minification refreshes it from blue mip 0.
+    passed = passed && checkMip("minified snapshot averages red and blue rows", 0xff800080u);
     releaseCom(readback);
     releaseCom(source);
     releaseGraphics(&scaled);
-    if (!passed) std::fprintf(stderr, "FAIL backbuffer mips use host target dimensions\n");
+    if (!passed) std::fprintf(stderr, "FAIL backbuffer snapshot mips\n");
     return passed;
 }
 

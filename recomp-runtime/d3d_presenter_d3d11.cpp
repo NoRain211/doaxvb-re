@@ -1926,6 +1926,9 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
     ID3D11ShaderResourceView *none = nullptr;
     presenter->context->PSSetShaderResources(0u, 1u, &none);
     copyGuestBuffer(presenter, presenter->back_buffer_copy);
+    /* Every view exposes the chain; refresh it with each new snapshot. */
+    if (presenter->scale != 1.0f)
+        presenter->context->GenerateMips(presenter->back_buffer_sample);
     return presenter->back_buffer_sample;
 }
 
@@ -1982,17 +1985,7 @@ ID3D11ShaderResourceView *lookupTexture(
             desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
     }
 
-    if (draw.texture_is_backbuffer) {
-        ID3D11ShaderResourceView *view = lookupBackBufferTexture(presenter, desc);
-        /* Full-buffer reads minify only into a smaller host target. Guest
-           backbuffer dimensions can include supersampling that the host resolves. */
-        if (view != nullptr && presenter->scale != 1.0f && draw.target.offscreen &&
-            (draw.target.color.width < mainWidth(presenter) ||
-             draw.target.color.height < mainHeight(presenter))) {
-            presenter->context->GenerateMips(view);
-        }
-        return view;
-    }
+    if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
 
     if (palettized && (draw.palette_bytes == nullptr ||
         draw.palette_byte_count != kPaletteBytes)) {
