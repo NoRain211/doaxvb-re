@@ -2911,7 +2911,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             desc.MiscFlags = 0u;
             if (!frameDumpFits(desc, requested)) {
-                std::fprintf(stderr, "recomp frame dump: deferred capture exceeds memory bound\n");
+                std::fprintf(stderr, "recomp frame dump: deferred capture exceeds frame dump bound\n");
                 DeleteFileA(trigger);
                 presenter->frame_dump_burst_base = presenter->frame_dump_count;
                 presenter->frame_dump_burst_count = 0u;
@@ -2987,7 +2987,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     if (defer && std::strcmp(defer, "1") == 0) {
         // Bound this diagnostic to 300 4K frames (about 10 GiB of readback memory).
         if (!frameDumpFits(desc, count)) {
-            std::fprintf(stderr, "recomp frame dump: deferred capture exceeds memory bound\n");
+            std::fprintf(stderr, "recomp frame dump: deferred capture exceeds frame dump bound\n");
             return;
         }
         presenter->deferred_dumps.push_back({std::move(owned), path, present_count, GetTickCount64()});

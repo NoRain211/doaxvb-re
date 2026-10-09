@@ -20,7 +20,10 @@ class LifterPinTests(unittest.TestCase):
     def test_generation_failure_restores_selection_and_metadata(self):
         self.check_generation_failure(ValueError("failed"))
 
-    def check_generation_failure(self, failure):
+    def test_revision_failure_restores_selection_and_metadata(self):
+        self.check_generation_failure(ValueError("failed"), revision="b" * 40)
+
+    def check_generation_failure(self, failure, revision=None):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "tools/game-recipe").mkdir(parents=True)
@@ -32,6 +35,8 @@ class LifterPinTests(unittest.TestCase):
             (root / "public-export.json").write_text("{}\n", encoding="utf-8")
             before = {name: (root / name).read_bytes() for name in update_lifter_pin.PINNED}
             def fake_git(*args):
+                if revision and args == ("rev-parse", "--verify", f"{revision}^{{commit}}"):
+                    return revision
                 return "a" * 40 if args == ("rev-parse", "HEAD") else ""
             def fake_generate(imported, verify_parity, revision=None):
                 if verify_parity:
@@ -45,13 +50,16 @@ class LifterPinTests(unittest.TestCase):
                     patch.object(update_lifter_pin.subprocess, "run") as run, \
                     patch.object(update_lifter_pin, "generate", side_effect=fake_generate) as generate, \
                     patch("sys.argv", ["update_lifter_pin.py", "--imported", "private/import",
-                                       "--manual-call-target", "0x2000"]):
+                                       "--manual-call-target", "0x2000"] +
+                                      (["--revision", revision] if revision else [])):
                 with self.assertRaises(type(failure)):
                     update_lifter_pin.main()
                 self.assertEqual(run.call_count, 1)  # submodule sync, never staging
-                generate.assert_called_with(Path("private/import"), verify_parity=False, revision="a" * 40)
+                generate.assert_called_with(Path("private/import"), verify_parity=False,
+                                            revision=revision or "a" * 40)
                 self.assertEqual(git_calls.call_args_list[-2:], [
-                    call("checkout", "--detach", "a" * 40), call("checkout", "--detach", "a" * 40)])
+                    call("checkout", "--detach", revision or "a" * 40),
+                    call("checkout", "--detach", "a" * 40)])
             self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
 
     def test_invalid_cli_targets_do_not_touch_git(self):

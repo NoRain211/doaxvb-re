@@ -1544,8 +1544,15 @@ static bool testDeferredDumpBurst(RecompD3dPresenter *presenter)
     return passed;
 }
 
-static bool testFrameDumpWrite(RecompD3dPresenter *presenter, ID3D11Texture2D *staging)
+static bool testFrameDumpWrite(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *staging)
 {
+    D3D11_TEXTURE2D_DESC desc{}; staging->GetDesc(&desc);
+    if (desc.Width != 4u || desc.Height != 4u) return false;
+    uint32_t pixels[16];
+    for (unsigned i = 0u; i < 16u; ++i) pixels[i] = 0xff000000u | (i * 0x010305u);
+    presenter->context->UpdateSubresource(color, 0u, nullptr, pixels, 16u, 0u);
+    presenter->context->CopyResource(staging, color);
     char folder[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "bmp", 0, path)) return false;
     DeleteFileA(path);
@@ -1556,8 +1563,13 @@ static bool testFrameDumpWrite(RecompD3dPresenter *presenter, ID3D11Texture2D *s
         unsigned char header[54];
         passed = std::fread(header, 1, sizeof header, file) == sizeof header &&
             header[0] == 'B' && header[1] == 'M';
+        for (unsigned y = 0u; passed && y < 4u; ++y) {
+            unsigned char row[12];
+            passed = std::fread(row, 1, sizeof row, file) == sizeof row;
+            for (unsigned x = 0u; passed && x < 4u; ++x)
+                passed = std::memcmp(row + x*3u, &pixels[(3u-y)*4u+x], 3u) == 0;
+        }
         std::fseek(file, 0, SEEK_END);
-        D3D11_TEXTURE2D_DESC desc{}; staging->GetDesc(&desc);
         passed = passed && std::ftell(file) == 54 + ((desc.Width*3+3)&~3u)*desc.Height;
         std::fclose(file);
     }
@@ -2366,7 +2378,7 @@ int main()
         !testOffscreenRendering(&presenter, color, readback, false)) {
         status = 70;
     }
-    if (status == 0 && !testFrameDumpWrite(&presenter, readback)) status = 82;
+    if (status == 0 && !testFrameDumpWrite(&presenter, color, readback)) status = 82;
     if (status == 0 && !testCompressedMips(&presenter, color, readback)) status = 92;
     if (status == 0 && !testAlphaMask(&presenter, color, readback)) status = 91;
     if (status == 0 && !testReflection(&presenter, color, readback)) status = 93;
