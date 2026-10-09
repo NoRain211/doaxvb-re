@@ -98,6 +98,19 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 light_positions[8];\n"
     "    float4 light_attenuation[8];\n"
     "    float4 light_ambient[8];\n"
+    "    float4 fog_color;\n"
+    "    float4 fog_params; // start, end, density, mode\n"
+    "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
+    "    row_major float4x4 fog_world_view[4];\n"
+    "}\n"
+    "float fogFactor(float depth) {\n"
+    "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
+    "    if (fog_params.w == 2) { float d = depth * fog_params.z; return saturate(exp(-d*d)); }\n"
+    "    if (fog_params.w == 3) {\n"
+    "        float span = fog_params.y - fog_params.x;\n"
+    "        return span == 0 ? (depth < fog_params.y ? 1 : 0) : saturate((fog_params.y-depth)/span);\n"
+    "    }\n"
+    "    return saturate(depth);\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -208,6 +221,11 @@ void buildDrawShaderSource(
         "            (func == 5 && alpha != ref) ||\n"
         "            (func == 6 && alpha >= ref);\n"
         "        if (!alpha_pass) discard;\n"
+        "    }\n"
+        "    if (fog_flags.x > 0.5f) {\n"
+        "        float depth = fog_flags.y > 0.5f && fog_flags.z < 0.5f ? abs(input.position.z) : input.fog_depth;\n"
+        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(depth);\n"
+        "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
         "    }\n"
         "    return shaded;\n"
         "}\n",
@@ -1315,9 +1333,37 @@ bool drawShaderSource(
         return false;
     }
 
-    char source[8192];
+    char source[12288];
     buildDrawShaderSource(layout, source, sizeof source);
     compiled_source = source;
+    const auto fields = compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {");
+    compiled_source.insert(fields, "\n    float fog_depth : TEXCOORD6;\n"
+        "    noperspective float fog_factor : TEXCOORD7;\n");
+    if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+        const auto input = compiled_source.find("struct VSIn {") + std::strlen("struct VSIn {");
+        compiled_source.insert(input, "\n    float4 specular : COLOR1;\n");
+    }
+    std::string fog = "    output.fog_depth = fog_flags.y > 0.5f ? abs(output.position.z) : output.position.w;\n";
+    fog += layout.specular_offset != RECOMP_D3D_FVF_ABSENT
+        ? "    output.fog_factor = input.specular.a;\n" : "    output.fog_factor = 1;\n";
+    if (!layout.pretransformed) {
+        fog += "    if (fog_flags.z > 0.5f) {\n"
+            "        float3 eye = mul(float4(input.position,1),fog_world_view[0]).xyz;\n";
+        if (layout.blend_weight_count) {
+            fog += "        if (blend_flags.x > 0.5f) { eye=0; float remainder=1;\n";
+            for (uint32_t i = 0; i < layout.blend_weight_count; ++i) {
+                const auto index = std::to_string(i);
+                fog += "eye += input.weights["+index+"] * mul(float4(input.position,1),fog_world_view["+index+"]).xyz;\n"
+                    "remainder -= input.weights["+index+"];\n";
+            }
+            fog += "eye += remainder * mul(float4(input.position,1),fog_world_view["+
+                std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
+        }
+        fog += "        output.fog_depth = length(eye);\n    }\n";
+    } else {
+        fog += "    if (fog_flags.y > 0.5f) output.fog_depth = abs(output.position.z / output.position.w);\n";
+    }
+    compiled_source.insert(compiled_source.find("    return output;"), fog);
     if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
@@ -1448,7 +1494,7 @@ bool createDrawPipeline(
             &pipeline.pixel_shader);
     }
     if (SUCCEEDED(result)) {
-        D3D11_INPUT_ELEMENT_DESC elements[8]{};
+        D3D11_INPUT_ELEMENT_DESC elements[9]{};
         UINT count = 0u;
 
         elements[count++] = {
@@ -1474,6 +1520,11 @@ bool createDrawPipeline(
             elements[count++] = {
                 "COLOR", 0u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
                 layout.diffuse_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+        }
+        if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+            elements[count++] = {
+                "COLOR", 1u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
+                layout.specular_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
         const uint32_t texture_coords = layout.texcoord_count == 4u ? 4u
             : layout.texcoord_count == 2u ? 2u
@@ -1535,7 +1586,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient (300 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 300u) * sizeof(float);
+    constant_desc.ByteWidth = (140u + 192u * 4u + 300u + 76u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2460,7 +2511,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 300]{};
+    float draw_constants[140 + 192 * 4 + 300 + 76]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2519,6 +2570,28 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(constants+204, light.positions, sizeof light.positions);
         std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
         std::memcpy(constants+268, light.ambient, sizeof light.ambient);
+    }
+    {
+        static const bool fog_enabled = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        static const bool fog_visualize = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG_FACTOR");
+            return value && std::strcmp(value, "1") == 0;
+        }();
+        float *fog = draw_constants + 140 + 192 * 4 + 300;
+        for (unsigned c = 0; c < 3; ++c)
+            fog[c] = ((draw.fog.color >> (16 - 8*c)) & 255u) / 255.0f;
+        fog[4] = draw.fog.start;
+        fog[5] = draw.fog.end;
+        fog[6] = draw.fog.density;
+        fog[7] = static_cast<float>(draw.fog.mode);
+        fog[8] = draw.fog.enabled && fog_enabled && !draw.program_count ? 1.0f : 0.0f;
+        fog[9] = draw.fog_z ? 1.0f : 0.0f;
+        fog[10] = draw.fog.range && !layout.pretransformed ? 1.0f : 0.0f;
+        fog[11] = fog_visualize ? 1.0f : 0.0f;
+        std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
