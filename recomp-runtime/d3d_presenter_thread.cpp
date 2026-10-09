@@ -25,7 +25,7 @@
 
 namespace {
 
-bool vsync_presents;
+bool vsync_presents = true;
 
 /* The compositor's refresh rate for the primary display, 0 when unknown. */
 double display_refresh_hz()
@@ -366,7 +366,11 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 packet->command(i).type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT)
                 frame = packet->command(i).data.present.swap_counter;
         }
-        if (thread.split_rate && frame) {
+        if (thread.split_rate && frame && released) {
+            // A release can reuse an address within this packet; replaying it
+            // would let earlier draws see the post-release texture cache.
+            execute(thread, backend, *packet);
+        } else if (thread.split_rate && frame) {
             constexpr double tick_ms = 1000.0/60.0;
             const double picked = clock_ms();
             if (!thread.split_first_frame) {
@@ -445,7 +449,6 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 if (thread.split_next+1000.0/thread.split_rate < now)
                     thread.split_next = now;
             }
-            if (!presented && released) execute(thread, backend, *packet);
         } else if (thread.verify_at && frame >= thread.verify_at && frame-thread.verify_at < thread.verify_count) {
             if (released || packet->hasPoseReplay()) {
                 std::fprintf(stderr, "recomp replay identity: frame=%u rejected=packet-kind\n", frame);

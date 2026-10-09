@@ -1513,6 +1513,56 @@ static bool testDrawPipelineEviction(
     return passed;
 }
 
+static bool testDeferredDumpBurst(RecompD3dPresenter *presenter)
+{
+    char folder[MAX_PATH], trigger[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "dmp", 0, trigger)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", trigger);
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_TRIGGER", trigger);
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "1");
+    bool passed = true;
+    for (unsigned requested : {301u, 10000u}) {
+        FILE *file = std::fopen(trigger, "wb");
+        if (!file) { passed = false; break; }
+        std::fprintf(file, "%u", requested); std::fclose(file);
+        dumpBackBufferOnce(presenter, 1);
+        passed = passed && presenter->frame_dump_burst_count == 0 &&
+            presenter->frame_dump_burst_base == presenter->frame_dump_count &&
+            presenter->frame_dump_count == 0 && presenter->dump_pool.empty() &&
+            presenter->deferred_dumps.empty() && GetFileAttributesA(trigger) == INVALID_FILE_ATTRIBUTES;
+        dumpBackBufferOnce(presenter, 2);
+        passed = passed && presenter->frame_dump_count == 0;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_TRIGGER", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "");
+    DeleteFileA(trigger);
+    if (!passed) std::fprintf(stderr, "FAIL oversized deferred dump burst abort\n");
+    return passed;
+}
+
+static bool testFrameDumpWrite(RecompD3dPresenter *presenter, ID3D11Texture2D *staging)
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "bmp", 0, path)) return false;
+    DeleteFileA(path);
+    writeFrameDump(presenter, staging, path, 1, 0);
+    FILE *file = std::fopen(path, "rb");
+    bool passed = false;
+    if (file) {
+        unsigned char header[54];
+        passed = std::fread(header, 1, sizeof header, file) == sizeof header &&
+            header[0] == 'B' && header[1] == 'M';
+        std::fseek(file, 0, SEEK_END);
+        D3D11_TEXTURE2D_DESC desc{}; staging->GetDesc(&desc);
+        passed = passed && std::ftell(file) == 54 + ((desc.Width*3+3)&~3u)*desc.Height;
+        std::fclose(file);
+    }
+    DeleteFileA(path);
+    if (!passed) std::fprintf(stderr, "FAIL frame dump row/header write\n");
+    return passed;
+}
+
 static bool testWindowClose(RecompD3dPresenter *warp)
 {
     IDXGIDevice *dxgi_device = nullptr;
@@ -1568,6 +1618,7 @@ static bool testWindowClose(RecompD3dPresenter *warp)
             back, nullptr, &presenter.render_target_view));
         releaseCom(back);
         if (!passed) std::fprintf(stderr, "FAIL window setup scenario=%u\n", scenario);
+        if (passed && scenario == 0u) passed = testDeferredDumpBurst(&presenter);
         if (passed) {
             active_presenter = &presenter;
             RecompD3dPresenterCommand command{};
@@ -2113,9 +2164,15 @@ int main()
     }
     D3D11_TEXTURE2D_DESC dump_desc{};
     dump_desc.Width=5120; dump_desc.Height=3840;
-    if (frameDumpFits(dump_desc,300) || !frameDumpFits(dump_desc,100)) return 1;
+    if (frameDumpFits(dump_desc,300) || !frameDumpFits(dump_desc,100)) {
+        std::fprintf(stderr, "FAIL frame dump memory bound\n");
+        return 1;
+    }
     dump_desc.Width=3840; dump_desc.Height=2160;
-    if (!frameDumpFits(dump_desc,300) || frameDumpFits(dump_desc,301)) return 1;
+    if (!frameDumpFits(dump_desc,300) || frameDumpFits(dump_desc,301)) {
+        std::fprintf(stderr, "FAIL frame dump count bound\n");
+        return 1;
+    }
     FrameRateCounter counter;
     double fps = 0, frame_ms = 0;
     if (sampleFrameRate(counter, 0u, fps, frame_ms)) return 1;
@@ -2162,6 +2219,7 @@ int main()
         !testOffscreenRendering(&presenter, color, readback, false)) {
         status = 70;
     }
+    if (status == 0 && !testFrameDumpWrite(&presenter, readback)) status = 82;
     if (status == 0 && !testCompressedMips(&presenter, color, readback)) status = 92;
     if (status == 0 && !testAlphaMask(&presenter, color, readback)) status = 91;
     if (status == 0 && !testReflection(&presenter, color, readback)) status = 93;

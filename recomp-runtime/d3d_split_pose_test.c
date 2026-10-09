@@ -15,6 +15,9 @@ int main(void)
     CHECK(recomp_split_rate("120junk")==0 && recomp_split_rate("0")==0);
     const char *note;
     CHECK(recomp_split_requested("auto") && recomp_split_requested("144") && !recomp_split_requested(NULL));
+    CHECK(recomp_split_requested(" auto \r\n"));
+    CHECK(!recomp_split_requested("auto junk"));
+    CHECK(recomp_split_display_rate(" auto \r\n",143.981,true,&note)==143.981 && !note);
     CHECK(recomp_split_display_rate("auto",143.981,true,&note)==143.981 && !note);
     CHECK(recomp_split_display_rate("auto",0,true,&note)==0 && note);
     CHECK(recomp_split_display_rate("auto",50,true,&note)==0 && note);

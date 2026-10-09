@@ -2663,14 +2663,21 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
 {
     D3D11_TEXTURE2D_DESC desc{};
     staging->GetDesc(&desc);
+    const unsigned width = desc.Width;
+    const unsigned height = desc.Height;
+    const unsigned row_bytes = width * 3u;
+    const unsigned padded = (row_bytes + 3u) & ~3u;
+    const unsigned image_bytes = padded * height;
+    /* Allocate before mapping or opening the file, so failure leaves no partial BMP. */
+    std::vector<unsigned char> bmp_row;
+    try { bmp_row.resize(padded, 0); }
+    catch (const std::bad_alloc &) {
+        std::fprintf(stderr, "recomp frame dump: row allocation failed path=%s\n", path);
+        return;
+    }
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(presenter->context->Map(
             staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
-        const unsigned width = desc.Width;
-        const unsigned height = desc.Height;
-        const unsigned row_bytes = width * 3u;
-        const unsigned padded = (row_bytes + 3u) & ~3u;
-        const unsigned image_bytes = padded * height;
 
         if (FILE *file = std::fopen(path, "wb")) {
             unsigned char header[54] = {0};
@@ -2692,13 +2699,6 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
             std::fwrite(header, 1, sizeof header, file);
 
             /* Write a whole row: per-pixel stdio locking stalls capture replay. */
-            std::vector<unsigned char> bmp_row;
-            try { bmp_row.resize(padded, 0); }
-            catch (const std::bad_alloc &) {
-                std::fclose(file);
-                presenter->context->Unmap(staging, 0u);
-                return;
-            }
             for (unsigned y = 0u; y < height; ++y) {
                 const unsigned char *row =
                     static_cast<const unsigned char *>(mapped.pData) +
@@ -2781,7 +2781,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         count = presenter->frame_dump_burst_count = requested;
         const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
         ID3D11Texture2D *back_buffer = nullptr;
-        if (defer && std::strcmp(defer, "1") == 0 && requested <= 300 && SUCCEEDED(
+        if (defer && std::strcmp(defer, "1") == 0 && SUCCEEDED(
                 presenter->swap_chain->GetBuffer(0u, __uuidof(ID3D11Texture2D),
                     reinterpret_cast<void **>(&back_buffer)))) {
             D3D11_TEXTURE2D_DESC desc{};
@@ -2793,6 +2793,9 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
             desc.MiscFlags = 0u;
             if (!frameDumpFits(desc, requested)) {
                 std::fprintf(stderr, "recomp frame dump: deferred capture exceeds memory bound\n");
+                DeleteFileA(trigger);
+                presenter->frame_dump_burst_base = presenter->frame_dump_count;
+                presenter->frame_dump_burst_count = 0u;
                 return;
             }
             for (unsigned i = 0u; i < requested; ++i) {

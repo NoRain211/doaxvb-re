@@ -37,6 +37,32 @@ void d3d11_backend_prepare(RecompD3dPresenter *, const RecompD3dPresenterCommand
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr,"Replay line %d: %s\n",__LINE__,#c); return 1; } } while (0)
 int main()
 {
+    CHECK(vsync_presents);
+    recomp_d3d_presenter_set_immediate_present(true);
+    CHECK(!vsync_presents);
+    recomp_d3d_presenter_set_immediate_present(false);
+    CHECK(vsync_presents);
+    const RecompD3dPresenterConfig config{320,240,RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+    /* Reused texture addresses must execute in order once, at either rate. */
+    for (double rate : {0.0, 240.0}) {
+        PresenterThread release_thread;
+        release_thread.pending=1; release_thread.shutdown=true; release_thread.split_rate=rate;
+        auto &release_packet=release_thread.packets[0];
+        RecompD3dPresenterCommand draw{};
+        draw.type=RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+        CHECK(release_packet.add(draw)==RECOMP_D3D_PRESENTER_OK);
+        CHECK(release_packet.addRelease(0x1000,64)==RECOMP_D3D_PRESENTER_OK);
+        CHECK(release_packet.add(draw)==RECOMP_D3D_PRESENTER_OK);
+        draw.type=RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+        draw.data.present.swap_counter=1;
+        CHECK(release_packet.add(draw)==RECOMP_D3D_PRESENTER_OK);
+        release_packet.seal(true); release_packet.published_ms=clock_ms();
+        run(release_thread,config);
+        CHECK(calls==std::vector<char>({'D','R','D','D'}));
+        CHECK(status(release_thread)==RECOMP_D3D_PRESENTER_OK);
+        calls.clear();
+    }
     PresenterThread thread;
     auto *backend=reinterpret_cast<RecompD3dPresenter *>(1);
     D3dCapturePacket packet;
@@ -78,8 +104,6 @@ int main()
     float view[16], projection[16];
     CHECK(!recomp_animation_camera(nullptr,view,projection));
     CHECK(!recomp_animation_pose_blend(nullptr,0,nullptr,nullptr,0,nullptr));
-    const RecompD3dPresenterConfig config{320,240,RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
-        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
     _putenv_s("RECOMP_SPLIT_RATE","");
     for (const char *trace : {"1","present"}) {
         _putenv_s("RECOMP_SPLIT_TRACE",trace);

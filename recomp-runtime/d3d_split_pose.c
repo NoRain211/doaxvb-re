@@ -18,9 +18,19 @@ double recomp_split_rate(const char *text)
     return rate;
 }
 
+static bool split_auto(const char *text)
+{
+    if (!text) return false;
+    while (isspace((unsigned char)*text)) ++text;
+    if (strncmp(text, "auto", 4) != 0) return false;
+    text += 4;
+    while (isspace((unsigned char)*text)) ++text;
+    return !*text;
+}
+
 bool recomp_split_requested(const char *text)
 {
-    return (text && strcmp(text, "auto") == 0) || recomp_split_rate(text) != 0;
+    return split_auto(text) || recomp_split_rate(text) != 0;
 }
 
 double recomp_split_display_rate(const char *text, double display_hz, bool vsync,
@@ -28,7 +38,7 @@ double recomp_split_display_rate(const char *text, double display_hz, bool vsync
 {
     *note = NULL;
     const bool known = isfinite(display_hz) && display_hz >= 30 && display_hz <= 1000;
-    if (text && strcmp(text, "auto") == 0) {
+    if (split_auto(text)) {
         if (known && display_hz >= 60) return display_hz;
         *note = known ? "display refresh is below 60 Hz; split rate off" :
             "display refresh unknown; split rate off";

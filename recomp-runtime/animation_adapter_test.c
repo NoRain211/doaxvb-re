@@ -4,7 +4,7 @@
 #include "animation_split_adapter.c"
 #include "animation_track_adapter.c"
 
-#include <assert.h>
+#include <stdlib.h>
 #include <setjmp.h>
 #include <stdarg.h>
 
@@ -19,7 +19,10 @@ static char stopped[128];
 
 uint8_t *recomp_memory(uint32_t address, size_t size)
 {
-    assert(address <= sizeof memory && size <= sizeof memory-address);
+    if (address > sizeof memory || size > sizeof memory-address) {
+        fprintf(stderr,"Adapter memory out of bounds: address=%u size=%zu\n",address,size);
+        abort();
+    }
     return memory+address;
 }
 uint32_t *recomp_memory_u32_checked(uint32_t address) { return (uint32_t *)recomp_memory(address,4); }

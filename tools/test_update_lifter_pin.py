@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import update_lifter_pin
 
@@ -33,16 +33,25 @@ class LifterPinTests(unittest.TestCase):
             before = {name: (root / name).read_bytes() for name in update_lifter_pin.PINNED}
             def fake_git(*args):
                 return "a" * 40 if args == ("rev-parse", "HEAD") else ""
+            def fake_generate(imported, verify_parity, revision=None):
+                if verify_parity:
+                    return root / "old"
+                for name in update_lifter_pin.PINNED:
+                    (root / name).write_bytes(b"changed before failure\n")
+                raise failure
             with patch.object(update_lifter_pin, "ROOT", root), \
-                    patch.object(update_lifter_pin, "git", side_effect=fake_git), \
+                    patch.object(update_lifter_pin, "git", side_effect=fake_git) as git_calls, \
                     patch.object(update_lifter_pin.subprocess, "check_output", return_value=""), \
                     patch.object(update_lifter_pin.subprocess, "run") as run, \
-                    patch.object(update_lifter_pin, "generate", side_effect=[root / "old", failure]), \
+                    patch.object(update_lifter_pin, "generate", side_effect=fake_generate) as generate, \
                     patch("sys.argv", ["update_lifter_pin.py", "--imported", "private/import",
                                        "--manual-call-target", "0x2000"]):
                 with self.assertRaises(type(failure)):
                     update_lifter_pin.main()
                 self.assertEqual(run.call_count, 1)  # submodule sync, never staging
+                generate.assert_called_with(Path("private/import"), verify_parity=False, revision="a" * 40)
+                self.assertEqual(git_calls.call_args_list[-2:], [
+                    call("checkout", "--detach", "a" * 40), call("checkout", "--detach", "a" * 40)])
             self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
 
     def test_invalid_cli_targets_do_not_touch_git(self):
