@@ -2109,11 +2109,12 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
 
 static bool testTextureAntialiasing()
 {
+    for (auto feature : {D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0})
     for (uint32_t samples : {1u, 4u}) {
         RecompD3dPresenter presenter{};
         presenter.msaa = samples;
         if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0u, D3D11_SDK_VERSION,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, &feature, 1u, D3D11_SDK_VERSION,
                 &presenter.device, nullptr, &presenter.context))) return false;
         ID3D11Texture2D *color = nullptr, *readback = nullptr, *resolved = nullptr;
         const auto run = [&]() {
@@ -2183,7 +2184,7 @@ static bool testTextureAntialiasing()
                         static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
                     for (unsigned x = 0; x < 4; ++x) {
                         const unsigned red = (row[x] >> 16u) & 255u;
-                        const bool partial = samples > 1u && (mode == 0 || mode == 4) && x == 1;
+                        const bool partial = samples > 1u && feature >= D3D_FEATURE_LEVEL_10_1 && (mode == 0 || mode == 4) && x == 1;
                         const unsigned hard = mode == 2 || mode == 5 || x >= 2 ||
                             (x == 1 && (mode == 3 || mode == 4)) ? 255u : 0u;
                         if ((partial ? red == 0 || red == 255 : red != hard) || (row[x] & 0xffffu)) {
@@ -2214,11 +2215,9 @@ static bool testTextureAntialiasing()
                         else presenter.context->CopyResource(resolved, color);
                         const bool pass = func == RECOMP_D3D_COMPARE_ALWAYS ||
                             (func == RECOMP_D3D_COMPARE_GREATER ? alpha > ref : alpha >= ref);
-                        const unsigned output_alpha = samples > 1u && func != RECOMP_D3D_COMPARE_ALWAYS
-                            ? 255u : alpha;
-                        const uint32_t pixel = pass ? (output_alpha << 24u) | 0x00ff0000u : clear.color;
+                        const uint32_t pixel = pass ? (alpha << 24u) | 0x00ff0000u : clear.color;
                         const uint32_t expected[] = {pixel,pixel,pixel,pixel};
-                        if (!checkPixels(&presenter, resolved, readback, "constant alpha byte comparison and preserved ALWAYS alpha", expected))
+                        if (!checkPixels(&presenter, resolved, readback, "constant alpha byte comparison and preserved fragment alpha", expected))
                             return false;
                         if (func == RECOMP_D3D_COMPARE_ALWAYS) {
                             ID3D11BlendState *blend = nullptr;
@@ -2235,6 +2234,18 @@ static bool testTextureAntialiasing()
             draw.has_texture = true;
             draw.use_texture_factor = false;
             draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+            draw.depth.alpha_ref = 0u;
+            const uint8_t flat_texels[] = {0x88,0x88,0x88,0x88,0x88,0x88,0x88,0x88, 0,0xf8,0,0,0,0,0,0};
+            draw.texture.data += 0x100u;
+            draw.texture_bytes = flat_texels;
+            if (submitClear(&presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+                submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK) return false;
+            if (samples > 1u) presenter.context->ResolveSubresource(resolved, 0u, color, 0u, desc.Format);
+            else presenter.context->CopyResource(resolved, color);
+            const uint32_t flat_expected[] = {0x88ff0000u,0x88ff0000u,0x88ff0000u,0x88ff0000u};
+            if (!checkPixels(&presenter, resolved, readback, "flat texture preserves passing alpha", flat_expected)) return false;
+            draw.texture.data += 0x100u;
+            draw.texture_bytes = texels;
             draw.depth.alpha_ref = 85u;
             /* Anisotropy is limited to textures with an actual mip chain. */
             uint8_t mip_texels[sizeof texels * 2];

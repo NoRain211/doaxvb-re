@@ -201,16 +201,20 @@ void buildDrawShaderSource(
         "            (func == 4 && alpha > ref) ||\n"
         "            (func == 5 && alpha != ref) ||\n"
         "            (func == 6 && alpha >= ref);\n"
+        "#ifdef EXPLICIT_COVERAGE\n"
         "        if (draw_flags.y > 1.5f) {\n"
-        /* Smooth cutout edges around the byte comparison boundary. Flat alpha
-           and the inclusive endpoints retain the exact hard test. */
+        /* Coverage is independent of stored alpha, including flat hard passes. */
         "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
         "            float width = fwidth(shaded.a);\n"
         "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
-        "            shaded.a = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
+        "            coverage = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
         "                ? (alpha_pass ? 1.0f : 0.0f)\n"
         "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
-        "        } else if (!alpha_pass) discard;\n"
+        "            uint count = (uint)round(coverage * draw_flags.y);\n"
+        "            sample_coverage = count >= 32 ? 0xffffffffu : (1u << count) - 1u;\n"
+        "        } else\n"
+        "#endif\n"
+        "        if (!alpha_pass) discard;\n"
         "    }\n"
         "    return shaded;\n"
         "}\n",
@@ -1221,7 +1225,7 @@ bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source)
+    std::string &compiled_source, bool explicit_coverage = true)
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
@@ -1275,6 +1279,13 @@ bool drawShaderSource(
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
 
     }
+    if (explicit_coverage) {
+        const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+        compiled_source.replace(compiled_source.find(pixel), pixel.size(),
+            "float4 ps_main(VSOut input, out uint sample_coverage : SV_Coverage) : SV_TARGET {\n"
+            "    sample_coverage = 0xffffffffu;");
+        compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
+    }
     return true;
 }
 
@@ -1301,7 +1312,7 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
                 ID3DBlob *blob = nullptr;
                 const bool vertex = stage[0] == 'v';
                 compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
-                    vertex ? "vs_4_0" : "ps_4_0", &blob);
+                    vertex ? "vs_4_0" : "ps_4_1", &blob);
                 releaseCom(blob);
             }
         }
@@ -1321,14 +1332,15 @@ bool createDrawPipeline(
 {
     RecompD3dVertexLayout layout;
     std::string compiled_source;
-    if (!drawShaderSource(fvf, pipeline, layout, compiled_source)) {
+    const bool explicit_coverage = presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage)) {
         return false;
     }
 
     ID3DBlob *vertex_blob = nullptr;
     ID3DBlob *pixel_blob = nullptr;
     if (!compileDrawShader(compiled_source.c_str(), "vs_main", "vs_4_0", &vertex_blob) ||
-        !compileDrawShader(compiled_source.c_str(), "ps_main", "ps_4_0", &pixel_blob)) {
+        !compileDrawShader(compiled_source.c_str(), "ps_main", explicit_coverage ? "ps_4_1" : "ps_4_0", &pixel_blob)) {
         releaseCom(vertex_blob);
         releaseCom(pixel_blob);
         return false;
@@ -2426,9 +2438,10 @@ RecompD3dPresenterError submitDraw(
     const bool alpha_to_coverage = draw.depth.alpha_test_enable &&
         (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER ||
          draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL) &&
-        !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u;
-    /* draw_flags.y: 0 disabled, 1 hard alpha test, 2 MSAA coverage. */
-    draw_constants[65] = alpha_to_coverage ? 2.0f : draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+        !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u &&
+        presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    /* draw_flags.y: 0 disabled, 1 hard alpha test, otherwise sample count. */
+    draw_constants[65] = alpha_to_coverage ? static_cast<float>(presenter->msaa) : draw.depth.alpha_test_enable ? 1.0f : 0.0f;
     draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
