@@ -27,17 +27,37 @@ if(WIN32)
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
 else()
-    # macOS builds need SDL3 (brew install sdl3). Other hosts only configure,
-    # which the tools tests do without it.
+    # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
+    # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
+    # 24.04 has no package). Hosts with neither only configure, which the
+    # tools tests do without it.
+    option(RECOMP_FETCH_SDL3 "Build SDL3 when the system has none" OFF)
     find_package(SDL3 QUIET)
     if(APPLE AND NOT SDL3_FOUND)
         message(FATAL_ERROR "SDL3 is required: brew install sdl3")
+    endif()
+    if(NOT SDL3_FOUND AND RECOMP_FETCH_SDL3)
+        include(FetchContent)
+        FetchContent_Declare(SDL3
+            GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+            GIT_TAG release-3.4.12)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_SHARED ON CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(SDL3)
+        set(SDL3_FOUND TRUE)
     endif()
     function(recomp_use_sdl3 target)
         if(SDL3_FOUND)
             target_link_libraries(${target} PRIVATE SDL3::SDL3)
         endif()
     endfunction()
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
+    add_compile_definitions(_GNU_SOURCE)
+    link_libraries(Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 # Clang contracts a*b+c into FMA by default on AArch64. Keep IEEE operation

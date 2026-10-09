@@ -6,9 +6,14 @@
 #include <windows.h>
 #else
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 #include <wchar.h>
 #include <strings.h>
 #include <sys/types.h>
