@@ -47,14 +47,28 @@ static int combiner_adapter_test(void)
     attach_combiner(device, &draw);
     REQUIRE(draw.has_combiner && draw.combiner_is_frontbuffer && !draw.combiner_is_backbuffer);
     *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET + 4u) = 0;
-    // Host-owned target pixels: no guest upload span, still a combiner draw.
+    // Unmapped stage-one pixels decline to the stage-zero path.
     *recomp_memory_u32(resource + 4u) = 0x00900000u;
     recomp_runtime.registers.esp = 0x001f6500u;
     set_texture();
     draw.has_combiner = false;
     attach_combiner(device, &draw);
-    REQUIRE(draw.has_combiner && draw.reflection_bytes == NULL && draw.reflection_texture.data != 0u);
+    REQUIRE(!draw.has_combiner);
+    // Unless they alias the presented front buffer.
+    *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET + 4u) = resource;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner && draw.combiner_is_frontbuffer && draw.reflection_bytes == NULL);
+    *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET + 4u) = 0;
     *recomp_memory_u32(resource + 4u) = resource + 0x100u;
+    // A 2x2 two-level A8R8G8B8 chain hands the presenter every mip.
+    *recomp_memory_u32(resource + 12u) = 0x01120620u;
+    recomp_runtime.registers.esp = 0x001f6500u;
+    set_texture();
+    draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner && draw.reflection_texture.mip_levels == 2u &&
+        draw.reflection_byte_count == 20u);
+    *recomp_memory_u32(resource + 12u) = 0x00000620u;
     recomp_runtime.registers.esp = 0x001f6500u;
     set_texture();
     for (uint32_t i = 0; i < 16; ++i) REQUIRE(draw.reflection_transform[i] == (i % 5 == 0 ? 1.0f : 0.0f));
@@ -112,6 +126,12 @@ static int combiner_adapter_test(void)
     draw.has_combiner = false;
     attach_combiner(device, &draw);
     REQUIRE(draw.has_combiner);
+    memcpy(&stages[0][6], &bias, sizeof bias);
+    draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    const bool biased_rejected = !draw.has_combiner;
+    stages[0][6] = 0;
+    REQUIRE(biased_rejected);
     const uint32_t unsupported[] = {7u, 9u, 10u};
     for (uint32_t i = 0u; i < sizeof unsupported / sizeof unsupported[0]; ++i) {
         stages[0][unsupported[i]] = 1; draw.has_combiner = false;

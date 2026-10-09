@@ -2440,6 +2440,30 @@ static bool testCombiner(RecompD3dPresenter *presenter,
     snapshot.combiner_is_frontbuffer = true;
     if (presenter->front_buffer_sample == nullptr &&
         submitDraw(presenter, snapshot) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    {
+        uint32_t presented[16];
+        std::fill(std::begin(presented), std::end(presented), 0xff0000ffu);
+        const D3D11_TEXTURE2D_DESC desc = {4u, 4u, 1u, 1u, DXGI_FORMAT_B8G8R8A8_UNORM,
+            {1u, 0u}, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0u, 0u};
+        const D3D11_SUBRESOURCE_DATA data = {presented, sizeof presented / 4u, 0u};
+        ID3D11Texture2D *front = nullptr, *target = nullptr;
+        ID3D11ShaderResourceView *view = nullptr;
+        ID3D11Resource *resource = nullptr;
+        ID3D11ShaderResourceView *saved = presenter->front_buffer_sample;
+        bool passed = SUCCEEDED(presenter->device->CreateTexture2D(&desc, &data, &front)) &&
+            SUCCEEDED(presenter->device->CreateShaderResourceView(front, nullptr, &view));
+        presenter->front_buffer_sample = view;
+        passed = passed && submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, snapshot) == RECOMP_D3D_PRESENTER_OK;
+        presenter->front_buffer_sample = saved;
+        RenderTargetEntry *entry = passed ? findRenderTarget(presenter, snapshot.target.color) : nullptr;
+        if (entry) entry->render_view->GetResource(&resource);
+        const uint32_t expected[] = {0xff0000ffu,0xff0000ffu,0xff0000ffu,0xff0000ffu};
+        passed = resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&target))) &&
+            checkPixels(presenter, target, readback, "stage one samples presented front buffer", expected);
+        releaseCom(target); releaseCom(resource); releaseCom(view); releaseCom(front);
+        if (!passed) return false;
+    }
     const uint8_t alpha = 128;
     draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8;
     draw.reflection_texture.bits_per_pixel = 8;

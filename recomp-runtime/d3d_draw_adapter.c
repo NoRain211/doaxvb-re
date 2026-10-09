@@ -840,6 +840,10 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
     const bool stage0_texture = recomp_d3d_combiner_uses_texture(stages[0] + 12u);
     if (stage0_texture &&
         (stages[0][21] != 0u || stages[0][28] != 0u)) return;
+    float stage0_bias;
+    memcpy(&stage0_bias, &stages[0][6], sizeof stage0_bias);
+    // Only stage 1 carries a host MipLODBias; stage 0 samples unbiased.
+    if (stage0_texture && stage0_bias != 0.0f) return;
     const bool stage1_texture = recomp_d3d_combiner_uses_texture(stages[1] + 12u);
     // Only the presenter's linear min/mag/mip sampler is implemented here.
     if ((stage0_texture &&
@@ -868,9 +872,11 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
         memcpy(&format, binding + 12u, sizeof format);
         if ((format & 0xf4u) != 0x20u) return;
         attach_texture(1u, &texture);
-        /* Null bytes are a host-owned render target; the presenter resolves it. */
         if (!texture.has_texture || texture.palette_bytes != NULL) return;
         attach_backbuffer_texture(device, &texture);
+        /* Without guest bytes only the back or front buffer has host pixels. */
+        if (texture.texture_bytes == NULL &&
+            !texture.texture_is_backbuffer && !texture.texture_is_frontbuffer) return;
     }
     if (stages[1][21] == 2u) {
         if (!read_transform(device, 3u, draw->reflection_transform)) return;
