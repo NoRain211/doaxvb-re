@@ -804,6 +804,56 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     draw->directional = result;
 }
 
+/* The title sea selects vertex color in stage 0 and adds an animated
+   texture squared in stage 1 (MULTIPLYADD). Snapshot both stages for draws
+   that no special path above already admits. Stage 2 must be disabled and
+   stage 1 must read UV set 0 without texgen. */
+static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    uint32_t stages[3][32];
+    const uint8_t *bytes = guest_span(0x001f2988u, sizeof stages);
+    RecompD3dVertexLayout layout;
+    RecompD3dPresenterDrawCommand texture = {0};
+
+    if (bytes == NULL || draw->program_count || draw->has_reflection ||
+        draw->has_alpha_mask || draw->program_alpha_mask || draw->four_tap_filter ||
+        draw->use_texture_factor || draw->modulate_texture_factor ||
+        !recomp_d3d_fvf_layout(draw->fvf, &layout) || layout.pretransformed ||
+        layout.texcoord_offset == RECOMP_D3D_FVF_ABSENT ||
+        (layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && !draw->directional.enabled)) return;
+    memcpy(stages, bytes, sizeof stages);
+    /* Words 12-19: COLOROP, COLORARG0-2, ALPHAOP, ALPHAARG0-2; 21 is
+       TEXTURETRANSFORMFLAGS and 28 TEXCOORDINDEX. */
+    if (stages[1][12] <= 1u || stages[1][12] > 24u || stages[2][12] != 1u ||
+        stages[1][28] != 0u || (stages[1][21] != 0u && stages[1][21] != 2u)) return;
+    for (uint32_t s = 0u; s < 2u; ++s) {
+        for (uint32_t i = 0u; i < 8u; ++i) {
+            const uint32_t word = stages[s][12u + i];
+            if ((i == 0u || i == 4u) ? word > 24u : (word & 15u) > 4u) return;
+            draw->combiner[s][i] = word;
+        }
+    }
+    attach_texture(1u, &texture);
+    if (!texture.has_texture || texture.texture_bytes == NULL ||
+        texture.palette_bytes != NULL) return;
+    if (stages[1][21] == 2u) {
+        if (!read_transform(device, 3u, draw->reflection_transform)) return;
+        for (uint32_t i = 0u; i < 16u; ++i)
+            if (!isfinite(draw->reflection_transform[i])) return;
+    } else {
+        memset(draw->reflection_transform, 0, sizeof draw->reflection_transform);
+        for (uint32_t i = 0u; i < 4u; ++i) draw->reflection_transform[i * 5u] = 1.0f;
+    }
+    draw->reflection_texture = texture.texture;
+    draw->reflection_bytes = texture.texture_bytes;
+    draw->reflection_byte_count = texture.texture_byte_count;
+    draw->combiner_address_u = texture.address_u;
+    draw->combiner_address_v = texture.address_v;
+    memcpy(&draw->combiner_lod_bias, &stages[1][6], sizeof draw->combiner_lod_bias);
+    if (!isfinite(draw->combiner_lod_bias)) draw->combiner_lod_bias = 0.0f;
+    draw->has_combiner = true;
+}
+
 static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t selector[4];
@@ -838,6 +888,7 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
     if (draw->has_reflection && (!draw->has_texture || draw->texture.linear ||
         draw->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
         !attach_reflection(device, draw))) return false;
+    attach_combiner(device, draw);
     return true;
 }
 
