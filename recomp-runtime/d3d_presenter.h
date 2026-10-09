@@ -116,6 +116,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Depth, stencil, and alpha-test state for this draw, already decoded by
        the render-state model so the presenter never sees a method number. */
     RecompD3dDepthState depth;
+    RecompD3dFogState fog;
+    bool fog_z; /* Affine projection uses Z; perspective uses clip W. */
+    float fog_world_view[4][16]; /* Only needed for range fog. */
     RecompD3dBlendState blend;
     /* Stage 0 selects this ARGB factor for both color and alpha. */
     bool use_texture_factor;

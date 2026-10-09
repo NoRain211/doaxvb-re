@@ -820,6 +820,41 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     draw->directional = result;
 }
 
+static void attach_fog(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    draw->fog = (RecompD3dFogState){0};
+    draw->fog_z = false;
+    memset(draw->fog_world_view, 0, sizeof draw->fog_world_view);
+    /* Programmable fog is outside the fixed-function path. */
+    if (draw->program_count) return;
+    /* The generated D3D8 setters retain deferred states in the render-state
+       array. Read at the draw seam; do not depend on emitted GPU methods. */
+    const uint8_t *words = guest_span(0x001f2b88u + 92u * 4u, 6u * 4u);
+    const uint8_t *color = guest_span(0x001f2b88u + 138u * 4u, 4u);
+    if (!words || !color) return;
+    uint32_t values[6], argb;
+    RecompD3dFogState fog;
+    memcpy(values, words, sizeof values);
+    memcpy(&argb, color, sizeof argb);
+    recomp_d3d_fog_state(values, argb, &fog);
+    if (!fog.enabled || !fog.mode) { draw->fog = fog; return; }
+    float projection[16], world_view[4][16] = {0};
+    if (!read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return;
+    const bool fog_z = projection[3] == 0 && projection[7] == 0 &&
+        projection[11] == 0 && projection[15] == 1;
+    if (fog.range) {
+        float view[16], world[16];
+        if (!read_transform(device, D3D_TRANSFORM_VIEW, view)) return;
+        for (uint32_t i = 0; i <= draw->blend_weight_count; ++i) {
+            if (!read_transform(device, D3D_TRANSFORM_WORLD + i, world)) return;
+            multiply_transform(world, view, world_view[i]);
+        }
+    }
+    draw->fog = fog;
+    draw->fog_z = fog_z;
+    memcpy(draw->fog_world_view, world_view, sizeof world_view);
+}
+
 static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t selector[4];
@@ -847,6 +882,7 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
                 recomp_d3d_texture_factor_modulate_selected(stage1_arguments, next_color_op);
         }
     }
+    attach_fog(device, draw);
     attach_directional_lighting(device, draw);
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
@@ -2142,6 +2178,8 @@ finished:
     if (decline != NULL) report_decline(decline);
 }
 
+/* Draws consume deferred fog state retained by generated D3D8 setters;
+   see docs/fog.md. Replacing those library setters remains open work. */
 RecompFunction recomp_d3d_draw_lookup_manual(uint32_t guest_address)
 {
     if (guest_address == D3D_DEVICE_DRAW_VERTICES_UP_ADDRESS) {
