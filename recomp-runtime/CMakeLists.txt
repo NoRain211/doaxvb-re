@@ -124,7 +124,7 @@ add_executable(recomp_runtime_test
     d3d_creation_adapter.c
     d3d_creation_model_test.c
     d3d_draw_model.c
-    d3d_draw_adapter.c
+    d3d_draw_adapter_test.c
     d3d_draw_model_test.c
     d3d_frame_model.c
     d3d_frame_model_test.c
