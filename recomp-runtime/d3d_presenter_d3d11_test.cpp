@@ -2152,7 +2152,13 @@ static bool testHeldFrameTargets()
     target.depth.data += 0x100000; target.depth.format_byte = 0x2a; target.depth.depth = true;
     ID3D11DepthStencilView *shared_depth = nullptr;
     passed &= lookupDepthTarget(&presenter, target, 512, 512, shared_depth) == RECOMP_D3D_PRESENTER_OK;
+    // Replacement fits only after crediting the scaled color allocation.
+    const uint64_t before_restore = presenter.target_bytes;
+    const uint64_t replaced_bytes = findRenderTarget(&presenter, target.color)->bytes;
+    presenter.target_bytes = kTargetByteLimit;
     passed &= bind(false) && depth != nullptr && depth == shared_depth;
+    passed &= presenter.target_bytes == kTargetByteLimit - replaced_bytes + 512u * 512u * 4u;
+    presenter.target_bytes = before_restore - replaced_bytes + 512u * 512u * 4u;
     if (depth) {
         depth->GetResource(&resource);
         static_cast<ID3D11Texture2D *>(resource)->GetDesc(&desc);

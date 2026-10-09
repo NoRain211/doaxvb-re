@@ -1040,7 +1040,8 @@ RecompD3dPresenterError bindTarget(
             const uint32_t host_width = static_cast<uint32_t>(desc.width * scale);
             const uint32_t host_height = static_cast<uint32_t>(desc.height * scale);
             const uint64_t bytes = static_cast<uint64_t>(host_width) * host_height * 4u;
-            if (bytes > kTargetByteLimit - presenter->target_bytes) {
+            const uint64_t replaced_bytes = restore_depth ? entry->bytes : 0u;
+            if (bytes > kTargetByteLimit - (presenter->target_bytes - replaced_bytes)) {
                 std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
                 return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             }
@@ -1517,9 +1518,6 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     return true;
 }
 
-/* Returns the pipeline for one FVF, building it on first use. A pipeline that
-   fails to build is remembered against its own FVF so it is not retried every
-   draw and does not affect any other FVF. */
 // Resample only color; depth stays in its existing guest-sized storage.
 bool resampleTarget(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *source,
     ID3D11RenderTargetView *target, uint32_t width, uint32_t height)
@@ -1557,6 +1555,9 @@ bool resampleTarget(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *sou
     return true;
 }
 
+/* Returns the pipeline for one FVF, building it on first use. A pipeline that
+   fails to build is remembered against its own FVF so it is not retried every
+   draw and does not affect any other FVF. */
 const DrawPipeline *lookupDrawPipeline(
     RecompD3dPresenter *presenter,
     uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr)
