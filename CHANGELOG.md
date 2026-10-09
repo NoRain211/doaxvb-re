@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.6.0 Beta RC1 — 2026-10-09
+
+This release candidate improves rendering and adds opt-in high refresh
+presentation and texture replacement. It updates the generation recipe, so
+download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
+
+### Added
+
+- **High refresh presentation** (#98). `RECOMP_SPLIT_RATE=auto`, or a rate
+  such as 120 or 144, shows extra frames between the game's 60 Hz ticks by
+  interpolating the camera, characters and props. Gameplay keeps its original
+  timing. Use it with `--vsync`. The picture runs one tick behind, and some
+  objects such as water still move at 60 Hz. Unset, nothing changes.
+- **Texture replacement** (#95). With `RECOMP_TEXTURES` set, F12 dumps the
+  current frame's textures as PNG and Ctrl+F12 reloads edited PNGs while the
+  game runs. See `docs/texture-replacement.md`.
+- **VRR** (#82). `RECOMP_D3D_VRR=1` presents for G-Sync and FreeSync displays.
+
+### Fixed
+
+- Scene transitions, such as between match rounds and entering the Hopping
+  Game, showed a black screen for about two seconds instead of the held frame
+  (#97).
+- Even 60 Hz pacing with V-Sync on 120 and 240 Hz displays (#82).
+- Depth-of-field backgrounds shimmered and characters showed a stair-stepped
+  halo at upscaled resolutions (#79).
+- Distant geometry had no fog (#94).
+- Fixed-function point lights were dropped or lit as directional (#92).
+- Textures at steep angles blurred and shimmered, and foliage and hair edges
+  stair-stepped under MSAA (#93).
+- The title screen sea had no shimmer (#96).
+- Closing the window mid-frame could exit with an error code (#80).
+
+### Changed
+
+- The recipe routes selected pose calls through hand-written adapters for
+  high refresh presentation (#98). The lifter is unchanged.
+
 ## 0.5.3 Beta "Mixtape" — 2026-09-30
 
 This release adds Radio Station shuffle. It updates the generation recipe, so
