@@ -2034,7 +2034,7 @@ static bool testReplacementFormats()
     if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
         &level, 1, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
     bool passed = true;
-    for (uint32_t format : {RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8, RECOMP_D3D_TEXTURE_FORMAT_P8,
+    for (uint32_t format : std::initializer_list<uint32_t>{RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8, RECOMP_D3D_TEXTURE_FORMAT_P8,
         RECOMP_D3D_TEXTURE_FORMAT_DXT1, RECOMP_D3D_TEXTURE_FORMAT_DXT3,
         RECOMP_D3D_TEXTURE_FORMAT_DXT5, RECOMP_D3D_TEXTURE_FORMAT_A8}) {
         RecompD3dPresenterDrawCommand draw{};
