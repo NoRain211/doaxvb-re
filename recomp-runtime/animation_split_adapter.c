@@ -336,6 +336,7 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
             break;
         }
     }
+    if (found && (!ready[found->actor] || frames[found->actor] != frame)) found = NULL;
     unsigned actor = found ? found->actor : UINT32_MAX;
     unsigned joint = found ? found->joint : UINT32_MAX;
     uint32_t seam = 0;

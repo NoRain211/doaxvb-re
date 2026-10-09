@@ -113,6 +113,23 @@ int main(int argc, char **argv)
         CHECK(recomp_animation_split_draw(&draw,worlds,1,view,projection,&size)==NULL);
         CHECK(!strict_mode);
     } else CHECK(strict_mode && strcmp(stopped,"split:rigid-mismatch")==0);
-    puts("PASS animation adapter rejection, resolved split, terrain edge and first-tick finalization");
+    /* Deferred palettes must stop using an invalidated or stale actor pair. */
+    test_frame=4;
+    recomp_animation_split_capture(0,3,&next);
+    recomp_animation_split_capture(0,test_frame,&next);
+    unit(worlds[0]); unit(worlds[1]);
+    uint8_t recipe[16]={0}; float offsets[24][4]={{0}};
+    RecompBoneMatrix initial; unit(initial.m);
+    recomp_animation_split_palette(0,test_frame,1,2,recipe,offsets,&initial,
+        (const RecompBoneMatrix *)worlds);
+    RecompSplitDraw *payload=recomp_animation_split_draw(&draw,worlds,2,view,projection,&size);
+    CHECK(payload!=NULL && payload->pose && payload->actor==0);
+    free(payload);
+    recomp_animation_split_invalidate(0);
+    CHECK(recomp_animation_split_draw(&draw,worlds,2,view,projection,&size)==NULL);
+    recomp_animation_split_capture(0,test_frame+1,&next);
+    CHECK(ready[0]);
+    CHECK(recomp_animation_split_draw(&draw,worlds,2,view,projection,&size)==NULL);
+    puts("PASS animation adapter rejection, resolved split, terrain edge, first-tick finalization and binding invalidation");
     return 0;
 }
