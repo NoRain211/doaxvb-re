@@ -1957,22 +1957,26 @@ void copyGuestBuffer(RecompD3dPresenter *presenter, ID3D11Resource *target)
     presenter->render_target_view->GetResource(&source);
     if (presenter->msaa > 1u) presenter->context->ResolveSubresource(
         target, 0u, source, 0u, DXGI_FORMAT_B8G8R8A8_UNORM);
-    else presenter->context->CopyResource(target, source);
+    else presenter->context->CopySubresourceRegion(target, 0u, 0u, 0u, 0u, source, 0u, nullptr);
     releaseCom(source);
 }
 
 bool createBufferCopy(RecompD3dPresenter *presenter,
-    ID3D11Texture2D *&copy, ID3D11ShaderResourceView *&sample)
+    ID3D11Texture2D *&copy, ID3D11ShaderResourceView *&sample, bool mips = false)
 {
     if (copy != nullptr) return true;
     D3D11_TEXTURE2D_DESC texture_desc{};
     texture_desc.Width = mainWidth(presenter);
     texture_desc.Height = mainHeight(presenter);
-    texture_desc.MipLevels = texture_desc.ArraySize = 1u;
+    // Upscaled back-buffer snapshots need mips for guest downsampling.
+    texture_desc.MipLevels = mips ? 0u : 1u;
+    texture_desc.ArraySize = 1u;
     texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     texture_desc.SampleDesc.Count = 1u;
     texture_desc.Usage = D3D11_USAGE_DEFAULT;
-    texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+        (mips ? D3D11_BIND_RENDER_TARGET : 0u);
+    texture_desc.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0u;
     HRESULT result = presenter->device->CreateTexture2D(&texture_desc, nullptr, &copy);
     if (SUCCEEDED(result)) {
         result = presenter->device->CreateShaderResourceView(copy, nullptr, &sample);
@@ -1999,12 +2003,15 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
         presenter->render_target_view == nullptr) return nullptr;
 
     if (!createBufferCopy(presenter, presenter->back_buffer_copy,
-            presenter->back_buffer_sample)) return nullptr;
+            presenter->back_buffer_sample, presenter->scale != 1.0f)) return nullptr;
     /* Sampling observes the current render buffer at this draw, even if the
        preceding draw sampled an older copy. Keep the copy outside the FIFO. */
     ID3D11ShaderResourceView *none = nullptr;
     presenter->context->PSSetShaderResources(0u, 1u, &none);
     copyGuestBuffer(presenter, presenter->back_buffer_copy);
+    /* Every view exposes the chain; refresh it with each new snapshot. */
+    if (presenter->scale != 1.0f)
+        presenter->context->GenerateMips(presenter->back_buffer_sample);
     return presenter->back_buffer_sample;
 }
 
