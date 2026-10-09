@@ -79,8 +79,13 @@ Point lights, anisotropic filtering and alpha coverage apply automatically.
 (RTGI). RTGI needs DXR 1.1 support and an RTGI-enabled build; D3D11 remains the
 fallback. It can reduce frame rate during matches. Strength ranges from 0 to 4
 and defaults to 1; hit-point color defaults on when RTGI is enabled. The
-**Hotkeys** button lists live texture reload/dump and RTGI tuning shortcuts.
+**Help** section lists live texture reload/dump and RTGI tuning shortcuts.
 Hotkey changes last for that run; the launcher remembers its own selections.
+
+The launcher's layout follows the game's menus. To show game art behind it,
+place your own `background.jpg` and `logo.png` in `private/launcher`;
+without them it draws a plain sunset backdrop. Arrow keys switch sections,
+Enter plays and Esc quits.
 
 To check launcher settings on Windows, run `tools/test_launcher.ps1` with both
 Windows PowerShell 5 and PowerShell 7. The checks use isolated synthetic
