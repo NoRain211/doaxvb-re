@@ -33,6 +33,7 @@ public:
     bool hasPoseReplay() const { return pose_replay_; }
 
 private:
+    friend struct D3dCapturePacketTest;
     // Default-initializes instead of zeroing; Debug builds rebind to proxy types.
     template <typename T>
     struct NoInitAllocator : std::allocator<T> {

@@ -3,6 +3,7 @@
 #include "animation_rotation.h"
 #include "d3d_pose_replay.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,7 @@ double recomp_split_rate(const char *text)
     if (!text || !*text) return 0;
     char *end;
     double rate = strtod(text, &end);
+    while (isspace((unsigned char)*end)) ++end;
     if (*end || !isfinite(rate) || rate < 60 || rate > 1000) return 0;
     return rate;
 }
@@ -119,6 +121,7 @@ void recomp_split_ball_matrix(const RecompSplitDraw *split, float fraction, floa
 
 static bool rotation_quaternion(const float m[16], double scale[3], double q[4])
 {
+    for (unsigned i = 0; i < 16; ++i) if (!isfinite(m[i])) return false;
     double r[3][3];
     for (unsigned i = 0; i < 3; ++i) {
         scale[i] = sqrt((double)m[i*4]*m[i*4]+(double)m[i*4+1]*m[i*4+1]+(double)m[i*4+2]*m[i*4+2]);

@@ -137,7 +137,7 @@ bool recomp_animation_track_sample(const uint8_t *track, size_t size,
         }
         /* Guest cursors wrap at 16 bits. A visual reader cannot silently
            interpret that as a valid monotonic clip; the caller owns loops. */
-        if (end > UINT16_MAX) return false;
+        if (duration == 0u || end > UINT16_MAX) return false;
         if (tick < end) {
             RecompAnimationCurve curve;
             if (!recomp_animation_curve(form, record, size - offset, duration, &curve))

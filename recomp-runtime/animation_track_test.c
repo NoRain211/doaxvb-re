@@ -111,6 +111,14 @@ int main(void)
     CHECK(!recomp_animation_curve(2u, track, 9u, 4u, &curve));
     CHECK(!recomp_animation_curve(2u, track, 10u, 0u, &curve));
 
+    for (unsigned form = 1; form <= 2; ++form) {
+        memset(track, 0, sizeof track);
+        record(track, form, 0u, 0x10000u);
+        record(track + (form == 1 ? 4 : 6), 0u, 0u, 0x28000u);
+        value = 17;
+        CHECK(!recomp_animation_track_sample(track, sizeof track, 0u, 0, &value));
+        CHECK(value == 17);
+    }
     record(track, 3u, 1u, 0x98000u);
     CHECK(recomp_animation_track_sample(track, 4u, 65534u, 0.0f, &value) && value == -1.5f);
     CHECK(!recomp_animation_track_sample(track, 4u, 65535u, 0.0f, &value));

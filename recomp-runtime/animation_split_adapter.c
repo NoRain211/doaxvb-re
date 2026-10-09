@@ -11,9 +11,7 @@
 
 bool recomp_animation_split_enabled(void)
 {
-    static int enabled = -1;
-    if (enabled < 0) enabled = recomp_split_requested(getenv("RECOMP_SPLIT_RATE"));
-    return enabled != 0;
+    return recomp_d3d_presenter_split_enabled();
 }
 
 static bool split_trace(void)
@@ -369,6 +367,7 @@ void *recomp_animation_split_draw(const RecompD3dPresenterDrawCommand *draw,
         for (unsigned i = 0; rigid && i < 16; ++i)
             error = fmaxf(error, fabsf(expected[i]-worlds[0][i])/fmaxf(1, fabsf(worlds[0][i])));
         rigid = rigid && error <= 0.0001f;
+        if (!rigid) recomp_split_fallback("split:rigid-mismatch");
     }
     if (actor >= 4 && !camera && !ball && !rigid) return NULL;
     size_t bytes = sizeof(RecompSplitDraw)+(seam ? (size_t)draw->vertex_count*sizeof(RecompSplitVertex) : 0);

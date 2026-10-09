@@ -110,6 +110,11 @@ void recomp_d3d_presenter_set_immediate_present(bool enabled)
     (void)enabled;
 }
 
+bool recomp_d3d_presenter_split_enabled(void)
+{
+    return false;
+}
+
 void recomp_d3d_presenter_report_draw_textures(void)
 {
     /* The in-memory presenter uploads no textures, so it has none to report. */

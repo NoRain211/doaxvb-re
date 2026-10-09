@@ -94,6 +94,7 @@ struct PresenterThread {
 
 PresenterThread *active_thread;
 double clock_ms();
+void fail(PresenterThread &thread, RecompD3dPresenterError error);
 
 void dump_split_trace(PresenterThread &thread)
 {
@@ -127,28 +128,34 @@ bool prepare_next(PresenterThread &thread, RecompD3dPresenter *backend, double d
         thread.prepare_cursor = 0;
     }
     bool progressed = false;
-    while (thread.prepare_cursor < next->count() && deadline-clock_ms() > 1.5) {
-        const size_t i = thread.prepare_cursor;
-        if (next->record(i).kind == D3dCapturePacket::COMMAND) {
-            const auto &command = next->command(i);
-            // ponytail: upload cost estimated at ~4 ms per MiB of new texels;
-            // anything longer than a present slot is left to its draw.
-            // Textures that already exist cost nothing.
-            const uint64_t bytes = d3d11_backend_prepare_bytes(backend, &command);
-            const double cost = bytes*4.0/1048576.0;
-            if (bytes == 0) {
-                ++thread.prepare_cursor;
-                continue;
+    try {
+        while (thread.prepare_cursor < next->count() && deadline-clock_ms() > 1.5) {
+            const size_t i = thread.prepare_cursor;
+            if (next->record(i).kind == D3dCapturePacket::COMMAND) {
+                const auto &command = next->command(i);
+                // ponytail: upload cost estimated at ~4 ms per MiB of new texels;
+                // anything longer than a present slot is left to its draw.
+                // Textures that already exist cost nothing.
+                const uint64_t bytes = d3d11_backend_prepare_bytes(backend, &command);
+                const double cost = bytes*4.0/1048576.0;
+                if (bytes == 0) {
+                    ++thread.prepare_cursor;
+                    continue;
+                }
+                if (cost > 1000.0/thread.split_rate) {
+                    ++thread.prepare_cursor;
+                    continue;
+                }
+                if (deadline-clock_ms()-1.0 < cost) break;
+                d3d11_backend_prepare(backend, &command);
             }
-            if (cost > 1000.0/thread.split_rate) {
-                ++thread.prepare_cursor;
-                continue;
-            }
-            if (deadline-clock_ms()-1.0 < cost) break;
-            d3d11_backend_prepare(backend, &command);
+            ++thread.prepare_cursor;
+            progressed = true;
         }
-        ++thread.prepare_cursor;
-        progressed = true;
+    } catch (const std::bad_alloc &) {
+        fail(thread, RECOMP_D3D_PRESENTER_OUT_OF_MEMORY);
+    } catch (...) {
+        fail(thread, RECOMP_D3D_PRESENTER_HOST_FAILURE);
     }
     return progressed;
 }
@@ -196,7 +203,7 @@ void pump(PresenterThread &thread)
 }
 
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
-    const D3dCapturePacket &packet, int phase = -1, float fraction = -1)
+    const D3dCapturePacket &packet, int phase = -1, float fraction = -1, bool apply_releases = true)
 {
     RecompBoneMatrix sampled[4][32];
     bool sampled_valid[4] = {};
@@ -239,6 +246,11 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                         split_error = "draw";
                     if (thread.split_trace) thread.trace_split_ms += clock_ms()-split_start;
                     if (split_error) {
+                        const char *strict = std::getenv("RECOMP_SPLIT_STRICT");
+                        if (strict != nullptr && std::strcmp(strict, "1") == 0) {
+                            fail(thread, RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+                            return;
+                        }
                         // Guest data can be degenerate (the island map draws an object whose
                         // world matrix holds NaN). Submit the captured draw unchanged, exactly
                         // as the 60 Hz path does, instead of stopping the presenter.
@@ -282,7 +294,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                 break;
             }
             case D3dCapturePacket::RELEASE:
-                error = d3d11_backend_release_memory(backend, record.base, record.size);
+                if (apply_releases) error = d3d11_backend_release_memory(backend, record.base, record.size);
                 break;
             case D3dCapturePacket::REPORT:
                 d3d11_backend_report_draw_textures();
@@ -417,7 +429,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 const double deadline = thread.split_next;
                 thread.split_camera_draws = thread.split_pose_draws = 0;
                 thread.trace_split_ms = 0; thread.trace_records = 0;
-                execute(thread, backend, *packet, -1, fraction);
+                execute(thread, backend, *packet, -1, fraction, !presented);
                 render_work += clock_ms()-draw_start; ++render_presents;
                 if (thread.split_trace) thread.split_records.push_back({frame, fraction,
                     thread.split_camera_draws, thread.split_pose_draws, deadline, draw_start,
@@ -590,12 +602,22 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
             std::fprintf(stderr, "recomp split rate: requested=%s display=%.3f\n", requested, display);
             if (note) std::fprintf(stderr, "recomp split rate: %s\n", note);
         }
+        const char *trace = std::getenv("RECOMP_SPLIT_TRACE");
+        thread->split_trace = trace != nullptr && std::strcmp(trace, "present") == 0;
+        thread->split_trace_limit = 1200;
+        if (const char *limit = std::getenv("RECOMP_SPLIT_TRACE_LIMIT")) {
+            char *end;
+            const unsigned long parsed = std::strtoul(limit, &end, 10);
+            if (*limit && !*end && parsed > 0) thread->split_trace_limit = parsed;
+        }
+        if (thread->split_rate) {
+            thread->split_timer = CreateWaitableTimerExW(nullptr, nullptr,
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
+            if (thread->split_timer == nullptr)
+                thread->split_timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+            if (thread->split_timer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
         d3d11_backend_set_split_presentation(thread->split_rate != 0);
-        thread->split_trace = std::getenv("RECOMP_SPLIT_TRACE") != nullptr;
-        if (const char *limit = std::getenv("RECOMP_SPLIT_TRACE_LIMIT"))
-            thread->split_trace_limit = std::strtoul(limit, nullptr, 10);
-        if (thread->split_rate) thread->split_timer = CreateWaitableTimerExW(nullptr, nullptr,
-            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
         if (thread->split_rate) std::fprintf(stderr, "recomp split rate: target=%.6g gameplay=60 visual_delay_ticks=1\n", thread->split_rate);
         if (const char *at = std::getenv("RECOMP_REPLAY_VERIFY_AT")) {
             thread->verify_at = static_cast<uint32_t>(std::strtoul(at, nullptr, 10));
@@ -622,6 +644,11 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     active_thread = thread.release();
     *presenter = reinterpret_cast<RecompD3dPresenter *>(active_thread);
     return RECOMP_D3D_PRESENTER_OK;
+}
+
+bool recomp_d3d_presenter_split_enabled(void)
+{
+    return active_thread != nullptr && active_thread->split_rate != 0;
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_submit(

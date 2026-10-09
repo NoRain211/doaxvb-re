@@ -241,7 +241,10 @@ void D3dCapturePacket::clear()
     entries_.clear();
     commands_.clear();
     payload_.clear();
-    ++span_generation_;
+    if (++span_generation_ == 0u) {
+        for (SpanSlot &slot : span_slots_) slot.generation = 0u;
+        span_generation_ = 1u;
+    }
     span_count_ = 0u;
     sealed_ = false;
     pose_replay_ = false;

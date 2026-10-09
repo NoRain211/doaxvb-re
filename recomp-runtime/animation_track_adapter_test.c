@@ -21,6 +21,11 @@ int recomp_animation_track_adapter_test(void)
         {1.0f, 0.5f, -0.0f, 0.0f},
         {1.0f, 0.0f, 0.0f, 0.0f}
     };
+    const char *setting = getenv("RECOMP_ANIMATION_TRACKS");
+    char *original = setting ? malloc(strlen(setting)+1) : NULL;
+    if (setting && !original) return 0;
+    if (original) strcpy(original, setting);
+    int passed = 1;
     const unsigned endpoint[] = {10u, 4u, 6u, 0u};
 #ifdef _WIN32
     _putenv_s("RECOMP_ANIMATION_TRACKS", "1");
@@ -45,7 +50,11 @@ int recomp_animation_track_adapter_test(void)
         recomp_runtime.registers = saved;
         recomp_fpu_context_save(&fpu);
         entry = recomp_lookup_manual(addresses[form]);
-        if (entry == NULL) return 0;
+        if (entry == NULL) {
+            fprintf(stderr, "Animation adapter: form %u address 0x%08x lookup returned NULL\n", form, addresses[form]);
+            passed = 0;
+            break;
+        }
         entry();
         recomp_fpu_context_save(&after);
         saved.esp += 4u;
@@ -54,8 +63,16 @@ int recomp_animation_track_adapter_test(void)
             memcmp(fpu.fpu_stack, after.fpu_stack, sizeof fpu.fpu_stack) != 0 ||
             fpu.fpu_top != after.fpu_top) {
             fprintf(stderr, "Animation adapter: form %u changed unexpected state\n", form);
-            return 0;
+            passed = 0;
+            break;
         }
     }
-    return recomp_animation_track_lookup_manual(0u) == NULL;
+#ifdef _WIN32
+    _putenv_s("RECOMP_ANIMATION_TRACKS", original ? original : "");
+#else
+    if (original) setenv("RECOMP_ANIMATION_TRACKS", original, 1);
+    else unsetenv("RECOMP_ANIMATION_TRACKS");
+#endif
+    free(original);
+    return passed && recomp_animation_track_lookup_manual(0u) == NULL;
 }

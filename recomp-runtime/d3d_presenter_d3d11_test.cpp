@@ -2026,6 +2026,11 @@ int main()
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;
     }
+    D3D11_TEXTURE2D_DESC dump_desc{};
+    dump_desc.Width=5120; dump_desc.Height=3840;
+    if (frameDumpFits(dump_desc,300) || !frameDumpFits(dump_desc,100)) return 1;
+    dump_desc.Width=3840; dump_desc.Height=2160;
+    if (!frameDumpFits(dump_desc,300) || frameDumpFits(dump_desc,301)) return 1;
     FrameRateCounter counter;
     double fps = 0, frame_ms = 0;
     if (sampleFrameRate(counter, 0u, fps, frame_ms)) return 1;

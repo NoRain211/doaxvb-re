@@ -35,7 +35,11 @@ bool recomp_d3d_pose_replay_draw(const RecompD3dPresenterDrawCommand *source,
     multiply(pose->palettes[phase][0], pose->view, world_view);
     multiply(world_view, pose->projection, result.transform);
     for (unsigned i = 0; i < pose->count; ++i) {
-        if (i > 0) multiply(pose->palettes[phase][i], view_projection, result.blend_transforms[i-1]);
+        if (i > 0) {
+            multiply(pose->palettes[phase][i], view_projection, result.blend_transforms[i-1]);
+            for (unsigned j = 0; j < 16; ++j)
+                if (!isfinite(result.blend_transforms[i-1][j])) return false;
+        }
         if (result.directional.enabled && !recomp_d3d_normal_transform(
             pose->palettes[phase][i], result.directional.normal_transforms[i])) return false;
     }

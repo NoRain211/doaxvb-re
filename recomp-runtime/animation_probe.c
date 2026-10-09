@@ -161,8 +161,8 @@ static float ground_height(float x, float z)
     if (grid == 0) return 0;
     float xmin = guest_float(0x009ef7e0u), zmin = guest_float(0x009ef7fcu);
     float base = guest_float(0x009ef7ecu), cell = guest_float(0x009ef7e8u);
-    if (x < xmin || x > guest_float(0x009ef7e4u) ||
-        z < zmin || z > guest_float(0x009ef808u)) return base;
+    if (x < xmin || x >= guest_float(0x009ef7e4u) ||
+        z < zmin || z >= guest_float(0x009ef808u)) return base;
     if (!isfinite(x) || !isfinite(z) || cell <= 0) {
         if (!split_play()) recomp_stop(1, "animation:height-input");
         recomp_split_fallback("animation:height-input");
@@ -744,10 +744,12 @@ void recomp_animation_probe_finish_split(void)
 {
 #ifdef RECOMP_FULL_PROGRAM
     static uint32_t finished[4];
+    static bool finalized[4];
     if (!recomp_animation_split_enabled()) return;
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     for (unsigned actor = 0; actor < 4; ++actor) {
-        if (!solved_valid[actor] || solved_frame[actor] != frame || finished[actor] == frame) continue;
+        if (!solved_valid[actor] || solved_frame[actor] != frame || (finalized[actor] && finished[actor] == frame)) continue;
+        finalized[actor] = true;
         finished[actor] = frame;
         const PoseCapture *capture = split_captures+actor;
         RecompBoneMatrix final[32];

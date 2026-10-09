@@ -132,7 +132,18 @@ static RecompBoneMatrix swing(const float a[3], const float b[3])
     double cosine = dot(a, b);
     float axis[3];
     cross(a, b, axis);
-    if (1.0 + cosine <= 1e-6) return m;
+    if (1.0 + cosine <= 1e-6 || (cosine < 0 && dot(axis, axis) <= 1e-12)) {
+        /* Cross with the least-aligned coordinate axis for a stable half-turn. */
+        unsigned least = 0;
+        for (unsigned i = 1; i < 3; ++i) if (fabsf(a[i]) < fabsf(a[least])) least = i;
+        float basis[3] = {0}; basis[least] = 1;
+        cross(a, basis, axis);
+        normalize(axis);
+        for (unsigned r = 0; r < 3; ++r)
+            for (unsigned c = 0; c < 3; ++c)
+                m.m[r*4+c] = (float)(2.0*axis[r]*axis[c]-(r == c));
+        return m;
+    }
     for (unsigned r = 0; r < 3; ++r)
         for (unsigned c = 0; c < 3; ++c)
             m.m[r*4+c] = (float)((r == c ? cosine : 0.0) +
@@ -155,6 +166,16 @@ static RecompBoneMatrix blend(RecompBoneMatrix a, RecompBoneMatrix b, float weig
         relative.m[1]-relative.m[4]};
     float length = normalize(axis);
     float cosine = (float)(((double)relative.m[10]+relative.m[5]+relative.m[0]-1)*0.5);
+    if (length < 1e-6f && cosine < 0) {
+        /* The skew part vanishes at pi; recover the axis from R + I. */
+        unsigned largest = 0;
+        for (unsigned i = 1; i < 3; ++i)
+            if (relative.m[i*4+i] > relative.m[largest*4+largest]) largest = i;
+        axis[largest] = sqrtf(fmaxf(0, (relative.m[largest*4+largest]+1)*0.5f));
+        for (unsigned i = 0; i < 3; ++i) if (i != largest)
+            axis[i] = (relative.m[largest*4+i]+relative.m[i*4+largest])/(4*axis[largest]);
+        normalize(axis);
+    }
     {
         float s, c;
         sine_cosine((float)(atan2((double)length*0.5, cosine)*weight), &s, &c);
@@ -332,7 +353,7 @@ static void rotation_angles(RecompBoneMatrix m, float xyz[3])
 }
 
 static void look_angles(const RecompSkeletonTables *t, const RecompSkeletonTargets *s,
-    RecompBoneMatrix body, const float p[60], float neck[3], float head[3])
+    RecompBoneMatrix body, const float p[RECOMP_POSE_CHANNELS], float neck[3], float head[3])
 {
     memcpy(neck, p+47, 3*sizeof(float));
     memcpy(head, p+9, 3*sizeof(float));
@@ -376,11 +397,11 @@ void recomp_animation_blend_euler(const float a[3], const float b[3], float weig
     rotation_angles(blend(euler(identity(), a), euler(identity(), b), weight), output);
 }
 
-bool recomp_animation_solve_skeleton(const RecompSkeletonTables *t, const float p[60],
+bool recomp_animation_solve_skeleton(const RecompSkeletonTables *t, const float p[RECOMP_POSE_CHANNELS],
     const RecompSkeletonTargets *s, RecompBoneMatrix output[32])
 {
     if (!t || !p || !s || !output) return false;
-    for (unsigned i = 0; i < 60; ++i)
+    for (unsigned i = 0; i < RECOMP_POSE_CHANNELS; ++i)
         if (!isfinite(p[i]) || fabsf(p[i]) > 1000000.0f) return false;
     if (!finite_values(s->position, 3) || !isfinite(s->heading) || fabsf(s->heading) > 1000000.0f ||
         !isfinite(s->ground_height) || !isfinite(s->hip_height) || !isfinite(s->neck_height) ||
@@ -399,10 +420,10 @@ bool recomp_animation_solve_skeleton(const RecompSkeletonTables *t, const float 
             !isfinite(l->alternate_squared_difference) || fabsf(s->eyes[i]) > 1000000.0f)
             return false;
         if (d->end >= 32 || d->parent >= 32 || d->proximal >= 24 || d->middle >= 32 ||
-            (d->tip != 255 && d->tip >= 24) || d->tip_channel >= 60) return false;
+            (d->tip != 255 && d->tip >= 24) || d->tip_channel >= RECOMP_POSE_CHANNELS) return false;
         for (unsigned k = 0; k < 3; ++k)
-            if (d->position_channels[k] >= 60 || d->rotation_channels[k] >= 60) return false;
-        if (d->pole_channels[0] >= 60 || d->pole_channels[1] >= 60) return false;
+            if (d->position_channels[k] >= RECOMP_POSE_CHANNELS || d->rotation_channels[k] >= RECOMP_POSE_CHANNELS) return false;
+        if (d->pole_channels[0] >= RECOMP_POSE_CHANNELS || d->pole_channels[1] >= RECOMP_POSE_CHANNELS) return false;
     }
     RecompBoneMatrix b[32];
     for (unsigned i = 0; i < 32; ++i) b[i] = identity();

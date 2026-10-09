@@ -1,4 +1,4 @@
-#include "animation_skeleton.h"
+#include "animation_skeleton.c"
 
 #include <math.h>
 #include <stdio.h>
@@ -42,6 +42,26 @@ int main(void)
     RecompSkeletonTargets s, saved_targets;
     RecompBoneMatrix a[32], b[32], before[32];
     float p[60], saved_channels[60];
+    const float direction[3]={1,0,0}, opposite[3]={-1,0,0};
+    RecompBoneMatrix half_turn=swing(direction,opposite);
+    CHECK(fabsf(half_turn.m[0]+1)<1e-6f && fabsf(half_turn.m[1])<1e-6f);
+    const float approximate[3]={.9995f,0,0}, approximate_opposite[3]={-.9995f,0,0};
+    half_turn=swing(approximate,approximate_opposite);
+    CHECK(fabsf(half_turn.m[0]+1)<1e-6f && fabsf(half_turn.m[10]-1)<1e-6f);
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        RecompBoneMatrix end=identity();
+        for (unsigned i=0; i<3; ++i) end.m[i*4+i]=i==axis ? 1 : -1;
+        RecompBoneMatrix midpoint=blend(identity(),end,.5f);
+        for (unsigned r=0; r<3; ++r) for (unsigned c=0; c<3; ++c) {
+            double product=0, squared=0;
+            for (unsigned k=0; k<3; ++k) {
+                product+=midpoint.m[r*4+k]*midpoint.m[c*4+k];
+                squared+=midpoint.m[r*4+k]*midpoint.m[k*4+c];
+            }
+            CHECK(fabs(product-(r==c))<0.002);
+            CHECK(fabs(squared-end.m[r*4+c])<0.002);
+        }
+    }
     fixture(&t, p, &s);
     saved_tables = t; saved_targets = s; memcpy(saved_channels, p, sizeof p);
     CHECK(recomp_animation_solve_skeleton(&t, p, &s, a));

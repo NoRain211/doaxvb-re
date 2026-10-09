@@ -5,9 +5,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+enum { RECOMP_POSE_CHANNELS = 60 };
+
 typedef struct RecompAnimationPose {
     uint32_t tick, mask, flags;
-    float channels[60];
+    float channels[RECOMP_POSE_CHANNELS];
 } RecompAnimationPose;
 
 enum RecompAnimationBlendKind {
@@ -27,8 +29,14 @@ typedef struct RecompAnimationGroup {
 /* Preserves the initialized destination's mask and unselected channels, as the
    pose cache does. Inputs remain immutable. Failure leaves output unchanged.
    This is the interpolation mode of AF5C0, including hip-angle quantization. */
+#ifdef __cplusplus
+extern "C" {
+#endif
 bool recomp_animation_pose_blend(const RecompAnimationGroup *groups, size_t count,
     const RecompAnimationPose *a, const RecompAnimationPose *b, float weight,
     RecompAnimationPose *output);
+#ifdef __cplusplus
+}
+#endif
 
 #endif

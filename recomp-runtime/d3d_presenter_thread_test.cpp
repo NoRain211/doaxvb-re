@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <string>
 
 static const RecompD3dPresenterConfig config = {
     320u, 240u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
@@ -130,13 +131,23 @@ static bool testDeferredDump()
     DeleteFileA(prefix);
     RecompD3dPresenter *presenter = nullptr;
     if (!expect("create deferred dump", recomp_d3d_presenter_create(&config, &presenter))) return false;
+    const char *variables[] = {"RECOMP_D3D_FRAME_DUMP", "RECOMP_D3D_FRAME_DUMP_COUNT",
+        "RECOMP_D3D_FRAME_DUMP_AT", "RECOMP_D3D_FRAME_DUMP_DEFER",
+        "RECOMP_D3D_FRAME_DUMP_TRIGGER", "RECOMP_D3D_FRAME_DUMP_INTERVAL_MS"};
+    std::string originals[6];
+    for (unsigned i=0; i<6; ++i) {
+        const char *value=std::getenv(variables[i]);
+        if (value) originals[i]=value;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_TRIGGER", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS", "");
     _putenv_s("RECOMP_D3D_FRAME_DUMP", prefix);
     _putenv_s("RECOMP_D3D_FRAME_DUMP_COUNT", "3");
     _putenv_s("RECOMP_D3D_FRAME_DUMP_AT", "1");
     _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "1");
     const uint32_t colors[] = {0xff000000u, 0xffff0000u, 0xff00ff00u, 0xff0000ffu};
     bool passed = true;
-    for (unsigned i = 0; i < 4 && passed; ++i) {
+    for (unsigned i = 0; i < 3 && passed; ++i) {
         auto command = clearCommand(); command.data.clear.color = colors[i];
         passed &= expect("deferred clear", recomp_d3d_presenter_submit(presenter, &command));
         command = {}; command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
@@ -144,10 +155,7 @@ static bool testDeferredDump()
         passed &= expect("deferred present", recomp_d3d_presenter_submit(presenter, &command));
     }
     passed &= destroy(presenter);
-    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
-    _putenv_s("RECOMP_D3D_FRAME_DUMP_COUNT", "");
-    _putenv_s("RECOMP_D3D_FRAME_DUMP_AT", "");
-    _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "");
+    for (unsigned i=0; i<6; ++i) _putenv_s(variables[i], originals[i].c_str());
     for (unsigned i = 0; i < 3; ++i) {
         char path[MAX_PATH+16]; std::snprintf(path, sizeof path, "%s.%03u.bmp", prefix, i);
         FILE *file = std::fopen(path, "rb");

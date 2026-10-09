@@ -40,7 +40,7 @@ bool recomp_animation_pose_blend(const RecompAnimationGroup *groups, size_t coun
     RecompAnimationPose *output)
 {
     static const unsigned widths[] = {3,3,2,2,2,1};
-    if (!groups || !a || !b || !output || count > 60 ||
+    if (!groups || !a || !b || !output || count > RECOMP_POSE_CHANNELS ||
         !isfinite(weight) || weight < 0 || weight > 1) return false;
     RecompAnimationPose result = *output;
     uint32_t first = a->mask, second = b->mask;
@@ -50,7 +50,7 @@ bool recomp_animation_pose_blend(const RecompAnimationGroup *groups, size_t coun
     for (size_t i = 0; i < count; ++i) {
         const RecompAnimationGroup *g = groups+i;
         if (g->kind >= sizeof widths/sizeof *widths || g->width != widths[g->kind] ||
-            g->channel > 60-g->width) return false;
+            g->channel > RECOMP_POSE_CHANNELS-g->width) return false;
         float *out = result.channels+g->channel;
         const float *p = a->channels+g->channel, *q = b->channels+g->channel;
         bool from_a = (g->mask & first) != 0, from_b = (g->mask & second) != 0;
@@ -95,7 +95,7 @@ bool recomp_animation_pose_blend(const RecompAnimationGroup *groups, size_t coun
         int64_t units = (int64_t)((double)result.channels[i]*turn_units_per_radian);
         result.channels[i] = (float)((double)(uint16_t)units*radians_per_turn_unit);
     }
-    for (unsigned i = 0; i < 60; ++i) if (!isfinite(result.channels[i])) return false;
+    for (unsigned i = 0; i < RECOMP_POSE_CHANNELS; ++i) if (!isfinite(result.channels[i])) return false;
     result.tick = result.flags = 0;
     *output = result;
     return true;

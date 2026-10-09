@@ -1,4 +1,5 @@
 #include "d3d_split_pose.h"
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,6 +10,7 @@ int main(void)
     CHECK(recomp_split_rate("100") == 100 && recomp_split_rate("144") == 144);
     CHECK(recomp_split_rate("120") == 120 && recomp_split_rate("240") == 240);
     CHECK(recomp_split_rate("119.88") == 119.88);
+    CHECK(recomp_split_rate(" 120 \r\n") == 120 && recomp_split_rate(" \t") == 0);
     CHECK(recomp_split_rate(NULL)==0 && recomp_split_rate("1")==0 && recomp_split_rate("nan")==0);
     CHECK(recomp_split_rate("120junk")==0 && recomp_split_rate("0")==0);
     const char *note;
@@ -66,12 +68,46 @@ int main(void)
     CHECK(recomp_split_rigid_matrix(from,to,.5f,mid));
     CHECK(fabsf(mid[0]-2.5f*cosf(.785398163f))<1e-5f && fabsf(mid[2]+2.5f*sinf(.785398163f))<1e-5f);
     CHECK(fabsf(mid[5]-2.5f)<1e-5f && fabsf(mid[12]-.5f)<1e-6f && fabsf(mid[13]-2)<1e-6f);
+    RecompBoneMatrix moving[2];
+    memcpy(moving[0].m, from, 64); memcpy(moving[1].m, to, 64);
+    recomp_split_bone_motion(moving, moving+1, motion);
+    CHECK(fabsf(motion[0]-sqrtf(17))<1e-6f && fabsf(motion[1]-90)<1e-5f);
+    for (unsigned i = 3; i < 16; i += 4) {
+        float original = to[i]; to[i] = NAN;
+        memcpy(saved, mid, 64);
+        CHECK(!recomp_split_rigid_matrix(from,to,.5f,mid));
+        CHECK(memcmp(saved,mid,64)==0);
+        to[i] = original;
+    }
     to[1]=1; CHECK(!recomp_split_rigid_matrix(from,to,.5f,mid)); /* shear */
     to[1]=0; to[0]=-1; to[2]=0; to[8]=0; to[10]=1; CHECK(!recomp_split_rigid_matrix(from,to,.5f,mid)); /* mirror */
     identity(to); to[12]=8; split.ball=0; split.rigid=true;
     memcpy(split.rigid_worlds[0],split.worlds[0],64); memcpy(split.rigid_worlds[1],to,64);
     source.split_pose_size=sizeof split;
     CHECK(recomp_d3d_split_draw(&source,.25f,NULL,NULL,&output) && fabsf(output.transform[12]-2)<1e-6f);
+    split.rigid=false; split.ball=2; split.worlds[0][0]=2;
+    split.ball_position[0][1]=2; split.ball_position[1][1]=6;
+    CHECK(recomp_d3d_split_draw(&source,.5f,NULL,NULL,&output));
+    CHECK(output.transform[0]==2 && output.transform[12]==5 && output.transform[13]==4);
+    split.ball=1; split.ball_angles[0][2]=3.0f; split.ball_angles[1][2]=-3.0f;
+    recomp_split_ball_matrix(&split,.5f,mid);
+    CHECK(fabsf(mid[0]+1)<0.003f && fabsf(mid[1])<1e-5f); /* short arc through pi */
+    struct { RecompSplitDraw split; RecompSplitVertex inputs[2]; } seam={0};
+    seam.split.count=1; seam.split.seam=true; seam.split.seam_destination=1;
+    identity(seam.split.view); identity(seam.split.projection); identity(seam.split.worlds[0]);
+    RecompBoneMatrix seam_bones[32]={0};
+    identity(seam_bones[0].m); identity(seam_bones[1].m); seam_bones[0].m[12]=4;
+    seam.inputs[0].mode=2; seam.inputs[0].position[0]=1; seam.inputs[0].normal[1]=1;
+    float original_vertices[2][6]={{0},{7,8,9,0,1,0}}, replay_vertices[2][6];
+    source.split_pose=&seam; source.split_pose_size=sizeof seam;
+    source.vertex_bytes=original_vertices; source.vertex_count=2; source.vertex_stride=24;
+    CHECK(recomp_d3d_split_draw(&source,.5f,seam_bones,replay_vertices,&output));
+    CHECK(output.vertex_bytes==replay_vertices && replay_vertices[0][0]==5 && replay_vertices[0][4]==1);
+    CHECK(memcmp(replay_vertices[1],original_vertices[1],24)==0 && original_vertices[0][0]==0);
+    seam.split.reference[0][0]=seam.split.reference[2][1]=seam.split.reference[4][2]=1;
+    seam.inputs[0].mode=1; seam.inputs[0].coefficients[0]=1;
+    CHECK(recomp_d3d_split_draw(&source,.5f,seam_bones,replay_vertices,&output));
+    CHECK(replay_vertices[0][0]==1 && replay_vertices[0][4]==1);
     RecompVisualPose input={0}, unchanged;
     input.targets[0].terrain_disabled=1;
     const unsigned slots[4][4]={{3,5,4,6},{7,8,9,255},{12,11,10,13},{18,14,22,255}};
@@ -98,5 +134,14 @@ int main(void)
     CHECK(recomp_animation_visual_sample(&unchanged,.37f,bones)); old_z=bones[3].m[14];
     CHECK(recomp_animation_visual_sample(&input,.37f,bones));
     CHECK(fabsf(bones[3].m[14]-old_z+.096f)<1e-6f);
+    input.channels[0].channels[12]=input.channels[1].channels[12]=1.5f;
+    input.channels[0].channels[14]=input.channels[1].channels[14]=0;
+    input.net_displacement[0]=input.net_displacement[1]=0;
+    input.targets[0].position[2]=input.targets[1].position[2]=FLT_MAX*.75f;
+    CHECK(recomp_animation_visual_sample(&input,.5f,bones));
+    RecompBoneMatrix saved_bones[32]; memcpy(saved_bones,bones,sizeof bones);
+    input.net_displacement[0]=input.net_displacement[1]=FLT_MAX;
+    CHECK(!recomp_animation_visual_sample(&input,.5f,bones));
+    CHECK(memcmp(saved_bones,bones,sizeof bones)==0);
     puts("Split arbitrary rate/fraction, camera, ball, immutable pose and validation tests passed");return 0;
 }

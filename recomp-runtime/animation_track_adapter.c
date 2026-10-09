@@ -34,16 +34,24 @@ static void build_curve(unsigned form)
     uint32_t duration = *recomp_memory_u32(cursor + 12u);
     RecompAnimationCurve curve;
 
+#ifdef RECOMP_FULL_PROGRAM
+    static const RecompFunction original[] = {
+        sub_000AEA60, sub_000AEB50, sub_000AEBC0, sub_000AEC50
+    };
+#endif
     if (!recomp_animation_curve(form, recomp_memory(record, required[form]),
             required[form], duration, &curve)) {
+#ifdef RECOMP_FULL_PROGRAM
+        if (mode() == 1) {
+            original[form]();
+            return;
+        }
+#endif
         recomp_stop(1, "animation:invalid-segment");
         return;
     }
 #ifdef RECOMP_FULL_PROGRAM
     if (mode() == 2) {
-        static const RecompFunction original[] = {
-            sub_000AEA60, sub_000AEB50, sub_000AEBC0, sub_000AEC50
-        };
         static uint32_t previous_frame = UINT32_MAX;
         static uint32_t compared[4];
         uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
@@ -82,7 +90,8 @@ static void constant(void) { build_curve(3u); }
 RecompFunction recomp_animation_track_lookup_manual(uint32_t guest_address)
 {
     /* Game-owned coefficient builders called indirectly by the track walker.
-       Direct generated calls to the walker/sampler bypass manual lookup. */
+       Model rejection in mode 1 calls the generated builder; verify mode uses
+       it as an oracle. Direct walker/sampler calls bypass manual lookup. */
     switch (guest_address) {
     case 0x000aea60u: return mode() ? hermite : NULL;
     case 0x000aeb50u: return mode() ? linear : NULL;

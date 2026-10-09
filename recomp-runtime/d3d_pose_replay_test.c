@@ -1,5 +1,6 @@
 #include "d3d_pose_replay.h"
 
+#include <float.h>
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -51,6 +52,17 @@ int main(void)
         CHECK(result.vertex_bytes == sampled_vertices[phase]);
     }
     RecompD3dPresenterDrawCommand saved = result;
+    CHECK(!recomp_d3d_pose_replay_draw(&source, RECOMP_POSE_REPLAY_SAMPLES, &result));
+    CHECK(memcmp(&result, &saved, sizeof result) == 0);
+    source.has_transform = false;
+    CHECK(!recomp_d3d_pose_replay_draw(&source, 1, &result));
+    CHECK(memcmp(&result, &saved, sizeof result) == 0);
+    source.has_transform = true;
+    /* Only a secondary palette overflows; the primary transform stays finite. */
+    pose.palettes[1][1][0] = FLT_MAX;
+    CHECK(!recomp_d3d_pose_replay_draw(&source, 1, &result));
+    CHECK(memcmp(&result, &saved, sizeof result) == 0);
+    pose.palettes[1][1][0] = 1;
     source.program_count = 1;
     CHECK(!recomp_d3d_pose_replay_draw(&source, 1, &result));
     CHECK(memcmp(&result, &saved, sizeof result) == 0);

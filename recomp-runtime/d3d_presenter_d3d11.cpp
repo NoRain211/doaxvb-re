@@ -654,8 +654,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->device);
 }
 
+void flushFrameDumps(RecompD3dPresenter *presenter);
+
 void releasePresenter(RecompD3dPresenter *presenter)
 {
+    flushFrameDumps(presenter);
     releaseGraphics(presenter);
     if (presenter->window != nullptr && IsWindow(presenter->window)) {
         DestroyWindow(presenter->window);
@@ -2680,7 +2683,13 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
             std::fwrite(header, 1, sizeof header, file);
 
             /* Write a whole row: per-pixel stdio locking stalls capture replay. */
-            std::vector<unsigned char> bmp_row(padded, 0);
+            std::vector<unsigned char> bmp_row;
+            try { bmp_row.resize(padded, 0); }
+            catch (const std::bad_alloc &) {
+                std::fclose(file);
+                presenter->context->Unmap(staging, 0u);
+                return;
+            }
             for (unsigned y = 0u; y < height; ++y) {
                 const unsigned char *row =
                     static_cast<const unsigned char *>(mapped.pData) +
@@ -2700,6 +2709,18 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
         }
         presenter->context->Unmap(staging, 0u);
     }
+}
+
+void flushFrameDumps(RecompD3dPresenter *presenter)
+{
+    for (const auto &dump : presenter->deferred_dumps)
+        writeFrameDump(presenter, dump.texture.get(), dump.path.c_str(), dump.present, dump.captured_ms);
+    presenter->deferred_dumps.clear();
+}
+
+bool frameDumpFits(const D3D11_TEXTURE2D_DESC &desc, unsigned count)
+{
+    return count <= 300 && uint64_t(desc.Width)*desc.Height*4*count <= 12ull*1024*1024*1024;
 }
 
 /* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
@@ -2730,9 +2751,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     if (presenter->frame_dump_count - presenter->frame_dump_burst_base >=
             (count == 0u ? 1u : count)) {
         // Flush on the following frame so every captured frame was presented first.
-        for (const auto &dump : presenter->deferred_dumps)
-            writeFrameDump(presenter, dump.texture.get(), dump.path.c_str(), dump.present, dump.captured_ms);
-        presenter->deferred_dumps.clear();
+        flushFrameDumps(presenter);
         if (trigger != nullptr) {
             DeleteFileA(trigger);
             presenter->frame_dump_burst_base = presenter->frame_dump_count;
@@ -2763,6 +2782,10 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
             desc.BindFlags = 0u;
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             desc.MiscFlags = 0u;
+            if (!frameDumpFits(desc, requested)) {
+                std::fprintf(stderr, "recomp frame dump: deferred capture exceeds memory bound\n");
+                return;
+            }
             for (unsigned i = 0u; i < requested; ++i) {
                 ID3D11Texture2D *staging = nullptr;
                 if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) break;
@@ -2832,7 +2855,7 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
     if (defer && std::strcmp(defer, "1") == 0) {
         // Bound this diagnostic to 300 4K frames (about 10 GiB of readback memory).
-        if (count > 300 || uint64_t(desc.Width)*desc.Height*4*count > 12ull*1024*1024*1024) {
+        if (!frameDumpFits(desc, count)) {
             std::fprintf(stderr, "recomp frame dump: deferred capture exceeds memory bound\n");
             return;
         }

@@ -15,6 +15,10 @@
     } \
 } while (0)
 
+struct D3dCapturePacketTest {
+    static void wrap(D3dCapturePacket &packet) { packet.span_generation_ = UINT32_MAX; }
+};
+
 int main()
 {
     using Draw = RecompD3dPresenterDrawCommand;
@@ -230,6 +234,17 @@ int main()
     CHECK(static_cast<const uint8_t *>(frozen.texture_bytes)[0] != 0x55);
     packet.clear();
     CHECK(!packet.hasPoseReplay());
+    D3dCapturePacketTest::wrap(packet);
+    packet.clear();
+    value = {};
+    value.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    value.data.draw.vertex_count=1; value.data.draw.vertex_stride=12;
+    value.data.draw.vertex_bytes=sources[0].data();
+    CHECK(packet.add(value)==RECOMP_D3D_PRESENTER_OK);
+    CHECK(packet.add(value)==RECOMP_D3D_PRESENTER_OK);
+    packet.seal();
+    CHECK(packet.command(0).data.draw.vertex_bytes==packet.command(1).data.draw.vertex_bytes);
+    CHECK(std::memcmp(packet.command(0).data.draw.vertex_bytes,sources[0].data(),12)==0);
     std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and replay snapshots");
     return 0;
 }

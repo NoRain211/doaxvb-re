@@ -217,6 +217,8 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
    not force guest state. Intended for the full-program runner; the default
    (vsync) remains for windowed tests. */
 void recomp_d3d_presenter_set_immediate_present(bool enabled);
+/* Resolved split state after presenter creation; false before initialization. */
+bool recomp_d3d_presenter_split_enabled(void);
 
 /* Observation only: reports which guest texture formats draws actually
    sampled, and which ones a draw asked for but the presenter could not

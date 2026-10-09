@@ -2,8 +2,9 @@
 #define DOAXBV_ANIMATION_SKELETON_H
 
 #include "animation_palette.h"
+#include "animation_pose.h"
 
-enum { RECOMP_POSE_CHANNELS = 60, RECOMP_RIG_OFFSETS = 24, RECOMP_POSE_BONES = 32 };
+enum { RECOMP_RIG_OFFSETS = 24, RECOMP_POSE_BONES = 32 };
 
 /* Indices refer to the decoded channel array, not the three-word clip header.
    This is the 24-byte limb description, with the executable's fields named. */

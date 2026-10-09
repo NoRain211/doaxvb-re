@@ -1916,6 +1916,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     if (pose_probe < 0)
         pose_probe = getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
             getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL;
+    if (split_enabled && command.data.draw.program_count != 0)
+        recomp_split_fallback("split:vertex-program-unimplemented");
     if (command.data.draw.program_count == 0 && (split_enabled || pose_probe)) {
         float worlds[4][16];
         unsigned count = command.data.draw.blend_weight_count+1;
