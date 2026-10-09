@@ -102,6 +102,19 @@ typedef enum RecompD3dStencilOp {
     RECOMP_D3D_STENCIL_DECRWRAP,
 } RecompD3dStencilOp;
 
+/* Xbox has FOGTABLEMODE, but no separate PC FOGVERTEXMODE state.
+   NONE consumes the supplied vertex factor; EXP/EXP2/LINEAR consume depth. */
+typedef struct RecompD3dFogState {
+    bool enabled;
+    bool range;
+    uint32_t mode; /* D3DFOGMODE: NONE=0, EXP=1, EXP2=2, LINEAR=3. */
+    uint32_t color;
+    float start, end, density;
+} RecompD3dFogState;
+
+void recomp_d3d_fog_state(const uint32_t words[6], uint32_t color,
+    RecompD3dFogState *state);
+
 typedef struct RecompD3dDepthState {
     bool depth_test_enable;
     bool depth_write_enable;

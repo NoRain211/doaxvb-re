@@ -1364,6 +1364,89 @@ static int testTextureCache(RecompD3dPresenter *presenter, uint32_t &detail)
     return 0;
 }
 
+static bool testFog(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t specular; };
+    Vertex vertices[] = {{0,0,0.25f,0.5f,0x80000000u}, {4,0,0.25f,0.5f,0x80000000u},
+        {0,4,0.25f,0.5f,0x80000000u}, {4,4,0.25f,0.5f,0x80000000u}};
+    const uint16_t indices[] = {0,1,2,3};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x084u; // XYZRHW | SPECULAR
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4;
+    draw.triangle_count = 2;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    draw.blend.color_write_mask = 15;
+    draw.use_texture_factor = true;
+    draw.texture_factor = 0x80ffffffu;
+    draw.fog.enabled = true;
+    draw.fog.color = 0x000000ffu; // Fog alpha must not replace source alpha.
+    draw.fog.end = 4;
+    const RecompD3dPresenterClearCommand clear = {true, false, false, 0x00ff0000u, 1, 0};
+    const struct { uint32_t mode; float density; const char *label; } cases[] = {
+        {0,0,"RHW vertex fog uses specular alpha"},
+        {1,0.25541281f,"EXP uses reciprocal RHW"},
+        {2,0.35736033f,"EXP2 uses reciprocal RHW"},
+        {3,0,"linear uses reciprocal RHW, not screen Z"},
+    };
+    for (const auto &test : cases) {
+        draw.fog.mode = test.mode;
+        draw.fog.density = test.density;
+        // Keep exponential results away from a half-byte quantization boundary.
+        const uint32_t pixel = test.mode == 1 || test.mode == 2 ? 0x809999ffu : 0x808080ffu;
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter, color, readback, test.label, expected)) return false;
+    }
+    draw.fog.enabled = false;
+    const uint32_t unfogged[] = {0x80ffffffu,0x80ffffffu,0x80ffffffu,0x80ffffffu};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "disabled fog preserves RGB and alpha", unfogged)) return false;
+    draw.fog.enabled = true;
+    draw.fog.mode = 3;
+    draw.fog.density = 0;
+    draw.fog.end = 2;
+    draw.blend.blend_enable = true;
+    draw.blend.src_factor = draw.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+    const uint32_t additive[] = {0x80ff00ffu,0x80ff00ffu,0x80ff00ffu,0x80ff00ffu};
+    if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "additive draw fogs to fog color before blending", additive)) return false;
+    draw.blend.blend_enable = false;
+    draw.fog_z = true;
+    draw.fog.end = 0.5f;
+    const uint32_t zfog[] = {0x808080ffu,0x808080ffu,0x808080ffu,0x808080ffu};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "affine fog uses screen Z", zfog)) return false;
+    for (unsigned i = 0; i < 4; ++i) {
+        vertices[i].x -= 0.5f; vertices[i].y -= 0.5f;
+        vertices[i].z = i & 1 ? 0.5f : 0;
+        vertices[i].rhw = i & 1 ? 0.25f : 1;
+    }
+    const uint32_t varying_z[] = {0x80dfdfffu,0x809f9fffu,0x806060ffu,0x802020ffu};
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "Z fog is affine with varying RHW", varying_z)) return false;
+    draw.fog.range = true; // XYZRHW still has only device Z/W, not an eye position.
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "pretransformed range request retains Z fog", varying_z)) return false;
+    const float xyz[][3] = {{-1,1,0},{1,1,0},{-1,-1,0},{1,-1,0}};
+    draw.fvf = 0x002u;
+    draw.vertex_stride = sizeof xyz[0];
+    draw.vertex_bytes = xyz;
+    draw.fog_z = false;
+    draw.fog.end = 2 * std::sqrt(6.0f);
+    for (unsigned i = 0; i < 4; ++i) draw.fog_world_view[0][i*5] = 1;
+    draw.fog_world_view[0][14] = 2;
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+        checkPixels(presenter, color, readback, "range fog uses translated eye distance", zfog);
+}
+
 static bool testVertexBlending(
     RecompD3dPresenter *presenter, ID3D11Texture2D *color, ID3D11Texture2D *readback)
 {
@@ -1764,6 +1847,26 @@ static bool testVertexProgram(RecompD3dPresenter *presenter,
             submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK ||
             !checkPixels(presenter,color,readback,"program output and changed constants",expected)) return false;
     }
+    draw.fog.enabled = true;
+    draw.fog.color = 0x00ff0000u;
+    draw.fog.start = 0; draw.fog.end = 1; draw.fog.density = 1;
+    const uint32_t no_program_fog[] = {0xff00ff00u,0xff00ff00u,0xff00ff00u,0xff00ff00u};
+    for (unsigned mode = 0; mode <= 3; ++mode) {
+        draw.fog.mode = mode;
+        if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter, color, readback, "vertex programs without oFog remain unchanged", no_program_fog)) return false;
+    }
+    auto writes_fog = draw;
+    writes_fog.program[2][3] &= ~1u;
+    std::memcpy(writes_fog.program[3], writes_fog.program[1], sizeof writes_fog.program[3]);
+    writes_fog.program[3][3] = (8u<<12) | (1u<<11) | (5u<<3) | 1u;
+    writes_fog.program_count = 4;
+    for (unsigned mode = 0; mode <= 3; ++mode) {
+        writes_fog.fog.mode = mode;
+        if (submitDraw(presenter, writes_fog) != RECOMP_D3D_PRESENTER_OK ||
+            !checkPixels(presenter, color, readback, "vertex programs writing oFog remain unchanged", no_program_fog)) return false;
+    }
+    draw.fog.enabled = false;
     // A doubled sample grid must cover the same host pixels after inversion.
     for (auto &vertex : vertices) { vertex[0] = vertex[0]*2+4; vertex[1] = vertex[1]*2+4; }
     draw.program_constants[58][0] *= 2; draw.program_constants[58][1] *= 2;
@@ -2345,6 +2448,8 @@ static bool testPacingPolicies()
 
 int main()
 {
+    _putenv_s("RECOMP_D3D_FOG", "");
+    _putenv_s("RECOMP_D3D_FOG_FACTOR", "");
     if (!testReplacementFormats()) return 1;
     if (!testPacingPolicies()) {
         std::fprintf(stderr, "FAIL refresh intervals, statistics epochs, timer handles or frame latency\n");
@@ -2411,6 +2516,7 @@ int main()
     if (status == 0 && !testAlphaRendering(&presenter, color, readback)) {
         status = 60;
     }
+    if (status == 0 && !testFog(&presenter, color, readback)) status = 82;
     if (status == 0 && !testVertexBlending(&presenter, color, readback)) status = 80;
     if (status == 0 && !testLinearTextureUpdates(&presenter, readback)) status = 88;
     if (status == 0 && !testDrawPipelineEviction(&presenter)) status = 89;
