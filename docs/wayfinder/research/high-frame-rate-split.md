@@ -2,9 +2,9 @@
 
 Design: 2026-10-03. M4 checkpoint: 2026-10-05. Release candidate: 2026-10-06.
 Opt-in split-rate presentation is implemented. It has passed the bounded
-replay, pose, pacing and smoke gates below and awaits a user play test. The
-sections after "Current state" are a dated log; statements in them describe
-the code at their checkpoint.
+replay, pose and smoke gates below and awaits a user play test. The S2
+present-hitch gate remains unmet. Sections after "Current state" are a dated
+log; statements in them describe the code at their checkpoint.
 
 ## Current state
 
@@ -21,7 +21,7 @@ Settings:
 | `RECOMP_SPLIT_RATE` | Unset, `0` or invalid: off, and presentation is the ordinary 60 Hz path. `auto`: the primary display's refresh rate. A number from 60 to 1000: that present rate. |
 | `RECOMP_SPLIT_STRICT=1` | Stop on any unexpected split-rate state instead of falling back. For agent gates. |
 | `RECOMP_SPLIT_TRACE=1` | Log per-tick camera and actor steps and cut decisions. |
-| `RECOMP_SPLIT_TRACE=present` | Buffer one record per present and write them at exit, or after `RECOMP_SPLIT_TRACE_LIMIT` presents. Without a limit the buffer grows for the whole run. |
+| `RECOMP_SPLIT_TRACE=present` | Buffer one record per present and write them at exit or after `RECOMP_SPLIT_TRACE_LIMIT` presents, then stop tracing. The default limit is 1200; zero or invalid values use the default. |
 | `RECOMP_SPLIT_FAILURE=path` | Write the inputs of a palette mismatch to `path`. |
 
 The rate must equal the display's refresh rate. At startup the presenter
@@ -56,8 +56,6 @@ Known limitations:
   reflection pass, is paired only for its last build.
 - Cuts and teleports are detected from the ratio of successive steps. A cut
   between two very similar shots is not detected; it also looks the same.
-- A resource release in a tick is applied on each of its presents, so its
-  textures are uploaded again on each.
 - Interpolation adds one 60 Hz tick of display latency plus the extra swap
   chain buffer. The total has not been measured.
 - Only the primary display's refresh rate is read.
@@ -410,6 +408,10 @@ not the full sampling/blending cluster or the one-character rendering experiment
 value, tangent and curvature decoding, all four segment forms (Hermite, linear,
 quadratic and constant), and a bounded immutable integer scalar sampler. Float
 stores and double intermediates retain the generated runtime's rounding order.
+In `RECOMP_ANIMATION_TRACKS=1`, rejected coefficient inputs fall back to the
+generated game-owned builder at the manual dispatch seam. `verify` still stops
+on rejection; wholesale replacement of the track walker remains open.
+
 Absent tracks have an explicit default. Backward samples start a fresh scan;
 clip looping remains the caller's responsibility. This API does not substitute
 scalar interpolation for the channel-aware fractional pose blend.

@@ -22,8 +22,11 @@ checkpoint was ported because it touches only split-rate files.
 | H2 | Every frame-adapter presenter call, including the kernel's memory release, takes the Swap close path. |
 | M1 | `RECOMP_SPLIT_RATE=auto` uses the primary display refresh. A rate within 1% snaps to it; with `--vsync` a higher rate is lowered to it, and a lower rate warns. Variable refresh remains untested. |
 | Docs | The design notes have a current-state section with settings and known limitations, and the errors listed below are corrected. |
+| M5 | Release records execute only on the first present of each captured tick. |
+| L3 | Only `RECOMP_SPLIT_TRACE=present` buffers records, with a default limit of 1200. |
 
-M2 to M6 and L1 to L5 remain open.
+M2 to M4, M6, L1, L2, L4 and L5 remain open. The findings below describe the
+original review snapshot; the table above records the current resolutions.
 
 ## Summary
 
@@ -33,9 +36,7 @@ Draws that cannot be paired are snapped, and the worker owns every input it
 replays. No data race was found between the game thread and the render
 worker. With `RECOMP_SPLIT_RATE` unset, every split path is skipped.
 
-Three issues block shipping split rate as an opt-in feature: a visual-only mode
-can still stop the game on unseen content, closing the window can exit with an
-error, and the branch carries unrelated whole-game work. Pacing has a
+The original H1 to H3 blockers are addressed as recorded above. Pacing has a
 display-rate gap that needs at least documentation and one display-side
 measurement. Vertex-program draws are the largest coverage gap and the likely
 cause of the 60 Hz water steps.
@@ -248,7 +249,7 @@ Compared with those, this track is missing:
 
 | Technique | Status here | Suggested approach |
 | --- | --- | --- |
-| Default to the display refresh | Manual numeric rate | Read the output mode and use it when the setting is absent or set to "auto" (M1). |
+| Match the display refresh | `auto` reads the primary display refresh; unset stays off | Read the window's actual output for multi-monitor use (M1). |
 | Display-synchronized sample time and a VRR path | CPU timer with sync interval 1 | Frame statistics or a waitable swap chain; tearing flag and interval 0 on VRR (M1). |
 | Vertex-program draws | Not tagged | Substitute camera constants (M2). |
 | Texture scrolling and animated UVs (water, scrolling UI) | Steps at 60 Hz | Pair texture transforms between matched draws, as Zelda64Recomp does for texture scrolling. |
@@ -268,44 +269,33 @@ has constantly. Interpolation is the right choice.
 [high-frame-rate-split.md](high-frame-rate-split.md) has a
 `public-export.json` entry and is stored with LF endings. It names no
 private paths, assets or filenames. Raw captures are described only as kept
-under `private/`. Problems to fix before release:
+under `private/`. The current-state section now documents the settings,
+display-rate requirement, incompatible whole-game pacing and known limits.
+The historical checkpoint wording about implementation status, sample time,
+snapped ticks and water coverage is corrected; the S3 comparison method is
+described without relying on a private script. The design summary now states
+that the S2 present-hitch gate remains unmet.
 
-- The page is a chronological log. Its earlier sections still say
-  `RECOMP_SPLIT_RATE` "is not implemented" (lines 396, 566, 633, 752). Add a
-  short current-state section at the top covering the settings
-  (`RECOMP_SPLIT_RATE`, `RECOMP_SPLIT_TRACE=1|present`,
-  `RECOMP_SPLIT_TRACE_LIMIT`, `RECOMP_SPLIT_FAILURE`), the requirement that
-  the rate match the display, incompatibility with `RECOMP_GAME_HZ`, and the
-  known limitations (M2 to M4, H1 guards, water and shop preview).
-- M3 says the worker "samples the actual elapsed fraction". Since `b57b791`
-  it samples the scheduled deadline.
-- S1 says a snapped tick "holds the previous visual state". It actually shows
-  the current tick for the whole interval, which is what 60 Hz shows.
-- S3's water explanation depends on M2.
-- S3 cites `s3check.py`, which is not in the public tree. Publish it under
-  `tools/` or describe its method well enough to reproduce.
-- S2 names a specific desktop program seen during stalls. That is machine
-  run evidence; "other desktop programs" is enough.
-- `docs/building.md`, `docs/public-status.md` and `CHANGELOG.md` do not
-  mention split rate yet.
+`docs/building.md` documents `RECOMP_SPLIT_RATE`. `docs/public-status.md` and
+`CHANGELOG.md` still need the release's split-rate entry when it ships.
 
 ## Release readiness
 
-Must fix before shipping split rate as opt-in:
+Release checks before shipping split rate as opt-in:
 
-1. Replace the H1 stops with per-draw or per-tick fallback, keeping a strict
-   mode for gates.
-2. Fix the H2 close path.
-3. Port the split commits alone onto `origin/main` (H3) and pass `public-ci`.
+1. H1 is addressed: ordinary split guards fall back, and strict mode retains
+   stops for gates. Check this behavior in the named build.
+2. H2 is addressed: frame-adapter presenter errors share the normal close
+   path. Check closing the named build.
+3. H3 is addressed by the port onto `origin/main`; pass `public-ci`.
 4. Document that the rate must equal the display refresh and that VRR is
    untested. Record one PresentMon display-side run at 120 and 144 (M1).
 5. Get the user's play test of the named build, with split off as well as on.
    Cover pool hopping, a shop, a match, the hotel and the island map.
-6. Add the current-state section and fix the documentation errors above.
-   Add the user-facing setting to `docs/building.md` or the controls page.
+6. The current-state section and `docs/building.md` setting are present.
+   Add the release entries to `docs/public-status.md` and `CHANGELOG.md`.
 
 Nice to have, in rough value order: vertex-program camera interpolation (M2),
-releases on the first present only (M5), latency reduction and measurement
-(M6), automatic refresh detection with a VRR path (M1), texture-transform
+latency reduction and measurement (M6), a VRR path (M1), texture-transform
 interpolation for water and scrolling, stable pairing for the shop preview
-and props, an explicit cut signal, and the L1 to L3 guards.
+and props, an explicit cut signal, and the L1 and L2 guards.
