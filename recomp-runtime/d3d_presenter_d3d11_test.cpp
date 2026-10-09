@@ -2023,7 +2023,7 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
 static bool testReplacementFormats()
 {
     namespace fs = std::filesystem;
-    const fs::path root = (fs::current_path() / "private") /
+    const fs::path root = fs::temp_directory_path() /
         ("recomp-texture-formats-" + std::to_string(GetCurrentProcessId()));
     _putenv_s("RECOMP_TEXTURE_DUMP", "1");
     _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());

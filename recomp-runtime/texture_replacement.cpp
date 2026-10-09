@@ -260,16 +260,6 @@ uint32_t frameNumber(const char *value)
     const auto parsed = std::from_chars(value, end, number);
     return parsed.ec == std::errc{} && parsed.ptr == end ? number : 0u;
 }
-
-fs::path privatePath(const fs::path &path)
-{
-    const auto root = fs::weakly_canonical(fs::current_path() / "private");
-    const auto candidate = fs::weakly_canonical(fs::absolute(path));
-    const auto match = std::mismatch(root.begin(), root.end(), candidate.begin(), candidate.end(),
-        [](const fs::path &a, const fs::path &b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; });
-    if (match.first != root.end()) throw std::runtime_error("texture paths must be under private");
-    return candidate;
-}
 } // namespace
 
 bool TextureIdentity::matches(const RecompD3dPresenterDrawCommand &draw) const
@@ -313,13 +303,6 @@ TextureReplacements::TextureReplacements()
         if (!dump_at_) std::fprintf(stderr, "recomp textures: ignoring invalid RECOMP_TEXTURE_FRAME_AT '%s'\n", at);
         else std::fprintf(stderr, "recomp textures: frame dump at %u\n", dump_at_);
     }
-    if (enabled_) {
-        try { root_ = privatePath(root_); directory_ = privatePath(directory_); }
-        catch (const std::exception &e) {
-            std::fprintf(stderr, "recomp textures: disabled (%s)\n", e.what());
-            enabled_ = dump_ = false;
-        }
-    }
 }
 
 ID3D11ShaderResourceView *TextureReplacements::lookup(const std::string &key,
@@ -350,7 +333,7 @@ void TextureReplacements::scan()
         if (error) break;
         // PNG is the editable master when both names are present.
         if (extension == ".png" || files.find(key) == files.end())
-            files[key] = {privatePath(entry.path()), time, size};
+            files[key] = {entry.path(), time, size};
     }
     if (error && error != std::errc::no_such_file_or_directory)
         throw std::runtime_error("replacement directory scan");

@@ -7,7 +7,7 @@
 
 int main()
 {
-    const fs::path root = (fs::current_path() / "private") /
+    const fs::path root = fs::temp_directory_path() /
         ("recomp-textures-test-" + std::to_string(GetCurrentProcessId()));
     struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); } } cleanup{root};
     fs::create_directories(root / "replace");
@@ -17,12 +17,6 @@ int main()
     try {
         for (const char *invalid : {"", "no", "1x", "-1", "0", "4294967296"}) REQUIRE(frameNumber(invalid) == 0);
         REQUIRE(frameNumber("123") == 123 && frameNumber("4294967295") == UINT32_MAX);
-        bool rejected_path = false;
-        try { privatePath(fs::current_path() / "outside"); } catch (const std::exception &) { rejected_path = true; }
-        REQUIRE(rejected_path && privatePath(root) == fs::weakly_canonical(root));
-        rejected_path = false;
-        try { privatePath(fs::current_path() / "private" / ".." / "escape"); } catch (const std::exception &) { rejected_path = true; }
-        REQUIRE(rejected_path);
         bool diagnosed = false;
         try { check(E_INVALIDARG); } catch (const std::exception &error) {
             diagnosed = std::strstr(error.what(), "hr=0x80070057") != nullptr;

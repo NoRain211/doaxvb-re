@@ -1,12 +1,10 @@
 # Texture replacement (D3D11)
 
 Start the runner with `RECOMP_TEXTURES=1` to use `private/textures/replace`,
-or set `RECOMP_TEXTURES` to a directory under the working directory's
-`private/` tree. Absolute and relative paths must stay inside that tree.
-Set `RECOMP_TEXTURE_DUMP=1` to also write
+or set `RECOMP_TEXTURES` to an absolute directory. Relative paths start at
+the runner's working directory. Set `RECOMP_TEXTURE_DUMP=1` to also write
 each distinct original texture to `private/textures/dump/<key>.png`.
-`RECOMP_TEXTURE_DUMP_DIR` can choose another folder inside the same `private/` tree.
-Paths that resolve outside it disable this feature with a diagnostic.
+`RECOMP_TEXTURE_DUMP_DIR` can set an absolute path for the `textures` folder.
 
 1. With either option enabled, press **F12** in the game. Originals used by
    the current frame go to `private/textures/frame-<present>/`.
