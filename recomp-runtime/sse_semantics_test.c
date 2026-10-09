@@ -190,6 +190,7 @@ int recomp_sse_semantics_test(void)
                     (uint32_t)expected[mode][pair + 1u]);
             }
         }
+        _mm_setcsr(masked_csr | _MM_ROUND_NEAREST);
 #endif
         /* Nearest-even rounding validation for fractional inputs on all platforms */
         {
