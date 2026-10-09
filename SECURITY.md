@@ -43,3 +43,16 @@ disclosure. No response or remediation timeframe is promised.
   manifests.
 - Do not weaken these boundaries to make a malformed or unauthenticated input
   appear to work.
+
+## Known issues
+
+- The lifter's standalone section extractor,
+  `tools/xboxrecomp/tools/xbe_parser/xbe_parser.py --extract-sections`, builds
+  each output file name from the section name stored in the XBE. It replaces
+  only `$` and `.`, so an absolute name such as `C:\x` writes `C:\x.bin`
+  outside the chosen directory. Run it only on XBE files you trust. The
+  supported build does not call it: `BuildGame` accepts only the verified XBE
+  hash and does not extract sections. The fix belongs on the
+  `codex/doaxbv-recipe` branch of `NoRain211/xboxrecomp`: name files by
+  section index or address and check that each resolved path stays inside the
+  output directory. Move the pin with `tools/update_lifter_pin.py`.
