@@ -1984,8 +1984,11 @@ ID3D11ShaderResourceView *lookupTexture(
 
     if (draw.texture_is_backbuffer) {
         ID3D11ShaderResourceView *view = lookupBackBufferTexture(presenter, desc);
-        /* Only a draw into a smaller offscreen target minifies; 1:1 reads skip it. */
-        if (view != nullptr && presenter->scale != 1.0f && draw.target.offscreen) {
+        /* Full-buffer reads minify only into a smaller host target. Guest
+           backbuffer dimensions can include supersampling that the host resolves. */
+        if (view != nullptr && presenter->scale != 1.0f && draw.target.offscreen &&
+            (draw.target.color.width < mainWidth(presenter) ||
+             draw.target.color.height < mainHeight(presenter))) {
             presenter->context->GenerateMips(view);
         }
         return view;
