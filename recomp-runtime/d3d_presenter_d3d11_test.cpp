@@ -1,4 +1,7 @@
 #include "d3d_presenter_d3d11.cpp"
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
 
 static int finish(RecompD3dPresenter *presenter, int status, uint32_t detail)
 {
@@ -2158,6 +2161,13 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
 
 int main()
 {
+#ifdef _MSC_VER
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    for (int report : {_CRT_ERROR, _CRT_ASSERT}) {
+        _CrtSetReportMode(report, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(report, _CRTDBG_FILE_STDERR);
+    }
+#endif
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;

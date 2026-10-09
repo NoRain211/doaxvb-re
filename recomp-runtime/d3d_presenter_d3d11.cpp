@@ -2669,9 +2669,9 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
     const unsigned padded = (row_bytes + 3u) & ~3u;
     const unsigned image_bytes = padded * height;
     /* Allocate before mapping or opening the file, so failure leaves no partial BMP. */
-    std::vector<unsigned char> bmp_row;
-    try { bmp_row.resize(padded, 0); }
-    catch (const std::bad_alloc &) {
+    // A Debug vector also allocates an iterator proxy in its noexcept constructor.
+    std::unique_ptr<unsigned char[]> bmp_row(new (std::nothrow) unsigned char[padded]{});
+    if (!bmp_row) {
         std::fprintf(stderr, "recomp frame dump: row allocation failed path=%s\n", path);
         return;
     }
@@ -2705,9 +2705,9 @@ void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
                     static_cast<size_t>(height - 1u - y) * mapped.RowPitch;
                 for (unsigned x = 0u; x < width; ++x) {
                     /* Back buffer is B8G8R8A8, which already matches BMP order. */
-                    std::memcpy(bmp_row.data()+x*3u, row+x*4u, 3u);
+                    std::memcpy(bmp_row.get()+x*3u, row+x*4u, 3u);
                 }
-                std::fwrite(bmp_row.data(), 1, padded, file);
+                std::fwrite(bmp_row.get(), 1, padded, file);
             }
             std::fclose(file);
             std::fprintf(
