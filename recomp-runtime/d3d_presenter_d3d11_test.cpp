@@ -2083,7 +2083,7 @@ static bool testTextureAntialiasing()
                 draw.depth.alpha_func = mode == 4 ? RECOMP_D3D_COMPARE_GREATER_EQUAL : RECOMP_D3D_COMPARE_GREATER;
                 draw.depth.alpha_ref = mode == 3 ? 0u : 85u;
                 if (submitClear(&presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
-                    submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(true)) return false;
+                    submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(false)) return false;
                 if (samples > 1u) {
                     presenter.context->ResolveSubresource(resolved, 0u, color, 0u, desc.Format);
                 } else {
@@ -2111,6 +2111,58 @@ static bool testTextureAntialiasing()
                 presenter.context->Unmap(readback, 0u);
                 if (!passed) return false;
             }
+            /* Constant alpha must match the rounded byte test, including endpoints. */
+            draw.has_texture = false;
+            draw.use_texture_factor = true;
+            draw.blend.blend_enable = false;
+            draw.depth.alpha_test_enable = true;
+            for (auto func : {RECOMP_D3D_COMPARE_GREATER, RECOMP_D3D_COMPARE_GREATER_EQUAL,
+                              RECOMP_D3D_COMPARE_ALWAYS}) {
+                draw.depth.alpha_func = func;
+                for (unsigned ref : {0u, 128u, 255u}) {
+                    draw.depth.alpha_ref = ref;
+                    for (unsigned alpha : {0u, 128u, 255u}) {
+                        draw.texture_factor = (alpha << 24u) | 0x00ff0000u;
+                        if (submitClear(&presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+                            submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK) return false;
+                        if (samples > 1u) presenter.context->ResolveSubresource(resolved, 0u, color, 0u, desc.Format);
+                        else presenter.context->CopyResource(resolved, color);
+                        const bool pass = func == RECOMP_D3D_COMPARE_ALWAYS ||
+                            (func == RECOMP_D3D_COMPARE_GREATER ? alpha > ref : alpha >= ref);
+                        const unsigned output_alpha = samples > 1u && func != RECOMP_D3D_COMPARE_ALWAYS
+                            ? 255u : alpha;
+                        const uint32_t pixel = pass ? (output_alpha << 24u) | 0x00ff0000u : clear.color;
+                        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+                        if (!checkPixels(&presenter, resolved, readback, "constant alpha byte comparison and preserved ALWAYS alpha", expected))
+                            return false;
+                        if (func == RECOMP_D3D_COMPARE_ALWAYS) {
+                            ID3D11BlendState *blend = nullptr;
+                            presenter.context->OMGetBlendState(&blend, nullptr, nullptr);
+                            D3D11_BLEND_DESC state{};
+                            if (blend) blend->GetDesc(&state);
+                            const bool hard = blend && !state.AlphaToCoverageEnable;
+                            releaseCom(blend);
+                            if (!hard) return false;
+                        }
+                    }
+                }
+            }
+            draw.has_texture = true;
+            draw.use_texture_factor = false;
+            draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+            draw.depth.alpha_ref = 85u;
+            /* Anisotropy is limited to textures with an actual mip chain. */
+            uint8_t mip_texels[sizeof texels * 2];
+            std::memcpy(mip_texels, texels, sizeof texels);
+            std::memcpy(mip_texels + sizeof texels, texels, sizeof texels);
+            draw.texture.mip_levels = 2;
+            draw.texture_bytes = mip_texels;
+            draw.texture_byte_count = sizeof mip_texels;
+            if (submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(true)) return false;
+            draw.texture.mip_levels = 1;
+            draw.texture_bytes = texels;
+            draw.texture_byte_count = sizeof texels;
+            if (submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(false)) return false;
             /* Unknown/point filter state and reflection retain the old sampler. */
             draw.linear_mip_filter = false;
             if (submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(false)) return false;

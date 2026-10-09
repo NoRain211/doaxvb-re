@@ -449,7 +449,8 @@ static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
         memcpy(&draw->address_v, bytes + 4u, sizeof draw->address_v);
         uint32_t filters[3];
         memcpy(filters, bytes + 12u, sizeof filters);
-        draw->linear_mip_filter = filters[0] == 2u && filters[1] == 2u && filters[2] == 2u;
+        draw->linear_mip_filter = desc->mip_levels > 1u &&
+            filters[0] == 2u && filters[1] == 2u && filters[2] == 2u;
     }
     if (!swizzled_byte_count(desc, &byte_count)) {
         /* A render target may have host-owned pixels without a CPU upload. */
