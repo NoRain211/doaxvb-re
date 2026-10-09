@@ -168,9 +168,13 @@ extern "C" void recomp_music_initialize(const char *folder_path)
     const auto started = std::chrono::steady_clock::now();
     const fs::path folder(folder_path);
     // Delay-loaded so Windows N editions without Media Foundation still run.
-    // Loaded once; delay-loaded imports keep them for the process anyway.
-    static const DWORD load_error = LoadLibraryW(L"mfplat.dll") &&
-        LoadLibraryW(L"mfreadwrite.dll") ? ERROR_SUCCESS : GetLastError();
+    // Loaded once; delay-loaded imports keep them for the process anyway. Search
+    // System32 only: the working directory is the imported disc, so a missing
+    // system DLL must not fall back to a same-named file shipped on the disc.
+    static const DWORD load_error =
+        LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+        LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            ? ERROR_SUCCESS : GetLastError();
     if (load_error != ERROR_SUCCESS) {
         report("disabled", folder.c_str(), HRESULT_FROM_WIN32(load_error));
         return;
