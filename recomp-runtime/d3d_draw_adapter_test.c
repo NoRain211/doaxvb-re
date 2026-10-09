@@ -42,6 +42,21 @@ static int combiner_adapter_test(void)
     attach_combiner(device, &draw);
     REQUIRE(draw.has_combiner && draw.combiner_is_backbuffer);
     *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET) = 0;
+    *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET + 4u) = resource;
+    draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner && draw.combiner_is_frontbuffer && !draw.combiner_is_backbuffer);
+    *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET + 4u) = 0;
+    // Host-owned target pixels: no guest upload span, still a combiner draw.
+    *recomp_memory_u32(resource + 4u) = 0x00900000u;
+    recomp_runtime.registers.esp = 0x001f6500u;
+    set_texture();
+    draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner && draw.reflection_bytes == NULL && draw.reflection_texture.data != 0u);
+    *recomp_memory_u32(resource + 4u) = resource + 0x100u;
+    recomp_runtime.registers.esp = 0x001f6500u;
+    set_texture();
     for (uint32_t i = 0; i < 16; ++i) REQUIRE(draw.reflection_transform[i] == (i % 5 == 0 ? 1.0f : 0.0f));
     stages[1][21] = 2;
     float *transform = (float *)(void *)(memory + device - region.address + 0x810u + 3u * 0x40u);

@@ -884,8 +884,8 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
         memcpy(&format, binding + 12u, sizeof format);
         if ((format & 0xf4u) != 0x20u) return;
         attach_texture(1u, &texture);
-        if (!texture.has_texture || texture.texture_bytes == NULL ||
-            texture.palette_bytes != NULL) return;
+        /* Null bytes are a host-owned render target; the presenter resolves it. */
+        if (!texture.has_texture || texture.palette_bytes != NULL) return;
         attach_backbuffer_texture(device, &texture);
     }
     if (stages[1][21] == 2u) {
@@ -902,6 +902,7 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
     draw->combiner_address_u = texture.address_u;
     draw->combiner_address_v = texture.address_v;
     draw->combiner_is_backbuffer = texture.texture_is_backbuffer;
+    draw->combiner_is_frontbuffer = texture.texture_is_frontbuffer;
     memcpy(&draw->combiner_lod_bias, &stages[1][6], sizeof draw->combiner_lod_bias);
     if (!isfinite(draw->combiner_lod_bias)) draw->combiner_lod_bias = 0.0f;
     draw->has_combiner = true;

@@ -2735,6 +2735,7 @@ RecompD3dPresenterError submitDraw(
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
         reflection.texture_is_backbuffer = draw.has_combiner && draw.combiner_is_backbuffer;
+        reflection.texture_is_frontbuffer = draw.has_combiner && draw.combiner_is_frontbuffer;
         const bool needs_mask = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[1]);
         if (draw.has_combiner && needs_mask) {
             const RenderTargetEntry *sampled = findRenderTarget(presenter, reflection.texture);

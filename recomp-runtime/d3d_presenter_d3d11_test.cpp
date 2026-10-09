@@ -2435,6 +2435,11 @@ static bool testCombiner(RecompD3dPresenter *presenter,
         releaseCom(target); releaseCom(resource);
         if (!passed) return false;
     }
+    // A front-buffer alias samples the presented frame, never stale guest bytes.
+    snapshot.combiner_is_backbuffer = false;
+    snapshot.combiner_is_frontbuffer = true;
+    if (presenter->front_buffer_sample == nullptr &&
+        submitDraw(presenter, snapshot) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
     const uint8_t alpha = 128;
     draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8;
     draw.reflection_texture.bits_per_pixel = 8;
