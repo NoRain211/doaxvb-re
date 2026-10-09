@@ -32,12 +32,15 @@ int main(void)
     source.has_transform = true;
     source.has_reflection = true;
     source.directional.enabled = true;
+    source.fog.enabled = true; source.fog.mode = 3; source.fog.range = true;
     RecompD3dPresenterDrawCommand before = source;
     for (unsigned phase = 0; phase < RECOMP_POSE_REPLAY_SAMPLES; ++phase) {
         CHECK(recomp_d3d_pose_replay_draw(&source, phase, &result));
         CHECK(result.transform[12] == phase*2 && result.transform[13] == 3);
         CHECK(result.blend_transforms[0][12] == (phase+1)*2);
         CHECK(result.reflection_world_view[12] == phase);
+        CHECK(result.fog_world_view[0][12] == phase && result.fog_world_view[0][13] == 3);
+        CHECK(result.fog_world_view[1][12] == phase+1);
         CHECK(result.directional.normal_transforms[0][0] == 1);
         CHECK(result.directional.normal_transforms[1][5] == 1);
         for (unsigned i = 0; i < pose.count; ++i)

@@ -37,7 +37,7 @@ double recomp_split_display_rate(const char *text, double display_hz, bool vsync
     const char **note)
 {
     *note = NULL;
-    const bool known = isfinite(display_hz) && display_hz >= 30 && display_hz <= 1000;
+    const bool known = isfinite(display_hz) && display_hz > 0 && display_hz <= 1000;
     if (split_auto(text)) {
         if (known && display_hz >= 60) return display_hz;
         *note = known ? "display refresh is below 60 Hz; split rate off" :

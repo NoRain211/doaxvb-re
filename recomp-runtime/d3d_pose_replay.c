@@ -42,6 +42,8 @@ bool recomp_d3d_pose_replay_draw(const RecompD3dPresenterDrawCommand *source,
         }
         memcpy(result.directional.world_transforms[i], pose->palettes[phase][i],
             sizeof result.directional.world_transforms[i]);
+        if (result.fog.enabled && result.fog.mode && result.fog.range)
+            multiply(pose->palettes[phase][i], pose->view, result.fog_world_view[i]);
         if (result.directional.enabled && !recomp_d3d_normal_transform(
             pose->palettes[phase][i], result.directional.normal_transforms[i])) return false;
     }
