@@ -326,7 +326,10 @@ int recomp_d3d_draw_presenter_close_test(int indexed)
     memcpy(recomp_memory_u32(indices), order, sizeof order);
     recomp_d3d_presenter_memory_set_error(RECOMP_D3D_PRESENTER_CLOSED);
     RecompFunction draw = recomp_d3d_draw_lookup_manual(indexed ? 0x001e78b0u : 0x001e7750u);
-    if (draw == NULL) return 1;
+    if (draw == NULL) {
+        fprintf(stderr, "FAIL draw lookup failed for %s\n", indexed ? "indexed" : "UP");
+        return 1;
+    }
     draw();
     fprintf(stderr, "FAIL closed presenter returned from %s draw\n", indexed ? "indexed" : "UP");
     return 1;
