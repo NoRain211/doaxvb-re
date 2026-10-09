@@ -383,6 +383,8 @@ struct RenderTargetEntry {
     RecompD3dTextureDesc desc;
     ID3D11RenderTargetView *render_view;
     ID3D11ShaderResourceView *sample_view;
+    float scale = 1.0f;  // host texels per guest texel
+    uint64_t bytes = 0u;
 };
 
 /* Depth belongs to its guest storage, which can serve several color targets. */
@@ -989,11 +991,13 @@ RecompD3dPresenterError bindTarget(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterTarget &target,
     ID3D11RenderTargetView *&color_view,
-    ID3D11DepthStencilView *&depth_view)
+    ID3D11DepthStencilView *&depth_view,
+    bool scene_copy = false)
 {
     color_view = presenter->render_target_view;
     uint32_t width = presenter->config.width;
     uint32_t height = presenter->config.height;
+    float offscreen_scale = 1.0f;
 
     if (target.offscreen) {
         const RecompD3dTextureDesc &desc = target.color;
@@ -1012,15 +1016,36 @@ RecompD3dPresenterError bindTarget(
         }
 
         RenderTargetEntry *entry = findRenderTarget(presenter, desc);
+        /* Transitions shrink the upscaled scene into a 512x512 texture and
+           show it while loading; keep such copies at main scale. Smaller
+           targets are blur downsamples and stay at guest size.
+           ponytail: size heuristic; key on the consumer if a 512 target blurs. */
+        float scale = scene_copy && desc.width >= 512u && desc.height >= 512u
+            ? (std::min)(static_cast<float>(mainHeight(presenter)) / presenter->config.height,
+                  static_cast<float>(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) /
+                      (std::max)(desc.width, desc.height))
+            : 1.0f;
+        if (static_cast<uint64_t>(desc.width * scale) * static_cast<uint64_t>(desc.height * scale) * 4u >
+            kTargetByteLimit - presenter->target_bytes) scale = 1.0f;
+        if (entry != nullptr && entry->scale < scale) {
+            releaseCom(entry->sample_view);
+            releaseCom(entry->render_view);
+            presenter->target_bytes -= entry->bytes;
+            *entry = presenter->render_targets.back();
+            presenter->render_targets.pop_back();
+            entry = nullptr;
+        }
         if (entry == nullptr) {
-            const uint64_t bytes = static_cast<uint64_t>(desc.width) * desc.height * 4u;
+            const uint32_t host_width = static_cast<uint32_t>(desc.width * scale);
+            const uint32_t host_height = static_cast<uint32_t>(desc.height * scale);
+            const uint64_t bytes = static_cast<uint64_t>(host_width) * host_height * 4u;
             if (bytes > kTargetByteLimit - presenter->target_bytes) {
                 std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
                 return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             }
             D3D11_TEXTURE2D_DESC texture_desc{};
-            texture_desc.Width = desc.width;
-            texture_desc.Height = desc.height;
+            texture_desc.Width = host_width;
+            texture_desc.Height = host_height;
             texture_desc.MipLevels = 1u;
             texture_desc.ArraySize = 1u;
             texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1053,6 +1078,8 @@ RecompD3dPresenterError bindTarget(
                 return RECOMP_D3D_PRESENTER_HOST_FAILURE;
             }
             created.desc = desc;
+            created.scale = scale;
+            created.bytes = bytes;
             try {
                 presenter->render_targets.push_back(created);
             } catch (const std::bad_alloc &) {
@@ -1064,12 +1091,14 @@ RecompD3dPresenterError bindTarget(
             entry = &presenter->render_targets.back();
             std::fprintf(stderr,
                 "recomp d3d presenter: render target data=0x%08X "
-                "fmt=0x%02X size=%ux%u\n",
-                desc.data, desc.format_byte, desc.width, desc.height);
+                "fmt=0x%02X size=%ux%u host=%ux%u\n",
+                desc.data, desc.format_byte, desc.width, desc.height,
+                host_width, host_height);
         }
         color_view = entry->render_view;
         width = desc.width;
         height = desc.height;
+        offscreen_scale = entry->scale;
     }
 
     const RecompD3dPresenterError depth_result =
@@ -1083,10 +1112,11 @@ RecompD3dPresenterError bindTarget(
         (presenter->scale != 1.0f || presenter->msaa > 1u)) {
         depth_view = nullptr;
     }
+    if (offscreen_scale != 1.0f) depth_view = nullptr;
     const float host_width = static_cast<float>(
-        target.offscreen ? width : mainWidth(presenter));
+        target.offscreen ? static_cast<uint32_t>(width * offscreen_scale) : mainWidth(presenter));
     const float host_height = static_cast<float>(
-        target.offscreen ? height : mainHeight(presenter));
+        target.offscreen ? static_cast<uint32_t>(height * offscreen_scale) : mainHeight(presenter));
     presenter->target_scale_x = host_width / width;
     presenter->target_scale_y = host_height / height;
 
@@ -2262,7 +2292,8 @@ RecompD3dPresenterError submitDraw(
     ID3D11RenderTargetView *color_view;
     ID3D11DepthStencilView *depth_view;
     const RecompD3dPresenterError target_result =
-        bindTarget(presenter, draw.target, color_view, depth_view);
+        bindTarget(presenter, draw.target, color_view, depth_view,
+            draw.texture_is_frontbuffer || draw.texture_is_backbuffer);
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
         return target_result;
     }
@@ -3268,7 +3299,7 @@ RecompD3dPresenterError d3d11_backend_release_memory(
         if (!released(entry.desc.data)) { ++i; continue; }
         releaseCom(entry.sample_view);
         releaseCom(entry.render_view);
-        presenter->target_bytes -= static_cast<uint64_t>(entry.desc.width) * entry.desc.height * 4u;
+        presenter->target_bytes -= entry.bytes;
         entry = presenter->render_targets.back();
         presenter->render_targets.pop_back();
         changed = true;
