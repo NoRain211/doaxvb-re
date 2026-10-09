@@ -82,10 +82,12 @@ and defaults to 1; hit-point color defaults on when RTGI is enabled. The
 **Help** section lists live texture reload/dump and RTGI tuning shortcuts.
 Hotkey changes last for that run; the launcher remembers its own selections.
 
-The launcher's layout follows the game's menus. To show game art behind it,
-place your own `background.jpg` and `logo.png` in `private/launcher`;
-without them it draws a plain sunset backdrop. Arrow keys switch sections,
-Enter plays and Esc quits.
+The launcher copies the game's island map menus: glass panels, green name
+plates and A/B prompts. It draws game images from `private/launcher` when
+present: `background.png` (an island map frame), `logo.png`, and
+`button-a.png`/`button-b.png`. Use images from your own copy of the game;
+without them it draws a plain sea backdrop and simple buttons. Arrow keys
+switch sections, Enter plays and Esc quits.
 
 To check launcher settings on Windows, run `tools/test_launcher.ps1` with both
 Windows PowerShell 5 and PowerShell 7. The checks use isolated synthetic

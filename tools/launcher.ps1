@@ -22,85 +22,118 @@ try {
     }
 } catch {}
 
-# The window follows the game's island menus: art backdrop, italic section list, navy card.
-function C($hex) { [Drawing.ColorTranslator]::FromHtml($hex) }
-$navy = C '#08394f'; $field = C '#114a63'; $lime = C '#b5de39'; $ink = C '#f4fbff'; $soft = C '#d5e8ed'; $edge = C '#70a6b4'; $deep = C '#062c40'
+# The window copies the game's Zack Island menus: glass plates, outlined italic text, A/B prompts.
+function C($hex, $alpha = 255) { [Drawing.Color]::FromArgb($alpha, [Drawing.ColorTranslator]::FromHtml($hex)) }
+function RF($x, $y, $w, $h) { New-Object Drawing.RectangleF ([single]$x), ([single]$y), ([single]$w), ([single]$h) }
+$field = C '#0d4f63'; $ink = C '#ffffff'; $soft = C '#d9f6f7'
 $dot = " $([char]0xB7) "
-$menuFont = New-Object Drawing.Font('Arial', 17, [Drawing.FontStyle]'Bold, Italic')
-$headFont = New-Object Drawing.Font('Arial', 19, [Drawing.FontStyle]'Bold, Italic')
-$accentFont = New-Object Drawing.Font('Arial', 13, [Drawing.FontStyle]'Bold, Italic')
-$W = 880; $H = 560
+$W = 864; $H = 576
+# Game textures stay private: setup or the player copies them into private\launcher.
+$art = Join-Path $root 'private\launcher'
+function Art($name) { $path = Join-Path $art $name; if (Test-Path $path) { $path } }
 
-$form = New-Object Windows.Forms.Form -Property @{
-    Text = 'DOAXBV'; FormBorderStyle = 'FixedSingle'; MaximizeBox = $false; StartPosition = 'CenterScreen'; KeyPreview = $true
-    ClientSize = (New-Object Drawing.Size $W, $H); BackColor = $deep; ForeColor = $ink; Font = (New-Object Drawing.Font('Segoe UI', 9.75))
+function New-Round($x, $y, $w, $h, $r) {
+    $path = New-Object Drawing.Drawing2D.GraphicsPath
+    $d = 2 * $r
+    $path.AddArc((RF $x $y $d $d), 180, 90); $path.AddArc((RF ($x + $w - $d) $y $d $d), 270, 90)
+    $path.AddArc((RF ($x + $w - $d) ($y + $h - $d) $d $d), 0, 90); $path.AddArc((RF $x ($y + $h - $d) $d $d), 90, 90)
+    $path.CloseFigure(); $path
 }
-[Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic').SetValue($form, $true, $null)
-$icon = Join-Path $root 'private\doaxbv.ico'
-if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
-
-function Draw-Text($g, $text, $font, $color, $x, $y) {
-    $shadow = New-Object Drawing.SolidBrush (C '#06384a')
-    $brush = New-Object Drawing.SolidBrush $color
-    $g.DrawString($text, $font, $shadow, [single]($x + 1), [single]($y + 2))
-    $g.DrawString($text, $font, $shadow, [single]($x - 1), [single]($y - 1))
-    $g.DrawString($text, $font, $brush, [single]$x, [single]$y)
-    $shadow.Dispose(); $brush.Dispose()
+function Draw-Plate($g, $x, $y, $w, $h, $top, $bottom, $alpha = 235) {
+    $g.SmoothingMode = 'AntiAlias'
+    $r = [Math]::Min(12, $h / 2)
+    $shape = New-Round $x $y $w $h $r
+    $fill = New-Object Drawing.Drawing2D.LinearGradientBrush((RF $x $y $w $h), (C $top $alpha), (C $bottom $alpha), [single]90)
+    $gloss = New-Round ($x + 3) ($y + 2) ($w - 6) ($h * 0.45) ([Math]::Max(1, $r - 3))
+    $shine = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(70, 255, 255, 255))
+    $edge = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(210, 255, 255, 255)), ([single]1.5)
+    $g.FillPath($fill, $shape); $g.FillPath($shine, $gloss); $g.DrawPath($edge, $shape)
+    $shape.Dispose(); $gloss.Dispose(); $fill.Dispose(); $shine.Dispose(); $edge.Dispose()
+}
+function Draw-Outlined($g, $text, $size, $x, $y, $w, $h, $line = '#1d4fb8', $align = 'Near') {
+    $g.SmoothingMode = 'AntiAlias'
+    $path = New-Object Drawing.Drawing2D.GraphicsPath
+    $format = New-Object Drawing.StringFormat
+    $format.Alignment = $align; $format.LineAlignment = 'Center'
+    $path.AddString($text, (New-Object Drawing.FontFamily 'Arial'), [int][Drawing.FontStyle]'Bold, Italic', [single]$size, (RF $x $y $w $h), $format)
+    $pen = New-Object Drawing.Pen (C $line), ([single][Math]::Max(2, $size / 5))
+    $pen.LineJoin = 'Round'
+    $g.DrawPath($pen, $path); $g.FillPath([Drawing.Brushes]::White, $path)
+    $path.Dispose(); $format.Dispose(); $pen.Dispose()
 }
 function Draw-Fit($g, $path, $x, $y, $width, $height, [switch]$cover) {
     $image = [Drawing.Image]::FromFile($path)
     $scale = if ($cover) { [Math]::Max($width / $image.Width, $height / $image.Height) } else { [Math]::Min($width / $image.Width, $height / $image.Height) }
     $w = $image.Width * $scale; $h = $image.Height * $scale
     $left = if ($cover) { $x + ($width - $w) / 2 } else { $x }
-    $g.DrawImage($image, [single]$left, [single]($y + ($height - $h) / 2), [single]$w, [single]$h)
+    $g.DrawImage($image, (RF $left ($y + ($height - $h) / 2) $w $h))
     $image.Dispose()
 }
+function Draw-Icon($g, $name, $letter, $color, $x, $y, $size) {
+    if ($path = Art $name) { Draw-Fit $g $path $x $y $size $size; return }
+    $brush = New-Object Drawing.SolidBrush (C $color)
+    $g.SmoothingMode = 'AntiAlias'; $g.FillEllipse($brush, (RF $x $y $size $size)); $brush.Dispose()
+    Draw-Outlined $g $letter ($size * 0.6) $x $y $size $size '#203040' 'Center'
+}
 
-# Retail art stays private: use private\launcher\background.jpg and logo.png when present.
-$art = Join-Path $root 'private\launcher'
+$form = New-Object Windows.Forms.Form -Property @{
+    Text = 'DOAXBV'; FormBorderStyle = 'FixedSingle'; MaximizeBox = $false; StartPosition = 'CenterScreen'; KeyPreview = $true
+    ClientSize = (New-Object Drawing.Size $W, $H); BackColor = (C '#1a8fc0'); ForeColor = $ink; Font = (New-Object Drawing.Font('Segoe UI', 9.75))
+}
+[Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic').SetValue($form, $true, $null)
+$icon = Join-Path $root 'private\doaxbv.ico'
+if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
+
 $backdrop = New-Object Drawing.Bitmap $W, $H
 $g = [Drawing.Graphics]::FromImage($backdrop)
-$g.InterpolationMode = 'HighQualityBicubic'; $g.TextRenderingHint = 'AntiAliasGridFit'
-if (Test-Path (Join-Path $art 'background.jpg')) {
-    Draw-Fit $g (Join-Path $art 'background.jpg') 0 0 $W $H -cover
+$g.InterpolationMode = 'HighQualityBicubic'
+if ($artFile = Art 'background.png') {
+    Draw-Fit $g $artFile 0 0 $W $H -cover
 } else {
-    $sky = New-Object Drawing.Drawing2D.LinearGradientBrush((New-Object Drawing.Point 0, 0), (New-Object Drawing.Point 0, $H), (C '#2b7aa8'), (C '#f0b46a'))
-    $g.FillRectangle($sky, 0, 0, $W, $H); $sky.Dispose()
+    $sea = New-Object Drawing.Drawing2D.LinearGradientBrush((RF 0 0 $W $H), (C '#7fd8ff'), (C '#178ab8'), [single]90)
+    $g.FillRectangle($sea, 0, 0, $W, $H); $sea.Dispose()
 }
-$shade = New-Object Drawing.Drawing2D.LinearGradientBrush((New-Object Drawing.Point 0, 0), (New-Object Drawing.Point 340, 0), ([Drawing.Color]::FromArgb(140, 6, 44, 64)), ([Drawing.Color]::FromArgb(0, 6, 44, 64)))
-$g.FillRectangle($shade, 0, 0, 340, $H); $shade.Dispose()
-if (Test-Path (Join-Path $art 'logo.png')) {
-    Draw-Fit $g (Join-Path $art 'logo.png') 24 12 320 104
+# The map art carries the game's own island sign, so the logo only fills in without it.
+if (Art 'background.png') {
+} elseif ($artFile = Art 'logo.png') {
+    Draw-Fit $g $artFile 14 4 300 140
 } else {
-    Draw-Text $g 'DEAD OR ALIVE' (New-Object Drawing.Font('Arial', 30, [Drawing.FontStyle]'Bold, Italic')) $ink 24 24
-    Draw-Text $g 'XTREME BEACH VOLLEYBALL' $accentFont (C '#9fd4ea') 30 72
+    Draw-Outlined $g 'DEAD OR ALIVE' 34 20 18 330 50
+    Draw-Outlined $g 'Xtreme Beach Volleyball' 18 24 64 330 30
 }
-Draw-Text $g 'NATIVE PC PORT' (New-Object Drawing.Font('Segoe UI', 8, [Drawing.FontStyle]'Bold')) $soft 34 116
-$bar = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(235, 6, 44, 64))
-$g.FillRectangle($bar, 0, $H - 34, $W, 34); $bar.Dispose()
-$cardShadow = New-Object Drawing.SolidBrush (C '#032b3d')
-$g.FillRectangle($cardShadow, 515, 115, 344, 392); $cardShadow.Dispose()
-$prompts = "$([char]0x2191)$([char]0x2193) Select     Enter  Play     Esc  Quit"
-Draw-Text $g 'Settings apply on next launch' $form.Font $soft 24 ($H - 26)
-Draw-Text $g $prompts $form.Font $ink ($W - 24 - $g.MeasureString($prompts, $form.Font).Width) ($H - 26)
+# The settings frame matches the location preview frame on the island map.
+Draw-Plate $g 346 110 504 402 '#d4fffa' '#53bcc8' 235
+$inner = New-Round 358 122 480 378 8
+$fill = New-Object Drawing.SolidBrush (C '#073e52' 225)
+$g.FillPath($fill, $inner); $fill.Dispose(); $inner.Dispose()
+Draw-Icon $g 'button-a.png' 'A' '#3fc43f' ($W - 302) ($H - 54) 34
+Draw-Outlined $g 'Play' 17 ($W - 266) ($H - 52) 70 30
+Draw-Icon $g 'button-b.png' 'B' '#e03a3a' ($W - 192) ($H - 54) 34
+Draw-Outlined $g 'Quit' 17 ($W - 156) ($H - 52) 70 30
+Draw-Outlined $g "$([char]0x2191)$([char]0x2193) Select" 15 ($W - 420) ($H - 52) 110 30
+Draw-Outlined $g 'Settings apply on next launch' 13 24 ($H - 52) 300 30 '#0b3a66'
 $g.Dispose()
 $form.BackgroundImage = $backdrop
 
-$card = New-Object Windows.Forms.Panel -Property @{ Left = 512; Top = 112; Width = 344; Height = 392; BackColor = $navy }
-$card.Add_Paint({ param($s, $e) $pen = New-Object Drawing.Pen $edge; $e.Graphics.DrawRectangle($pen, 0, 0, $s.Width - 1, $s.Height - 1); $pen.Dispose() })
-$title = New-Object Windows.Forms.Label -Property @{ Left = 18; Top = 14; Width = 310; Height = 34; Font = $headFont; ForeColor = $ink }
-$subtitle = New-Object Windows.Forms.Label -Property @{ Left = 20; Top = 48; Width = 310; ForeColor = $soft }
-$card.Controls.AddRange(@($title, $subtitle))
+$title = New-Object Windows.Forms.Label -Property @{ Left = 372; Top = 54; Width = 452; Height = 46; BackColor = [Drawing.Color]::Transparent }
+$title.Add_Paint({
+    param($s, $e)
+    Draw-Plate $e.Graphics 1 1 ($s.Width - 2) ($s.Height - 2) '#9af5c8' '#17886a' 245
+    Draw-Outlined $e.Graphics $s.Text 24 0 0 $s.Width $s.Height '#1d4fb8' 'Center'
+})
+$card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width = 448; Height = 350; BackColor = [Drawing.Color]::Transparent }
+$subtitle = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 448; Height = 22; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
+$card.Controls.Add($subtitle)
 
 $sections = 'Main Menu', 'Graphics', 'Audio', 'Textures', 'Experimental', 'Help'
 $subtitles = 'Your next visit to Zack Island', 'Display and image quality', 'Volume and custom soundtrack', 'Replacement packs and dumps', 'Unfinished renderer features', 'Keys while playing'
 $pages = foreach ($name in $sections) {
-    $page = New-Object Windows.Forms.Panel -Property @{ Left = 20; Top = 82; Width = 306; Height = 236; BackColor = $navy; Visible = $false }
+    $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = [Drawing.Color]::Transparent; Visible = $false }
     $card.Controls.Add($page); $page
 }
 function Add-Row($page, $text, $top, $control) {
-    $label = New-Object Windows.Forms.Label -Property @{ Text = $text; Left = 0; Top = $top + 4; Width = 116; ForeColor = $soft }
-    $control.Left = 120; $control.Top = $top; $control.Width = 184
+    $label = New-Object Windows.Forms.Label -Property @{ Text = $text; Left = 0; Top = $top + 4; Width = 150; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
+    $control.Left = 156; $control.Top = $top; $control.Width = 290
     $page.Controls.AddRange(@($label, $control)); $control
 }
 function New-Choice($items, $index) {
@@ -110,23 +143,23 @@ function New-Choice($items, $index) {
     $box
 }
 function New-Toggle($page, $text, $top, $checked) {
-    $box = New-Object Windows.Forms.CheckBox -Property @{ Text = $text; Left = 0; Top = $top; Width = 304; FlatStyle = 'Flat'; ForeColor = $ink; Checked = [bool]$checked }
+    $box = New-Object Windows.Forms.CheckBox -Property @{ Text = $text; Left = 0; Top = $top; Width = 446; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent; Checked = [bool]$checked }
     $page.Controls.Add($box); $box
 }
 function New-Note($page, $text, $top, $height) {
-    $note = New-Object Windows.Forms.Label -Property @{ Text = $text; Left = 0; Top = $top; Width = 304; Height = $height; ForeColor = $soft }
+    $note = New-Object Windows.Forms.Label -Property @{ Text = $text; Left = 0; Top = $top; Width = 446; Height = $height; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
     $page.Controls.Add($note); $note
 }
 function New-Button($text, $width) {
     $button = New-Object Windows.Forms.Button -Property @{ Text = $text; Width = $width; Height = 28; FlatStyle = 'Flat'; BackColor = $field; ForeColor = $ink }
-    $button.FlatAppearance.BorderColor = $edge
+    $button.FlatAppearance.BorderColor = $soft
     $button
 }
 
-$ready = New-Object Windows.Forms.Label -Property @{ Text = 'Ready to play'; Left = 0; Top = 0; Width = 304; Height = 26; Font = $accentFont; ForeColor = $lime }
+$ready = New-Object Windows.Forms.Label -Property @{ Text = 'Ready to play'; Left = 0; Top = 0; Width = 446; Height = 28; Font = (New-Object Drawing.Font('Arial', 14, [Drawing.FontStyle]'Bold, Italic')); ForeColor = (C '#9af5c8'); BackColor = [Drawing.Color]::Transparent }
 $summaryKeys = New-Note $pages[0] "Display`nRendering`nExtras" 44 80
-$summaryKeys.Width = 96
-$summary = New-Object Windows.Forms.Label -Property @{ Left = 100; Top = 44; Width = 204; Height = 80; ForeColor = $ink }
+$summaryKeys.Width = 110
+$summary = New-Object Windows.Forms.Label -Property @{ Left = 120; Top = 44; Width = 326; Height = 80; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent }
 $pages[0].Controls.AddRange(@($ready, $summary))
 
 $heightNames = [string[]]($heights | ForEach-Object { if ($_ -eq 480) { '480p (windowed)' } else { "$($_)p" } })
@@ -159,9 +192,9 @@ $pages[2].Controls.Add($music)
 New-Note $pages[2] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
 
 $textures = New-Toggle $pages[3] 'Use texture pack' 0 $settings.textures
-$textureFolder = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 32; Width = 214; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Text = [string]$settings.textureFolder }
-$browse = New-Button 'Folder...' 84
-$browse.Left = 220; $browse.Top = 30
+$textureFolder = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 32; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Text = [string]$settings.textureFolder }
+$browse = New-Button 'Folder...' 88
+$browse.Left = 358; $browse.Top = 30
 $browse.Add_Click({
     $dialog = New-Object Windows.Forms.FolderBrowserDialog
     $dialog.Description = 'Choose a texture replacement pack'
@@ -182,7 +215,7 @@ $hitColor.Enabled = $rtgi.Checked
 $rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
 New-Note $pages[4] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 154 40 | Out-Null
 
-New-Note $pages[5] "Textures`n  F12  Dump textures in view`n  Ctrl+F12  Reload texture pack`n`nRTGI`n  F5 / F6  Strength down / up`n  F7  Split comparison`n  F8  Toggle GI`n  F9  Pause or resume`n  F10  Step one frame" 0 230 | Out-Null
+New-Note $pages[5] "Textures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 240 | Out-Null
 
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" })
@@ -193,20 +226,15 @@ function Update-Summary {
 
 $state = @{ section = 0 }
 $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
-    $item = New-Object Windows.Forms.Label -Property @{ Left = 20; Top = 150 + $i * 50; Width = 230; Height = 42; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand'; Tag = $i; AccessibleName = $sections[$i]; AccessibleRole = 'MenuItem' }
+    $item = New-Object Windows.Forms.Label -Property @{ Left = 24; Top = 214 + $i * 50; Width = 270; Height = 42; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand'; Tag = $i; AccessibleName = $sections[$i]; AccessibleRole = 'MenuItem' }
     $item.Add_Paint({
         param($s, $e)
-        $e.Graphics.TextRenderingHint = 'AntiAliasGridFit'
-        $name = $sections[$s.Tag].ToUpper()
         if ($state.section -eq $s.Tag) {
-            $fill = New-Object Drawing.SolidBrush $lime
-            $text = New-Object Drawing.SolidBrush (C '#17391c')
-            $e.Graphics.FillRectangle($fill, 4, 0, $s.Width - 4, $s.Height)
-            $e.Graphics.DrawString($name, $menuFont, $text, [single]14, [single]9)
-            $fill.Dispose(); $text.Dispose()
+            Draw-Plate $e.Graphics 1 1 ($s.Width - 2) ($s.Height - 2) '#9af5c8' '#17886a' 245
         } else {
-            Draw-Text $e.Graphics $name $menuFont $ink 10 9
+            Draw-Plate $e.Graphics 1 4 ($s.Width - 30) ($s.Height - 8) '#c4f6fa' '#3a9ec0' 150
         }
+        Draw-Outlined $e.Graphics $sections[$s.Tag].ToUpper() 20 16 0 ($s.Width - 16) $s.Height
     })
     $item.Add_Click({ param($s) Select-Section $s.Tag })
     $item
@@ -214,7 +242,7 @@ $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
 function Select-Section($index) {
     $state.section = $index
     for ($i = 0; $i -lt $pages.Count; $i++) { $pages[$i].Visible = $i -eq $index; $menu[$i].Invalidate() }
-    $title.Text = $sections[$index].ToUpper()
+    $title.Text = $sections[$index].ToUpper(); $title.Invalidate()
     $subtitle.Text = $subtitles[$index]
     if ($index -eq 0) { Update-Summary }
 }
@@ -227,11 +255,19 @@ $form.Add_KeyDown({
     if ($e.KeyCode -eq 'Escape') { $form.Close() }
 })
 
-$play = New-Object Windows.Forms.Button -Property @{ Text = 'PLAY GAME'; Left = 20; Top = 330; Width = 200; Height = 44; FlatStyle = 'Flat'; BackColor = $lime; ForeColor = (C '#172c15'); Font = $accentFont; DialogResult = 'OK' }
+$play = New-Object Windows.Forms.Button -Property @{ Text = 'PLAY'; Left = 232; Top = 286; Width = 214; Height = 50; FlatStyle = 'Flat'; BackColor = [Drawing.Color]::Transparent; DialogResult = 'OK'; Cursor = 'Hand' }
 $play.FlatAppearance.BorderSize = 0
-$play.FlatAppearance.MouseOverBackColor = C '#c8ec55'
+$play.FlatAppearance.MouseOverBackColor = [Drawing.Color]::Transparent
+$play.FlatAppearance.MouseDownBackColor = [Drawing.Color]::Transparent
+$play.Add_Paint({
+    param($s, $e)
+    $e.Graphics.Clear((C '#073e52'))
+    Draw-Plate $e.Graphics 1 1 ($s.Width - 2) ($s.Height - 2) '#9af5c8' '#17886a' 255
+    Draw-Icon $e.Graphics 'button-a.png' 'A' '#3fc43f' 14 8 34
+    Draw-Outlined $e.Graphics 'PLAY' 24 56 0 ($s.Width - 70) $s.Height '#1d4fb8' 'Center'
+})
 $card.Controls.Add($play)
-$form.Controls.AddRange(@($menu) + $card)
+$form.Controls.AddRange(@($menu) + @($title, $card))
 Select-Section 0
 $form.AcceptButton = $play
 $form.ActiveControl = $play
