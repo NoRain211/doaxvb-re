@@ -26,6 +26,24 @@ if(WIN32)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
+else()
+    find_package(SDL3 REQUIRED)
+    function(recomp_use_sdl3 target)
+        target_link_libraries(${target} PRIVATE SDL3::SDL3)
+    endfunction()
+endif()
+
+if(NOT WIN32)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        set(RECOMP_FIBER_ASM fiber_switch_x86_64.S)
+    endif()
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
+    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        set(RECOMP_FIBER_ASM fiber_switch_x86_64.S)
+    endif()
 endif()
 
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
@@ -217,12 +235,20 @@ if(NOT MSVC)
 endif()
 target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
-# Media Foundation is delay-loaded: Windows N editions and Server without the
-# Media Foundation feature lack it, and custom music then stays disabled.
-set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
-set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
-target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
-target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+if(WIN32)
+    # Media Foundation is delay-loaded: Windows N editions and Server without the
+    # Media Foundation feature lack it, and custom music then stays disabled.
+    set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
+    set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+    target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
+    target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+else()
+    target_sources(recomp_runtime_test PRIVATE win32_compat.c)
+    if(RECOMP_FIBER_ASM)
+        enable_language(ASM)
+        target_sources(recomp_runtime_test PRIVATE ${RECOMP_FIBER_ASM})
+    endif()
+endif()
 target_compile_definitions(recomp_runtime_test PRIVATE
     RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
 
@@ -307,7 +333,16 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    if(WIN32)
+        target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    else()
+        target_sources(recomp_runner PRIVATE win32_compat.c)
+        if(RECOMP_FIBER_ASM)
+            enable_language(ASM)
+            target_sources(recomp_runner PRIVATE ${RECOMP_FIBER_ASM})
+        endif()
+        recomp_use_sdl3(recomp_runner)
+    endif()
 endif()
 
 if(RECOMP_PROGRAM_DIR)

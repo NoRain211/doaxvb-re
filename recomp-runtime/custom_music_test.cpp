@@ -6,12 +6,14 @@ extern "C" {
 void recomp_test_heap_reset(uint32_t cursor, int fail_after);
 }
 
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <wrl/client.h>
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -27,8 +29,7 @@ void recomp_test_heap_reset(uint32_t cursor, int fail_after);
 #include <vector>
 
 namespace {
-unsigned service_steps, originals;
-std::vector<uint32_t> guest_errors;
+unsigned originals;
 }
 
 /* The adapter wraps or falls through to these generated bodies; the unit test
@@ -38,9 +39,12 @@ extern "C" void sub_00188210(void) { kernel_return_caller_cleanup(0u); }
 extern "C" void sub_001880D0(void) { kernel_return_caller_cleanup(0u); }
 extern "C" void sub_0018D270(void) { ++originals; kernel_return_caller_cleanup(0u); }
 
+#ifdef _WIN32
 namespace fs = std::filesystem;
 using Microsoft::WRL::ComPtr;
 namespace {
+unsigned service_steps;
+std::vector<uint32_t> guest_errors;
 constexpr uint32_t kSecondBytes = RECOMP_MUSIC_RATE * RECOMP_MUSIC_FRAME_BYTES;
 constexpr uint32_t kPacket = 8192;
 using Bytes = std::vector<uint8_t>;
@@ -427,3 +431,10 @@ extern "C" int recomp_custom_music_test(void)
     CoUninitialize();
     return result;
 }
+#else
+extern "C" int recomp_custom_music_test(void)
+{
+    std::printf("custom music: Media Foundation unavailable on non-Windows; skipped\n");
+    return 77;
+}
+#endif
