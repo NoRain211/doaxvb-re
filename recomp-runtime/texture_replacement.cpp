@@ -3,11 +3,13 @@
 #include <d3dcompiler.h>
 #include <wincodec.h>
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using Microsoft::WRL::ComPtr;
@@ -17,7 +19,12 @@ constexpr uint64_t resident_limit = 512u * 1024u * 1024u;
 
 void check(HRESULT result)
 {
-    if (FAILED(result)) throw std::runtime_error("image or GPU operation failed");
+    if (FAILED(result)) {
+        char message[96];
+        std::snprintf(message, sizeof message, "image or GPU operation failed hr=0x%08lX",
+            static_cast<unsigned long>(result));
+        throw std::runtime_error(message);
+    }
 }
 
 struct Wic {
@@ -96,7 +103,8 @@ D3D11_TEXTURE2D_DESC describe(ID3D11ShaderResourceView *view)
 // A texel Load lets the GPU decode BC, BGRA and A8 with its own sampling rules.
 // All callers run at the frame boundary; no draw pipeline state is retained.
 Pixels readPixels(ID3D11Device *device, ID3D11DeviceContext *context,
-    ID3D11ShaderResourceView *source)
+    ID3D11ShaderResourceView *source, ComPtr<ID3D11VertexShader> &vs,
+    ComPtr<ID3D11PixelShader> &ps)
 {
     auto desc = describe(source);
     Pixels pixels{desc.Width, desc.Height, {}};
@@ -116,20 +124,21 @@ Pixels readPixels(ID3D11Device *device, ID3D11DeviceContext *context,
     desc.BindFlags = 0;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     check(device->CreateTexture2D(&desc, nullptr, &staging));
-    constexpr char shader[] =
+    static constexpr char shader[] =
         "float4 vs(uint i:SV_VertexID):SV_Position {"
         "return float4(i==2?3:-1,i==1?3:-1,0,1); }"
         "Texture2D image:register(t0);"
         "float4 ps(float4 p:SV_Position):SV_Target {return image.Load(int3(p.xy,0));}";
-    ComPtr<ID3DBlob> vs_code, ps_code;
-    ComPtr<ID3D11VertexShader> vs;
-    ComPtr<ID3D11PixelShader> ps;
-    check(D3DCompile(shader, sizeof shader, nullptr, nullptr, nullptr,
-        "vs", "vs_4_0", 0, 0, &vs_code, nullptr));
-    check(D3DCompile(shader, sizeof shader, nullptr, nullptr, nullptr,
-        "ps", "ps_4_0", 0, 0, &ps_code, nullptr));
-    check(device->CreateVertexShader(vs_code->GetBufferPointer(), vs_code->GetBufferSize(), nullptr, &vs));
-    check(device->CreatePixelShader(ps_code->GetBufferPointer(), ps_code->GetBufferSize(), nullptr, &ps));
+    static const auto code = [] {
+        std::pair<ComPtr<ID3DBlob>, ComPtr<ID3DBlob>> result;
+        check(D3DCompile(shader, sizeof shader, nullptr, nullptr, nullptr,
+            "vs", "vs_4_0", 0, 0, &result.first, nullptr));
+        check(D3DCompile(shader, sizeof shader, nullptr, nullptr, nullptr,
+            "ps", "ps_4_0", 0, 0, &result.second, nullptr));
+        return result;
+    }();
+    if (!vs) check(device->CreateVertexShader(code.first->GetBufferPointer(), code.first->GetBufferSize(), nullptr, &vs));
+    if (!ps) check(device->CreatePixelShader(code.second->GetBufferPointer(), code.second->GetBufferSize(), nullptr, &ps));
     context->ClearState();
     D3D11_VIEWPORT viewport{0, 0, float(desc.Width), float(desc.Height), 0, 1};
     context->RSSetViewports(1, &viewport);
@@ -169,7 +178,7 @@ uint32_t word(const std::vector<uint8_t> &bytes, size_t offset)
 }
 
 ComPtr<ID3D11ShaderResourceView> loadDds(ID3D11Device *device, const fs::path &path,
-    const D3D11_TEXTURE2D_DESC &original, uint64_t &bytes_used)
+    const D3D11_TEXTURE2D_DESC &original, uint64_t &bytes_used, uint64_t budget = resident_limit)
 {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     const auto length = file.tellg();
@@ -234,6 +243,7 @@ ComPtr<ID3D11ShaderResourceView> loadDds(ID3D11Device *device, const fs::path &p
         width = (std::max)(1u, width / 2u); height = (std::max)(1u, height / 2u);
     }
     if (offset != bytes.size()) throw std::runtime_error("DDS trailing payload");
+    if (bytes_used > budget) throw std::runtime_error("resident byte budget");
     desc.ArraySize = desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_IMMUTABLE;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -242,6 +252,23 @@ ComPtr<ID3D11ShaderResourceView> loadDds(ID3D11Device *device, const fs::path &p
     check(device->CreateTexture2D(&desc, data.data(), &texture));
     check(device->CreateShaderResourceView(texture.Get(), nullptr, &view));
     return view;
+}
+uint32_t frameNumber(const char *value)
+{
+    uint32_t number = 0;
+    const char *end = value + std::strlen(value);
+    const auto parsed = std::from_chars(value, end, number);
+    return parsed.ec == std::errc{} && parsed.ptr == end ? number : 0u;
+}
+
+fs::path privatePath(const fs::path &path)
+{
+    const auto root = fs::weakly_canonical(fs::current_path() / "private");
+    const auto candidate = fs::weakly_canonical(fs::absolute(path));
+    const auto match = std::mismatch(root.begin(), root.end(), candidate.begin(), candidate.end(),
+        [](const fs::path &a, const fs::path &b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; });
+    if (match.first != root.end()) throw std::runtime_error("texture paths must be under private");
+    return candidate;
 }
 } // namespace
 
@@ -281,7 +308,18 @@ TextureReplacements::TextureReplacements()
     directory_ = directory && *directory && std::strcmp(directory, "1") != 0
         ? fs::path(directory) : fs::path("private/textures/replace");
     const char *at = std::getenv("RECOMP_TEXTURE_FRAME_AT");
-    if (at) dump_at_ = static_cast<uint32_t>(std::strtoul(at, nullptr, 10));
+    if (at) {
+        dump_at_ = frameNumber(at);
+        if (!dump_at_) std::fprintf(stderr, "recomp textures: ignoring invalid RECOMP_TEXTURE_FRAME_AT '%s'\n", at);
+        else std::fprintf(stderr, "recomp textures: frame dump at %u\n", dump_at_);
+    }
+    if (enabled_) {
+        try { root_ = privatePath(root_); directory_ = privatePath(directory_); }
+        catch (const std::exception &e) {
+            std::fprintf(stderr, "recomp textures: disabled (%s)\n", e.what());
+            enabled_ = dump_ = false;
+        }
+    }
 }
 
 ID3D11ShaderResourceView *TextureReplacements::lookup(const std::string &key,
@@ -312,7 +350,7 @@ void TextureReplacements::scan()
         if (error) break;
         // PNG is the editable master when both names are present.
         if (extension == ".png" || files.find(key) == files.end())
-            files[key] = {entry.path(), time, size};
+            files[key] = {privatePath(entry.path()), time, size};
     }
     if (error && error != std::errc::no_such_file_or_directory)
         throw std::runtime_error("replacement directory scan");
@@ -344,13 +382,16 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
             auto original = item.second.Get();
             Pixels pixels;
             auto read = [&]() -> const Pixels & {
-                if (pixels.bytes.empty()) pixels = readPixels(device, context, original);
+                if (pixels.bytes.empty()) pixels = readPixels(device, context, original, readback_vs_, readback_ps_);
                 return pixels;
             };
-            const bool unique_dump = dump_ && dumped_.size() < 16384 && dumped_.insert(key).second;
+            const bool unique_dump = dump_ && dumped_.size() < 16384 && dumped_.find(key) == dumped_.end();
             if (unique_dump || frame_dump) {
                 try {
-                    if (unique_dump) savePng(root_ / "dump" / (key + ".png"), read());
+                    if (unique_dump) {
+                        savePng(root_ / "dump" / (key + ".png"), read());
+                        dumped_.insert(key);
+                    }
                     if (frame_dump) savePng(frame_dir / (key + ".png"), read());
                 } catch (const std::exception &e) {
                     std::fprintf(stderr, "recomp textures: dump rejected %s (%s)\n", key.c_str(), e.what());
@@ -368,9 +409,9 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
                 ComPtr<ID3D11ShaderResourceView> view;
                 uint64_t bytes = 0;
                 if (file->second.path.extension() == ".dds") {
-                    // Reserve the largest allowed file before allocating on the GPU.
-                    if (resident_ + file_limit > resident_limit) throw std::runtime_error("resident byte budget");
-                    view = loadDds(device, file->second.path, desc, bytes);
+                    if (file->second.size > resident_limit - resident_)
+                        throw std::runtime_error("resident byte budget");
+                    view = loadDds(device, file->second.path, desc, bytes, resident_limit - resident_);
                 } else {
                     const auto png = loadPng(file->second.path);
                     shape(device, png.width, png.height, desc);
@@ -420,4 +461,6 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
 void TextureReplacements::clear()
 {
     frame_.clear(); replacements_.clear(); files_.clear(); dumped_.clear(); resident_ = 0;
+    readback_vs_.Reset(); readback_ps_.Reset();
+    scanned_ = false;
 }

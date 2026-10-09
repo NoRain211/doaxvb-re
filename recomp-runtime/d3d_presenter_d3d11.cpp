@@ -1986,7 +1986,7 @@ ID3D11ShaderResourceView *lookupTexture(
     const bool linear_bgra = desc.format_byte == 0x12u;
     const bool compressed = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ||
         desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT3 || desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5;
-    const uint32_t levels = compressed && desc.mip_levels ? desc.mip_levels : 1u;
+    const uint32_t levels = !linear_bgra && desc.mip_levels ? desc.mip_levels : 1u;
     if (compressed) {
         const uint32_t span = recomp_d3d_texture_compressed_mip_span(&desc);
         if (span == 0u || span > draw.texture_byte_count ||
@@ -2068,48 +2068,37 @@ ID3D11ShaderResourceView *lookupTexture(
 
     std::vector<D3D11_SUBRESOURCE_DATA> subresources(levels);
     D3D11_SUBRESOURCE_DATA &initial = subresources[0];
-    std::vector<uint8_t> unswizzled;
+    std::vector<std::vector<uint8_t>> mip_pixels(levels);
 
     if (linear_bgra) {
         initial.pSysMem = draw.texture_bytes;
         initial.SysMemPitch = desc.pitch;
-    } else if (palettized) {
-        const size_t texels = static_cast<size_t>(desc.width) * desc.height;
-        if (desc.width == 0u || desc.height == 0u ||
+    } else if (palettized || isSwizzledTextureFormat(desc.format_byte)) {
+        const uint32_t texel_bytes = palettized ? 1u : desc.bits_per_pixel / 8u;
+        const uint32_t span = recomp_d3d_texture_mip_span(&desc);
+        if (span == 0u || span > draw.texture_byte_count ||
             desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            texels > draw.texture_byte_count) {
-            return nullptr;
+            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
+        uint32_t width = desc.width, height = desc.height, offset = 0u;
+        for (uint32_t level = 0u; level < levels; ++level) {
+            const size_t texels = size_t(width) * height;
+            auto &pixels = mip_pixels[level];
+            pixels.resize(texels * (palettized ? 4u : texel_bytes));
+            const auto *source = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            if (palettized) {
+                std::vector<uint8_t> indices(texels);
+                if (!recomp_d3d_texture_unswizzle(source, indices.data(), width, height, 1u)) return nullptr;
+                const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
+                for (size_t i = 0u; i < texels; ++i)
+                    std::memcpy(pixels.data() + i * 4u, palette + indices[i] * 4u, 4u);
+            } else if (!recomp_d3d_texture_unswizzle(source, pixels.data(), width, height, texel_bytes)) {
+                return nullptr;
+            }
+            subresources[level].pSysMem = pixels.data();
+            subresources[level].SysMemPitch = width * (palettized ? 4u : texel_bytes);
+            offset += static_cast<uint32_t>(texels * texel_bytes);
+            width = (std::max)(1u, width / 2u); height = (std::max)(1u, height / 2u);
         }
-        std::vector<uint8_t> indices(texels);
-        if (!recomp_d3d_texture_unswizzle(
-                static_cast<const uint8_t *>(draw.texture_bytes),
-                indices.data(), desc.width, desc.height, 1u)) {
-            return nullptr;
-        }
-        unswizzled.resize(texels * 4u);
-        const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
-        for (size_t i = 0u; i < texels; ++i) {
-            /* Little-endian ARGB palette words are already BGRA bytes. */
-            std::memcpy(unswizzled.data() + i * 4u, palette + indices[i] * 4u, 4u);
-        }
-        initial.pSysMem = unswizzled.data();
-        initial.SysMemPitch = desc.width * 4u;
-    } else if (isSwizzledTextureFormat(desc.format_byte)) {
-        const uint32_t texel_bytes = desc.bits_per_pixel / 8u;
-
-        unswizzled.resize(
-            static_cast<size_t>(desc.width) * desc.height * texel_bytes);
-        if (!recomp_d3d_texture_unswizzle(
-                static_cast<const uint8_t *>(draw.texture_bytes),
-                unswizzled.data(),
-                desc.width,
-                desc.height,
-                texel_bytes)) {
-            return nullptr;
-        }
-        initial.pSysMem = unswizzled.data();
-        initial.SysMemPitch = desc.width * texel_bytes;
     } else {
         const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
         uint32_t width = desc.width, height = desc.height, offset = 0u;

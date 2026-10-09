@@ -7,7 +7,7 @@
 
 int main()
 {
-    const fs::path root = fs::temp_directory_path() /
+    const fs::path root = (fs::current_path() / "private") /
         ("recomp-textures-test-" + std::to_string(GetCurrentProcessId()));
     struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); } } cleanup{root};
     fs::create_directories(root / "replace");
@@ -15,6 +15,21 @@ int main()
     _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
     _putenv_s("RECOMP_TEXTURE_DUMP", "1");
     try {
+        for (const char *invalid : {"", "no", "1x", "-1", "0", "4294967296"}) REQUIRE(frameNumber(invalid) == 0);
+        REQUIRE(frameNumber("123") == 123 && frameNumber("4294967295") == UINT32_MAX);
+        bool rejected_path = false;
+        try { privatePath(fs::current_path() / "outside"); } catch (const std::exception &) { rejected_path = true; }
+        REQUIRE(rejected_path && privatePath(root) == fs::weakly_canonical(root));
+        rejected_path = false;
+        try { privatePath(fs::current_path() / "private" / ".." / "escape"); } catch (const std::exception &) { rejected_path = true; }
+        REQUIRE(rejected_path);
+        bool diagnosed = false;
+        try { check(E_INVALIDARG); } catch (const std::exception &error) {
+            diagnosed = std::strstr(error.what(), "hr=0x80070057") != nullptr;
+        }
+        REQUIRE(diagnosed);
+        ComPtr<ID3D11VertexShader> readback_vs;
+        ComPtr<ID3D11PixelShader> readback_ps;
         RecompD3dPresenterDrawCommand draw{};
         draw.texture = {RECOMP_D3D_TEXTURE_FORMAT_DXT1, 4, false, false, false, 64, 64, 0, 4096, 7};
         std::vector<uint8_t> payload(recomp_d3d_texture_mip_span(&draw.texture), 0);
@@ -72,7 +87,10 @@ int main()
         ComPtr<ID3D11ShaderResourceView> original;
         check(device->CreateTexture2D(&desc, &data, &texture));
         check(device->CreateShaderResourceView(texture.Get(), nullptr, &original));
-        REQUIRE(readPixels(device.Get(), context.Get(), original.Get()).bytes == pixels.bytes);
+        REQUIRE(readPixels(device.Get(), context.Get(), original.Get(), readback_vs, readback_ps).bytes == pixels.bytes);
+        auto *cached_vs = readback_vs.Get(); auto *cached_ps = readback_ps.Get();
+        REQUIRE(readPixels(device.Get(), context.Get(), original.Get(), readback_vs, readback_ps).bytes == pixels.bytes);
+        REQUIRE(cached_vs == readback_vs.Get() && cached_ps == readback_ps.Get());
         TextureReplacements replacements;
         REQUIRE(replacements.lookup(first.key, original.Get()) == original.Get());
         replacements.finishFrame(device.Get(), context.Get(), 1);
@@ -94,7 +112,7 @@ int main()
         auto changed = replacements.lookup(first.key, original.Get());
         REQUIRE(changed != original.Get());
         REQUIRE(describe(changed).MipLevels == 3);
-        REQUIRE(readPixels(device.Get(), context.Get(), changed).bytes == pixels.bytes);
+        REQUIRE(readPixels(device.Get(), context.Get(), changed, readback_vs, readback_ps).bytes == pixels.bytes);
         // Frame dumps always contain originals, including on a replacement cache hit.
         replacements.request(false);
         replacements.finishFrame(device.Get(), context.Get(), 5);
@@ -117,10 +135,25 @@ int main()
         replacements.request(true);
         replacements.finishFrame(device.Get(), context.Get(), 9);
         REQUIRE(replacements.lookup(first.key, original.Get()) != original.Get());
+        replacements.clear();
+        replacements.lookup(first.key, original.Get());
+        replacements.finishFrame(device.Get(), context.Get(), 10);
+        REQUIRE(replacements.lookup(first.key, original.Get()) != original.Get());
+        // A locked output retries on the next continuous-dump frame.
+        const auto retry_path = root / "dump" / "retry.png";
+        { std::ofstream placeholder(retry_path); placeholder << "locked"; }
+        HANDLE locked = CreateFileW(retry_path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        REQUIRE(locked != INVALID_HANDLE_VALUE);
+        replacements.lookup("retry", original.Get());
+        replacements.finishFrame(device.Get(), context.Get(), 11);
+        CloseHandle(locked);
+        replacements.lookup("retry", original.Get());
+        replacements.finishFrame(device.Get(), context.Get(), 12);
+        REQUIRE(loadPng(retry_path).bytes.size() == 64);
         fs::rename(root / "replace", root / "old-replace");
         { std::ofstream blocked(root / "replace"); blocked << "not a directory"; }
         replacements.request(true);
-        replacements.finishFrame(device.Get(), context.Get(), 10);
+        replacements.finishFrame(device.Get(), context.Get(), 13);
         REQUIRE(replacements.lookup(first.key, original.Get()) == original.Get());
 
         // Synthetic DDS chains: legacy BC1/2/3 and straight RGBA8.
@@ -136,6 +169,11 @@ int main()
             uint64_t used = 0;
             auto view = loadDds(device.Get(), path, desc, used);
             REQUIRE(view && describe(view.Get()).MipLevels == 3 && used == dds.size() - 128);
+            // Small files fit above 448 MiB resident, but payload allocation still respects the remaining budget.
+            REQUIRE(loadDds(device.Get(), path, desc, used, resident_limit - 449u * 1024u * 1024u));
+            bool over_budget = false;
+            try { loadDds(device.Get(), path, desc, used, 1); } catch (const std::exception &) { over_budget = true; }
+            REQUIRE(over_budget);
             dds.pop_back();
             { std::ofstream out(path, std::ios::binary); out.write(reinterpret_cast<char *>(dds.data()), dds.size()); }
             bool rejected = false;

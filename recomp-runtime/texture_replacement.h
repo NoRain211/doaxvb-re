@@ -41,6 +41,8 @@ private:
     bool reload_ = false, frame_dump_ = false;
     uint32_t dump_at_ = 0;
     uint64_t resident_ = 0;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> readback_vs_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> readback_ps_;
     std::filesystem::path root_, directory_;
     std::unordered_map<std::string, File> files_;
     std::unordered_map<std::string, Replacement> replacements_;
