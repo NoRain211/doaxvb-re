@@ -2105,8 +2105,85 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testPacingPolicies()
+{
+    const UINT rates[][2] = {{60,1}, {119,1}, {120,2}, {121,2}, {144,1},
+        {179,1}, {180,1}, {181,1}, {239,1}, {240,4}, {241,4}, {360,1}};
+    for (const auto &rate : rates) {
+        if (fixedRefreshInterval(rate[0]) != rate[1]) return false;
+    }
+    RecompD3dPresenter stats_presenter{};
+    DXGI_FRAME_STATISTICS stats{};
+    stats.PresentCount = 10u; stats.PresentRefreshCount = 100u;
+    recordFrameStatistics(&stats_presenter, S_OK, stats);
+    for (HRESULT error : {DXGI_ERROR_FRAME_STATISTICS_DISJOINT, E_FAIL}) {
+        recordFrameStatistics(&stats_presenter, error, stats);
+        if (stats_presenter.last_stat_present != 0u || stats_presenter.last_stat_refresh != 0u) return false;
+        ++stats.PresentCount; stats.PresentRefreshCount = 1u;
+        recordFrameStatistics(&stats_presenter, S_OK, stats);
+        if (stats_presenter.refresh_holds[8] != 0u) return false;
+        ++stats.PresentCount; stats.PresentRefreshCount += 2u;
+        recordFrameStatistics(&stats_presenter, S_OK, stats);
+    }
+    if (stats_presenter.refresh_holds[2] != 2u) return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    stats_presenter.sync_interval = 4u;
+    stats_presenter.next_refresh_check = now + std::chrono::seconds(1);
+    if (syncInterval(&stats_presenter) != 4u) return false;
+    stats_presenter.present_count = 1u; // Below 60 FPS, a due check still runs.
+    stats_presenter.next_refresh_check = now - std::chrono::seconds(1);
+    syncInterval(&stats_presenter);
+    if (stats_presenter.next_refresh_check <= now) return false;
+
+    const auto worker = [] { recomp_d3d_sleep_until(0); };
+    std::thread(worker).join(); // Initialize thread support before counting handles.
+    DWORD before = 0u, after = 0u;
+    if (!GetProcessHandleCount(GetCurrentProcess(), &before)) return false;
+    for (unsigned i = 0u; i < 8u; ++i) std::thread(worker).join();
+    if (!GetProcessHandleCount(GetCurrentProcess(), &after) || after != before) return false;
+
+    const bool saved_immediate = immediate_present;
+    bool passed = true;
+    for (unsigned mode = 0u; mode < 3u; ++mode) {
+        RecompD3dPresenter presenter{};
+        presenter.config = {320u, 240u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+            RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+        immediate_present = mode != 1u;
+        presenter.vrr = mode == 2u;
+        const bool immediate = mode == 0u;
+        IDXGIDevice1 *device = nullptr;
+        IDXGISwapChain2 *chain = nullptr;
+        UINT latency = 0u;
+        DXGI_SWAP_CHAIN_DESC desc{};
+        passed = createWindow(&presenter) &&
+            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP)) &&
+            SUCCEEDED(presenter.swap_chain->GetDesc(&desc)) &&
+            desc.SwapEffect == (immediate ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD) &&
+            ((desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0u) == presenter.vrr &&
+            ((desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0u) == !immediate;
+        if (passed && immediate) {
+            passed = SUCCEEDED(presenter.device->QueryInterface(IID_PPV_ARGS(&device))) &&
+                SUCCEEDED(device->GetMaximumFrameLatency(&latency)) && latency == 3u;
+        } else if (passed) {
+            passed = SUCCEEDED(presenter.swap_chain->QueryInterface(IID_PPV_ARGS(&chain))) &&
+                SUCCEEDED(chain->GetMaximumFrameLatency(&latency)) && latency == 1u;
+        }
+        releaseCom(chain);
+        releaseCom(device);
+        releasePresenter(&presenter);
+        if (!passed) break;
+    }
+    immediate_present = saved_immediate;
+    return passed;
+}
+
 int main()
 {
+    if (!testPacingPolicies()) {
+        std::fprintf(stderr, "FAIL refresh intervals, statistics epochs, timer handles or frame latency\n");
+        return 1;
+    }
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;
