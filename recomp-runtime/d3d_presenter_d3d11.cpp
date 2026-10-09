@@ -103,6 +103,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 fog_params; // start, end, density, mode\n"
     "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
     "    row_major float4x4 fog_world_view[4];\n"
+    "    float4 combiner[4];\n"
     "}\n"
     "float fogFactor(float depth) {\n"
     "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
@@ -116,7 +117,64 @@ constexpr char kDrawShaderPrologue[] =
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
     "Texture2D alpha_mask : register(t1);\n"
-    "SamplerState mask_sampler : register(s1);\n";
+    "SamplerState mask_sampler : register(s1);\n"
+    /* Xbox D3DTA selectors 0-4 with COMPLEMENT (0x10) and ALPHAREPLICATE
+       (0x20); absent specular is black. */
+    "float4 ff_arg(int a, float4 cur, float4 dif, float4 tex) {\n"
+    "    int s = a & 15;\n"
+    "    float4 v = s == 0 ? dif : s == 2 ? tex : s == 3 ? texture_factor\n"
+    "        : s == 4 ? float4(0, 0, 0, 0) : cur;\n"
+    "    if (a & 0x20) v = v.aaaa;\n"
+    "    if (a & 0x10) v = 1.0f - v;\n"
+    "    return v;\n"
+    "}\n"
+    /* Xbox values differ from PC D3D8: BLENDCURRENTALPHA=13,
+       DOTPRODUCT3=22, MULTIPLYADD=23, LERP=24. See Cxbx XbD3D8Types.h:
+       https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/hle/D3D8/XbD3D8Types.h
+       PREMODULATE is declined by the adapter. */
+    "float4 ff_op(float4 o, float4 cur, float4 dif, float4 tex) {\n"
+    "    float4 a0 = ff_arg((int)o.y, cur, dif, tex);\n"
+    "    float4 a1 = ff_arg((int)o.z, cur, dif, tex);\n"
+    "    float4 a2 = ff_arg((int)o.w, cur, dif, tex);\n"
+    "    float4 r = cur;\n"
+    "    switch ((int)o.x) {\n"
+    "    case 2: r = a1; break;\n"
+    "    case 3: r = a2; break;\n"
+    "    case 4: r = a1 * a2; break;\n"
+    "    case 5: r = 2.0f * a1 * a2; break;\n"
+    "    case 6: r = 4.0f * a1 * a2; break;\n"
+    "    case 7: r = a1 + a2; break;\n"
+    "    case 8: r = a1 + a2 - 0.5f; break;\n"
+    "    case 9: r = 2.0f * (a1 + a2 - 0.5f); break;\n"
+    "    case 10: r = a1 - a2; break;\n"
+    "    case 11: r = a1 + a2 - a1 * a2; break;\n"
+    "    case 12: r = lerp(a2, a1, dif.a); break;\n"
+    "    case 13: r = lerp(a2, a1, cur.a); break;\n"
+    "    case 14: r = lerp(a2, a1, tex.a); break;\n"
+    "    case 15: r = lerp(a2, a1, texture_factor.a); break;\n"
+    "    case 16: r = a1 + a2 * (1.0f - tex.a); break;\n"
+    "    case 18: r = a1 + a1.a * a2; break;\n"
+    "    case 19: r = a1 * a2 + a1.a; break;\n"
+    "    case 20: r = a1 + (1.0f - a1.a) * a2; break;\n"
+    "    case 21: r = (1.0f - a1) * a2 + a1.a; break;\n"
+    "    case 22: r = saturate(4.0f * dot(a1.rgb - 0.5f, a2.rgb - 0.5f)).xxxx; break;\n"
+    "    case 23: r = a0 + a1 * a2; break;\n"
+    "    case 24: r = lerp(a2, a1, a0); break;\n"
+    "    }\n"
+    "    return saturate(r);\n"
+    "}\n"
+    "float4 ff_combine(float4 dif, float4 t0, float4 t1) {\n"
+    "    float4 cur = dif;\n"
+    "    [unroll] for (int s = 0; s < 2; ++s) {\n"
+    "        float4 c = combiner[s * 2], a = combiner[s * 2 + 1];\n"
+    "        if (c.x < 1.5f) break;\n"
+    "        float4 tex = s == 0 ? t0 : t1;\n"
+    "        float4 next = ff_op(c, cur, dif, tex);\n"
+    "        if (a.x > 1.5f) next.a = ff_op(a, cur, dif, tex).a; else next.a = cur.a;\n"
+    "        cur = next;\n"
+    "    }\n"
+    "    return cur;\n"
+    "}\n";
 
 /* Builds the draw shader for one decoded vertex layout. Only the components
    the layout actually carries appear in VSIn, so the input layout and the
@@ -186,7 +244,15 @@ void buildDrawShaderSource(
         "}\n"
         "float4 ps_main(VSOut input) : SV_TARGET {\n"
         "    float4 shaded = input.color;\n"
-        "    if (reflection_flags.x > 0.5f) {\n"
+        "    if (reflection_flags.x > 2.5f) {\n"
+        "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
+        "        if (lighting_flags.y > 0.5f) t0.rgb = 1.0f;\n"
+        "        float4 t1 = alpha_mask.Sample(mask_sampler, input.reflection_coord * lighting_flags.zw);\n"
+        "        if (reflection_flags.y > 0.5f) t1.rgb = 1.0f;\n"
+        "        float4 dif = input.color;\n"
+        "        if (directional_flags.x > 0.5f) dif.a *= blend_flags.z;\n"
+        "        shaded = ff_combine(dif, t0, t1);\n"
+        "    } else if (reflection_flags.x > 0.5f) {\n"
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= reflection_diffuse.a;\n"
         "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
@@ -270,7 +336,9 @@ void buildDrawShaderSource(
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
         has_texcoord && !layout.pretransformed
             ? (has_normal
-                ? "    if (reflection_flags.x > 1.5f) {\n"
+                ? "    if (reflection_flags.x > 2.5f) {\n"
+                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    } else if (reflection_flags.x > 1.5f) {\n"
                   "        output.reflection_coord = input.texcoord;\n"
                   "    } else if (reflection_flags.x > 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
@@ -279,7 +347,9 @@ void buildDrawShaderSource(
                   "        float3 r = reflect(normalize(eye), n);\n"
                   "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
                   "    }\n"
-                : "    if (reflection_flags.x > 1.5f) {\n"
+                : "    if (reflection_flags.x > 2.5f) {\n"
+                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    } else if (reflection_flags.x > 1.5f) {\n"
                   "        output.reflection_coord = input.texcoord;\n"
                   "    } else if (reflection_flags.x > 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
@@ -1693,7 +1763,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient (300 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 300u + 76u) * sizeof(float);
+    constant_desc.ByteWidth = (140u + 192u * 4u + 300u + 76u + 16u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2251,8 +2321,8 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
             presenter->back_buffer_sample, presenter->scale != 1.0f)) return nullptr;
     /* Sampling observes the current render buffer at this draw, even if the
        preceding draw sampled an older copy. Keep the copy outside the FIFO. */
-    ID3D11ShaderResourceView *none = nullptr;
-    presenter->context->PSSetShaderResources(0u, 1u, &none);
+    ID3D11ShaderResourceView *none[2] = {};
+    presenter->context->PSSetShaderResources(0u, 2u, none);
     copyGuestBuffer(presenter, presenter->back_buffer_copy);
     /* Every view exposes the chain; refresh it with each new snapshot. */
     if (presenter->scale != 1.0f)
@@ -2608,7 +2678,8 @@ RecompD3dPresenterError submitDraw(
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
         return target_result;
     }
-    if (draw.has_texture) {
+    const bool needs_texture = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[0]);
+    if (draw.has_texture && needs_texture) {
         const RenderTargetEntry *sampled = findRenderTarget(presenter, draw.texture);
         if (sampled != nullptr && sampled->render_view == color_view) {
             std::fprintf(stderr,
@@ -2650,12 +2721,14 @@ RecompD3dPresenterError submitDraw(
 
     const UINT index_size = draw_index_count * 2u;
     ID3D11ShaderResourceView *texture_view =
-        draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
-    if ((draw.texture_is_frontbuffer || draw.texture_is_backbuffer) && texture_view == nullptr)
+        draw.has_texture && needs_texture ? lookupTexture(presenter, draw) : nullptr;
+    if (needs_texture && (draw.texture_is_frontbuffer || draw.texture_is_backbuffer) &&
+        texture_view == nullptr)
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
-    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask;
+    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection ||
+        draw.program_alpha_mask || draw.has_combiner;
     if (has_second_texture && texture_view != nullptr) texture_view->AddRef();
     const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
     std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(
@@ -2672,7 +2745,7 @@ RecompD3dPresenterError submitDraw(
         mask_view = lookupTexture(presenter, mask);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
-    if (draw.has_reflection || draw.program_alpha_mask) {
+    if (draw.has_reflection || draw.program_alpha_mask || draw.has_combiner) {
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
             (draw.program_alpha_mask && layout.normal_offset == RECOMP_D3D_FVF_ABSENT) ||
             layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2680,8 +2753,18 @@ RecompD3dPresenterError submitDraw(
         reflection.texture = draw.reflection_texture;
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
-        mask_view = lookupTexture(presenter, reflection);
-        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        reflection.texture_is_backbuffer = draw.has_combiner && draw.combiner_is_backbuffer;
+        reflection.texture_is_frontbuffer = draw.has_combiner && draw.combiner_is_frontbuffer;
+        const bool needs_mask = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[1]);
+        if (draw.has_combiner && needs_mask) {
+            const RenderTargetEntry *sampled = findRenderTarget(presenter, reflection.texture);
+            if (sampled != nullptr && sampled->render_view == color_view)
+                return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
+        mask_view = needs_mask ? lookupTexture(presenter, reflection) : nullptr;
+        if ((needs_mask && mask_view == nullptr) ||
+            (texture_view == nullptr && needs_texture))
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (draw.four_tap_filter && texture_view == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2690,7 +2773,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 300 + 76]{};
+    float draw_constants[140 + 192 * 4 + 300 + 76 + 16]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2815,6 +2898,20 @@ RecompD3dPresenterError submitDraw(
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
         draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
     }
+    if (draw.has_combiner) {
+        std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
+        draw_constants[136] = 3.0f;
+        draw_constants[137] = draw.reflection_texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8
+            ? 1.0f : 0.0f;
+        draw_constants[78] = draw.reflection_texture.linear && draw.reflection_texture.width
+            ? 1.0f / draw.reflection_texture.width : 1.0f;
+        draw_constants[79] = draw.reflection_texture.linear && draw.reflection_texture.height
+            ? 1.0f / draw.reflection_texture.height : 1.0f;
+        for (unsigned i = 0u; i < 16u; ++i) {
+            draw_constants[140 + 192 * 4 + 300 + 76 + i] =
+                static_cast<float>(draw.combiner[i / 8u][i % 8u]);
+        }
+    }
 
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
@@ -2853,8 +2950,23 @@ RecompD3dPresenterError submitDraw(
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
             : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
-        draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
+        draw.program_alpha_mask ? presenter->program_mask_sampler
+            : draw.has_combiner
+            ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v, false)
+            : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
+    if (draw.has_combiner && draw.combiner_lod_bias != 0.0f && samplers[1] != nullptr) {
+        /* The title sea biases its tiled shimmer two mips sharper; D3D11
+           returns the existing object for a repeated description. */
+        D3D11_SAMPLER_DESC desc{};
+        samplers[1]->GetDesc(&desc);
+        desc.MipLODBias = draw.combiner_lod_bias;
+        ID3D11SamplerState *biased = nullptr;
+        if (SUCCEEDED(presenter->device->CreateSamplerState(&desc, &biased))) {
+            presenter->context->PSSetSamplers(1u, 1u, &biased);
+            biased->Release();
+        }
+    }
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {

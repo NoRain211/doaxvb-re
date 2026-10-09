@@ -2339,6 +2339,161 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testCombiner(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z; uint32_t color; float u, v; };
+    Vertex vertices[] = {{-1,1,.5f,0xffff0000u,0,0}, {1,1,.5f,0xffff0000u,0,0},
+        {-1,-1,.5f,0xffff0000u,0,0}, {1,-1,.5f,0xffff0000u,0,0}};
+    const uint16_t indices[] = {0,1,2,3};
+    const uint32_t green = 0xff00ff00u, blue = 0xff0000ffu;
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x142; draw.vertex_stride = sizeof(Vertex);
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_count = draw.index_count = 4; draw.triangle_count = 2;
+    draw.vertex_bytes = vertices; draw.index_bytes = indices;
+    draw.has_transform = draw.has_combiner = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    std::memcpy(draw.reflection_transform, draw.transform, sizeof draw.transform);
+    draw.blend.color_write_mask = 15;
+    draw.combiner[0][0] = draw.combiner[0][4] = 2;
+    draw.combiner[1][0] = 23; draw.combiner[1][1] = 1;
+    draw.combiner[1][2] = draw.combiner[1][3] = 2;
+    draw.combiner[1][4] = 2; draw.combiner[1][6] = 1;
+    draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.reflection_texture.bits_per_pixel = 32;
+    draw.reflection_texture.width = draw.reflection_texture.height = 1;
+    draw.reflection_texture.data = 0x00750000u;
+    draw.reflection_bytes = &green; draw.reflection_byte_count = sizeof green;
+    const RecompD3dPresenterClearCommand clear = {true,false,false,0xff000000u,1,0};
+    const auto render = [&](uint32_t pixel, const char *label) {
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        return submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter, color, readback, label, expected);
+    };
+    if (!render(0xffffff00u, "combiner without stage zero texture")) return false;
+    draw.combiner[0][2] = 2;
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    draw.combiner[0][2] = 0;
+    draw.combiner_lod_bias = -2.0f;
+    if (!render(0xffffff00u, "combiner stage one LOD bias")) return false;
+    ID3D11SamplerState *biased = nullptr;
+    presenter->context->PSGetSamplers(1u, 1u, &biased);
+    D3D11_SAMPLER_DESC sampler{};
+    if (biased) biased->GetDesc(&sampler);
+    const bool bias_preserved = biased && sampler.MipLODBias == -2.0f;
+    releaseCom(biased);
+    if (!bias_preserved) return false;
+    draw.combiner_lod_bias = 0.0f;
+    draw.reflection_texture.width = 0;
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    draw.reflection_texture.width = 1;
+    draw.reflection_bytes = nullptr; draw.reflection_byte_count = 0;
+    draw.combiner[1][0] = 7; draw.combiner[1][2] = 1; draw.combiner[1][3] = 0;
+    if (!render(0xffff0000u, "texture-free stage one ADD")) return false;
+    draw.combiner[1][0] = 23; draw.combiner[1][2] = draw.combiner[1][3] = 2;
+    draw.reflection_bytes = &green; draw.reflection_byte_count = sizeof green;
+    draw.has_texture = true; draw.texture = draw.reflection_texture;
+    draw.texture.data += 0x100; draw.texture_bytes = &blue; draw.texture_byte_count = sizeof blue;
+    if (!render(0xffffff00u, "combiner bypasses legacy texture path")) return false;
+    draw.texture.width = 0;
+    if (!render(0xffffff00u, "combiner ignores unconsumed stage zero binding")) return false;
+    draw.texture.width = 1;
+    draw.target.offscreen = draw.target.no_depth = true;
+    draw.target.color = draw.reflection_texture;
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    draw.target = {};
+    auto snapshot = draw;
+    const uint32_t stale[16] = {};
+    snapshot.combiner[1][0] = snapshot.combiner[1][4] = 2;
+    snapshot.combiner[1][6] = 2;
+    snapshot.combiner_is_backbuffer = true;
+    snapshot.reflection_texture = {};
+    snapshot.reflection_texture.data = 0x00760000u;
+    snapshot.reflection_texture.format_byte = 0x12u;
+    snapshot.reflection_texture.bits_per_pixel = 32;
+    snapshot.reflection_texture.linear = true;
+    snapshot.reflection_texture.width = snapshot.reflection_texture.height = 4;
+    snapshot.reflection_texture.pitch = 16;
+    snapshot.reflection_bytes = stale; snapshot.reflection_byte_count = sizeof stale;
+    snapshot.target.offscreen = snapshot.target.no_depth = true;
+    snapshot.target.color = snapshot.reflection_texture;
+    snapshot.target.color.data += 0x100;
+    for (uint32_t pixel : {0xff00ff00u, 0xffff0000u}) {
+        auto background = clear;
+        background.color = pixel;
+        if (submitClear(presenter, background) != RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter, snapshot) != RECOMP_D3D_PRESENTER_OK) return false;
+        RenderTargetEntry *entry = findRenderTarget(presenter, snapshot.target.color);
+        ID3D11Resource *resource = nullptr;
+        ID3D11Texture2D *target = nullptr;
+        if (entry) entry->render_view->GetResource(&resource);
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        const bool passed = resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&target))) &&
+            checkPixels(presenter, target, readback, "stage one snapshots current backbuffer", expected);
+        releaseCom(target); releaseCom(resource);
+        if (!passed) return false;
+    }
+    // A front-buffer alias samples the presented frame, never stale guest bytes.
+    snapshot.combiner_is_backbuffer = false;
+    snapshot.combiner_is_frontbuffer = true;
+    if (presenter->front_buffer_sample == nullptr &&
+        submitDraw(presenter, snapshot) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    {
+        uint32_t presented[16];
+        std::fill(std::begin(presented), std::end(presented), 0xff0000ffu);
+        const D3D11_TEXTURE2D_DESC desc = {4u, 4u, 1u, 1u, DXGI_FORMAT_B8G8R8A8_UNORM,
+            {1u, 0u}, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0u, 0u};
+        const D3D11_SUBRESOURCE_DATA data = {presented, sizeof presented / 4u, 0u};
+        ID3D11Texture2D *front = nullptr, *target = nullptr;
+        ID3D11ShaderResourceView *view = nullptr;
+        ID3D11Resource *resource = nullptr;
+        ID3D11ShaderResourceView *saved = presenter->front_buffer_sample;
+        bool passed = SUCCEEDED(presenter->device->CreateTexture2D(&desc, &data, &front)) &&
+            SUCCEEDED(presenter->device->CreateShaderResourceView(front, nullptr, &view));
+        presenter->front_buffer_sample = view;
+        passed = passed && submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, snapshot) == RECOMP_D3D_PRESENTER_OK;
+        presenter->front_buffer_sample = saved;
+        RenderTargetEntry *entry = passed ? findRenderTarget(presenter, snapshot.target.color) : nullptr;
+        if (entry) entry->render_view->GetResource(&resource);
+        const uint32_t expected[] = {0xff0000ffu,0xff0000ffu,0xff0000ffu,0xff0000ffu};
+        passed = resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&target))) &&
+            checkPixels(presenter, target, readback, "stage one samples presented front buffer", expected);
+        releaseCom(target); releaseCom(resource); releaseCom(view); releaseCom(front);
+        if (!passed) return false;
+    }
+    const uint8_t alpha = 128;
+    draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8;
+    draw.reflection_texture.bits_per_pixel = 8;
+    draw.reflection_texture.data += 0x200;
+    draw.reflection_bytes = &alpha; draw.reflection_byte_count = 1;
+    draw.combiner[1][0] = draw.combiner[1][4] = 2; draw.combiner[1][6] = 2;
+    if (!render(0x80ffffffu, "stage one A8 has white RGB")) return false;
+    const uint32_t row[] = {0xffff0000u,0xff00ff00u,0xff0000ffu,0xffffffffu};
+    draw.reflection_texture.format_byte = 0x12u;
+    draw.reflection_texture.bits_per_pixel = 32; draw.reflection_texture.linear = true;
+    draw.reflection_texture.width = 4; draw.reflection_texture.pitch = sizeof row;
+    draw.reflection_texture.data += 0x100;
+    draw.reflection_bytes = row; draw.reflection_byte_count = sizeof row;
+    draw.combiner_address_u = draw.combiner_address_v = 3;
+    for (auto &vertex : vertices) { vertex.u = 1.5f; vertex.v = 0.5f; }
+    if (!render(0xff00ff00u, "stage one linear texel coordinates")) return false;
+    struct LitVertex { float x,y,z,nx,ny,nz,u,v; };
+    const LitVertex lit[] = {{-1,1,.5f,0,0,1,0,0},{1,1,.5f,0,0,1,0,0},
+        {-1,-1,.5f,0,0,1,0,0},{1,-1,.5f,0,0,1,0,0}};
+    draw.fvf = 0x112; draw.vertex_bytes = lit; draw.vertex_stride = sizeof(LitVertex);
+    draw.directional.enabled = true; draw.directional.ambient_emissive[0] = 1;
+    draw.directional.material_diffuse[3] = 0.25f;
+    draw.directional.normal_transforms[0][0] = draw.directional.normal_transforms[0][5] =
+        draw.directional.normal_transforms[0][10] = draw.directional.normal_transforms[0][15] = 1;
+    draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE;
+    draw.material_alpha = 0.25f;
+    draw.combiner[1][2] = draw.combiner[1][6] = 0;
+    return render(0x40ff0000u, "combiner uses material diffuse alpha");
+}
+
 static bool testReplacementFormats()
 {
     namespace fs = std::filesystem;
@@ -2970,6 +3125,7 @@ int main()
     if (status == 0 && !testCullRendering(&presenter, color, readback)) status = 98;
     if (status == 0 && !testBackBufferMips(&presenter)) status = 99;
     if (status == 0 && !testSupersampledBackBuffer(&presenter)) status = 84;
+    if (status == 0 && !testCombiner(&presenter, color, readback)) status = 99;
     if (status == 0 && !testAddressSamplers(&presenter)) status = 83;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);

@@ -167,6 +167,16 @@ typedef struct RecompD3dPresenterDrawCommand {
     float reflection_normal[16];
     float reflection_transform[16];
     float reflection_diffuse[4];
+    /* Generic stages 0-1 when stage 1 runs an operation no path above admits:
+       per stage COLOROP, COLORARG0-2, ALPHAOP, ALPHAARG0-2 (Xbox values).
+       Stage 1 samples reflection_texture with mesh UV times
+       reflection_transform. */
+    bool has_combiner;
+    bool combiner_is_backbuffer;
+    bool combiner_is_frontbuffer;
+    uint32_t combiner[2][8];
+    uint32_t combiner_address_u, combiner_address_v;
+    float combiner_lod_bias;
     RecompD3dPresenterTarget target;
     /* Optional immutable RecompD3dPoseReplay, copied during submit. */
     const void *pose_replay;

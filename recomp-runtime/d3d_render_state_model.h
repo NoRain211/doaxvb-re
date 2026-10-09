@@ -214,6 +214,9 @@ bool recomp_d3d_texture_factor_modulate_selected(
     const uint32_t stage[6],
     uint32_t next_color_op);
 
+/* Consumed TEXTURE arguments and implicit texture-alpha operations. */
+bool recomp_d3d_combiner_uses_texture(const uint32_t words[8]);
+
 /* UV0 base texture, generated reflection blended by texture alpha, then diffuse. */
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32]);
 
