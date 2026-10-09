@@ -79,20 +79,11 @@ def visual_studios(*filters):
 
 def find_toolchain(root):
     if os.name != "nt":
-        for compiler in ("clang++", "g++", "c++"):
-            path = shutil.which(compiler)
-            if path:
-                try:
-                    with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=True) as probe:
-                        probe.write("int main() { return 0; }\n")
-                        probe.flush()
-                        res = subprocess.run([path, "-std=c++20", "-x", "c++", probe.name, "-o", "/dev/null"],
-                                             capture_output=True)
-                        if res.returncode == 0:
-                            return Path(path)
-                except Exception:
-                    continue
-        raise ValueError("A functional C++ compiler (clang++ or g++) is required to build the runner.")
+        # CMake finds the host compiler; check only that the tools are installed.
+        compiler = shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
+        if compiler is None or shutil.which("cmake") is None:
+            raise ValueError("CMake and a C++17 compiler are required; see docs/building.md.")
+        return compiler
     instances = visual_studios("-products", "*", "-requires",
                                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
     if not instances:

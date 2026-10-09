@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // macOS launcher: pick resolution, anti-aliasing, volume and music options,
 // remember them in private/launcher.json, then exit 0 so launcher.sh starts
-// the game. Mirrors tools/launcher.ps1. Exits 1 if the window is closed.
+// the game. Mirrors tools/launcher.ps1 without the Music folder button: custom
+// soundtracks need Media Foundation. Exits 1 if the window is closed.
 import AppKit
 
 let root = URL(fileURLWithPath: CommandLine.arguments.count > 1
     ? CommandLine.arguments[1] : FileManager.default.currentDirectoryPath)
 let settingsURL = root.appendingPathComponent("private/launcher.json")
-let musicURL = root.appendingPathComponent("private/UserMusic")
 
 let heights = [480, 720, 1080, 1440, 2160]
 let samples = [1, 2, 4, 8]
@@ -68,25 +68,14 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         shuffle.frame = NSRect(x: 104, y: 54, width: 140, height: 20)
         shuffle.state = boolSetting("shuffle") ? .on : .off
 
-        let music = NSButton(title: "Music folder", target: self, action: #selector(openMusic))
-        music.frame = NSRect(x: 12, y: 12, width: 116, height: 30)
         let play = NSButton(title: "Play", target: self, action: #selector(play))
         play.frame = NSRect(x: 160, y: 12, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, shuffle, music, play] { window.contentView!.addSubview(view) }
+        for view in [smaa, shuffle, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc func openMusic() {
-        do {
-            try FileManager.default.createDirectory(at: musicURL, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(musicURL)
-        } catch {
-            NSAlert(error: error).runModal()
-        }
     }
 
     @objc func play() {

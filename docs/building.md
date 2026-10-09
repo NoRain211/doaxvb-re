@@ -83,22 +83,31 @@ python tools/build_game.py --imported private/imported-disc
 
 ### macOS build
 
-On macOS (Apple Silicon or Intel), install the prerequisites with Homebrew:
+On macOS (Apple Silicon or Intel), install CMake, Ninja, SDL3 and Capstone:
 
 ```bash
-brew install cmake ninja sdl3 extract-xiso
+brew install cmake ninja sdl3
 python3 -m pip install capstone==5.0.9
 ```
 
-Ensure `extract-xiso` is in PATH, then run:
+Homebrew has no `extract-xiso`; build it from
+[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) and put it on
+`PATH`, or pass its location with `--extractor`:
+
+```bash
+git clone https://github.com/XboxDev/extract-xiso.git
+cmake -S extract-xiso -B extract-xiso/build && cmake --build extract-xiso/build
+```
+
+Then build the runner:
 
 ```bash
 ./build_game.sh /path/to/game.iso
 ```
 
-After compilation:
-- `./launcher.sh`: opens the native macOS launcher to select resolution, volume, and soundtrack options.
-- `./run_game.sh`: launches the game directly with saved configuration.
+`./launcher.sh` opens the launcher to pick resolution, anti-aliasing, volume
+and soundtrack options, then starts the game. `./run_game.sh` starts the game
+with the saved choices.
 
 Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
