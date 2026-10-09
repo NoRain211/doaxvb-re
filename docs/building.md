@@ -231,3 +231,8 @@ Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
 Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
 supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.
+Set `RECOMP_SPLIT_RATE=auto`, or to your display's refresh rate such as 120 or
+144, to present smoother motion than the game's 60 Hz while gameplay keeps its
+original timing. Use it with `--vsync`. The picture runs one 60 Hz tick
+behind, and some objects such as water still move at 60 Hz. See
+[the split-rate notes](wayfinder/research/high-frame-rate-split.md#current-state).
