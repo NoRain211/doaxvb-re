@@ -60,8 +60,8 @@ user-supplied files loaded at runtime.
 Edit PNG masters and convert them offline with `texconv`. Process RGB and
 alpha separately. Extend edge color into transparent texels to avoid dark
 fringes. Rebuild every mip from the new art, and keep cutout coverage at the
-192 threshold (`texconv --keep-coverage` is a starting point). Do not let a
-driver generate mips for cutouts. AI upscalers cannot restore detail missing
+192 threshold (`texconv --keep-coverage 0.7529411765`, or 192/255, is a
+starting point). Do not let a driver generate mips for cutouts. AI upscalers cannot restore detail missing
 from the source and can turn DXT block noise into invented structure. Small
 silhouettes benefit most from hand work.
 
