@@ -46,6 +46,10 @@ double recomp_split_display_rate(const char *text, double display_hz, bool vsync
     }
     double rate = recomp_split_rate(text);
     if (!rate || !known) return rate;
+    if (display_hz < 60) {
+        *note = "display refresh is below 60 Hz; split rate off";
+        return 0;
+    }
     // A nominal rate such as 120 on a 119.88 Hz mode would drift a frame every
     // few seconds; within 1% the display's exact rate is what was meant.
     if (fabs(rate-display_hz) <= display_hz*0.01) return display_hz;

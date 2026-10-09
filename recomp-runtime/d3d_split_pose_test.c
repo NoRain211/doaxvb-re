@@ -21,6 +21,11 @@ int main(void)
     CHECK(recomp_split_display_rate("auto",143.981,true,&note)==143.981 && !note);
     CHECK(recomp_split_display_rate("auto",0,true,&note)==0 && note);
     CHECK(recomp_split_display_rate("auto",50,true,&note)==0 && note);
+    CHECK(recomp_split_display_rate("60",30,true,&note)==0 && note);
+    CHECK(recomp_split_display_rate("120",50,true,&note)==0 && note);
+    CHECK(recomp_split_display_rate("60",59.94,true,&note)==0 && note);
+    CHECK(recomp_split_display_rate("120",50,false,&note)==0 && note);
+    CHECK(recomp_split_display_rate(NULL,50,true,&note)==0 && !note);
     CHECK(recomp_split_display_rate("120",119.88,true,&note)==119.88 && !note);
     CHECK(recomp_split_display_rate("240",144,true,&note)==144 && note);
     CHECK(recomp_split_display_rate("240",144,false,&note)==240 && note);
