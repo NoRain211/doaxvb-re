@@ -2,9 +2,45 @@
 
 This page records how the port got to its current state: what was built,
 why each direction was chosen, and which early conclusions turned out wrong.
+It draws on the git history and on the project's development chats,
+including archived ones going back to May 2026.
 [CHANGELOG.md](../CHANGELOG.md) lists what each release changed, and
 [public-status.md](public-status.md) states what the public tree and local
 builds prove. Branches marked local exist only on the maintainer's machine.
+
++## Before the public tree, May to August 2026
+
+The project went through four approaches before it settled on whole-program
+static recompilation. Each change of direction came from the same question:
+was the work producing visible or audible game output, or only more evidence
+about why it did not?
+
+| Dates | Approach | What happened |
+|---|---|---|
+| 05-18 to 05-19 | Emulator fix | Work started as an investigation of a xemu freeze. Finding no existing decompilation led to a private reverse-engineering workspace with Ghidra, symbol maps and xemu correlation notes. |
+| 05-20 to 06-15 | Native host | A Windows program loaded the XBE and ran its x86 code directly, with shims for kernel imports. Windows already used the XBE's preferred low address range, so the host relocated the image and still hit missed relocations. Six "loops" reached the display mode call, a blank window, sustained GPU command traffic and the movie player, but never a recognizable title screen. |
+| 06-16 to 06-21 | Decomp first | After the player said nothing was getting done, the repo added specs, work packets and source gates, and small Go "oracles" that modeled file cache, input and archive functions from static evidence. Most gates ended "held". The phase produced careful notes and very little forward motion. |
+| 06-21 to 07-02 | Crash-driven recomp | A first `xboxrecomp` spike judged its output unusable for two input functions, yet a private runner built on it the next day advanced crash by crash. It later ran millions of frames without crashing, with no proof that anything rendered or played. |
+| 07-03 to 07-15 | Native host again | A review found no recorded proof that the native host had been a dead end. With a five-day kill criterion, the exact-base mapping was solved, and the host presented its first non-uniform frame from parsed GPU commands. Controller enumeration stalled. |
+| 07-16 to 08-14 | Whole-program recomp | The player asked to stop building harnesses and "start the actual recomp". The tracked `recomp-runtime` gained an XBE entry runner, then a runner that compiled every generated chunk with fail-loud stubs. Lifter discovery fixes went into `xboxrecomp`. Guest TLS was modeled from xemu observations, and kernel imports, a second main-loop frame, DirectSound creation and deterministic Start input followed. |
+
+The public tree began on 2026-08-15 (`ef3bc2e`), and the native host was
+frozen as reference material the next day. Bring-up then advanced by
+numbered rounds, each ending at a classified stop. xemu with a GDB stub served
+as the oracle for movie timing. A lifter defect in packed SSE instructions
+explained black frames across thousands of call sites. Rounds 95 to 179
+closed the front-end milestone #14 on 08-31, when two natural runs reached
+island activity loading. Later rounds pushed through further screens until
+scripted input reached an activity and a natural cancel input was consumed
+there (#18). A 2026-09-05 assessment called
+the result "a credible executable port scaffold" and set audio (#15) and
+offline flows (#16) as the next work, which led to 0.0.1 Alpha.
+
+Several current rules in `AGENTS.md` come from this period. Progress means
+reaching a later natural event, not running longer. A bounded run finishes
+within a minute. After two failed attempts at the same event, compare the
+receipts before trying again. Generated C is never edited by hand.
+
 
 ## Releases up to 0.5.3
 
@@ -12,9 +48,14 @@ builds prove. Branches marked local exist only on the maintainer's machine.
 |---|---|
 | 2026-08-15 | Public source baseline (`ef3bc2e`). |
 | 2026-09-08 to 09-17 | 0.0.1 to 0.3.51 Alpha: boot, saves, audio, movies, water and activity repairs. |
+| 2026-09-19 to 09-24 | Casino Blackjack and Poker, and hotel gift tapes (#39, #40), 16:9 by default (#38), shop vertex streams (#41), audio crackle (#42) and renderer stalls (#43). |
 | 2026-09-25 | 0.4 Beta, the first fully playable build. Render scale, MSAA and SMAA, the D3D11 render worker thread, 60 Hz pacing and the launcher landed for it (#44 to #60). |
 | 2026-09-26 to 09-29 | 0.4.5 to 0.4.9 Beta: bundled build tools, swimsuit fabric (#62), View Collection (#64), SDL3 controllers (#67, #68, #70), save deletion (#71). |
 | 2026-09-29 to 09-30 | 0.5.0 to 0.5.3 Beta "Mixtape": custom soundtracks (#73), the private music folder (#75), launcher volume (#76), Radio Station shuffle (#78). |
+
+Other chats in this period added community health files, rewrote
+`AGENTS.md` from a review of 41 earlier sessions, and pinned the lifter to
+the `NoRain211/xboxrecomp` fork (#50).
 
 ## Presentation and graphics, 2026-09-26 to 2026-10-09
 
@@ -93,6 +134,26 @@ that asked for constant ambient was declined.
 
 ## Conclusions that turned out wrong
 
+- **The native host was a dead end.** It was dropped in June without a
+  recorded technical proof. In July the exact-base mapping that had blocked
+  it was solved within days. The project still chose whole-program recomp,
+  because that path leads to hand-written source.
+- **`xboxrecomp` output was unusable.** A June spike stopped after its output
+  for two input functions did not match the static notes. The same lifter,
+  fixed upstream and in the fork, now generates the whole game.
+- **Running more frames without a crash meant progress.** The June runner
+  reached millions of frames with no proof of rendering or audio. Progress
+  now means reaching a later natural event.
+- **The round 116 hang was a runtime bug.** A lifter upgrade had changed
+  almost every generated body. A control tree built with the earlier lifter
+  and the same recoveries ran past the hang.
+- **The opening movie stalled because of file read ordering.** Two
+  read-ordering theories were tested and retired. The xemu oracle showed the
+  real path through the movie classifier.
+- **VRR was worse than fixed pacing.** The first PresentMon comparison on
+  09-26 found VRR frames uneven. Earlier "scale 3" test runs had really run at
+  4.5 because of a script bug. VRR became even once presents waited for their
+  60 Hz slot (#82).
 - **RTGI would visibly change the lighting.** The first pass only added
   bounced light from on-screen surfaces. On sunny scenes it was almost
   invisible, because the game's baked ambient already fills shadows. Darkening
@@ -167,4 +228,6 @@ frames.
   use them.
 - The launcher does not expose VRR, fog, split rate or texture replacement
   yet.
+- Security scan fixes #86 (Media Foundation loaded from System32 only), #87
+  (guest buffer bounds) and #88 (lifter section extractor note) are open.
 - Known issues #54, #55 and #56 are unchanged.
