@@ -8,12 +8,14 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
 
 ### Added
 
-- **High refresh presentation** (#98). `RECOMP_SPLIT_RATE=auto`, or your
-  display's exact refresh rate, shows extra frames between the game's 60 Hz
-  ticks by interpolating the camera, characters and props. A rate below the
-  display's paces unevenly, so prefer `auto`. Gameplay keeps its original
-  timing. Use it with `--vsync`. The picture runs one tick behind, and some
-  objects such as water still move at 60 Hz. Unset, nothing changes.
+- **High refresh presentation** (#98). On a display above 60 Hz,
+  `RECOMP_SPLIT_RATE=auto` shows extra frames between the game's 60 Hz ticks
+  by interpolating the camera, characters, the ball and singly drawn props.
+  `auto` reads the primary display's refresh rate; on another display, set
+  its exact rate. On a fixed refresh display, a lower rate paces unevenly.
+  Gameplay keeps its original timing. Use it with `--vsync`. The picture
+  runs one tick behind, and water, repeated props and the shop preview still
+  move at 60 Hz. Leave it unset on 60 Hz displays; unset, nothing changes.
 - **Texture replacement** (#95). With `RECOMP_TEXTURES` set, F12 dumps the
   current frame's textures as PNG and Ctrl+F12 reloads edited PNGs while the
   game runs. See `docs/texture-replacement.md`.
@@ -33,7 +35,8 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
 - Distant geometry had no fog (#94).
 - Fixed-function point lights were dropped or lit as directional (#92).
 - Textures at steep angles blurred and shimmered, and foliage and hair edges
-  stair-stepped under MSAA (#93).
+  stair-stepped under MSAA (#93). The edge fix needs a GPU with Direct3D
+  feature level 10.1 or newer.
 - The title screen sea had no shimmer (#96).
 - Closing the window mid-frame could exit with an error code (#80).
 
