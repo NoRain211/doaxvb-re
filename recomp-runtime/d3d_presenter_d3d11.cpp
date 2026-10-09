@@ -774,7 +774,7 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.Flags = presenter->vrr && !immediate_present
         ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
 
-    return D3D11CreateDeviceAndSwapChain(
+    const HRESULT result = D3D11CreateDeviceAndSwapChain(
         nullptr,
         driver_type,
         nullptr,
@@ -787,6 +787,14 @@ HRESULT createDeviceWithDriver(
         &presenter->device,
         &selected_feature_level,
         &presenter->context);
+    // Limit the blocking flip queue; immediate presents must retain the default.
+    IDXGIDevice1 *dxgi_device = nullptr;
+    if (SUCCEEDED(result) && !immediate_present &&
+        SUCCEEDED(presenter->device->QueryInterface(IID_PPV_ARGS(&dxgi_device)))) {
+        dxgi_device->SetMaximumFrameLatency(1u);
+        releaseCom(dxgi_device);
+    }
+    return result;
 }
 
 HRESULT createGraphics(RecompD3dPresenter *presenter)
@@ -817,13 +825,6 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         presenter->create_result = warp_result;
         std::fprintf(stderr, "recomp d3d presenter: using WARP driver\n");
     }
-    // One queued frame: vsync back-pressure paces the game without adding input lag.
-    IDXGIDevice1 *dxgi_device = nullptr;
-    if (SUCCEEDED(presenter->device->QueryInterface(IID_PPV_ARGS(&dxgi_device)))) {
-        dxgi_device->SetMaximumFrameLatency(1u);
-        releaseCom(dxgi_device);
-    }
-
     ID3D11Texture2D *back_buffer = nullptr;
     HRESULT result = presenter->swap_chain->GetBuffer(
         0u,
@@ -3098,6 +3099,13 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
    frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
    refresh/60. Rechecked each second, as the window can change monitors.
    ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
+UINT fixedRefreshInterval(UINT hz)
+{
+    // Integer rates such as 239 stand for 239.76 Hz.
+    const UINT k = (hz + 30u) / 60u;
+    return (k == 2u || k == 4u) && hz + 1u >= 60u * k && hz <= 60u * k + 1u ? k : 1u;
+}
+
 UINT syncInterval(RecompD3dPresenter *presenter)
 {
     if (presenter->present_count % 60u == 0u) {
@@ -3108,13 +3116,27 @@ UINT syncInterval(RecompD3dPresenter *presenter)
         UINT interval = 1u;
         if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
             EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
-            // Integer rates such as 239 stand for 239.76 Hz.
-            const DWORD hz = mode.dmDisplayFrequency, k = (hz + 30u) / 60u;
-            if (k >= 2u && k <= 4u && hz + 1u >= 60u * k && hz <= 60u * k + 1u) interval = k;
+            interval = fixedRefreshInterval(mode.dmDisplayFrequency);
         }
         presenter->sync_interval = interval;
     }
     return presenter->sync_interval;
+}
+
+void recordFrameStatistics(RecompD3dPresenter *presenter,
+    HRESULT result, const DXGI_FRAME_STATISTICS &stats)
+{
+    if (FAILED(result)) {
+        presenter->last_stat_present = presenter->last_stat_refresh = 0u;
+        return;
+    }
+    if (presenter->last_stat_present != 0u &&
+        stats.PresentCount == presenter->last_stat_present + 1u) {
+        const UINT hold = stats.PresentRefreshCount - presenter->last_stat_refresh;
+        ++presenter->refresh_holds[(std::min)(hold, 8u)];
+    }
+    presenter->last_stat_present = stats.PresentCount;
+    presenter->last_stat_refresh = stats.PresentRefreshCount;
 }
 
 RecompD3dPresenterError submitPresent(
@@ -3214,10 +3236,11 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    DXGI_FRAME_STATISTICS stats{};
+    const HRESULT stats_result = presenter->present_log != nullptr || presenter->performance_counter
+        ? presenter->swap_chain->GetFrameStatistics(&stats) : E_FAIL;
     if (presenter->present_log != nullptr) {
-        DXGI_FRAME_STATISTICS stats{};
         UINT last_present = 0u;
-        const HRESULT stats_result = presenter->swap_chain->GetFrameStatistics(&stats);
         presenter->swap_chain->GetLastPresentCount(&last_present);
         std::fprintf(presenter->present_log,
             "%u,%lld,%lld,%u,0x%X,0x%08lX,%u,0x%08lX,%u,%u,%u,%lld\n",
@@ -3237,16 +3260,7 @@ RecompD3dPresenterError submitPresent(
             presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
         }
         presenter->last_present_ms = present_end_ms;
-        DXGI_FRAME_STATISTICS stats{};
-        if (SUCCEEDED(presenter->swap_chain->GetFrameStatistics(&stats))) {
-            if (presenter->last_stat_present != 0u &&
-                stats.PresentCount == presenter->last_stat_present + 1u) {
-                const UINT hold = stats.PresentRefreshCount - presenter->last_stat_refresh;
-                ++presenter->refresh_holds[(std::min)(hold, 8u)];
-            }
-            presenter->last_stat_present = stats.PresentCount;
-            presenter->last_stat_refresh = stats.PresentRefreshCount;
-        }
+        recordFrameStatistics(presenter, stats_result, stats);
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {

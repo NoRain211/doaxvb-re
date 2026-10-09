@@ -20,8 +20,8 @@ does not replace the game's clock. These are recommendations based on
 The counters count vblanks, not milliseconds. Neither the DXGI contract nor
 the supplied histogram identifies which NVIDIA refreshes were counted.
 Ranking LFC, delayed display, and counter/reporting behavior by likelihood is
-**unverified**. Measure the interval between displayed presents before
-changing pacing. [DXGI_FRAME_STATISTICS][stats]
+**unverified**. Measure the interval between displayed presents to assess
+the pacing changes below. [DXGI_FRAME_STATISTICS][stats]
 
 ## What the counters establish
 
@@ -248,9 +248,27 @@ the installed version's switches.
 PresentMon.exe --process_id <PID> --v1_metrics --qpc_time --timed 30 --terminate_after_timed --no_console_stats --output_file <LOCAL_CSV>
 ```
 
-## Minimal changes to consider
+## Implemented changes and remaining recommendations
 
-These are recommendations only; no runtime source was changed.
+This branch changes runtime source as well as adding this research note:
+
+- Scaled VRR output is downsampled into a client-sized swap chain.
+- Blocking flip presentation requests device frame latency one; immediate
+  presentation retains the device default. No latency waitable object is used.
+- Fixed-refresh presentation selects interval two near 120 Hz and four near
+  240 Hz (within one integer Hz); other rates retain interval one.
+- The VRR worker flushes rendering and waits on its own nominal 60 Hz grid
+  before `Present`, in addition to the guest's existing wait. Thread-local
+  waitable timers now close on thread exit.
+- Optional CSV logging records raw present/statistics counters, query HRESULT,
+  and QPC before/after `Present`. The histogram baseline resets on query
+  failures. Its label remains `holds`; stale/skipped sample counts and the
+  other diagnostics below are still open work.
+
+These changes follow from the [presenter][local-presenter] and
+[timer][local-vblank] source. Their effect on displayed cadence is
+**unverified**. The following recommendations describe remaining work and
+controls for a comparison; this branch is not an unchanged timing baseline.
 
 1. **Fix the diagnostic meaning first, in `submitPresent`.** Rename the
    refresh histogram to `present_refresh_delta`; report it as a count, not
@@ -261,10 +279,12 @@ These are recommendations only; no runtime source was changed.
    baseline after disjoint/error or output/chain changes; count stale samples
    and skipped IDs separately. Retain the zero-delta bucket. Source:
    [`submitPresent`][local-presenter]; rationale: [present-ID mapping][flip].
-2. **Keep the current timing policy for the first measurement.** The guest
+2. **Keep a control build with guest pacing only.** The guest
    wait releases a packet to the worker; `publish` permits up to two pending
-   packets including one executing, and the worker renders before calling
-   `Present`. Therefore a steady guest clock is not a display clock. Record
+   packets including one executing, and the patched worker renders and adds
+   its own VRR wait before calling `Present`. Compare it with a control that
+   has the same diagnostics but retains the pre-patch timing and output size.
+   Therefore a steady guest clock is not a display clock. Record
    the existing guest/queue diagnostics alongside worker-side timestamps.
    The timer uses a nominal integer-nanosecond 60 Hz interval and discards
    timing debt after lateness; it does not guarantee exact arrival times.
@@ -300,9 +320,14 @@ nor a future waitable chain eliminates the separate packet queue.
 
 ## Next gate
 
-Run **one 30-second, manually focused VRR capture**, after adding only the raw
-diagnostics in recommendation 1. Leave pacing, output size, and driver
-settings unchanged. Use the NVIDIA indicator to verify activation and
+Run **one 30-second, manually focused VRR capture** of this branch and a
+matching capture of a separate control build with only raw diagnostics added
+to the pre-patch runtime. Record each build's commit, output dimensions,
+latency policy, present flags/interval, and guest/worker waits. Keep driver
+settings, scene, and display setup identical. The current branch includes all
+runtime changes listed above, so this comparison measures their combined
+effect; isolate one timing change at a time before attributing a difference.
+Use the NVIDIA indicator to verify activation and
 PresentMon console capture without its GUI overlay; retain QPC timing and
 all dropped rows. This protocol follows the [activation check][nv-indicator]
 and [console capture controls][pm-console].

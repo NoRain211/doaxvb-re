@@ -6,12 +6,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <memory>
 #include <thread>
 
 namespace {
 using Clock = std::chrono::steady_clock;
 Clock::time_point last_vblank;
-thread_local HANDLE high_resolution_timer;
+thread_local std::unique_ptr<void, decltype(&CloseHandle)>
+    high_resolution_timer(nullptr, &CloseHandle);
 // ponytail: the supported progressive NTSC mode; other video modes need their rate.
 constexpr auto interval = std::chrono::nanoseconds(1000000000 / 60);
 constexpr auto spin_window = std::chrono::microseconds(500);
@@ -19,9 +21,9 @@ constexpr auto spin_window = std::chrono::microseconds(500);
 void sleepUntil(Clock::time_point deadline)
 {
     if (high_resolution_timer == nullptr) {
-        high_resolution_timer = CreateWaitableTimerExW(
+        high_resolution_timer.reset(CreateWaitableTimerExW(
             nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-            TIMER_MODIFY_STATE | SYNCHRONIZE);
+            TIMER_MODIFY_STATE | SYNCHRONIZE));
     }
     if (high_resolution_timer == nullptr) {
         std::this_thread::sleep_until(deadline);
@@ -35,8 +37,8 @@ void sleepUntil(Clock::time_point deadline)
         due.QuadPart = -std::chrono::duration_cast<std::chrono::nanoseconds>(
             timer_wait).count() / 100;
         if (due.QuadPart < 0 &&
-            SetWaitableTimer(high_resolution_timer, &due, 0, nullptr, nullptr, FALSE)) {
-            WaitForSingleObject(high_resolution_timer, INFINITE);
+            SetWaitableTimer(high_resolution_timer.get(), &due, 0, nullptr, nullptr, FALSE)) {
+            WaitForSingleObject(high_resolution_timer.get(), INFINITE);
         } else {
             std::this_thread::sleep_until(deadline);
             return;

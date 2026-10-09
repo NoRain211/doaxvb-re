@@ -2020,8 +2020,62 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testPacingPolicies()
+{
+    const UINT rates[][2] = {{60,1}, {119,2}, {120,2}, {121,2}, {144,1},
+        {179,1}, {180,1}, {181,1}, {239,4}, {240,4}, {241,4}, {360,1}};
+    for (const auto &rate : rates) {
+        if (fixedRefreshInterval(rate[0]) != rate[1]) return false;
+    }
+    RecompD3dPresenter stats_presenter{};
+    DXGI_FRAME_STATISTICS stats{};
+    stats.PresentCount = 10u; stats.PresentRefreshCount = 100u;
+    recordFrameStatistics(&stats_presenter, S_OK, stats);
+    for (HRESULT error : {DXGI_ERROR_FRAME_STATISTICS_DISJOINT, E_FAIL}) {
+        recordFrameStatistics(&stats_presenter, error, stats);
+        if (stats_presenter.last_stat_present != 0u || stats_presenter.last_stat_refresh != 0u) return false;
+        ++stats.PresentCount; stats.PresentRefreshCount = 1u;
+        recordFrameStatistics(&stats_presenter, S_OK, stats);
+        if (stats_presenter.refresh_holds[8] != 0u) return false;
+        ++stats.PresentCount; stats.PresentRefreshCount += 2u;
+        recordFrameStatistics(&stats_presenter, S_OK, stats);
+    }
+    if (stats_presenter.refresh_holds[2] != 2u) return false;
+
+    const auto worker = [] { recomp_d3d_sleep_until(0); };
+    std::thread(worker).join(); // Initialize thread support before counting handles.
+    DWORD before = 0u, after = 0u;
+    if (!GetProcessHandleCount(GetCurrentProcess(), &before)) return false;
+    for (unsigned i = 0u; i < 8u; ++i) std::thread(worker).join();
+    if (!GetProcessHandleCount(GetCurrentProcess(), &after) || after != before) return false;
+
+    const bool saved_immediate = immediate_present;
+    bool passed = true;
+    for (bool immediate : {true, false}) {
+        RecompD3dPresenter presenter{};
+        presenter.config = {320u, 240u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+            RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+        immediate_present = immediate;
+        IDXGIDevice1 *device = nullptr;
+        UINT latency = 0u;
+        passed = createWindow(&presenter) &&
+            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP)) &&
+            SUCCEEDED(presenter.device->QueryInterface(IID_PPV_ARGS(&device))) &&
+            SUCCEEDED(device->GetMaximumFrameLatency(&latency)) && latency == (immediate ? 3u : 1u);
+        releaseCom(device);
+        releasePresenter(&presenter);
+        if (!passed) break;
+    }
+    immediate_present = saved_immediate;
+    return passed;
+}
+
 int main()
 {
+    if (!testPacingPolicies()) {
+        std::fprintf(stderr, "FAIL refresh intervals, statistics epochs, timer handles or frame latency\n");
+        return 1;
+    }
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;
