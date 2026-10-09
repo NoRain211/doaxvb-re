@@ -1,4 +1,9 @@
-#if defined(__x86_64__) || defined(_M_X64)
+/* Native fiber switch for POSIX x86-64 (System V) hosts. recomp_fiber_switch
+   saves the callee-saved registers on the current stack, stores that stack
+   pointer in *from_sp, and resumes the fiber whose saved stack pointer is
+   to_sp. A new fiber's frame (built by CreateFiberEx in fiber_adapter.c)
+   returns into recomp_fiber_trampoline with r12 = parameter and r13 = entry. */
+#if defined(__x86_64__)
 
 #if defined(__APPLE__)
 #define CSYM(name) _##name
@@ -8,15 +13,8 @@
 
 .text
 .globl CSYM(recomp_fiber_switch)
-.globl _recomp_fiber_switch
-.globl recomp_fiber_switch
 .p2align 4
 CSYM(recomp_fiber_switch):
-#if defined(__APPLE__)
-recomp_fiber_switch:
-#else
-_recomp_fiber_switch:
-#endif
     pushq %rbp
     pushq %rbx
     pushq %r12
@@ -34,17 +32,14 @@ _recomp_fiber_switch:
     ret
 
 .globl CSYM(recomp_fiber_trampoline)
-.globl _recomp_fiber_trampoline
-.globl recomp_fiber_trampoline
 .p2align 4
 CSYM(recomp_fiber_trampoline):
-#if defined(__APPLE__)
-recomp_fiber_trampoline:
-#else
-_recomp_fiber_trampoline:
-#endif
     movq  %r12, %rdi
     andq  $-16, %rsp
     callq *%r13
     ud2
+#endif
+
+#if defined(__ELF__)
+.section .note.GNU-stack,"",%progbits
 #endif

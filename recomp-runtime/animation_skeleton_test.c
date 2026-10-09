@@ -108,15 +108,8 @@ int main(void)
     s.position[0] = 3.17f; s.position[2] = 2.9f; s.heading = 1.5f;
     p[12] = 0.2f; p[14] = 2.0002f; t.offsets[5][0] = 0.2f;
     CHECK(recomp_animation_solve_skeleton(&t, p, &s, a));
-#ifdef _WIN32
     CHECK(fabsf(a[5].m[0]-0.06801302731f) < 0.000002f);
     CHECK(fabsf(a[5].m[2]+0.99721509218f) < 0.000002f);
-#else
-    /* macOS/ARM64 libm acosf evaluates m[0] ≈ 0.0680578649f and m[2] ≈ -0.9972122312f
-       due to extreme derivative sensitivity (-1/sqrt(1-x^2)) near the acos singular boundary. */
-    CHECK(fabsf(a[5].m[0]-0.0680578649f) < 0.000002f);
-    CHECK(fabsf(a[5].m[2]+0.9972122312f) < 0.000002f);
-#endif
     puts("Animation skeleton tests passed");
     return 0;
 }
