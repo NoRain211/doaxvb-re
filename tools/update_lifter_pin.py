@@ -100,12 +100,19 @@ def generate(imported, verify_parity, revision=None):
     return build_game.build(args, verify_parity=verify_parity, lifter_revision=revision) / "generated"
 
 
+def manual_target(value):
+    address = int(value, 0)
+    if not 0 < address <= 0xffffffff:
+        raise argparse.ArgumentTypeError("Manual-call targets must be nonzero 32-bit addresses")
+    return address
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--imported", type=Path, required=True, help="Completed import beneath private/")
     parser.add_argument("--revision", help="Lifter commit (default: the fork's codex/doaxbv-recipe tip)")
     parser.add_argument("--manual-call-target", action="append", default=[],
-                        type=lambda value: int(value, 0),
+                        type=manual_target,
                         help="Add a manual-dispatch entry; repeat for a cluster. "
                              "Defaults to the current pin when --revision is omitted.")
     args = parser.parse_args()
@@ -131,7 +138,7 @@ def main():
         add_manual_targets(ROOT, args.manual_call_target)
         new = generate(args.imported, verify_parity=False, revision=revision)
         changed_files = pin_metadata(ROOT, new, revision)
-    except Exception:
+    except BaseException:
         for name, data in saved.items():
             (ROOT / name).write_bytes(data)
         git("checkout", "--detach", previous)

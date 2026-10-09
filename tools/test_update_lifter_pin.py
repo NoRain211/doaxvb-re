@@ -14,7 +14,13 @@ from update_lifter_pin import add_manual_targets, compare, function_hashes, pin_
 
 
 class LifterPinTests(unittest.TestCase):
+    def test_interrupt_restores_selection_and_metadata(self):
+        self.check_generation_failure(KeyboardInterrupt())
+
     def test_generation_failure_restores_selection_and_metadata(self):
+        self.check_generation_failure(ValueError("failed"))
+
+    def check_generation_failure(self, failure):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "tools/game-recipe").mkdir(parents=True)
@@ -31,13 +37,27 @@ class LifterPinTests(unittest.TestCase):
                     patch.object(update_lifter_pin, "git", side_effect=fake_git), \
                     patch.object(update_lifter_pin.subprocess, "check_output", return_value=""), \
                     patch.object(update_lifter_pin.subprocess, "run") as run, \
-                    patch.object(update_lifter_pin, "generate", side_effect=[root / "old", ValueError("failed")]), \
+                    patch.object(update_lifter_pin, "generate", side_effect=[root / "old", failure]), \
                     patch("sys.argv", ["update_lifter_pin.py", "--imported", "private/import",
                                        "--manual-call-target", "0x2000"]):
-                with self.assertRaisesRegex(ValueError, "failed"):
+                with self.assertRaises(type(failure)):
                     update_lifter_pin.main()
                 self.assertEqual(run.call_count, 1)  # submodule sync, never staging
             self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
+
+    def test_invalid_cli_targets_do_not_touch_git(self):
+        from contextlib import redirect_stderr
+        import io
+        for value in ("0", "-1", "0x100000000", "junk"):
+            with self.subTest(value=value), patch.object(update_lifter_pin, "git") as git, \
+                    patch.object(update_lifter_pin.subprocess, "run") as run, \
+                    patch("sys.argv", ["update_lifter_pin.py", "--imported", "private/import",
+                                       "--manual-call-target", value]), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    update_lifter_pin.main()
+                self.assertEqual(failure.exception.code, 2)
+                git.assert_not_called()
+                run.assert_not_called()
 
     def test_manual_selection_preserves_existing_entries_and_authentication(self):
         with tempfile.TemporaryDirectory() as folder:
