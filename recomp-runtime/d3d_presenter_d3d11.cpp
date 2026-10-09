@@ -220,6 +220,19 @@ void buildDrawShaderSource(
         "            (func == 4 && alpha > ref) ||\n"
         "            (func == 5 && alpha != ref) ||\n"
         "            (func == 6 && alpha >= ref);\n"
+        "#ifdef EXPLICIT_COVERAGE\n"
+        "        if (draw_flags.y > 1.5f) {\n"
+        /* Coverage is independent of stored alpha, including flat hard passes. */
+        "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
+        "            float width = fwidth(shaded.a);\n"
+        "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
+        "            coverage = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
+        "                ? (alpha_pass ? 1.0f : 0.0f)\n"
+        "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
+        "            uint count = (uint)round(coverage * draw_flags.y);\n"
+        "            sample_coverage = count >= 32 ? 0xffffffffu : (1u << count) - 1u;\n"
+        "        } else\n"
+        "#endif\n"
         "        if (!alpha_pass) discard;\n"
         "    }\n"
         "    if (fog_flags.x > 0.5f) {\n"
@@ -348,6 +361,7 @@ constexpr uint32_t kBlendStateSlots = 16u;
 struct BlendStateEntry {
     bool used;
     bool enable;
+    bool alpha_to_coverage;
     RecompD3dBlendFactor src;
     RecompD3dBlendFactor dst;
     RecompD3dBlendOp op;
@@ -491,7 +505,7 @@ struct RecompD3dPresenter {
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[4][4]{};
+    ID3D11SamplerState *address_samplers[2][4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -679,8 +693,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->depth_targets.clear();
     presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
-    for (auto &row : presenter->address_samplers) {
-        for (auto &sampler : row) releaseCom(sampler);
+    for (auto &filter : presenter->address_samplers) {
+        for (auto &row : filter) {
+            for (auto &sampler : row) releaseCom(sampler);
+        }
     }
     releaseCom(presenter->filter_sampler);
     releaseCom(presenter->program_mask_sampler);
@@ -1371,7 +1387,7 @@ bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source)
+    std::string &compiled_source, bool explicit_coverage = true)
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
@@ -1466,6 +1482,13 @@ bool drawShaderSource(
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
 
     }
+    if (explicit_coverage) {
+        const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+        compiled_source.replace(compiled_source.find(pixel), pixel.size(),
+            "float4 ps_main(VSOut input, out uint sample_coverage : SV_Coverage) : SV_TARGET {\n"
+            "    sample_coverage = 0xffffffffu;");
+        compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
+    }
     return true;
 }
 
@@ -1476,7 +1499,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
-void precompileDrawShaders(const std::atomic<bool> *stop)
+void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     const ULONGLONG start = GetTickCount64();
@@ -1486,13 +1509,13 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
             std::string source;
-            if (!drawShaderSource(fvf, no_program, layout, source)) continue;
+            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage)) continue;
             for (const char *stage : {"vs", "ps"}) {
                 if (stop->load()) return;
                 ID3DBlob *blob = nullptr;
                 const bool vertex = stage[0] == 'v';
                 compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
-                    vertex ? "vs_4_0" : "ps_4_0", &blob);
+                    vertex ? "vs_4_0" : explicit_coverage ? "ps_4_1" : "ps_4_0", &blob);
                 releaseCom(blob);
             }
         }
@@ -1512,14 +1535,15 @@ bool createDrawPipeline(
 {
     RecompD3dVertexLayout layout;
     std::string compiled_source;
-    if (!drawShaderSource(fvf, pipeline, layout, compiled_source)) {
+    const bool explicit_coverage = presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage)) {
         return false;
     }
 
     ID3DBlob *vertex_blob = nullptr;
     ID3DBlob *pixel_blob = nullptr;
     if (!compileDrawShader(compiled_source.c_str(), "vs_main", "vs_4_0", &vertex_blob) ||
-        !compileDrawShader(compiled_source.c_str(), "ps_main", "ps_4_0", &pixel_blob)) {
+        !compileDrawShader(compiled_source.c_str(), "ps_main", explicit_coverage ? "ps_4_1" : "ps_4_0", &pixel_blob)) {
         releaseCom(vertex_blob);
         releaseCom(pixel_blob);
         return false;
@@ -2200,7 +2224,8 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
 ID3D11SamplerState *lookupDrawSampler(
-    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
+    bool anisotropic = false)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
@@ -2208,12 +2233,16 @@ ID3D11SamplerState *lookupDrawSampler(
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[u - 1][v - 1];
+    ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
     if (sampler == nullptr) {
         D3D11_SAMPLER_DESC desc{};
         presenter->draw_sampler->GetDesc(&desc);
         desc.AddressU = u;
         desc.AddressV = v;
+        if (anisotropic) {
+            desc.Filter = D3D11_FILTER_ANISOTROPIC;
+            desc.MaxAnisotropy = 16u;
+        }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
         }
@@ -2420,12 +2449,14 @@ ID3D11ShaderResourceView *lookupTexture(
 
 ID3D11BlendState *lookupBlendState(
     RecompD3dPresenter *presenter,
-    const RecompD3dBlendState &blend)
+    const RecompD3dBlendState &blend,
+    bool alpha_to_coverage = false)
 {
     for (uint32_t i = 0u; i < presenter->blend_state_count; ++i) {
         BlendStateEntry &entry = presenter->blend_states[i];
 
         if (entry.used && entry.enable == blend.blend_enable &&
+            entry.alpha_to_coverage == alpha_to_coverage &&
             entry.src == blend.src_factor && entry.dst == blend.dst_factor &&
             entry.op == blend.op &&
             entry.color_write_mask == blend.color_write_mask) {
@@ -2434,6 +2465,7 @@ ID3D11BlendState *lookupBlendState(
     }
 
     D3D11_BLEND_DESC desc{};
+    desc.AlphaToCoverageEnable = alpha_to_coverage;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2460,6 +2492,7 @@ ID3D11BlendState *lookupBlendState(
     }
     entry.used = true;
     entry.enable = blend.blend_enable;
+    entry.alpha_to_coverage = alpha_to_coverage;
     entry.src = blend.src_factor;
     entry.dst = blend.dst_factor;
     entry.op = blend.op;
@@ -2697,7 +2730,13 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
-    draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+    const bool alpha_to_coverage = draw.depth.alpha_test_enable &&
+        (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER ||
+         draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL) &&
+        !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u &&
+        presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    /* draw_flags.y: 0 disabled, 1 hard alpha test, otherwise sample count. */
+    draw_constants[65] = alpha_to_coverage ? static_cast<float>(presenter->msaa) : draw.depth.alpha_test_enable ? 1.0f : 0.0f;
     draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
@@ -2761,10 +2800,16 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
+    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
+        draw.texture.mip_levels > 1u &&
+        !layout.pretransformed && !draw.texture.linear &&
+        !draw.texture.render_target && !draw.texture_is_backbuffer &&
+        draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
+        !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v),
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
         draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
@@ -2780,7 +2825,7 @@ RecompD3dPresenterError submitDraw(
             ((color >> 8u) & 255u) / 255.0f,
             (color & 255u) / 255.0f,
             ((color >> 24u) & 255u) / 255.0f};
-        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend);
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
@@ -3617,7 +3662,8 @@ RecompD3dPresenterError d3d11_backend_create(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     try {
-        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop);
+        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop,
+            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1);
     } catch (const std::system_error &) {
         // Shaders then compile on first use, as before.
     }
