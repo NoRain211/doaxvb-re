@@ -2948,6 +2948,9 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     const char *trigger = std::getenv("RECOMP_D3D_FRAME_DUMP_TRIGGER");
     if (trigger != nullptr) {
         count = presenter->frame_dump_burst_count;
+    } else if (count > 300) {
+        const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+        if (defer && std::strcmp(defer, "1") == 0) return;
     }
     if (presenter->frame_dump_count - presenter->frame_dump_burst_base >=
             (count == 0u ? 1u : count)) {

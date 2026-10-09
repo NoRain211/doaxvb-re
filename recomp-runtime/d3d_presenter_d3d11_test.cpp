@@ -1619,6 +1619,16 @@ static bool testDeferredDumpBurst(RecompD3dPresenter *presenter)
         dumpBackBufferOnce(presenter, 2);
         passed = passed && presenter->frame_dump_count == 0;
     }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_TRIGGER", "");
+    for (const char *count : {"301", "10000"}) {
+        _putenv_s("RECOMP_D3D_FRAME_DUMP_COUNT", count);
+        for (unsigned present = 1; present <= 2; ++present) {
+            dumpBackBufferOnce(presenter, present);
+            passed = passed && presenter->frame_dump_count == 0 &&
+                presenter->dump_pool.empty() && presenter->deferred_dumps.empty();
+        }
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_COUNT", "");
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     _putenv_s("RECOMP_D3D_FRAME_DUMP_TRIGGER", "");
     _putenv_s("RECOMP_D3D_FRAME_DUMP_DEFER", "");
