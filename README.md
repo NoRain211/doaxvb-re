@@ -2,7 +2,7 @@
 
 <img src="https://github.com/NoRain211/doaxbv-re/releases/download/readme-media/doaxbv-logo.png" alt="Dead or Alive Xtreme Beach Volleyball logo" width="420">
 
-# DOAXBV Native PC Port
+# DOAXVB Native PC Port
 
 **A native Windows port of _Dead or Alive Xtreme Beach Volleyball_, built by static recompilation, with the goal of rewriting it into readable source.**
 
