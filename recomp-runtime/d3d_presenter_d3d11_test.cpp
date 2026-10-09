@@ -2235,7 +2235,9 @@ static bool testTextureAntialiasing()
             draw.use_texture_factor = false;
             draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
             draw.depth.alpha_ref = 0u;
-            const uint8_t flat_texels[] = {0x88,0x88,0x88,0x88,0x88,0x88,0x88,0x88, 0,0xf8,0,0,0,0,0,0};
+            uint8_t flat_texels[sizeof texels];
+            std::memcpy(flat_texels, texels, sizeof texels);
+            std::fill(flat_texels, flat_texels + 8u, 0x88u);
             draw.texture.data += 0x100u;
             draw.texture_bytes = flat_texels;
             if (submitClear(&presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
