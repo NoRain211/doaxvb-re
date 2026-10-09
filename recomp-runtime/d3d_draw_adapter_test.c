@@ -36,6 +36,12 @@ int recomp_d3d_draw_adapter_test(void)
     REQUIRE(draw.has_combiner && memcmp(draw.combiner, words, sizeof words) == 0);
     REQUIRE(draw.reflection_bytes != NULL && draw.combiner_address_u == 3 && draw.combiner_address_v == 2);
     REQUIRE(draw.combiner_lod_bias == -2.0f);
+    REQUIRE(!draw.combiner_is_backbuffer);
+    *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET) = resource;
+    draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner && draw.combiner_is_backbuffer);
+    *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET) = 0;
     for (uint32_t i = 0; i < 16; ++i) REQUIRE(draw.reflection_transform[i] == (i % 5 == 0 ? 1.0f : 0.0f));
     stages[1][21] = 2;
     float *transform = (float *)(void *)(memory + device - region.address + 0x810u + 3u * 0x40u);

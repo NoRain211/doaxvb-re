@@ -2159,8 +2159,8 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
     }
     /* Sampling observes the current render buffer at this draw, even if the
        preceding draw sampled an older copy. Keep the copy outside the FIFO. */
-    ID3D11ShaderResourceView *none = nullptr;
-    presenter->context->PSSetShaderResources(0u, 1u, &none);
+    ID3D11ShaderResourceView *none[2] = {};
+    presenter->context->PSSetShaderResources(0u, 2u, none);
     copyGuestBuffer(presenter, presenter->back_buffer_copy);
     /* Every view exposes the chain; refresh it with each new snapshot. */
     if (presenter->scale != 1.0f)
@@ -2573,6 +2573,7 @@ RecompD3dPresenterError submitDraw(
         reflection.texture = draw.reflection_texture;
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
+        reflection.texture_is_backbuffer = draw.has_combiner && draw.combiner_is_backbuffer;
         const bool needs_mask = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[1]);
         if (draw.has_combiner && needs_mask) {
             const RenderTargetEntry *sampled = findRenderTarget(presenter, reflection.texture);

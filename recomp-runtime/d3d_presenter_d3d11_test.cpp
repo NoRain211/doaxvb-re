@@ -2326,6 +2326,37 @@ static bool testCombiner(RecompD3dPresenter *presenter,
     draw.target.color = draw.reflection_texture;
     if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
     draw.target = {};
+    auto snapshot = draw;
+    const uint32_t stale[16] = {};
+    snapshot.combiner[1][0] = snapshot.combiner[1][4] = 2;
+    snapshot.combiner[1][6] = 2;
+    snapshot.combiner_is_backbuffer = true;
+    snapshot.reflection_texture = {};
+    snapshot.reflection_texture.data = 0x00760000u;
+    snapshot.reflection_texture.format_byte = 0x12u;
+    snapshot.reflection_texture.bits_per_pixel = 32;
+    snapshot.reflection_texture.linear = true;
+    snapshot.reflection_texture.width = snapshot.reflection_texture.height = 4;
+    snapshot.reflection_texture.pitch = 16;
+    snapshot.reflection_bytes = stale; snapshot.reflection_byte_count = sizeof stale;
+    snapshot.target.offscreen = snapshot.target.no_depth = true;
+    snapshot.target.color = snapshot.reflection_texture;
+    snapshot.target.color.data += 0x100;
+    for (uint32_t pixel : {0xff00ff00u, 0xffff0000u}) {
+        auto background = clear;
+        background.color = pixel;
+        if (submitClear(presenter, background) != RECOMP_D3D_PRESENTER_OK ||
+            submitDraw(presenter, snapshot) != RECOMP_D3D_PRESENTER_OK) return false;
+        RenderTargetEntry *entry = findRenderTarget(presenter, snapshot.target.color);
+        ID3D11Resource *resource = nullptr;
+        ID3D11Texture2D *target = nullptr;
+        if (entry) entry->render_view->GetResource(&resource);
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        const bool passed = resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&target))) &&
+            checkPixels(presenter, target, readback, "stage one snapshots current backbuffer", expected);
+        releaseCom(target); releaseCom(resource);
+        if (!passed) return false;
+    }
     const uint8_t alpha = 128;
     draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8;
     draw.reflection_texture.bits_per_pixel = 8;

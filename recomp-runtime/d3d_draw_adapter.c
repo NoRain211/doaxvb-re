@@ -872,6 +872,7 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
         attach_texture(1u, &texture);
         if (!texture.has_texture || texture.texture_bytes == NULL ||
             texture.palette_bytes != NULL) return;
+        attach_backbuffer_texture(device, &texture);
     }
     if (stages[1][21] == 2u) {
         if (!read_transform(device, 3u, draw->reflection_transform)) return;
@@ -886,6 +887,7 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
     draw->reflection_byte_count = texture.texture_byte_count;
     draw->combiner_address_u = texture.address_u;
     draw->combiner_address_v = texture.address_v;
+    draw->combiner_is_backbuffer = texture.texture_is_backbuffer;
     memcpy(&draw->combiner_lod_bias, &stages[1][6], sizeof draw->combiner_lod_bias);
     if (!isfinite(draw->combiner_lod_bias)) draw->combiner_lod_bias = 0.0f;
     draw->has_combiner = true;

@@ -168,6 +168,7 @@ typedef struct RecompD3dPresenterDrawCommand {
        Stage 1 samples reflection_texture with mesh UV times
        reflection_transform. */
     bool has_combiner;
+    bool combiner_is_backbuffer;
     uint32_t combiner[2][8];
     uint32_t combiner_address_u, combiner_address_v;
     float combiner_lod_bias;
