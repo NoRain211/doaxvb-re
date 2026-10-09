@@ -38,6 +38,7 @@ int recomp_apu_model_test(void);
 int recomp_kernel_memory_test(void);
 int recomp_kernel_allocation_test(void);
 int recomp_kernel_presenter_close_test(void);
+int recomp_d3d_draw_presenter_close_test(int indexed);
 int recomp_kernel_file_save_test(void);
 int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
@@ -855,6 +856,12 @@ int main(int argc, char **argv)
 {
     int passed = 1;
 
+    if (argc == 2 && strcmp(argv[1], "--presenter-close-draw") == 0) {
+        return recomp_d3d_draw_presenter_close_test(1);
+    }
+    if (argc == 2 && strcmp(argv[1], "--presenter-close-up") == 0) {
+        return recomp_d3d_draw_presenter_close_test(0);
+    }
     if (argc == 2 && strcmp(argv[1], "--presenter-close-release") == 0) {
         return recomp_kernel_presenter_close_test();
     }
@@ -878,7 +885,8 @@ int main(int argc, char **argv)
             stderr,
             "usage: recomp_runtime_test "
             "[--invalid-access|--fiber-stack-recycling|"
-            "--ram-overrun|--ram-pending-ohci|--custom-music]\n");
+            "--ram-overrun|--ram-pending-ohci|--custom-music|"
+            "--presenter-close-release|--presenter-close-draw|--presenter-close-up]\n");
         return 64;
     }
 
