@@ -1,5 +1,6 @@
 #include "d3d_frame_adapter.h"
 #include "d3d_draw_model.h"
+#include "d3d_draw_adapter.h"
 #include "d3d_presenter_memory_test.h"
 #include "d3d_vblank.h"
 #include "xapi_time_adapter.h"
@@ -328,4 +329,54 @@ int recomp_d3d_frame_adapter_test(void)
         passed = 0;
     }
     return passed;
+}
+
+/* Each close case runs in its own process and must exit inside the draw seam. */
+int recomp_d3d_draw_presenter_close_test(int indexed)
+{
+    static uint8_t device_memory[TEST_DEVICE_SIZE];
+    static uint8_t call_memory[TEST_CALL_SIZE];
+    const RecompMemoryRegion regions[] = {
+        {TEST_DEVICE_BASE, sizeof device_memory, device_memory},
+        {TEST_CALL_BASE, sizeof call_memory, call_memory},
+    };
+    const RecompD3dPresenterConfig config = {
+        4u, 4u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8,
+    };
+    const uint32_t vertices = TEST_CALL_BASE + 0x800u;
+    const uint32_t indices = TEST_CALL_BASE + 0x900u;
+    const uint32_t buffer = TEST_DEVICE_BASE + 0x6100u;
+    const float quad[4][6] = {{0,0,0,1,0,0}, {4,0,0,1,1,0},
+        {0,4,0,1,0,1}, {4,4,0,1,1,1}};
+    const uint16_t order[] = {0,1,2,3};
+    const uint32_t args[] = {RECOMP_D3D_PT_TRIANGLESTRIP, 4u,
+        indexed ? indices : vertices, sizeof quad[0]};
+    recomp_runtime_init(regions, 2u, NULL, 0u, NULL, 0u);
+    recomp_d3d_frame_adapter_initialize(&config, TEST_DEVICE);
+    *recomp_memory_u32(0x001f2978u) = TEST_DEVICE;
+    *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = buffer;
+    *recomp_memory_u32(TEST_DEVICE + 0x21c0u) = buffer;
+    *recomp_memory_u32(TEST_DEVICE + 0x384u) = indexed ? 0x002u : 0x104u;
+    *recomp_memory_u32(0x001f2e20u) = sizeof quad[0];
+    *recomp_memory_u32(0x001f2e28u) = buffer;
+    *recomp_memory_u32(buffer + 4u) = vertices;
+    for (unsigned transform = 0u; transform <= 6u; ++transform) {
+        float identity[16] = {0};
+        identity[0] = identity[5] = identity[10] = identity[15] = 1;
+        memcpy(recomp_memory_u32(TEST_DEVICE + 0x810u + transform * 0x40u),
+            identity, sizeof identity);
+    }
+    prepare_stack(call_memory, args, indexed ? 3u : 4u);
+    memcpy(recomp_memory_u32(vertices), quad, sizeof quad);
+    memcpy(recomp_memory_u32(indices), order, sizeof order);
+    recomp_d3d_presenter_memory_set_error(RECOMP_D3D_PRESENTER_CLOSED);
+    RecompFunction draw = recomp_d3d_draw_lookup_manual(indexed ? 0x001e78b0u : 0x001e7750u);
+    if (draw == NULL) {
+        fprintf(stderr, "FAIL draw lookup failed for %s\n", indexed ? "indexed" : "UP");
+        return 1;
+    }
+    draw();
+    fprintf(stderr, "FAIL closed presenter returned from %s draw\n", indexed ? "indexed" : "UP");
+    return 1;
 }

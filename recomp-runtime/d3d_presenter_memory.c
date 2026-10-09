@@ -4,6 +4,7 @@
 
 struct RecompD3dPresenter {
     RecompD3dPresenterMemorySnapshot snapshot;
+    RecompD3dPresenterError error;
 };
 
 static RecompD3dPresenter *active_presenter;
@@ -46,6 +47,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     if (presenter == NULL || presenter != active_presenter) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
     }
+    if (presenter->error != RECOMP_D3D_PRESENTER_OK) return presenter->error;
     if (command == NULL) {
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
@@ -85,7 +87,7 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
     /* This backend retains commands, not uploaded pixels. */
-    return RECOMP_D3D_PRESENTER_OK;
+    return presenter->error;
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_destroy(
@@ -113,6 +115,11 @@ void recomp_d3d_presenter_set_immediate_present(bool enabled)
 void recomp_d3d_presenter_report_draw_textures(void)
 {
     /* The in-memory presenter uploads no textures, so it has none to report. */
+}
+
+void recomp_d3d_presenter_memory_set_error(RecompD3dPresenterError error)
+{
+    if (active_presenter != NULL) active_presenter->error = error;
 }
 
 bool recomp_d3d_presenter_memory_snapshot(
