@@ -8,15 +8,19 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
 
 ### Added
 
-- **High refresh presentation** (#98). `RECOMP_SPLIT_RATE=auto`, or a rate
-  such as 120 or 144, shows extra frames between the game's 60 Hz ticks by
-  interpolating the camera, characters and props. Gameplay keeps its original
+- **High refresh presentation** (#98). `RECOMP_SPLIT_RATE=auto`, or your
+  display's exact refresh rate, shows extra frames between the game's 60 Hz
+  ticks by interpolating the camera, characters and props. A rate below the
+  display's paces unevenly, so prefer `auto`. Gameplay keeps its original
   timing. Use it with `--vsync`. The picture runs one tick behind, and some
   objects such as water still move at 60 Hz. Unset, nothing changes.
 - **Texture replacement** (#95). With `RECOMP_TEXTURES` set, F12 dumps the
   current frame's textures as PNG and Ctrl+F12 reloads edited PNGs while the
   game runs. See `docs/texture-replacement.md`.
-- **VRR** (#82). `RECOMP_D3D_VRR=1` presents for G-Sync and FreeSync displays.
+- **Experimental VRR** (#82). `RECOMP_D3D_VRR=1` uses a tearing-capable
+  presentation path for G-Sync and FreeSync. VRR must already be active for
+  the game window, or the picture tears. Its effect on displayed pacing is
+  not yet verified.
 
 ### Fixed
 
