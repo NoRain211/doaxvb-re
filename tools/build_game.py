@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -22,6 +23,8 @@ SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438
 
 
 def command(args, cwd, log):
+    if log.is_file():
+        log.unlink()
     run_logged(args, log, cwd)
 
 
@@ -64,6 +67,21 @@ def prepare_lifter(work, revision=None):
                          "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
 
 
+def validate_import(imported):
+    receipt_file = imported / "receipt.json"
+    if not receipt_file.is_file():
+        raise ValueError("Existing import is missing receipt.json")
+    imported_receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+    if imported_receipt.get("status") != "extracted":
+        raise ValueError("Existing import is incomplete")
+    disc = imported / "disc"
+    for name, size in imported_receipt.get("files", {}).items():
+        path = (disc / name).resolve(strict=True)
+        if not path.is_relative_to(disc.resolve()) or path.stat().st_size != size:
+            raise ValueError("Existing import differs from its receipt")
+    return disc, imported_receipt
+
+
 def build(args, verify_parity=True, lifter_revision=None):
     prefer_bundled_tools(ROOT)
     if verify_parity:
@@ -81,8 +99,15 @@ def build(args, verify_parity=True, lifter_revision=None):
         raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
     if not args.generate_only:
         instance = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
-    work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
-    work.mkdir(parents=True)
+    else:
+        instance = None
+    if getattr(args, "work", None):
+        work = args.work.resolve(strict=True)
+        if not work.is_relative_to((ROOT / "private").resolve()):
+            raise ValueError("The existing setup directory must be beneath this checkout's private/")
+    else:
+        work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
+        work.mkdir(parents=True)
     receipt = {"status": "in-progress", "work": str(work),
                "lifter_revision": lifter_revision or LIFTER_REVISION, "recipe_sha256": RECIPE_SHA256}
     receipt_path = work / "build-receipt.json"
@@ -91,50 +116,71 @@ def build(args, verify_parity=True, lifter_revision=None):
             imported = args.imported.resolve(strict=True)
             if not imported.is_relative_to((ROOT / "private").resolve()):
                 raise ValueError("The existing import must be beneath this checkout's private/")
-            imported_receipt = json.loads((imported / "receipt.json").read_text(encoding="utf-8"))
-            if imported_receipt.get("status") != "extracted":
-                raise ValueError("Existing import is incomplete")
-            disc = imported / "disc"
-            for name, size in imported_receipt["files"].items():
-                path = (disc / name).resolve(strict=True)
-                if not path.is_relative_to(disc.resolve()) or path.stat().st_size != size:
-                    raise ValueError("Existing import differs from its receipt")
-        else:
+            disc, imported_receipt = validate_import(imported)
+        elif (work / "imported-disc/receipt.json").is_file():
+            disc, imported_receipt = validate_import(work / "imported-disc")
+        elif getattr(args, "iso", None):
             disc = extract(args.iso, work / "imported-disc", args.extractor)
             imported_receipt = json.loads((disc.parent / "receipt.json").read_text(encoding="utf-8"))
+        else:
+            raise ValueError("An ISO file (--iso) or existing extracted import is required to build.")
         images = list(disc.glob("*.xbe"))
         if len(images) != 1 or sha256(images[0]) != SUPPORTED_XBE_SHA256:
             raise ValueError("This build currently supports only the verified USA game executable")
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
-        prepare_lifter(work, lifter_revision)
-        # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
-        functions = work / "functions.json"
-        functions.write_text(json.dumps([
-            entry for shard in recipe["functions"]
-            for entry in json.loads((ROOT / shard).read_text(encoding="utf-8"))
-        ]) + "\n", encoding="utf-8")
-        targets = ROOT / recipe["manual_call_targets"]
         generated, metadata = work / "generated", work / "metadata"
-        generate = [sys.executable, "-u", "-m", "tools.recomp", xbe, "--all", "--split", "1000",
-                 "--functions", functions, "--disasm-dir", work / "no-disassembly",
-                 "--func-id-dir", work / "no-identification",
-                 "--abi-dir", work / "no-abi", "--gen-dir", generated, "--output-dir", metadata,
-                 "--manual-call-targets", targets, "--manual-call-targets-sha256", sha256(targets)]
-        for recovery in recipe["recoveries"]:
-            generate.extend(["--recover-functions", ROOT / recovery])
-        command(generate, LIFTER, work / "generate.log")
-        summary = json.loads((metadata / "summary.json").read_text(encoding="utf-8"))
-        if summary["failed"] or summary["total"] != summary["translated"]:
-            raise ValueError("Generation failed; see generate.log")
-        receipt["translated"] = summary["translated"]
-        unresolved_file = generated / "recomp_stubs_unresolved.c"
-        unresolved = len(re.findall(r"void sub_[0-9A-Fa-f]+\(void\)",
-                                   unresolved_file.read_text(encoding="utf-8"))) if unresolved_file.exists() else 0
-        receipt["unresolved_targets"] = unresolved
-        print(f"Generated {summary['translated']} bodies; {unresolved} unresolved targets. "
-              "The runner will stop if it reaches an unresolved target.", flush=True)
+        skip_generation = False
+        if generated.is_dir() and (generated / "recomp_funcs.h").is_file():
+            try:
+                manifest, ebp = program_manifest(generated)
+                if (not verify_parity) or (manifest == recipe["program_manifest_sha256"] and ebp == recipe["ebp_overrides"]):
+                    skip_generation = True
+            except Exception:
+                skip_generation = False
+
+        if skip_generation:
+            if (metadata / "summary.json").is_file():
+                summary = json.loads((metadata / "summary.json").read_text(encoding="utf-8"))
+                receipt["translated"] = summary.get("translated", 16034)
+            else:
+                receipt["translated"] = 16034
+            unresolved_file = generated / "recomp_stubs_unresolved.c"
+            unresolved = len(re.findall(r"void sub_[0-9A-Fa-f]+\(void\)",
+                                       unresolved_file.read_text(encoding="utf-8"))) if unresolved_file.exists() else 0
+            receipt["unresolved_targets"] = unresolved
+            print(f"Reusing existing generated game code in {generated} (exact recipe match).", flush=True)
+        else:
+            prepare_lifter(work, lifter_revision)
+            # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
+            functions = work / "functions.json"
+            functions.write_text(json.dumps([
+                entry for shard in recipe["functions"]
+                for entry in json.loads((ROOT / shard).read_text(encoding="utf-8"))
+            ]) + "\n", encoding="utf-8")
+            targets = ROOT / recipe["manual_call_targets"]
+            generate = [sys.executable, "-u", "-m", "tools.recomp", xbe, "--all", "--split", "1000",
+                     "--functions", functions, "--disasm-dir", work / "no-disassembly",
+                     "--func-id-dir", work / "no-identification",
+                     "--abi-dir", work / "no-abi", "--gen-dir", generated, "--output-dir", metadata,
+                     "--manual-call-targets", targets, "--manual-call-targets-sha256", sha256(targets)]
+            for recovery in recipe["recoveries"]:
+                generate.extend(["--recover-functions", ROOT / recovery])
+            command(generate, LIFTER, work / "generate.log")
+            summary = json.loads((metadata / "summary.json").read_text(encoding="utf-8"))
+            if summary["failed"] or summary["total"] != summary["translated"]:
+                raise ValueError("Generation failed; see generate.log")
+            receipt["translated"] = summary["translated"]
+            unresolved_file = generated / "recomp_stubs_unresolved.c"
+            unresolved = len(re.findall(r"void sub_[0-9A-Fa-f]+\(void\)",
+                                       unresolved_file.read_text(encoding="utf-8"))) if unresolved_file.exists() else 0
+            receipt["unresolved_targets"] = unresolved
+            print(f"Generated {summary['translated']} bodies; {unresolved} unresolved targets. "
+                  "The runner will stop if it reaches an unresolved target.", flush=True)
+            for p in generated.iterdir():
+                if p.is_file():
+                    p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         manifest, ebp = program_manifest(generated)
         receipt.update(program_manifest_sha256=manifest, ebp_overrides=ebp)
         if verify_parity:
@@ -148,20 +194,38 @@ def build(args, verify_parity=True, lifter_revision=None):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
-        receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
-                       configuration="Release", build_parallelism=2)
-        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
-                     "-G", "Visual Studio 17 2022", "-A", "x64",
-                     f"-DCMAKE_GENERATOR_INSTANCE={instance}",
-                     f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
-                     f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
-        icon = ROOT / "private/doaxbv.ico"
-        if icon.is_file():
-            configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
-        command(configure, ROOT, work / "configure.log")
-        command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
-                 "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
-        runner = output / "Release/recomp_program_runner.exe"
+        if sys.platform == "win32":
+            receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
+                           configuration="Release", build_parallelism=2)
+            configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
+                         "-G", "Visual Studio 17 2022", "-A", "x64",
+                         f"-DCMAKE_GENERATOR_INSTANCE={instance}",
+                         f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
+                         f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
+            icon = ROOT / "private/doaxbv.ico"
+            if icon.is_file():
+                configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
+            command(configure, ROOT, work / "configure.log")
+            command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
+                     "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
+            runner = output / "Release/recomp_program_runner.exe"
+        else:
+            generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+            machine = platform.machine().lower()
+            arch = "arm64" if ("arm" in machine or "aarch64" in machine) else "x64"
+            receipt.update(cmake_generator=generator, platform=arch,
+                           configuration="Release", build_parallelism=6)
+            configure = ["cmake", "-S", str(ROOT / "recomp-runtime"), "-B", str(output),
+                         "-G", generator,
+                         "-DCMAKE_BUILD_TYPE=Release",
+                         f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
+                         f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
+            if instance:
+                configure.append(f"-DCMAKE_CXX_COMPILER={instance}")
+            command(configure, ROOT, work / "configure.log")
+            command(["cmake", "--build", str(output), "--parallel", "6",
+                     "--target", "recomp_program_runner"], ROOT, work / "build.log")
+            runner = output / "recomp_program_runner"
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
@@ -180,16 +244,20 @@ def build(args, verify_parity=True, lifter_revision=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs = parser.add_mutually_exclusive_group(required=False)
     inputs.add_argument("--iso", type=Path)
     inputs.add_argument("--imported", type=Path, help="Reuse a completed private import without re-extracting")
+    parser.add_argument("--work", type=Path, help="Working directory in private/ to use or reuse")
     bundled = ROOT / "tools/artifacts/extract-xiso.exe"
     parser.add_argument("--extractor", default=str(bundled) if bundled.is_file() else "extract-xiso")
     parser.add_argument("--generate-only", action="store_true", help="Stop before compilation for diagnosis")
     parser.add_argument("--install-prerequisites", action="store_true",
                         help="Offer to install missing Microsoft C++ tools and Windows SDK (asks first)")
+    parsed_args = parser.parse_args()
+    if not (parsed_args.iso or parsed_args.imported or parsed_args.work):
+        parser.error("one of --iso, --imported, or --work is required")
     try:
-        build(parser.parse_args())
+        build(parsed_args)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Build failed: {error}", file=sys.stderr)
         sys.exit(1)

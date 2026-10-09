@@ -49,7 +49,9 @@ def launch(root, receipt_path=None):
         print(f"Using build receipt: {receipt_path}", flush=True)
         return run(runner, image, root, receipt_path)
     candidates = [root / "recomp_program_runner.exe",
-                  root / "build/recomp-program/Release/recomp_program_runner.exe"]
+                  root / "recomp_program_runner",
+                  root / "build/recomp-program/Release/recomp_program_runner.exe",
+                  root / "build/recomp-program/recomp_program_runner"]
     runner = next((path for path in candidates if path.is_file()), None)
     if runner is None:
         raise ValueError("No playable runner found. Drop your ISO onto BuildGame.cmd first; "
@@ -72,7 +74,23 @@ def launch(root, receipt_path=None):
 def run(runner, image, root, receipt_path=None):
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
-    env.setdefault("RECOMP_AUDIO_GAIN", "1")  # the launcher's Volume choice overrides this
+    launcher_path = root / "private" / "launcher.json"
+    if launcher_path.is_file():
+        try:
+            settings = json.loads(launcher_path.read_text(encoding="utf-8"))
+            height = int(settings.get("height", 480))
+            msaa = int(settings.get("msaa", 1))
+            smaa = "1" if settings.get("smaa", False) else "0"
+            volume = int(settings.get("volume", 100))
+            shuffle = "1" if settings.get("shuffle", False) else "0"
+            env.setdefault("RECOMP_D3D_SCALE", f"{height / 480.0:.4f}")
+            env.setdefault("RECOMP_D3D_MSAA", str(msaa))
+            env.setdefault("RECOMP_D3D_SMAA", smaa)
+            env.setdefault("RECOMP_AUDIO_GAIN", f"{volume / 100.0:.4f}")
+            env.setdefault("RECOMP_MUSIC_SHUFFLE", shuffle)
+        except Exception:
+            pass
+    env.setdefault("RECOMP_AUDIO_GAIN", "1")  # fallback if no launcher.json or env set
     env.setdefault("RECOMP_PERF_COUNTER", "1")
     print(f"Starting runner. Log: {log_path}", flush=True)
     with log_path.open("x", encoding="utf-8") as log:

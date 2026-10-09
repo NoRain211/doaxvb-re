@@ -4,12 +4,12 @@
 
 # DOAXVB Native PC Port
 
-**A native Windows port of _Dead or Alive Xtreme Beach Volleyball_, built by static recompilation, with the goal of rewriting it into readable source.**
+**A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows & macOS), built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=beta)](https://github.com/NoRain211/doaxbv-re/releases/latest)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D6)
+![Platform: Windows & macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6)
 
 [Download](https://github.com/NoRain211/doaxbv-re/releases/latest) ·
 [Changelog](CHANGELOG.md) ·
@@ -99,7 +99,12 @@ IDE is not required.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
    then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
-Setup extracts your ISO and builds an x64 Release runner locally; the package
+On macOS:
+1. Install prerequisites (`brew install cmake ninja sdl3 extract-xiso`, `pip3 install capstone==5.0.9`).
+2. Run `./build_game.sh /path/to/game.iso` and wait for setup to complete.
+3. Run `./launcher.sh` to select resolution, volume, and soundtrack options, then press **Play** (or run `./run_game.sh` directly).
+
+Setup extracts your ISO and builds a native Release runner locally; the package
 contains tools and source, never a prebuilt runner or game data. When updating,
 build in a new folder and keep your previous install and saves. GitHub's
 automatic source archives are source only; see the

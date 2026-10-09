@@ -79,7 +79,20 @@ def visual_studios(*filters):
 
 def find_toolchain(root):
     if os.name != "nt":
-        raise ValueError("Compiling the runner requires Windows and Visual Studio 2022.")
+        for compiler in ("clang++", "g++", "c++"):
+            path = shutil.which(compiler)
+            if path:
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=True) as probe:
+                        probe.write("int main() { return 0; }\n")
+                        probe.flush()
+                        res = subprocess.run([path, "-std=c++20", "-x", "c++", probe.name, "-o", "/dev/null"],
+                                             capture_output=True)
+                        if res.returncode == 0:
+                            return Path(path)
+                except Exception:
+                    continue
+        raise ValueError("A functional C++ compiler (clang++ or g++) is required to build the runner.")
     instances = visual_studios("-products", "*", "-requires",
                                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
     if not instances:
