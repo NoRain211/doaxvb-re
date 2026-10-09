@@ -90,7 +90,7 @@ bool recomp_d3d_vertex_program_source(
         s += "}\n";
     }
     s += "output.position=mul(float4(r12.xyz,1),wvp[0])*r12.w;\n"
-         "output.fog_depth=o5.x; output.fog_factor=o5.x;\n"
+         "output.fog_depth=0; output.fog_factor=1;\n"
          "output.color=o3; output.texcoord=o9.xy; output.reflection_coord=o10.xy; output.program_q=float2(o9.w,o10.w);\n";
     body=std::move(s);
     return true;

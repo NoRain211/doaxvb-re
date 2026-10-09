@@ -15,7 +15,7 @@ open work. No generated source is changed.
 
 Xbox exposes `FOGTABLEMODE`, not a separate PC `FOGVERTEXMODE` state.
 Mode NONE uses the vertex factor: specular alpha for fixed-function vertices,
-including XYZRHW, or the admitted vertex program's fog output. An absent
+including XYZRHW. An absent
 specular component defaults to no fog. The factor interpolates in screen
 space. EXP, EXP2 and LINEAR evaluate the interpolated fog coordinate in the
 pixel shader and clamp the resulting factor to [0, 1].
@@ -25,7 +25,8 @@ matrix). XYZRHW reconstructs W from reciprocal W. An affine projection with
 last column (0, 0, 0, 1) selects absolute projected Z instead. Range fog uses
 the length of the transformed eye position, including vertex blending;
 pretransformed vertices retain their Z/W path because they have no eye
-position. Programmable vertices supply their fog coordinate directly.
+position. Vertex-program draws bypass host fog; programmable fog is separate
+work.
 
 These choices follow the public Xbox state definitions and coordinate
 selection in [Cxbx's D3D8 types](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/hle/D3D8/XbD3D8Types.h)
@@ -42,6 +43,7 @@ Fog-disabled draws bypass the operation. Equal linear start/end values use
 a step at end to avoid division by zero.
 
 The render-state test checks float-bit decoding. The D3D11 readback test
-checks all three equations, RHW versus Z, specular-alpha vertex fog,
-disabled fog, alpha preservation and fog color before additive blending.
+checks all three equations, varying RHW versus affine Z, transformed range
+fog, specular-alpha vertex fog, programmable fog bypass, disabled fog, alpha
+preservation and fog color before additive blending.
 Actual scene comparisons and performance receipts belong under `private/`.

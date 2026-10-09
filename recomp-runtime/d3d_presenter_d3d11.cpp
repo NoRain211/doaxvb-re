@@ -217,7 +217,8 @@ void buildDrawShaderSource(
         "        if (!alpha_pass) discard;\n"
         "    }\n"
         "    if (fog_flags.x > 0.5f) {\n"
-        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(input.fog_depth);\n"
+        "        float depth = fog_flags.y > 0.5f && fog_flags.z < 0.5f ? abs(input.position.z) : input.fog_depth;\n"
+        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(depth);\n"
         "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
         "    }\n"
         "    return shaded;\n"
@@ -2458,9 +2459,9 @@ RecompD3dPresenterError submitDraw(
         fog[5] = draw.fog.end;
         fog[6] = draw.fog.density;
         fog[7] = static_cast<float>(draw.fog.mode);
-        fog[8] = draw.fog.enabled && fog_enabled ? 1.0f : 0.0f;
+        fog[8] = draw.fog.enabled && fog_enabled && !draw.program_count ? 1.0f : 0.0f;
         fog[9] = draw.fog_z ? 1.0f : 0.0f;
-        fog[10] = draw.fog.range ? 1.0f : 0.0f;
+        fog[10] = draw.fog.range && !layout.pretransformed ? 1.0f : 0.0f;
         fog[11] = fog_visualize ? 1.0f : 0.0f;
         std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }

@@ -107,7 +107,7 @@ typedef enum RecompD3dStencilOp {
 typedef struct RecompD3dFogState {
     bool enabled;
     bool range;
-    uint32_t mode;
+    uint32_t mode; /* D3DFOGMODE: NONE=0, EXP=1, EXP2=2, LINEAR=3. */
     uint32_t color;
     float start, end, density;
 } RecompD3dFogState;
