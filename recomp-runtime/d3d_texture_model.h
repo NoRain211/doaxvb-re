@@ -83,6 +83,8 @@ bool recomp_d3d_texture_describe(
     RecompD3dTextureDesc *out);
 uint32_t recomp_d3d_texture_compressed_mip_span(
     const RecompD3dTextureDesc *desc);
+/* Full static payload, including every uncompressed mip. Zero on invalid input. */
+uint32_t recomp_d3d_texture_mip_span(const RecompD3dTextureDesc *desc);
 void recomp_d3d_texture_census_record(
     RecompD3dTextureCensus *census,
     const RecompD3dTextureDesc *desc,

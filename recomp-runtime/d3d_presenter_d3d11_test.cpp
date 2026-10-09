@@ -2470,6 +2470,118 @@ static bool testCombiner(RecompD3dPresenter *presenter,
     return render(0x40ff0000u, "combiner uses material diffuse alpha");
 }
 
+static bool testReplacementFormats()
+{
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() /
+        ("recomp-texture-formats-" + std::to_string(GetCurrentProcessId()));
+    _putenv_s("RECOMP_TEXTURE_DUMP", "1");
+    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
+    RecompD3dPresenter presenter{};
+    _putenv_s("RECOMP_TEXTURE_DUMP", "");
+    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", "");
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+        &level, 1, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    bool passed = true;
+    for (uint32_t format : std::initializer_list<uint32_t>{RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8, RECOMP_D3D_TEXTURE_FORMAT_P8,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT1, RECOMP_D3D_TEXTURE_FORMAT_DXT3,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT5, RECOMP_D3D_TEXTURE_FORMAT_A8}) {
+        RecompD3dPresenterDrawCommand draw{};
+        const uint32_t bits = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ? 32 :
+            format == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 4 : 8;
+        draw.texture = {format, bits, false, false, false, 64, 64, 0, 0x900000u, 2};
+        // This descriptor flag means format capability, not rendered content.
+        draw.texture.render_target = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+        std::vector<uint8_t> bytes(recomp_d3d_texture_mip_span(&draw.texture), 0);
+        uint8_t palette[1024]{};
+        draw.texture_bytes = bytes.data(); draw.texture_byte_count = static_cast<uint32_t>(bytes.size());
+        draw.palette_bytes = palette; draw.palette_byte_count = sizeof palette;
+        auto *original = lookupTexture(&presenter, draw);
+        TextureIdentity identity;
+        identity.assign(draw);
+        passed &= original != nullptr;
+        const auto original_key = identity.key;
+        draw.texture.data += 0x10000u;
+        passed &= lookupTexture(&presenter, draw) != nullptr;
+        identity.assign(draw);
+        passed &= identity.key == original_key;
+        presenter.replacements.finishFrame(presenter.device, presenter.context, format);
+        passed &= fs::exists(root / "dump" / (original_key + ".png"));
+        bytes[11] = 1;
+        passed &= lookupTexture(&presenter, draw) != nullptr;
+        auto range = presenter.texture_index.equal_range(draw.texture.data);
+        bool changed = false;
+        for (auto it = range.first; it != range.second; ++it) {
+            const auto &entry = presenter.textures[it->second];
+            if (entry.format_byte == format) changed |= entry.identity.key != original_key;
+        }
+        passed &= changed;
+        presenter.replacements.finishFrame(presenter.device, presenter.context, format + 1);
+    }
+    releaseGraphics(&presenter);
+    std::error_code error;
+    fs::remove_all(root, error);
+    std::printf("%s replacement capture for six static formats on FL10\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
+static bool testUncompressedMipUploads(RecompD3dPresenter *presenter)
+{
+    const uint32_t palette[3] = {0xff102030u, 0xff405060u, 0xff708090u};
+    uint32_t full_palette[256]{};
+    std::memcpy(full_palette, palette, sizeof palette);
+    for (uint32_t format : std::initializer_list<uint32_t>{RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8,
+        RECOMP_D3D_TEXTURE_FORMAT_P8, RECOMP_D3D_TEXTURE_FORMAT_A8}) {
+        const uint32_t source_bytes = format == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ? 4u : 1u;
+        RecompD3dPresenterDrawCommand draw{};
+        draw.texture = {format,source_bytes * 8u,false,false,false,4,4,0,0x00b00000u + format * 0x100u,3};
+        std::vector<uint8_t> payload(recomp_d3d_texture_mip_span(&draw.texture));
+        size_t offset = 0;
+        for (uint32_t level = 0, width = 4; level < 3; ++level, width /= 2) {
+            const size_t size = width * width * source_bytes;
+            std::fill(payload.begin() + offset, payload.begin() + offset + size, static_cast<uint8_t>(level));
+            offset += size;
+        }
+        draw.texture_bytes = payload.data(); draw.texture_byte_count = static_cast<uint32_t>(payload.size());
+        draw.palette_bytes = full_palette; draw.palette_byte_count = sizeof full_palette;
+        auto *view = lookupTexture(presenter, draw);
+        if (!view) return false;
+        ID3D11Resource *source = nullptr;
+        view->GetResource(&source);
+        D3D11_TEXTURE2D_DESC desc{};
+        static_cast<ID3D11Texture2D *>(source)->GetDesc(&desc);
+        bool passed = desc.MipLevels == 3;
+        desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ID3D11Texture2D *staging = nullptr;
+        passed &= SUCCEEDED(presenter->device->CreateTexture2D(&desc, nullptr, &staging));
+        if (staging) {
+            presenter->context->CopyResource(staging, source);
+            for (uint32_t level = 0, width = 4; level < 3 && passed; ++level, width /= 2) {
+                D3D11_MAPPED_SUBRESOURCE mapped{};
+                passed &= SUCCEEDED(presenter->context->Map(staging, level, D3D11_MAP_READ, 0, &mapped));
+                if (!mapped.pData) break;
+                const uint32_t pixel_bytes = format == RECOMP_D3D_TEXTURE_FORMAT_A8 ? 1u : 4u;
+                for (uint32_t y = 0; y < width; ++y) {
+                    const auto *row = static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch;
+                    for (uint32_t x = 0; x < width * pixel_bytes; ++x) {
+                        const uint8_t expected = format == RECOMP_D3D_TEXTURE_FORMAT_P8
+                            ? reinterpret_cast<const uint8_t *>(&palette[level])[x % 4] : static_cast<uint8_t>(level);
+                        passed &= row[x] == expected;
+                    }
+                }
+                presenter->context->Unmap(staging, level);
+            }
+        }
+        releaseCom(staging); releaseCom(source);
+        if (!passed) return false;
+        draw.texture.data += 0x10000u; --draw.texture_byte_count;
+        if (lookupTexture(presenter, draw) != nullptr) return false;
+    }
+    std::puts("PASS authored A8, P8 and BGRA mip payloads and truncated-chain rejection");
+    return true;
+}
+
 static bool testTextureAntialiasing()
 {
     for (auto feature : {D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0})
@@ -2898,6 +3010,7 @@ int main()
 #endif
     _putenv_s("RECOMP_D3D_FOG", "");
     _putenv_s("RECOMP_D3D_FOG_FACTOR", "");
+    if (!testReplacementFormats()) return 1;
     if (!testTextureAntialiasing()) return 82;
     if (!testHeldFrameTargets()) return 1;
     if (!testPacingPolicies()) {
@@ -2965,6 +3078,7 @@ int main()
         !testOffscreenRendering(&presenter, color, readback, false)) {
         status = 70;
     }
+    if (status == 0 && !testUncompressedMipUploads(&presenter)) status = 99;
     if (status == 0 && !testFrameDumpWrite(&presenter, color, readback)) status = 82;
     if (status == 0 && !testCompressedMips(&presenter, color, readback)) status = 92;
     if (status == 0 && !testAlphaMask(&presenter, color, readback)) status = 91;
