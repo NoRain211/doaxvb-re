@@ -2292,7 +2292,7 @@ static bool testHeldFrameTargets()
         presenter.gamma_enabled = gamma;
         presenter.smaa = !gamma;
         copyFrontBuffer(&presenter);
-        if (presenter.front_buffer_copy) passed &= checkPixels(&presenter,
+        if (presenter.front_buffer_copy && readback) passed &= checkPixels(&presenter,
             presenter.front_buffer_copy, readback, "held-frame mip-zero snapshot", expected);
         else passed = false;
     }
