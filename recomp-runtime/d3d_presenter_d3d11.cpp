@@ -2105,6 +2105,21 @@ bool createBufferCopy(RecompD3dPresenter *presenter,
     return true;
 }
 
+// Keep the presented frame for draws that sample the guest front buffer.
+void copyFrontBuffer(RecompD3dPresenter *presenter)
+{
+    if (createBufferCopy(presenter, presenter->front_buffer_copy,
+            presenter->front_buffer_sample)) {
+        if (presenter->gamma_enabled || presenter->smaa) {
+            presenter->context->CopySubresourceRegion(
+                presenter->front_buffer_copy, 0u, 0u, 0u, 0u,
+                presenter->back_buffer_copy, 0u, nullptr);
+        } else {
+            copyGuestBuffer(presenter, presenter->front_buffer_copy);
+        }
+    }
+}
+
 ID3D11ShaderResourceView *lookupBackBufferTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dTextureDesc &desc)
@@ -3305,16 +3320,7 @@ RecompD3dPresenterError submitPresent(
             ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
-    // Keep the presented frame for draws that sample the guest front buffer.
-    if (createBufferCopy(presenter, presenter->front_buffer_copy,
-            presenter->front_buffer_sample)) {
-        if (presenter->gamma_enabled || presenter->smaa) {
-            presenter->context->CopyResource(
-                presenter->front_buffer_copy, presenter->back_buffer_copy);
-        } else {
-            copyGuestBuffer(presenter, presenter->front_buffer_copy);
-        }
-    }
+    copyFrontBuffer(presenter);
     if (presenter->vrr_target_view != nullptr) {
         auto *context = presenter->context;
         D3D11_TEXTURE2D_DESC window{};

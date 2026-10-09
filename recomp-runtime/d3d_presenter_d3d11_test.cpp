@@ -2165,6 +2165,39 @@ static bool testHeldFrameTargets()
         nullptr, 0, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
     ID3D11Texture2D *color = nullptr, *readback = nullptr;
     bool passed = createTestTargets(&presenter, &color, &readback);
+    // A scaled snapshot has mips and follows the display aspect ratio.
+    presenter.scale = 2;
+    presenter.config.width = presenter.config.height = 2;
+    passed &= createBufferCopy(&presenter, presenter.back_buffer_copy,
+        presenter.back_buffer_sample, true);
+    ID3D11RenderTargetView *snapshot = nullptr;
+    passed &= SUCCEEDED(presenter.device->CreateRenderTargetView(
+        presenter.back_buffer_copy, nullptr, &snapshot));
+    const uint32_t expected[4] = {0xffff0000u,0xffff0000u,0xffff0000u,0xffff0000u};
+    const float snapshot_red[] = {1,0,0,1};
+    if (snapshot) presenter.context->ClearRenderTargetView(snapshot, snapshot_red);
+    D3D11_TEXTURE2D_DESC snapshot_desc{};
+    if (presenter.back_buffer_copy) presenter.back_buffer_copy->GetDesc(&snapshot_desc);
+    passed &= snapshot_desc.MipLevels > 1u;
+    snapshot_desc.MipLevels = 1; snapshot_desc.BindFlags = snapshot_desc.MiscFlags = 0;
+    snapshot_desc.Usage = D3D11_USAGE_STAGING;
+    snapshot_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    releaseCom(readback);
+    passed &= SUCCEEDED(presenter.device->CreateTexture2D(&snapshot_desc,
+        nullptr, &readback));
+    for (bool gamma : {false, true}) {
+        presenter.gamma_enabled = gamma;
+        presenter.smaa = !gamma;
+        copyFrontBuffer(&presenter);
+        if (presenter.front_buffer_copy) passed &= checkPixels(&presenter,
+            presenter.front_buffer_copy, readback, "held-frame mip-zero snapshot", expected);
+        else passed = false;
+    }
+    releaseCom(snapshot);
+    releaseCom(presenter.front_buffer_sample); releaseCom(presenter.front_buffer_copy);
+    releaseCom(presenter.back_buffer_sample); releaseCom(presenter.back_buffer_copy);
+    presenter.gamma_enabled = presenter.smaa = false;
+    presenter.config.width = presenter.config.height = 4;
     presenter.scale = 3;
     RecompD3dPresenterTarget target{};
     target.offscreen = target.no_depth = true;
