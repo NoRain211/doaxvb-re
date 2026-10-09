@@ -2277,7 +2277,7 @@ static bool testTextureAntialiasing()
             if (samples == 1u) {
                 const bool coverage = feature >= D3D_FEATURE_LEVEL_10_1;
                 const std::atomic<bool> stop{false};
-                precompileDrawShaders(&stop, coverage);
+                std::thread([&] { precompileDrawShaders(&stop, coverage); }).join();
                 std::lock_guard<std::mutex> lock(compiled_shaders_lock);
                 for (const uint32_t fvf : kBootDrawFvfs) {
                     RecompD3dVertexLayout layout;
