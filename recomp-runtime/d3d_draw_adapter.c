@@ -684,7 +684,7 @@ static void attach_backbuffer_texture(
         RecompD3dTextureDesc backbuffer;
         uint32_t resource, format;
 
-        if (!draw->has_texture || bytes == NULL) return;
+        if (!draw->has_texture || bytes == NULL) continue;
         memcpy(&resource, bytes, sizeof resource);
         bytes = resource != 0u ? guest_span(resource, 20u) : NULL;
         if (bytes == NULL) continue;

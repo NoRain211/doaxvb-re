@@ -2020,8 +2020,105 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testHeldFrameTargets()
+{
+    RecompD3dPresenter presenter{};
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+        nullptr, 0, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    ID3D11Texture2D *color = nullptr, *readback = nullptr;
+    bool passed = createTestTargets(&presenter, &color, &readback);
+    presenter.scale = 3;
+    RecompD3dPresenterTarget target{};
+    target.offscreen = target.no_depth = true;
+    target.color = {RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8,32,false,false,true,512,512,0,0x00900000u,1};
+    ID3D11RenderTargetView *view = nullptr;
+    ID3D11DepthStencilView *depth = nullptr;
+    const auto bind = [&](bool held) { return bindTarget(&presenter, target, view, depth, held) == RECOMP_D3D_PRESENTER_OK; };
+    // A partial held-frame copy must retain an already populated target.
+    passed &= bind(false);
+    auto *original = view;
+    const float red[] = {1,0,0,1};
+    if (view) presenter.context->ClearRenderTargetView(view, red);
+    passed &= bind(true) && view == original && findRenderTarget(&presenter, target.color)->scale == 1;
+    ID3D11Resource *resource = nullptr;
+    if (view) view->GetResource(&resource);
+    ID3D11Texture2D *staging = nullptr;
+    D3D11_TEXTURE2D_DESC desc{};
+    if (resource) static_cast<ID3D11Texture2D *>(resource)->GetDesc(&desc);
+    desc.BindFlags = 0; desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    passed &= SUCCEEDED(presenter.device->CreateTexture2D(&desc, nullptr, &staging));
+    if (staging && resource) {
+        presenter.context->CopyResource(staging, resource);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        passed &= SUCCEEDED(presenter.context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped));
+        if (mapped.pData) {
+            for (uint32_t y : {0u,255u,511u}) {
+                    const auto *row = reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
+                    for (uint32_t x : {0u,255u,511u}) passed &= row[x] == 0xffff0000u;
+                }
+            presenter.context->Unmap(staging, 0);
+        }
+    }
+    releaseCom(staging); releaseCom(resource);
+    target.color.data += 0x100000;
+    passed &= bind(true) && findRenderTarget(&presenter, target.color)->scale == 3;
+    if (view) presenter.context->ClearRenderTargetView(view, red);
+    target.no_depth = false; target.custom_depth = true; target.depth = target.color;
+    target.depth.data += 0x100000; target.depth.format_byte = 0x2a; target.depth.depth = true;
+    ID3D11DepthStencilView *shared_depth = nullptr;
+    passed &= lookupDepthTarget(&presenter, target, 512, 512, shared_depth) == RECOMP_D3D_PRESENTER_OK;
+    passed &= bind(false) && depth != nullptr && depth == shared_depth;
+    if (depth) {
+        depth->GetResource(&resource);
+        static_cast<ID3D11Texture2D *>(resource)->GetDesc(&desc);
+        passed &= desc.Width == 512 && desc.Height == 512 && desc.SampleDesc.Count == 1;
+        releaseCom(resource);
+    }
+    if (view) {
+        view->GetResource(&resource);
+        static_cast<ID3D11Texture2D *>(resource)->GetDesc(&desc);
+        desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        passed &= SUCCEEDED(presenter.device->CreateTexture2D(&desc, nullptr, &staging));
+        if (staging) {
+            presenter.context->CopyResource(staging, resource);
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            passed &= SUCCEEDED(presenter.context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped));
+            if (mapped.pData) {
+                for (uint32_t y : {0u,255u,511u}) {
+                    const auto *row = reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
+                    for (uint32_t x : {0u,255u,511u}) passed &= row[x] == 0xffff0000u;
+                }
+                presenter.context->Unmap(staging, 0);
+            }
+        }
+        releaseCom(staging); releaseCom(resource);
+    }
+    // The budget rejects supersampling but still admits a guest-size copy.
+    const auto allocated = presenter.target_bytes;
+    presenter.target_bytes = kTargetByteLimit - 512u * 512u * 4u;
+    target.no_depth = true; target.color.data += 0x300000;
+    passed &= bind(true) && findRenderTarget(&presenter, target.color)->scale == 1;
+    presenter.target_bytes = allocated + 512u * 512u * 4u;
+    // A draw with no front-buffer snapshot must decline, rather than paint vertex color.
+    const float vertices[][5] = {{-1,1,.5f,0,0},{1,1,.5f,0,0},{-1,-1,.5f,0,0}};
+    const uint16_t indices[] = {0,1,2};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x102; draw.vertex_stride = sizeof vertices[0];
+    draw.vertex_bytes = vertices; draw.index_bytes = indices;
+    draw.vertex_count = draw.index_count = 3; draw.triangle_count = 1;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLELIST;
+    draw.has_transform = draw.has_texture = draw.texture_is_frontbuffer = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    draw.texture.width = draw.texture.height = 4;
+    passed &= submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    releaseCom(readback); releaseCom(color); releaseGraphics(&presenter);
+    std::printf("%s held-frame target retention, depth, budget and absent snapshot\n", passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main()
 {
+    if (!testHeldFrameTargets()) return 1;
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;

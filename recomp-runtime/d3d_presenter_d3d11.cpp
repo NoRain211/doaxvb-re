@@ -426,6 +426,8 @@ struct RecompD3dPresenter {
     bool gamma_enabled = false;
     ID3D11Texture2D *back_buffer_copy = nullptr;
     ID3D11ShaderResourceView *back_buffer_sample = nullptr;
+    ID3D11VertexShader *target_copy_vs = nullptr;
+    ID3D11PixelShader *target_copy_ps = nullptr;
     ID3D11Texture2D *front_buffer_copy = nullptr;
     ID3D11ShaderResourceView *front_buffer_sample = nullptr;
     ID3D11Texture2D *depth_texture = nullptr;
@@ -633,6 +635,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->render_target_view);
     releaseCom(presenter->back_buffer_sample);
     releaseCom(presenter->back_buffer_copy);
+    releaseCom(presenter->target_copy_vs);
+    releaseCom(presenter->target_copy_ps);
     releaseCom(presenter->front_buffer_sample);
     releaseCom(presenter->front_buffer_copy);
     releaseCom(presenter->swap_chain);
@@ -987,6 +991,9 @@ RecompD3dPresenterError lookupDepthTarget(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+bool resampleTarget(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *source,
+    ID3D11RenderTargetView *target, uint32_t width, uint32_t height);
+
 RecompD3dPresenterError bindTarget(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterTarget &target,
@@ -1016,26 +1023,20 @@ RecompD3dPresenterError bindTarget(
         }
 
         RenderTargetEntry *entry = findRenderTarget(presenter, desc);
-        /* Transitions shrink the upscaled scene into a 512x512 texture and
-           show it while loading; keep such copies at main scale. Smaller
-           targets are blur downsamples and stay at guest size.
+        /* Only new held-frame targets without depth start at main scale.
+           Existing targets retain both their pixels and allocation size.
            ponytail: size heuristic; key on the consumer if a 512 target blurs. */
-        float scale = scene_copy && desc.width >= 512u && desc.height >= 512u
+        float scale = scene_copy && target.no_depth && desc.width >= 512u && desc.height >= 512u
             ? (std::min)(static_cast<float>(mainHeight(presenter)) / presenter->config.height,
                   static_cast<float>(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) /
                       (std::max)(desc.width, desc.height))
             : 1.0f;
         if (static_cast<uint64_t>(desc.width * scale) * static_cast<uint64_t>(desc.height * scale) * 4u >
             kTargetByteLimit - presenter->target_bytes) scale = 1.0f;
-        if (entry != nullptr && entry->scale < scale) {
-            releaseCom(entry->sample_view);
-            releaseCom(entry->render_view);
-            presenter->target_bytes -= entry->bytes;
-            *entry = presenter->render_targets.back();
-            presenter->render_targets.pop_back();
-            entry = nullptr;
-        }
-        if (entry == nullptr) {
+        // Restore guest size before binding depth, which belongs to shared guest storage.
+        const bool restore_depth = entry != nullptr && entry->scale != 1.0f && !target.no_depth;
+        if (restore_depth) scale = 1.0f;
+        if (entry == nullptr || restore_depth) {
             const uint32_t host_width = static_cast<uint32_t>(desc.width * scale);
             const uint32_t host_height = static_cast<uint32_t>(desc.height * scale);
             const uint64_t bytes = static_cast<uint64_t>(host_width) * host_height * 4u;
@@ -1080,15 +1081,24 @@ RecompD3dPresenterError bindTarget(
             created.desc = desc;
             created.scale = scale;
             created.bytes = bytes;
-            try {
-                presenter->render_targets.push_back(created);
-            } catch (const std::bad_alloc &) {
-                releaseCom(created.sample_view);
-                releaseCom(created.render_view);
-                return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+            if (restore_depth) {
+                if (!resampleTarget(presenter, entry->sample_view, created.render_view, host_width, host_height)) {
+                    releaseCom(created.sample_view); releaseCom(created.render_view);
+                    return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+                }
+                presenter->target_bytes -= entry->bytes;
+                releaseCom(entry->sample_view); releaseCom(entry->render_view);
+                *entry = created;
+            } else {
+                try {
+                    presenter->render_targets.push_back(created);
+                } catch (const std::bad_alloc &) {
+                    releaseCom(created.sample_view); releaseCom(created.render_view);
+                    return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+                }
+                entry = &presenter->render_targets.back();
             }
             presenter->target_bytes += bytes;
-            entry = &presenter->render_targets.back();
             std::fprintf(stderr,
                 "recomp d3d presenter: render target data=0x%08X "
                 "fmt=0x%02X size=%ux%u host=%ux%u\n",
@@ -1112,7 +1122,6 @@ RecompD3dPresenterError bindTarget(
         (presenter->scale != 1.0f || presenter->msaa > 1u)) {
         depth_view = nullptr;
     }
-    if (offscreen_scale != 1.0f) depth_view = nullptr;
     const float host_width = static_cast<float>(
         target.offscreen ? static_cast<uint32_t>(width * offscreen_scale) : mainWidth(presenter));
     const float host_height = static_cast<float>(
@@ -1511,6 +1520,43 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 /* Returns the pipeline for one FVF, building it on first use. A pipeline that
    fails to build is remembered against its own FVF so it is not retried every
    draw and does not affect any other FVF. */
+// Resample only color; depth stays in its existing guest-sized storage.
+bool resampleTarget(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *source,
+    ID3D11RenderTargetView *target, uint32_t width, uint32_t height)
+{
+    if (!ensureSharedDrawState(presenter)) return false;
+    if (!presenter->target_copy_vs || !presenter->target_copy_ps) {
+        constexpr char shader[] =
+            "void vs(uint i:SV_VertexID,out float4 p:SV_Position,out float2 uv:TEXCOORD0) {"
+            "uv=float2(i==1?2:0,i==2?2:0); p=float4(uv.x*2-1,1-uv.y*2,0,1); }"
+            "Texture2D image:register(t0); SamplerState sample_image:register(s0);"
+            "float4 ps(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target {"
+            "return image.Sample(sample_image,uv); }";
+        ID3DBlob *vs = nullptr, *ps = nullptr;
+        bool ok = compileDrawShader(shader, "vs", "vs_4_0", &vs) &&
+            compileDrawShader(shader, "ps", "ps_4_0", &ps);
+        if (ok && !presenter->target_copy_vs) ok = SUCCEEDED(presenter->device->CreateVertexShader(
+            vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &presenter->target_copy_vs));
+        if (ok && !presenter->target_copy_ps) ok = SUCCEEDED(presenter->device->CreatePixelShader(
+            ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &presenter->target_copy_ps));
+        releaseCom(vs); releaseCom(ps);
+        if (!ok) return false;
+    }
+    auto *context = presenter->context;
+    context->ClearState();
+    const D3D11_VIEWPORT viewport = {0,0,float(width),float(height),0,1};
+    context->RSSetViewports(1, &viewport);
+    context->OMSetRenderTargets(1, &target, nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(presenter->target_copy_vs, nullptr, 0);
+    context->PSSetShader(presenter->target_copy_ps, nullptr, 0);
+    context->PSSetShaderResources(0, 1, &source);
+    context->PSSetSamplers(0, 1, &presenter->filter_sampler);
+    context->Draw(3, 0);
+    context->ClearState();
+    return true;
+}
+
 const DrawPipeline *lookupDrawPipeline(
     RecompD3dPresenter *presenter,
     uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr)
@@ -2293,7 +2339,7 @@ RecompD3dPresenterError submitDraw(
     ID3D11DepthStencilView *depth_view;
     const RecompD3dPresenterError target_result =
         bindTarget(presenter, draw.target, color_view, depth_view,
-            draw.texture_is_frontbuffer || draw.texture_is_backbuffer);
+            draw.texture_is_frontbuffer);
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
         return target_result;
     }
@@ -2340,6 +2386,8 @@ RecompD3dPresenterError submitDraw(
     const UINT index_size = draw_index_count * 2u;
     ID3D11ShaderResourceView *texture_view =
         draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
+    if ((draw.texture_is_frontbuffer || draw.texture_is_backbuffer) && texture_view == nullptr)
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
     const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask;
