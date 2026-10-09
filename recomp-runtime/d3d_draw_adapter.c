@@ -850,6 +850,9 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
          (stages[1][3] != 2u || stages[1][4] != 2u || stages[1][5] != 2u))) return;
     for (uint32_t s = 0u; s < 2u; ++s) {
         if (stages[s][20] != 0u || stages[s][11] != 0u) return;
+        if ((s == 0u ? stage0_texture : stage1_texture) &&
+            (stages[s][7] != 0u || stages[s][9] != 0u || stages[s][10] != 0u ||
+             ((stages[s][0] == 4u || stages[s][1] == 4u) && stages[s][29] != 0u))) return;
         for (uint32_t i = 0u; i < 8u; ++i) {
             const uint32_t word = stages[s][12u + i];
             if (i == 0u || i == 4u) {
@@ -860,6 +863,12 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
         }
     }
     if (stage1_texture) {
+        const uint32_t resource = recomp_d3d_texture_adapter_model()->textures[1];
+        const uint8_t *binding = resource != 0u ? guest_span(resource, 20u) : NULL;
+        uint32_t format;
+        if (binding == NULL) return;
+        memcpy(&format, binding + 12u, sizeof format);
+        if ((format & 0xf4u) != 0x20u) return;
         attach_texture(1u, &texture);
         if (!texture.has_texture || texture.texture_bytes == NULL ||
             texture.palette_bytes != NULL) return;

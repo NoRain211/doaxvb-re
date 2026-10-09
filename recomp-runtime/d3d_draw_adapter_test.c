@@ -49,6 +49,7 @@ int recomp_d3d_draw_adapter_test(void)
         {0,12,17}, {0,16,17}, {1,12,17}, {1,16,17},
         {0,20,1}, {1,20,1}, {1,28,1}, {1,21,3},
         {0,11,1}, {1,11,1}, {1,3,1}, {1,4,1}, {1,4,3}, {1,5,1},
+        {1,7,1}, {1,9,1}, {1,10,0x20000000u},
         {2,12,2}, {1,12,25}, {0,14,5}, {0,14,0x40}
     };
     for (uint32_t i = 0; i < sizeof rejected / sizeof rejected[0]; ++i) {
@@ -57,6 +58,24 @@ int recomp_d3d_draw_adapter_test(void)
         attach_combiner(device, &draw);
         const bool rejected_draw = !draw.has_combiner;
         *word = old;
+        REQUIRE(rejected_draw);
+    }
+    stages[1][29] = 0xff123456u;
+    for (uint32_t axis = 0u; axis < 2u; ++axis) {
+        const uint32_t old = stages[1][axis];
+        stages[1][axis] = 4; draw.has_combiner = false;
+        attach_combiner(device, &draw);
+        const bool rejected_draw = !draw.has_combiner;
+        stages[1][axis] = old;
+        REQUIRE(rejected_draw);
+    }
+    stages[1][29] = 0;
+    const uint32_t formats[] = {0x00000624u, 0x00000630u};
+    for (uint32_t i = 0u; i < sizeof formats / sizeof formats[0]; ++i) {
+        *recomp_memory_u32(resource + 12u) = formats[i]; draw.has_combiner = false;
+        attach_combiner(device, &draw);
+        const bool rejected_draw = !draw.has_combiner;
+        *recomp_memory_u32(resource + 12u) = 0x00000620u;
         REQUIRE(rejected_draw);
     }
     stages[0][14] = 4;
@@ -72,6 +91,18 @@ int recomp_d3d_draw_adapter_test(void)
     draw.has_combiner = false;
     attach_combiner(device, &draw);
     REQUIRE(draw.has_combiner);
+    const uint32_t unsupported[] = {7u, 9u, 10u};
+    for (uint32_t i = 0u; i < sizeof unsupported / sizeof unsupported[0]; ++i) {
+        stages[0][unsupported[i]] = 1; draw.has_combiner = false;
+        attach_combiner(device, &draw);
+        const bool rejected_draw = !draw.has_combiner;
+        stages[0][unsupported[i]] = 0;
+        REQUIRE(rejected_draw);
+    }
+    stages[0][0] = 4; stages[0][29] = 0xff123456u; draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(!draw.has_combiner);
+    stages[0][0] = stages[0][29] = 0;
     for (uint32_t index = 3u; index <= 5u; ++index) {
         for (uint32_t filter = 1u; filter <= 3u; filter += 2u) {
             stages[0][index] = filter; draw.has_combiner = false;
