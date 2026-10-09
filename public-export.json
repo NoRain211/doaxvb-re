@@ -33,6 +33,7 @@
     "docs/wayfinder/research/host-shell-redistribution.md",
     "docs/wayfinder/research/og-xbox-custom-soundtracks.md",
     "docs/wayfinder/research/texture-replacement.md",
+    "docs/wayfinder/research/vrr-frame-pacing.md",
     "docs/wayfinder/research/vulkan-renderer-seams.md",
     "private/README.md",
     "recomp-runtime/**",
