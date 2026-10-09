@@ -2714,7 +2714,7 @@ RecompD3dPresenterError submitDraw(
         draw_constants[79] = draw.reflection_texture.linear && draw.reflection_texture.height
             ? 1.0f / draw.reflection_texture.height : 1.0f;
         for (unsigned i = 0u; i < 16u; ++i) {
-            draw_constants[140 + 192 * 4 + 300 + i] =
+            draw_constants[140 + 192 * 4 + 300 + 76 + i] =
                 static_cast<float>(draw.combiner[i / 8u][i % 8u]);
         }
     }
