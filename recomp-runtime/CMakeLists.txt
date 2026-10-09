@@ -514,10 +514,8 @@ if(RECOMP_PROGRAM_DIR)
         $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
         $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
         $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
-        $<$<PLATFORM_ID:Windows>:input_host_win32.c>
         $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
         $<$<NOT:$<PLATFORM_ID:Windows>>:audio_output_sdl.cpp>
-        $<$<NOT:$<PLATFORM_ID:Windows>>:input_host_sdl.c>
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
@@ -545,6 +543,7 @@ if(RECOMP_PROGRAM_DIR)
         directory_model.c
         input_model.c
         input_adapter.c
+        input_host_win32.c
         input_pulse_source.c
         symbolic_link_model.c
         kernel_ordinals.c
@@ -669,7 +668,7 @@ else()
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
     add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
-    add_executable(recomp_input_host_test input_host_sdl.c input_host_win32_test.c)
+    add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     recomp_use_sdl3(recomp_input_host_test)
 endif()
 
