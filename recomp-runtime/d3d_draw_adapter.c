@@ -839,12 +839,15 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
        TEXTURETRANSFORMFLAGS and 28 TEXCOORDINDEX. */
     if (stages[1][12] <= 1u || stages[1][12] > 24u || stages[2][12] != 1u ||
         stages[1][28] != 0u || (stages[1][21] != 0u && stages[1][21] != 2u)) return;
-    if (recomp_d3d_combiner_uses_texture(stages[0] + 12u) &&
+    const bool stage0_texture = recomp_d3d_combiner_uses_texture(stages[0] + 12u);
+    if (stage0_texture &&
         (stages[0][21] != 0u || stages[0][28] != 0u)) return;
     const bool stage1_texture = recomp_d3d_combiner_uses_texture(stages[1] + 12u);
     // Only the presenter's linear min/mag/mip sampler is implemented here.
-    if (stage1_texture &&
-        (stages[1][3] != 2u || stages[1][4] != 2u || stages[1][5] != 2u)) return;
+    if ((stage0_texture &&
+         (stages[0][3] != 2u || stages[0][4] != 2u || stages[0][5] != 2u)) ||
+        (stage1_texture &&
+         (stages[1][3] != 2u || stages[1][4] != 2u || stages[1][5] != 2u))) return;
     for (uint32_t s = 0u; s < 2u; ++s) {
         if (stages[s][20] != 0u || stages[s][11] != 0u) return;
         for (uint32_t i = 0u; i < 8u; ++i) {

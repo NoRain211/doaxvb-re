@@ -68,6 +68,19 @@ int recomp_d3d_draw_adapter_test(void)
     REQUIRE(draw.has_combiner);
     // Stage zero consumes TEXTURE only through its selected arguments.
     stages[0][14] = 2;
+    stages[0][3] = stages[0][4] = stages[0][5] = 2;
+    draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner);
+    for (uint32_t index = 3u; index <= 5u; ++index) {
+        for (uint32_t filter = 1u; filter <= 3u; filter += 2u) {
+            stages[0][index] = filter; draw.has_combiner = false;
+            attach_combiner(device, &draw);
+            const bool rejected_draw = !draw.has_combiner;
+            stages[0][index] = 2;
+            REQUIRE(rejected_draw);
+        }
+    }
     for (uint32_t index = 21u; index <= 28u; index += 7u) {
         stages[0][index] = 1; draw.has_combiner = false;
         attach_combiner(device, &draw);
