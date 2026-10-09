@@ -93,7 +93,7 @@ void recomp_d3d_frame_adapter_reset(void)
 }
 
 /* The window can close between frames, so any command may see CLOSED. */
-static void exit_if_window_closed(RecompD3dPresenterError error)
+void recomp_d3d_frame_adapter_exit_if_closed(RecompD3dPresenterError error)
 {
     if (error == RECOMP_D3D_PRESENTER_CLOSED) {
         recomp_d3d_frame_adapter_reset();
@@ -191,7 +191,7 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
-    exit_if_window_closed(presenter_error);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         recomp_stop(
             2,
@@ -226,7 +226,7 @@ void recomp_d3d_clear_adapter(void)
     }
     presenter_error = recomp_d3d_presenter_submit(
         presenter, &result.command);
-    exit_if_window_closed(presenter_error);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
@@ -369,7 +369,7 @@ void recomp_d3d_swap_adapter(void)
         presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(
         result.command.data.present.swap_counter, (uint32_t)presenter_error);
-    exit_if_window_closed(presenter_error);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
@@ -1398,7 +1398,7 @@ static void set_gamma_ramp(void)
     command.type = RECOMP_D3D_PRESENTER_COMMAND_GAMMA;
     memcpy(command.data.gamma, ramp, sizeof command.data.gamma);
     error = recomp_d3d_presenter_submit(presenter, &command);
-    exit_if_window_closed(error);
+    recomp_d3d_frame_adapter_exit_if_closed(error);
     if (error != RECOMP_D3D_PRESENTER_OK) {
         recomp_stop(2, "d3d-gamma:presenter:%u", (unsigned)error);
     }

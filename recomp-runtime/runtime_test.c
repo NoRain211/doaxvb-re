@@ -37,6 +37,7 @@ int recomp_ohci_model_test(void);
 int recomp_apu_model_test(void);
 int recomp_kernel_memory_test(void);
 int recomp_kernel_allocation_test(void);
+int recomp_kernel_presenter_close_test(void);
 int recomp_kernel_file_save_test(void);
 int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
@@ -854,6 +855,9 @@ int main(int argc, char **argv)
 {
     int passed = 1;
 
+    if (argc == 2 && strcmp(argv[1], "--presenter-close-release") == 0) {
+        return recomp_kernel_presenter_close_test();
+    }
     if (argc == 2 && strcmp(argv[1], "--custom-music") == 0) {
         return recomp_custom_music_test();
     }
