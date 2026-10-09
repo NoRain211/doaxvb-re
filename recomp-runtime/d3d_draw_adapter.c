@@ -1906,9 +1906,10 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     }
     capture_command = &command.data.draw;
 
-    if (recomp_d3d_presenter_submit(
-            recomp_d3d_frame_adapter_presenter(), &command) !=
-        RECOMP_D3D_PRESENTER_OK) {
+    RecompD3dPresenterError presenter_error = recomp_d3d_presenter_submit(
+        recomp_d3d_frame_adapter_presenter(), &command);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
+    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         decline = "presenter";
         goto finished;
     }
@@ -2068,8 +2069,10 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         decline = "up-alpha-mask";
         goto finished;
     }
-    if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command) !=
-        RECOMP_D3D_PRESENTER_OK) {
+    RecompD3dPresenterError presenter_error = recomp_d3d_presenter_submit(
+        recomp_d3d_frame_adapter_presenter(), &command);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
+    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         decline = "up-presenter";
         goto finished;
     }

@@ -19,6 +19,8 @@ void recomp_d3d_frame_adapter_initialize(
     const RecompD3dPresenterConfig *config,
     uint32_t device_address);
 void recomp_d3d_frame_adapter_reset(void);
+/* Applies the normal host-window exit to any presenter operation. */
+void recomp_d3d_frame_adapter_exit_if_closed(RecompD3dPresenterError error);
 void recomp_d3d_frame_adapter_reset_buffers(void);
 /* The presenter created by this adapter, or NULL before initialization.
    The draw seam submits through the same presenter so clear, draw, and

@@ -1,4 +1,6 @@
 #include "kernel_abi.h"
+#include "d3d_frame_adapter.h"
+#include "d3d_presenter_memory_test.h"
 #include "xbox_memory_layout.h"
 
 #include <stdio.h>
@@ -224,4 +226,26 @@ int recomp_kernel_allocation_test(void)
     request[2] = contiguous + 0x7ffu;
     passed &= expect_u32("rounded extent upper bound", memory_call(166u, request, 5u), 0u);
     return passed;
+}
+
+/* Runs in its own process because a closed presenter exits normally. */
+int recomp_kernel_presenter_close_test(void)
+{
+    enum { HEAP = 0x27000000u };
+    static uint8_t heap[0x20000u];
+    const RecompMemoryRegion region = {
+        .address = HEAP, .size = sizeof heap, .data = heap,
+    };
+    const RecompD3dPresenterConfig config = {
+        4u, 4u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8,
+    };
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    recomp_test_heap_reset(HEAP + 0x1000u, -1);
+    recomp_d3d_frame_adapter_initialize(&config, HEAP);
+    uint32_t block = recomp_kernel_allocate_pool(16u);
+    if (block == 0u) return 1;
+    recomp_d3d_presenter_memory_set_error(RECOMP_D3D_PRESENTER_CLOSED);
+    recomp_kernel_free_pool(block);
+    return 1; /* The close must exit before returning here. */
 }
