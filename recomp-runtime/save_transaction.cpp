@@ -441,13 +441,13 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
     ready = false;
     depth = 0;
     failed = false;
-    if (disc_root == nullptr || *disc_root == '\0') {
-        return false;
-    }
     try {
+        require(disc_root != nullptr && *disc_root != '\0');
 #ifdef _WIN32
         fs::path root = fs::absolute(disc_root).lexically_normal();
 #else
+        // macOS reaches /tmp and /var through symlinks, which check_parents
+        // rejects; resolve the root first.
         std::error_code ec;
         fs::path root = fs::canonical(disc_root, ec);
         if (ec) root = fs::absolute(disc_root).lexically_normal();
@@ -478,7 +478,7 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
 #else
         const auto lock_path = journal / "lock";
         if (exists_plain(lock_path)) require(fs::is_regular_file(lock_path));
-        journal_lock = open(lock_path.c_str(), O_RDWR | O_CREAT, 0666);
+        journal_lock = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
         require(journal_lock >= 0);
         require(flock(journal_lock, LOCK_EX | LOCK_NB) == 0);
 #endif
