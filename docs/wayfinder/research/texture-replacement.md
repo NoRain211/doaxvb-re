@@ -1,8 +1,8 @@
 # Texture replacement and 3D foliage
 
 Status: research for replacing low-resolution foliage art at 4K. It is based
-on public source only. No assets, extracted names, or runtime output were
-published.
+on public source plus non-committed hands-on observation. No assets,
+extracted names, or runtime captures were published.
 
 ## Decision
 
@@ -32,7 +32,11 @@ texture data changes the result.
   mip payload. Include the palette when P8 is supported. Exclude guest
   addresses, because the game reuses buffers. `textureFingerprint()` samples
   only 128 words; it detects cache changes and cannot identify a texture.
-  `xbe/sha.cpp` already provides SHA-256.
+  `xbe/sha.cpp` already provides SHA-256. Queued compressed textures borrow
+  guest memory (`d3d_presenter_capture.cpp`), so the capture packet must own
+  every hashed mip payload before queuing, or compute and retain the full
+  replacement key synchronously before queuing. Worker-side lookup must not
+  hash borrowed bytes that the guest can refill for a later draw.
 - **Fallback:** a missing, malformed, unsupported, or over-budget replacement
   uses the original upload. Cache both hits and misses; never touch the disk
   per draw.
@@ -98,7 +102,8 @@ A DXT1-only pilot:
 1. A dumped DDS loaded back unchanged renders identically.
 2. A conspicuous synthetic replacement appears on the intended draws only.
 3. The same texture at two addresses resolves to one key. Changed content at
-   one address, including an unsampled word, resolves to a new key.
+   one address, including an unsampled word, resolves to a new key. Refilling
+   a buffer after queuing preserves the earlier draw's replacement key.
 4. A missing or malformed pack falls back to the original.
 5. One reworked 2x or 4x foliage texture is compared in a bounded jungle
    scene at 1x and 4K, for distance, motion, cutout coverage, load count,
