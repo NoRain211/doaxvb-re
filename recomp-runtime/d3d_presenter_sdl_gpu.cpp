@@ -1670,7 +1670,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     if (std::this_thread::get_id() != presenter->owner_thread) {
         return RECOMP_D3D_PRESENTER_WRONG_THREAD;
     }
-    pumpEvents(presenter);
+    // Events are pumped once per present; pumping per draw costs a syscall
+    // round trip on X11/Wayland for each of the game's ~1500 draws a frame.
     if (presenter->close_requested) {
         return RECOMP_D3D_PRESENTER_CLOSED;
     }
