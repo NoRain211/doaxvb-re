@@ -1971,7 +1971,60 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     light.enabled=false;
     if (!pixels("unlit texture unchanged",0xff804020)) return false;
     world[0]=0;
-    return !recomp_d3d_normal_transform(world,light.normal_transforms[0]);
+    if (recomp_d3d_normal_transform(world,light.normal_transforms[0])) return false;
+
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices; draw.blend_weight_count=0;
+    light={}; light.enabled=light.normalize=true; light.count=1;
+    for (unsigned c=0;c<3;++c) light.colors[0][c]=light.material_diffuse[c]=1;
+    for (unsigned i=0;i<4;++i) {
+        light.world_transforms[0][i*5]=light.normal_transforms[0][i*5]=1;
+        vertices[i][3]=0; vertices[i][5]=1;
+    }
+    light.world_transforms[0][14]=10;
+    light.positions[0][2]=30; light.positions[0][3]=1;
+    light.attenuation[0][0]=1; light.attenuation[0][1]=0.05f; light.attenuation[0][3]=100;
+    // Corner distances are sqrt(402) and sqrt(3602); the resulting UNORM colors round to 1/2 and 1/4.
+    if (!pixels("point light near attenuation in world space",0xff402010)) return false;
+    light.world_transforms[0][14]=-30;
+    if (!pixels("point light far attenuation",0xff201008)) return false;
+    for (auto &vertex : vertices) vertex[5]=-1;
+    if (!pixels("point light back-facing diffuse is zero",0xff000000)) return false;
+    for (auto &vertex : vertices) vertex[5]=1;
+    light.attenuation[0][3]=50;
+    if (!pixels("point light outside range is zero",0xff000000)) return false;
+    light.world_transforms[0][14]=10;
+    light.attenuation[0][1]=0; light.attenuation[0][2]=0.0025f;
+    if (!pixels("point light quadratic attenuation",0xff402010)) return false;
+    light.attenuation[0][0]=2; light.attenuation[0][2]=0;
+    if (!pixels("point light constant attenuation",0xff402010)) return false;
+    light.attenuation[0][0]=1; light.attenuation[0][1]=0.05f; light.attenuation[0][3]=100;
+    light.count=2; light.directions[1][2]=1;
+    for (unsigned c=0;c<3;++c) light.colors[1][c]=0.25f;
+    if (!pixels("mixed point and directional lights",0xff603018)) return false;
+    light.count=1;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=0; light.ambient[0][c]=1; }
+    if (!pixels("point ambient near attenuation",0xff402010)) return false;
+    light.world_transforms[0][14]=-30;
+    if (!pixels("point ambient far attenuation",0xff201008)) return false;
+    for (auto &vertex : vertices) vertex[5]=-1;
+    if (!pixels("point ambient ignores normal",0xff201008)) return false;
+    light.attenuation[0][3]=50;
+    if (!pixels("point ambient outside range is zero",0xff000000)) return false;
+    light.ambient_emissive[0]=0.25f;
+    if (!pixels("out-of-range point ambient retains global ambient",0xff200000)) return false;
+    light.ambient_emissive[0]=0;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=1; light.ambient[0][c]=0; }
+    light.world_transforms[0][14]=10; light.attenuation[0][3]=100;
+    for (unsigned i=0;i<4;++i) {
+        weighted[i][4]=0; weighted[i][6]=1;
+    }
+    draw.fvf=0x116; draw.vertex_stride=36; draw.vertex_bytes=weighted; draw.blend_weight_count=1;
+    std::memcpy(light.world_transforms[1],light.world_transforms[0],64);
+    std::memcpy(light.normal_transforms[1],light.normal_transforms[0],64);
+    light.world_transforms[0][14]=-50; light.world_transforms[1][14]=30;
+    if (!pixels("point light weighted world position uses remainder matrix",0xff402010)) return false;
+    draw.blend_weight_count=0;
+    return pixels("point light disabled blending uses world zero",0xff1a0d06);
 }
 
 static bool testBackBufferMips(RecompD3dPresenter *presenter)

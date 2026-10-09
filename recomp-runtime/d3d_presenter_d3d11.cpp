@@ -71,9 +71,9 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
    serve both, so the shader is assembled per FVF from the decoded layout and
    cached with its matching input layout.
 
-   Vertex color comes from the stream or the admitted directional-lighting
+   Vertex color comes from the stream or the admitted fixed-function lighting
    path. Unsupported lighting configurations retain the earlier texture/normal
-   fallback. Texture alpha remains independent of directional diffuse RGB. */
+   fallback. Texture alpha remains independent of lit diffuse RGB. */
 constexpr char kDrawShaderPrologue[] =
     "cbuffer Transform : register(b0) {\n"
     "    row_major float4x4 wvp[4];\n"
@@ -94,6 +94,10 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 directional_directions[8];\n"
     "    float4 directional_colors[8];\n"
     "    float4 directional_flags;\n"
+    "    row_major float4x4 light_world[4];\n"
+    "    float4 light_positions[8];\n"
+    "    float4 light_attenuation[8];\n"
+    "    float4 light_ambient[8];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -1317,21 +1321,34 @@ bool drawShaderSource(
     if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
-            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n";
+            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n"
+            "        float3 world_pos = mul(float4(input.position,1),light_world[0]).xyz;\n";
         if (layout.blend_weight_count) {
-            lighting += "        if (blend_flags.x > 0.5f) { n=0; float remainder=1;\n";
+            lighting += "        if (blend_flags.x > 0.5f) { n=0; world_pos=0; float remainder=1;\n";
             for (uint32_t i=0; i<layout.blend_weight_count; ++i) {
                 const auto index=std::to_string(i);
                 lighting += "n += input.weights["+index+"] * mul(float4(input.normal,0),directional_normals["+index+"]).xyz;\n"
+                    "world_pos += input.weights["+index+"] * mul(float4(input.position,1),light_world["+index+"]).xyz;\n"
                     "remainder -= input.weights["+index+"];\n";
             }
             lighting += "n += remainder * mul(float4(input.normal,0),directional_normals["+
+                std::to_string(layout.blend_weight_count)+"]).xyz;\n"
+                "world_pos += remainder * mul(float4(input.position,1),light_world["+
                 std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
         }
         lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
             "        float3 rgb=directional_base.rgb;\n"
-            "        for (uint i=0; i<(uint)directional_flags.z; ++i)\n"
-            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,directional_directions[i].xyz));\n"
+            "        for (uint i=0; i<(uint)directional_flags.z; ++i) {\n"
+            "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
+            "            if (light_positions[i].w > 0.5f) {\n"
+            "                l = light_positions[i].xyz - world_pos;\n"
+            "                float d = length(l);\n"
+            "                float denominator = dot(light_attenuation[i].xyz,float3(1,d,d*d));\n"
+            "                atten = d <= light_attenuation[i].w && denominator > 0 ? 1/denominator : 0;\n"
+            "                l = d > 0 ? l/d : float3(0,0,0);\n"
+            "            }\n"
+            "            rgb += (directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) + light_ambient[i].rgb) * atten;\n"
+            "        }\n"
             "        output.color.rgb=saturate(rgb);\n"
             "    }\n";
         const auto uv = compiled_source.find("    output.texcoord =");
@@ -1515,8 +1532,10 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
-    /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 140u) * sizeof(float);
+    /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
+       normal transforms, material/base, directions/colors/flags, world transforms,
+       point positions, attenuation/range and material-scaled ambient (300 floats). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 300u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2441,7 +2460,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 140]{};
+    float draw_constants[140 + 192 * 4 + 300]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2496,6 +2515,10 @@ RecompD3dPresenterError submitDraw(
         constants[136]=1;
         constants[137]=light.normalize ? 1.0f:0.0f;
         constants[138]=static_cast<float>(light.count);
+        std::memcpy(constants+140, light.world_transforms, sizeof light.world_transforms);
+        std::memcpy(constants+204, light.positions, sizeof light.positions);
+        std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
+        std::memcpy(constants+268, light.ambient, sizeof light.ambient);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
