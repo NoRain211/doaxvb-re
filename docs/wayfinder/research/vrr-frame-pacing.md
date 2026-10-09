@@ -253,10 +253,14 @@ PresentMon.exe --process_id <PID> --v1_metrics --qpc_time --timed 30 --terminate
 This branch changes runtime source as well as adding this research note:
 
 - Scaled VRR output is downsampled into a client-sized swap chain.
-- Blocking flip presentation requests device frame latency one; immediate
-  presentation retains the device default. No latency waitable object is used.
-- Fixed-refresh presentation selects interval two near 120 Hz and four near
-  240 Hz (within one integer Hz); other rates retain interval one.
+- Blocking flip presentation creates a waitable chain and requests per-chain
+  frame latency one, checking the result. Immediate presentation retains the
+  device default. The worker does not wait on a chain readiness handle.
+- `RECOMP_D3D_VRR=1` selects flip presentation when tearing is supported,
+  including direct launches without `--vsync`.
+- Fixed-refresh presentation selects interval two at 120-121 Hz and four at
+  240-241 Hz; lower and other rates retain interval one. Monitor refresh is
+  rechecked using elapsed time, once per second. [Per-chain latency][chain-latency]
 - The VRR worker flushes rendering and waits on its own nominal 60 Hz grid
   before `Present`, in addition to the guest's existing wait. Thread-local
   waitable timers now close on thread exit.
@@ -290,12 +294,12 @@ controls for a comparison; this branch is not an unchanged timing baseline.
    timing debt after lateness; it does not guarantee exact arrival times.
    Sources: [guest wait][local-vblank], [swap adapter][local-adapter],
    [packet publication and execution][local-thread].
-3. **Add a waitable chain only if queueing is implicated.** Create the flip
-   chain with `FRAME_LATENCY_WAITABLE_OBJECT` alongside its existing tearing
-   flag; use `IDXGISwapChain2::SetMaximumFrameLatency(1)`, obtain the handle,
-   and check errors. The device-level latency setting is not the control for
-   this chain. Preserve flags across resize; this flag requires creation,
-   not later addition through resize. [Swap-chain flags][chain-flags],
+3. **Add a readiness wait only if queueing is implicated.** The flip chain
+   now uses `FRAME_LATENCY_WAITABLE_OBJECT` alongside its tearing flag and
+   checks `IDXGISwapChain2::SetMaximumFrameLatency(1)`. Obtain its readiness
+   handle to integrate the wait. The device-level latency setting is not the
+   control for this chain. Preserve flags across resize; this flag requires
+   creation, not later addition through resize. [Swap-chain flags][chain-flags],
    [per-chain latency][chain-latency], [creation guidance][latency]
 4. **Place any readiness wait at the actual frame boundary.** For this
    implementation that means before replaying a frame packet in the worker,

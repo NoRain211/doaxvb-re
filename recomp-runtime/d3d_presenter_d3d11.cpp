@@ -486,6 +486,7 @@ struct RecompD3dPresenter {
        in QPC ticks, to line up with a PresentMon --qpc_time capture. */
     FILE *present_log = nullptr;
     UINT sync_interval = 1u;
+    std::chrono::steady_clock::time_point next_refresh_check{};
     bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
     long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
@@ -531,9 +532,14 @@ uint32_t windowHeight(const RecompD3dPresenter *presenter)
 
 /* VRR needs direct flip, which a DWM-scaled swap chain loses; with VRR the
    swap chain matches the window and the presenter scales into it itself. */
+bool immediatePresent(const RecompD3dPresenter *presenter)
+{
+    return immediate_present && !presenter->vrr;
+}
+
 bool vrrScaled(const RecompD3dPresenter *presenter)
 {
-    return presenter->vrr && !immediate_present &&
+    return presenter->vrr &&
         (mainWidth(presenter) != presentClientWidth(presenter, windowHeight(presenter)) ||
          mainHeight(presenter) != windowHeight(presenter));
 }
@@ -748,6 +754,7 @@ HRESULT createDeviceWithDriver(
     RecompD3dPresenter *presenter,
     D3D_DRIVER_TYPE driver_type)
 {
+    const bool immediate = immediatePresent(presenter);
     DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
     const D3D_FEATURE_LEVEL feature_levels[] = {
         D3D_FEATURE_LEVEL_11_0,
@@ -766,15 +773,15 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.SampleDesc.Count = 1u;
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = immediate_present ? 1u : 2u;
+    swap_chain_desc.BufferCount = immediate ? 1u : 2u;
     swap_chain_desc.OutputWindow = presenter->window;
     swap_chain_desc.Windowed = TRUE;
-    swap_chain_desc.SwapEffect = immediate_present
+    swap_chain_desc.SwapEffect = immediate
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    swap_chain_desc.Flags = presenter->vrr && !immediate_present
-        ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    swap_chain_desc.Flags = immediate ? 0u : DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (presenter->vrr) swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    const HRESULT result = D3D11CreateDeviceAndSwapChain(
+    HRESULT result = D3D11CreateDeviceAndSwapChain(
         nullptr,
         driver_type,
         nullptr,
@@ -787,12 +794,12 @@ HRESULT createDeviceWithDriver(
         &presenter->device,
         &selected_feature_level,
         &presenter->context);
-    // Limit the blocking flip queue; immediate presents must retain the default.
-    IDXGIDevice1 *dxgi_device = nullptr;
-    if (SUCCEEDED(result) && !immediate_present &&
-        SUCCEEDED(presenter->device->QueryInterface(IID_PPV_ARGS(&dxgi_device)))) {
-        dxgi_device->SetMaximumFrameLatency(1u);
-        releaseCom(dxgi_device);
+    // Flip chains use the per-chain limit; immediate presents retain the default.
+    if (SUCCEEDED(result) && !immediate) {
+        IDXGISwapChain2 *chain = nullptr;
+        result = presenter->swap_chain->QueryInterface(IID_PPV_ARGS(&chain));
+        if (SUCCEEDED(result)) result = chain->SetMaximumFrameLatency(1u);
+        releaseCom(chain);
     }
     return result;
 }
@@ -3101,14 +3108,16 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
    ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
 UINT fixedRefreshInterval(UINT hz)
 {
-    // Integer rates such as 239 stand for 239.76 Hz.
+    // Rates below the multiple cannot retire sixty frames per second.
     const UINT k = (hz + 30u) / 60u;
-    return (k == 2u || k == 4u) && hz + 1u >= 60u * k && hz <= 60u * k + 1u ? k : 1u;
+    return (k == 2u || k == 4u) && hz >= 60u * k && hz <= 60u * k + 1u ? k : 1u;
 }
 
 UINT syncInterval(RecompD3dPresenter *presenter)
 {
-    if (presenter->present_count % 60u == 0u) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= presenter->next_refresh_check) {
+        presenter->next_refresh_check = now + std::chrono::seconds(1);
         MONITORINFOEXW monitor{};
         monitor.cbSize = sizeof monitor;
         DEVMODEW mode{};
@@ -3205,10 +3214,11 @@ RecompD3dPresenterError submitPresent(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
-    const UINT sync_interval = immediate_present || presenter->vrr ? 0u : syncInterval(presenter);
-    const UINT present_flags = immediate_present ? DXGI_PRESENT_DO_NOT_WAIT
+    const bool immediate = immediatePresent(presenter);
+    const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
+    const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
         : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
-    if (presenter->vrr && !immediate_present) {
+    if (presenter->vrr) {
         /* VRR shows a frame the moment it is presented, so render-time jitter
            became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
            late frame presents now and moves the grid, as the guest timer does. */
@@ -3248,6 +3258,7 @@ RecompD3dPresenterError submitPresent(
             sync_interval, present_flags, static_cast<unsigned long>(present_result),
             last_present, static_cast<unsigned long>(stats_result), stats.PresentCount,
             stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+        std::fflush(presenter->present_log);
     }
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
