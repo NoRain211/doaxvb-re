@@ -510,10 +510,11 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_model.c
         d3d_frame_adapter.c
         d3d_vblank.cpp
-        d3d_presenter_d3d11.cpp
-        texture_replacement.cpp
+        $<$<PLATFORM_ID:Windows>:d3d_presenter_d3d11.cpp>
+        $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
         d3d_presenter_capture.cpp
-        d3d_presenter_thread.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
         d3d_render_state_model.c
@@ -649,6 +650,14 @@ if(WIN32)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     target_link_libraries(recomp_input_host_test PRIVATE user32)
     recomp_use_sdl3(recomp_input_host_test)
+else()
+    add_executable(recomp_d3d_presenter_sdl_gpu_test
+        d3d_presenter_sdl_gpu.cpp
+        d3d_presenter_sdl_gpu_test.cpp
+        d3d_vertex_program.cpp
+        d3d_draw_model.c
+        d3d_texture_model.c)
+    recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
 endif()
 
 add_executable(recomp_d3d_presenter_capture_test
@@ -691,6 +700,11 @@ if(TARGET recomp_audio_output_xaudio2_test)
 endif()
 if(TARGET recomp_input_host_test)
     add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
+endif()
+if(TARGET recomp_d3d_presenter_thread_test)
+    add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_thread_test)
+elseif(TARGET recomp_d3d_presenter_sdl_gpu_test)
+    add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_sdl_gpu_test)
 endif()
 add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
 add_test(NAME recomp-runtime-d3d-presenter-capture COMMAND recomp_d3d_presenter_capture_test)
