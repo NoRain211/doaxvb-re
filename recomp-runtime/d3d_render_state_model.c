@@ -1,5 +1,22 @@
 #include "d3d_render_state_model.h"
 
+#include <string.h>
+
+void recomp_d3d_fog_state(const uint32_t words[6], uint32_t color,
+    RecompD3dFogState *state)
+{
+    if (words == NULL || state == NULL) return;
+    *state = (RecompD3dFogState){0};
+    if (words[1] > 3u) return;
+    state->enabled = words[0] != 0u;
+    state->mode = words[1];
+    memcpy(&state->start, words + 2, sizeof(float));
+    memcpy(&state->end, words + 3, sizeof(float));
+    memcpy(&state->density, words + 4, sizeof(float));
+    state->range = words[5] != 0u;
+    state->color = color;
+}
+
 enum {
     D3D_SIMPLE_COMMAND_BASE = 0x00040000u,
     D3D_SIMPLE_METHOD_MASK = 0x00001ffcu,
