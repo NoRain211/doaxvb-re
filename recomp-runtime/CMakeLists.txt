@@ -559,6 +559,7 @@ endif()
 if(WIN32)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        d3d_vblank.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
@@ -577,6 +578,7 @@ if(WIN32)
         animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
+        d3d_vblank.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
@@ -645,6 +647,16 @@ endif()
 add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
 add_test(NAME recomp-runtime-d3d-presenter-capture COMMAND recomp_d3d_presenter_capture_test)
 add_test(NAME recomp-runtime-four-cases COMMAND recomp_runtime_test)
+foreach(draw_case IN ITEMS draw up)
+    add_test(NAME recomp-runtime-presenter-close-${draw_case}
+        COMMAND recomp_runtime_test --presenter-close-${draw_case})
+    set_tests_properties(recomp-runtime-presenter-close-${draw_case} PROPERTIES
+        PASS_REGULAR_EXPRESSION "host-window-close.*kind=normal-exit.*exit_code=0")
+endforeach()
+add_test(NAME recomp-runtime-presenter-close-release
+    COMMAND recomp_runtime_test --presenter-close-release)
+set_tests_properties(recomp-runtime-presenter-close-release PROPERTIES
+    PASS_REGULAR_EXPRESSION "host-window-close.*kind=normal-exit.*exit_code=0")
 add_test(
     NAME recomp-runtime-fiber-stack-recycling
     COMMAND recomp_runtime_test --fiber-stack-recycling)

@@ -225,7 +225,10 @@ static void free_guest(uint32_t base)
         if (presenter != NULL) {
             RecompD3dPresenterError error = recomp_d3d_presenter_release_memory(
                 presenter, allocation->base, allocation->size);
-            recomp_d3d_frame_adapter_check("d3d-release-memory", error);
+            recomp_d3d_frame_adapter_exit_if_closed(error);
+            if (error != RECOMP_D3D_PRESENTER_OK) {
+                recomp_stop(2, "d3d-release-memory:presenter:%u", (unsigned)error);
+            }
         }
 #endif
         allocation->active = 0;

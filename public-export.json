@@ -34,6 +34,7 @@
     "docs/wayfinder/research/high-frame-rate-split.md",
     "docs/wayfinder/research/high-frame-rate-split-review.md",
     "docs/wayfinder/research/og-xbox-custom-soundtracks.md",
+    "docs/wayfinder/research/vrr-frame-pacing.md",
     "docs/wayfinder/research/vulkan-renderer-seams.md",
     "private/README.md",
     "recomp-runtime/**",
