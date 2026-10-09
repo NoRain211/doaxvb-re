@@ -180,6 +180,16 @@ uint64_t textureFingerprint(const void *bytes, uint32_t count)
     return hash;
 }
 
+// Vertex programs key shaders and pipelines, so every token counts; the
+// sampled texture fingerprint would let two programs share one shader.
+uint64_t programHash(const uint32_t (*tokens)[4], uint32_t count)
+{
+    const auto *data = reinterpret_cast<const uint8_t *>(tokens);
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0u; i < count * 16u; ++i) hash = (hash ^ data[i]) * 0x100000001b3ull;
+    return hash;
+}
+
 SDL_GPUTextureFormat hostTextureFormat(uint32_t format_byte)
 {
     switch (format_byte) {
@@ -238,6 +248,7 @@ struct PipelineKey {
     SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
+    bool alpha_to_coverage = false;
 
     bool depth_test_enable = false;
     bool depth_write_enable = false;
@@ -266,6 +277,7 @@ struct PipelineKey {
                color_format == o.color_format &&
                depth_format == o.depth_format &&
                sample_count == o.sample_count &&
+               alpha_to_coverage == o.alpha_to_coverage &&
                depth_test_enable == o.depth_test_enable &&
                depth_write_enable == o.depth_write_enable &&
                depth_func == o.depth_func &&
@@ -981,7 +993,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
 {
     uint64_t shader_key = fvf ^ (static_cast<uint64_t>(program_count) << 32);
     if (program_count && program_tokens) {
-        shader_key ^= textureFingerprint(program_tokens, program_count * 16u);
+        shader_key ^= programHash(program_tokens, program_count);
     }
     {
         std::lock_guard<std::mutex> lock(presenter->shader_mutex);
@@ -1041,7 +1053,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
                                              SDL_GPUSampleCount sample_count)
 {
     const bool is_strip = (q.draw.primitive_type == RECOMP_D3D_PT_TRIANGLESTRIP);
-    uint64_t prog_hash = q.draw.program_count ? textureFingerprint(q.draw.program, q.draw.program_count * 16u) : 0u;
+    uint64_t prog_hash = q.draw.program_count ? programHash(q.draw.program, q.draw.program_count) : 0u;
 
     PipelineKey pkey{};
     pkey.fvf = q.draw.fvf;
@@ -1053,6 +1065,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
     pkey.color_format = color_fmt;
     pkey.depth_format = depth_fmt;
     pkey.sample_count = sample_count;
+    pkey.alpha_to_coverage = sample_count != SDL_GPU_SAMPLECOUNT_1 && q.draw.depth.alpha_test_enable;
 
     pkey.depth_test_enable = q.draw.depth.depth_test_enable;
     pkey.depth_write_enable = q.draw.depth.depth_write_enable;
@@ -1087,7 +1100,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
     pinfo.fragment_shader = shaders.fragment_shader;
     pinfo.primitive_type = is_strip ? SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pinfo.multisample_state.sample_count = sample_count;
-    pinfo.multisample_state.enable_alpha_to_coverage = (sample_count != SDL_GPU_SAMPLECOUNT_1 && q.draw.depth.alpha_test_enable);
+    pinfo.multisample_state.enable_alpha_to_coverage = pkey.alpha_to_coverage;
 
     // Rasterizer state
     pinfo.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
