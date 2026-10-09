@@ -42,7 +42,7 @@ runner started without it uses UserMusic beside the imported XBE. The runner
 creates the folder at startup if it is missing and scans it once, so added or
 removed files appear after a restart.
 
-Decoding uses Windows Media Foundation, so macOS builds have an empty
+Decoding uses Windows Media Foundation, so macOS and Linux builds have an empty
 catalog; a portable decoder is open work.
 
 The game stays in control: it enumerates the soundtrack, chooses the song,

@@ -109,6 +109,24 @@ Then build the runner:
 and soundtrack options, then starts the game. `./run_game.sh` starts the game
 with the saved choices.
 
+### Linux and SteamOS build
+
+Linux builds use Vulkan through SDL3 and compile shaders at runtime with
+shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it).
+Build in an x86-64 distribution with CMake, Ninja, a C++17 compiler,
+Python 3 with `capstone==5.0.9`, `extract-xiso` built as above, and SDL3's
+build dependencies; `build_game.sh` builds SDL3 when the distribution has none.
+
+SteamOS has a read-only system and no compiler, so build inside a container
+such as an Ubuntu 24.04 `distrobox` that shares your home folder; the
+finished checkout then runs on SteamOS itself. Run `./build_game.sh` as on
+macOS. `./launcher.sh` opens a gamepad-friendly settings screen, then starts
+the game; `./run_game.sh` starts the game with the saved choices.
+
+For Steam Game Mode, add `launcher.sh` (or `run_game.sh`) with **Add a
+Non-Steam Game** in Desktop Mode. Under Steam the game and launcher open full
+screen.
+
 Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
 records a build. A supervised native run provides the behavior evidence.

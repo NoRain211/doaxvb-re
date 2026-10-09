@@ -4,12 +4,12 @@
 
 # DOAXVB Native PC Port
 
-**A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows & macOS), built by static recompilation, with the goal of rewriting it into readable source.**
+**A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows, macOS & Linux), built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=beta)](https://github.com/NoRain211/doaxbv-re/releases/latest)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-![Platform: Windows & macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6)
+![Platform: Windows, macOS & Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)
 
 [Download](https://github.com/NoRain211/doaxbv-re/releases/latest) ·
 [Changelog](CHANGELOG.md) ·
@@ -103,6 +103,9 @@ On macOS:
 1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).
 2. Run `./build_game.sh /path/to/game.iso` and wait for setup to complete.
 3. Run `./launcher.sh` to select resolution, volume, and soundtrack options, then press **Play** (or run `./run_game.sh` directly).
+
+On Linux and Steam Deck, follow [docs/building.md](docs/building.md#linux-and-steamos-build);
+the scripts are the same as on macOS.
 
 Setup extracts your ISO and builds a native Release runner locally; the package
 contains tools and source, never a prebuilt runner or game data. When updating,

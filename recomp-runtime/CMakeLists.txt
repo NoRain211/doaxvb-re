@@ -632,6 +632,13 @@ if(RECOMP_PROGRAM_DIR)
             CONTENT "1 ICON \"${app_icon}\"\n")
         target_sources(recomp_program_runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
     endif()
+
+    # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
+    # beside the runner rather than on first use like the macOS launcher.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(recomp_launcher ../tools/launcher_sdl.cpp)
+        recomp_use_sdl3(recomp_launcher)
+    endif()
 endif()
 
 if(WIN32)
