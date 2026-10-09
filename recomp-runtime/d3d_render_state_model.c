@@ -471,6 +471,20 @@ bool recomp_d3d_texture_factor_modulate_selected(
         stage[3] == 4u && stage[4] == 3u && stage[5] == 1u;
 }
 
+bool recomp_d3d_combiner_uses_texture(const uint32_t words[8])
+{
+    if (words[0] <= 1u) return false;
+    for (uint32_t channel = 0u; channel < 8u; channel += 4u) {
+        const uint32_t op = words[channel];
+        if (op <= 1u) continue;
+        if (op == 14u || op == 16u) return true;
+        if (op != 3u && (words[channel + 2u] & 15u) == 2u) return true;
+        if (op != 2u && (words[channel + 3u] & 15u) == 2u) return true;
+        if ((op == 23u || op == 24u) && (words[channel + 1u] & 15u) == 2u) return true;
+    }
+    return false;
+}
+
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
 {
     static const uint32_t arguments[3][6] = {

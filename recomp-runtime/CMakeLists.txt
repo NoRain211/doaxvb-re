@@ -530,6 +530,7 @@ if(WIN32)
         d3d_presenter_d3d11_test.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
+        d3d_render_state_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32)
@@ -540,6 +541,7 @@ if(WIN32)
         d3d_presenter_d3d11.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
+        d3d_render_state_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dxgi user32)

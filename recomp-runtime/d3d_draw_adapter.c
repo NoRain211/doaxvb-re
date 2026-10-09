@@ -826,8 +826,14 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
        TEXTURETRANSFORMFLAGS and 28 TEXCOORDINDEX. */
     if (stages[1][12] <= 1u || stages[1][12] > 24u || stages[2][12] != 1u ||
         stages[1][28] != 0u || (stages[1][21] != 0u && stages[1][21] != 2u)) return;
+    if (recomp_d3d_combiner_uses_texture(stages[0] + 12u) &&
+        (stages[0][21] != 0u || stages[0][28] != 0u)) return;
+    const bool stage1_texture = recomp_d3d_combiner_uses_texture(stages[1] + 12u);
+    // Only the presenter's linear min/mag/mip sampler is implemented here.
+    if (stage1_texture &&
+        (stages[1][3] != 2u || stages[1][4] != 2u || stages[1][5] != 2u)) return;
     for (uint32_t s = 0u; s < 2u; ++s) {
-        if (stages[s][20] != 0u) return;
+        if (stages[s][20] != 0u || stages[s][11] != 0u) return;
         for (uint32_t i = 0u; i < 8u; ++i) {
             const uint32_t word = stages[s][12u + i];
             if (i == 0u || i == 4u) {
@@ -837,9 +843,11 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
             draw->combiner[s][i] = word;
         }
     }
-    attach_texture(1u, &texture);
-    if (!texture.has_texture || texture.texture_bytes == NULL ||
-        texture.palette_bytes != NULL) return;
+    if (stage1_texture) {
+        attach_texture(1u, &texture);
+        if (!texture.has_texture || texture.texture_bytes == NULL ||
+            texture.palette_bytes != NULL) return;
+    }
     if (stages[1][21] == 2u) {
         if (!read_transform(device, 3u, draw->reflection_transform)) return;
         for (uint32_t i = 0u; i < 16u; ++i)

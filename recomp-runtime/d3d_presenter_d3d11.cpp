@@ -2406,8 +2406,9 @@ RecompD3dPresenterError submitDraw(
         reflection.texture = draw.reflection_texture;
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
-        mask_view = lookupTexture(presenter, reflection);
-        if (mask_view == nullptr ||
+        const bool needs_mask = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[1]);
+        mask_view = needs_mask ? lookupTexture(presenter, reflection) : nullptr;
+        if ((needs_mask && mask_view == nullptr) ||
             (texture_view == nullptr && (!draw.has_combiner || draw.has_texture)))
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
