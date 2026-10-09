@@ -206,7 +206,7 @@ ComPtr<ID3D11ShaderResourceView> loadDds(ID3D11Device *device, const fs::path &p
         case 0x35545844: desc.Format = DXGI_FORMAT_BC3_UNORM; block = 16; break;
         case 0x30315844:
             if (word(bytes, 132) != 3 || word(bytes, 136) != 0 || word(bytes, 140) != 1 ||
-                (word(bytes, 144) != 0 && word(bytes, 144) != 1))
+                (word(bytes, 144) != 0 && word(bytes, 144) != 1 && word(bytes, 144) != 3))
                 throw std::runtime_error("DDS DX10 shape or alpha mode");
             desc.Format = static_cast<DXGI_FORMAT>(word(bytes, 128));
             offset = 148;
@@ -339,7 +339,7 @@ void TextureReplacements::scan()
         throw std::runtime_error("replacement directory scan");
     for (auto r = replacements_.begin(); r != replacements_.end();) {
         const auto old = files_.find(r->first), next = files.find(r->first);
-        if (old == files_.end() || next == files.end() || old->second.path != next->second.path ||
+        if (!r->second.view || old == files_.end() || next == files.end() || old->second.path != next->second.path ||
             old->second.time != next->second.time || old->second.size != next->second.size) {
             resident_ -= r->second.bytes;
             r = replacements_.erase(r);
@@ -356,10 +356,15 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
         if (!scanned_ || reload_) scan();
         if (reload_) std::fprintf(stderr, "recomp textures: rescanned %zu files\n", files_.size());
         reload_ = false;
-        const bool frame_dump = frame_dump_ || (dump_at_ && present == dump_at_);
+        bool frame_dump = frame_dump_ || (dump_at_ && present == dump_at_);
         const auto frame_dir = root_ / ("frame-" + std::to_string(present));
-        if (dump_) fs::create_directories(root_ / "dump");
-        if (frame_dump) fs::create_directories(frame_dir);
+        try {
+            if (dump_) fs::create_directories(root_ / "dump");
+            if (frame_dump) fs::create_directories(frame_dir);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "recomp textures: dump setup failed (%s)\n", e.what());
+            dump_ = false; frame_dump = false;
+        }
         for (auto &item : frame_) {
             const auto &key = item.first;
             auto original = item.second.Get();
@@ -431,8 +436,7 @@ void TextureReplacements::finishFrame(ID3D11Device *device, ID3D11DeviceContext 
         if (frame_dump) std::fprintf(stderr, "recomp textures: frame %u dumped (%zu textures)\n", present, frame_.size());
     } catch (const std::exception &e) {
         std::fprintf(stderr, "recomp textures: frame work failed (%s)\n", e.what());
-        // A failed rescan must not leave stale replacements active. Disable
-        // continuous dumping after an output-directory error to avoid a log flood.
+        // A failed rescan must not leave stale replacements active.
         replacements_.clear(); files_.clear(); resident_ = 0; dump_ = false;
         // Retry directory scans only on an explicit reload.
         scanned_ = true; reload_ = false;

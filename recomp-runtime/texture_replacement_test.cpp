@@ -144,6 +144,45 @@ int main()
         replacements.lookup("retry", original.Get());
         replacements.finishFrame(device.Get(), context.Get(), 12);
         REQUIRE(loadPng(retry_path).bytes.size() == 64);
+        // Dump setup failures preserve cached replacements and still allow new loads.
+        const auto blocked_root = root / "blocked-output";
+        { std::ofstream blocked(blocked_root); blocked << "not a directory"; }
+        _putenv_s("RECOMP_TEXTURE_DUMP_DIR", blocked_root.string().c_str());
+        TextureReplacements blocked_dump;
+        blocked_dump.lookup(first.key, original.Get());
+        blocked_dump.finishFrame(device.Get(), context.Get(), 20);
+        REQUIRE(blocked_dump.lookup(first.key, original.Get()) != original.Get());
+        _putenv_s("RECOMP_TEXTURE_DUMP", "");
+        TextureReplacements blocked_frame;
+        blocked_frame.lookup(first.key, original.Get());
+        blocked_frame.finishFrame(device.Get(), context.Get(), 21);
+        auto retained = blocked_frame.lookup(first.key, original.Get());
+        REQUIRE(retained != original.Get());
+        blocked_frame.request(false);
+        blocked_frame.finishFrame(device.Get(), context.Get(), 22);
+        REQUIRE(blocked_frame.lookup(first.key, original.Get()) == retained);
+        _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
+        _putenv_s("RECOMP_TEXTURE_DUMP", "1");
+
+        // Reload retries a locked input even when its path, time and size are unchanged.
+        pixels.bytes[0] = 249;
+        savePng(replacement_path, pixels);
+        fs::last_write_time(replacement_path, fs::file_time_type::clock::now() + std::chrono::seconds(4));
+        locked = CreateFileW(replacement_path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        REQUIRE(locked != INVALID_HANDLE_VALUE);
+        replacements.request(true);
+        replacements.lookup(first.key, original.Get());
+        replacements.finishFrame(device.Get(), context.Get(), 23);
+        auto failed_load = replacements.lookup(first.key, original.Get());
+        CloseHandle(locked);
+        REQUIRE(failed_load == original.Get());
+        replacements.finishFrame(device.Get(), context.Get(), 24);
+        REQUIRE(replacements.lookup(first.key, original.Get()) == original.Get());
+        replacements.request(true);
+        replacements.finishFrame(device.Get(), context.Get(), 25);
+        changed = replacements.lookup(first.key, original.Get());
+        REQUIRE(changed != original.Get());
+        REQUIRE(readPixels(device.Get(), context.Get(), changed, readback_vs, readback_ps).bytes == pixels.bytes);
         fs::rename(root / "replace", root / "old-replace");
         { std::ofstream blocked(root / "replace"); blocked << "not a directory"; }
         replacements.request(true);
@@ -173,6 +212,22 @@ int main()
             bool rejected = false;
             try { loadDds(device.Get(), path, desc, used); } catch (const std::exception &) { rejected = true; }
             REQUIRE(rejected);
+        }
+        // DX10 accepts unknown, straight and opaque alpha, rejecting other metadata.
+        for (auto format : {DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM}) {
+            std::vector<uint8_t> dds(148 + (format == DXGI_FORMAT_BC1_UNORM ? 8 : 64), 0);
+            auto set = [&](size_t offset, uint32_t value) { std::memcpy(dds.data() + offset, &value, 4); };
+            set(0, 0x20534444); set(4, 124); set(12, 4); set(16, 4); set(76, 32);
+            set(80, 4); set(84, 0x30315844); set(128, format); set(132, 3); set(140, 1);
+            const auto path = root / "alpha.dds";
+            for (uint32_t alpha : {0u, 1u, 3u, 2u, 4u, 5u, 6u, 7u, 8u, 11u}) {
+                set(144, alpha);
+                { std::ofstream out(path, std::ios::binary); out.write(reinterpret_cast<char *>(dds.data()), dds.size()); }
+                uint64_t used = 0;
+                bool accepted = false;
+                try { accepted = !!loadDds(device.Get(), path, desc, used); } catch (const std::exception &) {}
+                REQUIRE(accepted == (alpha == 0u || alpha == 1u || alpha == 3u));
+            }
         }
         // DX10 BC7 is deliberately refused even if a downlevel driver exposes it.
         std::vector<uint8_t> bc7(164, 0);
