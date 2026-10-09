@@ -170,7 +170,7 @@ int main()
     value.data.draw.directional.positions[7][3] = 1.0f;
     value.data.draw.directional.attenuation[7][1] = 0.05f;
     value.data.draw.directional.attenuation[7][3] = 100.0f;
-    const auto lighting = value.data.draw.directional;
+    value.data.draw.directional.ambient[7][0] = 0.25f;
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     value.data.draw.directional = {};
     value.data.draw.texture.format_byte = 0u; // swizzled: borrowed from guest RAM
@@ -193,7 +193,12 @@ int main()
         CHECK(packet.command(5).data.draw.*fields[i] != sources[i].data());
         CHECK(packet.command(7).data.draw.*fields[i] == nullptr);
     }
-    CHECK(std::memcmp(&packet.command(5).data.draw.directional, &lighting, sizeof lighting) == 0);
+    CHECK(packet.command(5).data.draw.directional.world_transforms[3][14] == 12.0f);
+    CHECK(packet.command(5).data.draw.directional.positions[7][2] == 30.0f);
+    CHECK(packet.command(5).data.draw.directional.positions[7][3] == 1.0f);
+    CHECK(packet.command(5).data.draw.directional.attenuation[7][1] == 0.05f);
+    CHECK(packet.command(5).data.draw.directional.attenuation[7][3] == 100.0f);
+    CHECK(packet.command(5).data.draw.directional.ambient[7][0] == 0.25f);
     CHECK(packet.command(6).data.draw.texture_bytes == sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
     std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");

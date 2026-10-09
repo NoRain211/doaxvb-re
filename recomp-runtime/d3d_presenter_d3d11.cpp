@@ -95,6 +95,7 @@ constexpr char kDrawShaderPrologue[] =
     "    row_major float4x4 light_world[4];\n"
     "    float4 light_positions[8];\n"
     "    float4 light_attenuation[8];\n"
+    "    float4 light_ambient[8];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -1250,7 +1251,7 @@ bool drawShaderSource(
             "                atten = d <= light_attenuation[i].w && denominator > 0 ? 1/denominator : 0;\n"
             "                l = d > 0 ? l/d : float3(0,0,0);\n"
             "            }\n"
-            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) * atten;\n"
+            "            rgb += (directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) + light_ambient[i].rgb) * atten;\n"
             "        }\n"
             "        output.color.rgb=saturate(rgb);\n"
             "    }\n";
@@ -1435,8 +1436,10 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
-    /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 268u) * sizeof(float);
+    /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
+       normal transforms, material/base, directions/colors/flags, world transforms,
+       point positions, attenuation/range and material-scaled ambient (300 floats). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 300u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2352,7 +2355,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 268]{};
+    float draw_constants[140 + 192 * 4 + 300]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2410,6 +2413,7 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(constants+140, light.world_transforms, sizeof light.world_transforms);
         std::memcpy(constants+204, light.positions, sizeof light.positions);
         std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
+        std::memcpy(constants+268, light.ambient, sizeof light.ambient);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;

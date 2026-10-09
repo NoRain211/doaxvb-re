@@ -77,6 +77,8 @@ typedef struct RecompD3dDirectionalLighting {
     float positions[8][4];
     /* Constant, linear, quadratic attenuation, and range. */
     float attenuation[8][4];
+    /* Point-light ambient multiplied by material ambient, before attenuation. */
+    float ambient[8][4];
 } RecompD3dDirectionalLighting;
 
 typedef enum RecompD3dCullMode {

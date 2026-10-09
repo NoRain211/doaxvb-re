@@ -801,7 +801,8 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
         for (uint32_t c=0; c<3; ++c) {
             if (!isfinite(data[1+c]) || !isfinite(data[9+c])) return;
             result.colors[result.count][c] = data[1+c];
-            result.ambient_emissive[c] += mat[4+c]*data[9+c];
+            if (type == 1) result.ambient[result.count][c] = mat[4+c]*data[9+c];
+            else result.ambient_emissive[c] += mat[4+c]*data[9+c];
         }
         ++result.count; light=next;
     }

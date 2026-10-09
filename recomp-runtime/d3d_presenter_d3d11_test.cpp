@@ -2002,6 +2002,19 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     for (unsigned c=0;c<3;++c) light.colors[1][c]=0.25f;
     if (!pixels("mixed point and directional lights",0xff603018)) return false;
     light.count=1;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=0; light.ambient[0][c]=1; }
+    if (!pixels("point ambient near attenuation",0xff402010)) return false;
+    light.world_transforms[0][14]=-30;
+    if (!pixels("point ambient far attenuation",0xff201008)) return false;
+    for (auto &vertex : vertices) vertex[5]=-1;
+    if (!pixels("point ambient ignores normal",0xff201008)) return false;
+    light.attenuation[0][3]=50;
+    if (!pixels("point ambient outside range is zero",0xff000000)) return false;
+    light.ambient_emissive[0]=0.25f;
+    if (!pixels("out-of-range point ambient retains global ambient",0xff200000)) return false;
+    light.ambient_emissive[0]=0;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=1; light.ambient[0][c]=0; }
+    light.world_transforms[0][14]=10; light.attenuation[0][3]=100;
     for (unsigned i=0;i<4;++i) {
         weighted[i][4]=0; weighted[i][6]=1;
     }
