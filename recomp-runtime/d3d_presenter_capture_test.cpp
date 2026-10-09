@@ -1,4 +1,5 @@
 #include "d3d_presenter_capture.h"
+#include "d3d_pose_replay.h"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,10 @@
         return 1; \
     } \
 } while (0)
+
+struct D3dCapturePacketTest {
+    static void wrap(D3dCapturePacket &packet) { packet.span_generation_ = UINT32_MAX; }
+};
 
 int main()
 {
@@ -201,6 +206,58 @@ int main()
     CHECK(packet.command(5).data.draw.directional.ambient[7][0] == 0.25f);
     CHECK(packet.command(6).data.draw.texture_bytes == sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
-    std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");
+    packet.clear();
+    RecompD3dPoseReplay pose{};
+    pose.frame = 7;
+    pose.palettes[1][0][12] = 0.25f;
+    value = {};
+    value.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    value.data.draw.pose_replay = &pose;
+    std::array<uint8_t, 64> split_inputs{};
+    split_inputs.back() = 0x42;
+    value.data.draw.split_pose = split_inputs.data();
+    value.data.draw.split_pose_size = static_cast<uint32_t>(split_inputs.size());
+    std::array<uint8_t, 12*RECOMP_POSE_REPLAY_SAMPLES> pose_vertices;
+    pose_vertices.fill(0x37);
+    value.data.draw.vertex_count = 1;
+    value.data.draw.vertex_stride = 12;
+    value.data.draw.pose_vertex_bytes = pose_vertices.data();
+    value.data.draw.texture_bytes = sources[2].data();
+    value.data.draw.texture_byte_count = static_cast<uint32_t>(sources[2].size());
+    value.data.draw.texture.format_byte = 0;
+    CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
+    split_inputs.back() = 0x73;
+    CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
+    CHECK(packet.hasPoseReplay());
+    packet.seal(true);
+    pose = {};
+    pose_vertices.fill(0);
+    split_inputs.fill(0);
+    std::fill(sources[2].begin(), sources[2].end(), 0x55);
+    const auto &frozen = packet.command(0).data.draw;
+    const auto *saved = static_cast<const RecompD3dPoseReplay *>(frozen.pose_replay);
+    CHECK(saved != &pose && saved->frame == 7 && saved->palettes[1][0][12] == 0.25f);
+    CHECK(frozen.split_pose != split_inputs.data());
+    CHECK(static_cast<const uint8_t *>(frozen.split_pose)[63] == 0x42);
+    CHECK(static_cast<const uint8_t *>(packet.command(1).data.draw.split_pose)[63] == 0x73);
+    CHECK(frozen.pose_vertex_bytes != pose_vertices.data());
+    const auto *owned_vertices = static_cast<const uint8_t *>(frozen.pose_vertex_bytes);
+    CHECK(std::all_of(owned_vertices, owned_vertices+pose_vertices.size(), [](uint8_t v) { return v == 0x37; }));
+    CHECK(frozen.texture_bytes != sources[2].data());
+    CHECK(static_cast<const uint8_t *>(frozen.texture_bytes)[0] != 0x55);
+    packet.clear();
+    CHECK(!packet.hasPoseReplay());
+    D3dCapturePacketTest::wrap(packet);
+    packet.clear();
+    value = {};
+    value.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    value.data.draw.vertex_count=1; value.data.draw.vertex_stride=12;
+    value.data.draw.vertex_bytes=sources[0].data();
+    CHECK(packet.add(value)==RECOMP_D3D_PRESENTER_OK);
+    CHECK(packet.add(value)==RECOMP_D3D_PRESENTER_OK);
+    packet.seal();
+    CHECK(packet.command(0).data.draw.vertex_bytes==packet.command(1).data.draw.vertex_bytes);
+    CHECK(std::memcmp(packet.command(0).data.draw.vertex_bytes,sources[0].data(),12)==0);
+    std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and replay snapshots");
     return 0;
 }
