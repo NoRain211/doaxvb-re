@@ -3,6 +3,9 @@
 #include "d3d_render_state_adapter.h"
 #include "d3d_frame_adapter.h"
 #include "d3d_texture_adapter.h"
+#include "d3d_pose_replay.h"
+#include "animation_split_adapter.h"
+#include "animation_probe.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -426,11 +429,15 @@ static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
     }
     draw->texture = *desc;
     draw->has_texture = true;
-    /* D3D__TextureState[stage] starts with ADDRESSU, ADDRESSV. */
-    bytes = guest_span(0x001f2988u + stage * 0x80u, 8u);
+    /* Xbox texture states: ADDRESSU/V at 0/1, MAG/MIN/MIPFILTER at 3/4/5. */
+    bytes = guest_span(0x001f2988u + stage * 0x80u, 24u);
     if (bytes != NULL) {
         memcpy(&draw->address_u, bytes, sizeof draw->address_u);
         memcpy(&draw->address_v, bytes + 4u, sizeof draw->address_v);
+        uint32_t filters[3];
+        memcpy(filters, bytes + 12u, sizeof filters);
+        draw->linear_mip_filter = desc->mip_levels > 1u &&
+            filters[0] == 2u && filters[1] == 2u && filters[2] == 2u;
     }
     if (!swizzled_byte_count(desc, &byte_count)) {
         /* A render target may have host-owned pixels without a CPU upload. */
@@ -1325,6 +1332,7 @@ static void capture_draw(
 
 void recomp_d3d_draw_adapter_capture_present(uint32_t present, uint32_t presenter_error)
 {
+    if (present) recomp_animation_probe_capture_frame(present-1);
     if (!capture_open(present, 0u)) return;
     fprintf(draw_capture.file,
         "{\"kind\":\"end\",\"present\":%u,\"present_error\":%u,\"rows\":%u,"
@@ -1454,6 +1462,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     uint32_t vertex_data = 0u;
     RecompD3dDrawResult result;
     RecompD3dPresenterCommand command = {0};
+    RecompD3dPoseReplay pose_replay;
+    void *pose_vertices = NULL, *split_pose = NULL;
     const uint8_t *index_bytes;
     const uint8_t *vertex_bytes;
     uint32_t vertex_span;
@@ -1944,6 +1954,36 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "render-target";
         goto finished;
     }
+    bool split_enabled = recomp_animation_split_enabled();
+    /* getenv scans the whole environment; per draw it dominated world rendering. */
+    static int pose_probe = -1;
+    if (pose_probe < 0)
+        pose_probe = getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
+            getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL;
+    if (split_enabled && command.data.draw.program_count != 0)
+        recomp_split_fallback("split:vertex-program-unimplemented");
+    if (command.data.draw.program_count == 0 && (split_enabled || pose_probe)) {
+        float worlds[4][16];
+        unsigned count = command.data.draw.blend_weight_count+1;
+        bool readable = count <= 4;
+        for (unsigned i = 0; readable && i < count; ++i)
+            readable = read_transform(device, D3D_TRANSFORM_WORLD+i, worlds[i]);
+        if (!split_enabled && readable) recomp_animation_probe_capture_vertices(&command.data.draw, worlds, count);
+        if (!split_enabled && readable && recomp_animation_probe_pose_replay(worlds, count, &pose_replay) &&
+            read_transform(device, D3D_TRANSFORM_VIEW, pose_replay.view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, pose_replay.projection))
+            command.data.draw.pose_replay = &pose_replay;
+        pose_vertices = recomp_animation_probe_pose_vertices(&command.data.draw);
+        command.data.draw.pose_vertex_bytes = pose_vertices;
+        float view[16], projection[16];
+        if (readable && split_enabled &&
+            read_transform(device, D3D_TRANSFORM_VIEW, view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) {
+            split_pose = recomp_animation_split_draw(&command.data.draw, worlds, count, view,
+                projection, &command.data.draw.split_pose_size);
+            command.data.draw.split_pose = split_pose;
+        }
+    }
     capture_command = &command.data.draw;
 
     RecompD3dPresenterError presenter_error = recomp_d3d_presenter_submit(
@@ -1959,6 +1999,9 @@ finished:
     if (decline != NULL) report_decline(decline);
     capture_draw(device, primitive_type, index_count, index_data, &result,
         capture_command, decline != NULL ? decline : "accepted");
+    free(pose_vertices);
+    free(split_pose);
+
 }
 
 static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *draw)

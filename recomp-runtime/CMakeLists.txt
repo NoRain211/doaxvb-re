@@ -116,6 +116,7 @@ add_executable(recomp_runtime_test
     runtime.c
     stop_report.c
     runtime_test.c
+    animation_track_adapter_test.c
     xapi_time_adapter_test.cpp
     device_model.c
     device_model_test.c
@@ -178,6 +179,18 @@ add_executable(recomp_runtime_test
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
     program_manual.c
+    animation_track.c
+    animation_track_adapter.c
+    animation_probe.c
+    d3d_pose_replay.c
+    animation_palette.c
+    animation_skeleton.c
+    animation_pose.c
+    animation_seam.c
+    animation_visual.c
+    animation_camera.c
+    animation_split_adapter.c
+    d3d_split_pose.c
     save_adapter.c
     ohci_model.c
     ohci_model_test.c
@@ -199,6 +212,9 @@ add_executable(recomp_runtime_test
     kernel_video_test.c
     kernel_ordinals.c
     "${_recomp_test_leaf_source}")
+if(NOT MSVC)
+    target_link_libraries(recomp_runtime_test PRIVATE m)
+endif()
 target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 # Media Foundation is delay-loaded: Windows N editions and Server without the
@@ -440,6 +456,17 @@ if(RECOMP_PROGRAM_DIR)
         program_adapters.c
         xapi_time_adapter.cpp
         program_manual.c
+        animation_track.c
+        animation_track_adapter.c
+        animation_probe.c
+        animation_palette.c
+        animation_skeleton.c
+        animation_pose.c
+        animation_seam.c
+        animation_visual.c
+        animation_camera.c
+        animation_split_adapter.c
+        d3d_split_pose.c
         save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
@@ -452,6 +479,7 @@ if(RECOMP_PROGRAM_DIR)
         texture_replacement.cpp
         d3d_presenter_capture.cpp
         d3d_presenter_thread.cpp
+        d3d_pose_replay.c
         d3d_vertex_program.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
@@ -510,8 +538,11 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+        bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
     target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+    if(NOT MSVC)
+        target_link_libraries(recomp_program_runner PRIVATE m)
+    endif()
     if(WIN32)
         recomp_use_sdl3(recomp_program_runner)
     endif()
@@ -547,6 +578,14 @@ if(WIN32)
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
         d3d_presenter_thread.cpp
+        d3d_pose_replay.c
+        d3d_split_pose.c
+        animation_visual.c
+        animation_camera.c
+        animation_pose.c
+        animation_skeleton.c
+        animation_palette.c
+        animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
         texture_replacement.cpp
@@ -555,7 +594,20 @@ if(WIN32)
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
-        d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
+        d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
+    add_executable(recomp_d3d_presenter_replay_test
+        d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
+        d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
+        animation_skeleton.c animation_palette.c animation_seam.c d3d_draw_model.c)
+    target_link_libraries(recomp_d3d_presenter_replay_test PRIVATE dwmapi user32)
+    add_executable(recomp_animation_adapter_test animation_adapter_test.c
+        animation_track.c d3d_split_pose.c animation_visual.c animation_camera.c
+        animation_pose.c animation_skeleton.c animation_palette.c animation_seam.c
+        d3d_pose_replay.c d3d_draw_model.c)
+    if(NOT MSVC)
+        target_link_libraries(recomp_animation_adapter_test PRIVATE m)
+        target_link_libraries(recomp_d3d_presenter_replay_test PRIVATE m)
+    endif()
     add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     target_link_libraries(recomp_input_host_test PRIVATE user32)
@@ -572,7 +624,27 @@ add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 
 add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
 
+add_executable(recomp_animation_track_test animation_track.c animation_track_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_track_test PRIVATE m)
+endif()
+
+add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
+add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
+add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
+add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_skeleton_test PRIVATE m)
+    target_link_libraries(recomp_animation_pose_test PRIVATE m)
+    target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
+endif()
+
 include(CTest)
+add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test)
+add_test(NAME recomp-runtime-animation-palette COMMAND recomp_animation_palette_test)
+add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
+add_test(NAME recomp-runtime-animation-pose COMMAND recomp_animation_pose_test)
+add_test(NAME recomp-runtime-pose-replay COMMAND recomp_d3d_pose_replay_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
@@ -637,6 +709,10 @@ endif()
 if(TARGET recomp_d3d_presenter_d3d11_test)
     add_test(NAME recomp-runtime-d3d11-texture-cache
         COMMAND recomp_d3d_presenter_d3d11_test)
+    add_test(NAME recomp-runtime-d3d-presenter-replay COMMAND recomp_d3d_presenter_replay_test)
+    foreach(mode IN ITEMS normal strict verify off)
+        add_test(NAME recomp-runtime-animation-adapter-${mode} COMMAND recomp_animation_adapter_test ${mode})
+    endforeach()
     add_test(NAME recomp-runtime-d3d-presenter-thread
         COMMAND recomp_d3d_presenter_thread_test)
 endif()
@@ -702,3 +778,17 @@ endif()
 
 add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp)
 add_test(NAME recomp-runtime-controller-settings COMMAND recomp_controller_settings_test)
+
+add_executable(recomp_animation_seam_test animation_seam.c animation_seam_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_seam_test PRIVATE m)
+endif()
+add_test(NAME recomp-runtime-animation-seam COMMAND recomp_animation_seam_test)
+
+add_executable(recomp_d3d_split_pose_test d3d_split_pose_test.c d3d_split_pose.c
+    d3d_pose_replay.c d3d_draw_model.c animation_visual.c animation_camera.c
+    animation_pose.c animation_skeleton.c animation_palette.c animation_seam.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_d3d_split_pose_test PRIVATE m)
+endif()
+add_test(NAME recomp-runtime-split-pose COMMAND recomp_d3d_split_pose_test)

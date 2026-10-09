@@ -138,6 +138,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool has_texture;
     /* Guest D3DTADDRESS U/V for the texture's stage; 0 (unknown) wraps. */
     uint32_t address_u, address_v;
+    /* Guest min/mag/mip filters are all LINEAR; unknown states stay unchanged. */
+    bool linear_mip_filter;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     /* Storage aliases the guest front buffer: the last presented frame. */
@@ -166,6 +168,13 @@ typedef struct RecompD3dPresenterDrawCommand {
     float reflection_transform[16];
     float reflection_diffuse[4];
     RecompD3dPresenterTarget target;
+    /* Optional immutable RecompD3dPoseReplay, copied during submit. */
+    const void *pose_replay;
+    /* Optional contiguous diagnostic vertex samples, owned with the packet. */
+    const void *pose_vertex_bytes;
+    /* Immutable RecompSplitDraw followed by optional seam vertex inputs. */
+    const void *split_pose;
+    uint32_t split_pose_size;
 } RecompD3dPresenterDrawCommand;
 
 typedef struct RecompD3dPresenterCommand {
@@ -222,6 +231,8 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
    not force guest state. Intended for the full-program runner; the default
    (vsync) remains for windowed tests. */
 void recomp_d3d_presenter_set_immediate_present(bool enabled);
+/* Resolved split state after presenter creation; false before initialization. */
+bool recomp_d3d_presenter_split_enabled(void);
 
 /* Observation only: reports which guest texture formats draws actually
    sampled, and which ones a draw asked for but the presenter could not

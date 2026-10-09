@@ -221,6 +221,19 @@ void buildDrawShaderSource(
         "            (func == 4 && alpha > ref) ||\n"
         "            (func == 5 && alpha != ref) ||\n"
         "            (func == 6 && alpha >= ref);\n"
+        "#ifdef EXPLICIT_COVERAGE\n"
+        "        if (draw_flags.y > 1.5f) {\n"
+        /* Coverage is independent of stored alpha, including flat hard passes. */
+        "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
+        "            float width = fwidth(shaded.a);\n"
+        "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
+        "            coverage = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
+        "                ? (alpha_pass ? 1.0f : 0.0f)\n"
+        "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
+        "            uint count = (uint)round(coverage * draw_flags.y);\n"
+        "            sample_coverage = count >= 32 ? 0xffffffffu : (1u << count) - 1u;\n"
+        "        } else\n"
+        "#endif\n"
         "        if (!alpha_pass) discard;\n"
         "    }\n"
         "    if (fog_flags.x > 0.5f) {\n"
@@ -349,6 +362,7 @@ constexpr uint32_t kBlendStateSlots = 16u;
 struct BlendStateEntry {
     bool used;
     bool enable;
+    bool alpha_to_coverage;
     RecompD3dBlendFactor src;
     RecompD3dBlendFactor dst;
     RecompD3dBlendOp op;
@@ -424,6 +438,16 @@ struct DepthTargetEntry {
 
 } // namespace
 
+struct DumpTextureRelease {
+    void operator()(ID3D11Texture2D *texture) const { if (texture) texture->Release(); }
+};
+struct DeferredFrameDump {
+    std::unique_ptr<ID3D11Texture2D, DumpTextureRelease> texture;
+    std::string path;
+    unsigned present;
+    ULONGLONG captured_ms;
+};
+
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
     DWORD owner_thread = 0;
@@ -495,7 +519,7 @@ struct RecompD3dPresenter {
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[4][4]{};
+    ID3D11SamplerState *address_samplers[2][4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -523,6 +547,15 @@ struct RecompD3dPresenter {
     long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
+    unsigned frame_dump_burst_base = 0u;
+    unsigned frame_dump_burst_count = 0u;
+    std::vector<DeferredFrameDump> deferred_dumps;
+    // Staging textures created when a triggered burst starts, so capturing
+    // during the burst is only a GPU copy and does not disturb pacing.
+    std::vector<std::unique_ptr<ID3D11Texture2D, DumpTextureRelease>> dump_pool;
+    uint32_t replay_verify_frame = 0;
+    bool replay_verify_second = false;
+    std::vector<uint8_t> replay_reference;
     ULONGLONG next_frame_dump_ms = 0u;
 };
 
@@ -531,6 +564,7 @@ namespace {
 RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
+static bool split_presentation;
 
 /* kernel_config.c reports the Xbox widescreen video flag unless
    RECOMP_D3D_WIDESCREEN=0, so the game renders anamorphic 16:9 (or 4:3) into
@@ -694,8 +728,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->depth_targets.clear();
     presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
-    for (auto &row : presenter->address_samplers) {
-        for (auto &sampler : row) releaseCom(sampler);
+    for (auto &filter : presenter->address_samplers) {
+        for (auto &row : filter) {
+            for (auto &sampler : row) releaseCom(sampler);
+        }
     }
     releaseCom(presenter->filter_sampler);
     releaseCom(presenter->program_mask_sampler);
@@ -718,8 +754,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->device);
 }
 
+void flushFrameDumps(RecompD3dPresenter *presenter);
+
 void releasePresenter(RecompD3dPresenter *presenter)
 {
+    flushFrameDumps(presenter);
     releaseGraphics(presenter);
     if (presenter->present_log != nullptr) {
         std::fclose(presenter->present_log);
@@ -820,7 +859,8 @@ HRESULT createDeviceWithDriver(
     swap_chain_desc.SampleDesc.Count = 1u;
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = immediate ? 1u : 2u;
+    swap_chain_desc.BufferCount = immediate ? 1u :
+        split_presentation ? 3u : 2u;
     swap_chain_desc.OutputWindow = presenter->window;
     swap_chain_desc.Windowed = TRUE;
     swap_chain_desc.SwapEffect = immediate
@@ -1386,7 +1426,7 @@ bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source)
+    std::string &compiled_source, bool explicit_coverage = true)
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
@@ -1481,6 +1521,13 @@ bool drawShaderSource(
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
 
     }
+    if (explicit_coverage) {
+        const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+        compiled_source.replace(compiled_source.find(pixel), pixel.size(),
+            "float4 ps_main(VSOut input, out uint sample_coverage : SV_Coverage) : SV_TARGET {\n"
+            "    sample_coverage = 0xffffffffu;");
+        compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
+    }
     return true;
 }
 
@@ -1491,7 +1538,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
-void precompileDrawShaders(const std::atomic<bool> *stop)
+void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     const ULONGLONG start = GetTickCount64();
@@ -1501,13 +1548,13 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
             std::string source;
-            if (!drawShaderSource(fvf, no_program, layout, source)) continue;
+            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage)) continue;
             for (const char *stage : {"vs", "ps"}) {
                 if (stop->load()) return;
                 ID3DBlob *blob = nullptr;
                 const bool vertex = stage[0] == 'v';
                 compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
-                    vertex ? "vs_4_0" : "ps_4_0", &blob);
+                    vertex ? "vs_4_0" : explicit_coverage ? "ps_4_1" : "ps_4_0", &blob);
                 releaseCom(blob);
             }
         }
@@ -1527,14 +1574,15 @@ bool createDrawPipeline(
 {
     RecompD3dVertexLayout layout;
     std::string compiled_source;
-    if (!drawShaderSource(fvf, pipeline, layout, compiled_source)) {
+    const bool explicit_coverage = presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage)) {
         return false;
     }
 
     ID3DBlob *vertex_blob = nullptr;
     ID3DBlob *pixel_blob = nullptr;
     if (!compileDrawShader(compiled_source.c_str(), "vs_main", "vs_4_0", &vertex_blob) ||
-        !compileDrawShader(compiled_source.c_str(), "ps_main", "ps_4_0", &pixel_blob)) {
+        !compileDrawShader(compiled_source.c_str(), "ps_main", explicit_coverage ? "ps_4_1" : "ps_4_0", &pixel_blob)) {
         releaseCom(vertex_blob);
         releaseCom(pixel_blob);
         return false;
@@ -2215,7 +2263,8 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
 ID3D11SamplerState *lookupDrawSampler(
-    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
+    bool anisotropic = false)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
@@ -2223,12 +2272,16 @@ ID3D11SamplerState *lookupDrawSampler(
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[u - 1][v - 1];
+    ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
     if (sampler == nullptr) {
         D3D11_SAMPLER_DESC desc{};
         presenter->draw_sampler->GetDesc(&desc);
         desc.AddressU = u;
         desc.AddressV = v;
+        if (anisotropic) {
+            desc.Filter = D3D11_FILTER_ANISOTROPIC;
+            desc.MaxAnisotropy = 16u;
+        }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
         }
@@ -2439,12 +2492,14 @@ ID3D11ShaderResourceView *lookupTexture(
 
 ID3D11BlendState *lookupBlendState(
     RecompD3dPresenter *presenter,
-    const RecompD3dBlendState &blend)
+    const RecompD3dBlendState &blend,
+    bool alpha_to_coverage = false)
 {
     for (uint32_t i = 0u; i < presenter->blend_state_count; ++i) {
         BlendStateEntry &entry = presenter->blend_states[i];
 
         if (entry.used && entry.enable == blend.blend_enable &&
+            entry.alpha_to_coverage == alpha_to_coverage &&
             entry.src == blend.src_factor && entry.dst == blend.dst_factor &&
             entry.op == blend.op &&
             entry.color_write_mask == blend.color_write_mask) {
@@ -2453,6 +2508,7 @@ ID3D11BlendState *lookupBlendState(
     }
 
     D3D11_BLEND_DESC desc{};
+    desc.AlphaToCoverageEnable = alpha_to_coverage;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2479,6 +2535,7 @@ ID3D11BlendState *lookupBlendState(
     }
     entry.used = true;
     entry.enable = blend.blend_enable;
+    entry.alpha_to_coverage = alpha_to_coverage;
     entry.src = blend.src_factor;
     entry.dst = blend.dst_factor;
     entry.op = blend.op;
@@ -2716,7 +2773,13 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
-    draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+    const bool alpha_to_coverage = draw.depth.alpha_test_enable &&
+        (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER ||
+         draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL) &&
+        !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u &&
+        presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    /* draw_flags.y: 0 disabled, 1 hard alpha test, otherwise sample count. */
+    draw_constants[65] = alpha_to_coverage ? static_cast<float>(presenter->msaa) : draw.depth.alpha_test_enable ? 1.0f : 0.0f;
     draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
@@ -2780,10 +2843,16 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
+    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
+        draw.texture.mip_levels > 1u &&
+        !layout.pretransformed && !draw.texture.linear &&
+        !draw.texture.render_target && !draw.texture_is_backbuffer &&
+        draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
+        !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v),
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
         draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
@@ -2799,7 +2868,7 @@ RecompD3dPresenterError submitDraw(
             ((color >> 8u) & 255u) / 255.0f,
             (color & 255u) / 255.0f,
             ((color >> 24u) & 255u) / 255.0f};
-        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend);
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
@@ -2948,81 +3017,26 @@ bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
     return true;
 }
 
-/* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
-   INTERVAL_MS optionally spaces captures in host time. Capture stays inside
-   the renderer, without cross-process window painting or missed-frame bursts. */
-void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
+void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
+    const char *path, unsigned present_count, ULONGLONG captured_ms)
 {
-    const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
-    if (path == nullptr) {
-        return;
-    }
-    /* A single dump cannot answer whether content moves between frames, only
-       whether one frame is correct. RECOMP_D3D_FRAME_DUMP_COUNT captures a
-       burst of consecutive presents so successive back buffers can be
-       compared against each other. Default 1 keeps existing gates identical. */
-    const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
-    const unsigned count = count_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
-        : 1u;
-    if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
-        return;
-    }
-    const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
-    const unsigned at = at_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(at_text, nullptr, 10))
-        : 1u;
-    if (present_count < at) {
-        return;
-    }
-    const char *interval_text =
-        std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
-    const unsigned interval_ms = interval_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
-        : 0u;
-    if (!frameDumpDue(GetTickCount64(), interval_ms,
-            presenter->next_frame_dump_ms)) {
-        return;
-    }
-    const unsigned dump_index = presenter->frame_dump_count++;
-
-    /* One name per frame in a burst; the single-dump case keeps the exact
-       path it always used so existing gates and receipts still match. */
-    char burst_path[1024];
-    if (count > 1u) {
-        std::snprintf(
-            burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
-        path = burst_path;
-    }
-
-    ID3D11Texture2D *back_buffer = nullptr;
-    if (FAILED(presenter->swap_chain->GetBuffer(
-            0u, __uuidof(ID3D11Texture2D),
-            reinterpret_cast<void **>(&back_buffer)))) {
-        return;
-    }
     D3D11_TEXTURE2D_DESC desc{};
-    back_buffer->GetDesc(&desc);
-    desc.Usage = D3D11_USAGE_STAGING;
-    desc.BindFlags = 0u;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    desc.MiscFlags = 0u;
-
-    ID3D11Texture2D *staging = nullptr;
-    if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
-        back_buffer->Release();
+    staging->GetDesc(&desc);
+    const unsigned width = desc.Width;
+    const unsigned height = desc.Height;
+    const unsigned row_bytes = width * 3u;
+    const unsigned padded = (row_bytes + 3u) & ~3u;
+    const unsigned image_bytes = padded * height;
+    /* Allocate before mapping or opening the file, so failure leaves no partial BMP. */
+    // A Debug vector also allocates an iterator proxy in its noexcept constructor.
+    std::unique_ptr<unsigned char[]> bmp_row(new (std::nothrow) unsigned char[padded]{});
+    if (!bmp_row) {
+        std::fprintf(stderr, "recomp frame dump: row allocation failed path=%s\n", path);
         return;
     }
-    presenter->context->CopyResource(staging, back_buffer);
-
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(presenter->context->Map(
             staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
-        const unsigned width = desc.Width;
-        const unsigned height = desc.Height;
-        const unsigned row_bytes = width * 3u;
-        const unsigned padded = (row_bytes + 3u) & ~3u;
-        const unsigned image_bytes = padded * height;
 
         if (FILE *file = std::fopen(path, "wb")) {
             unsigned char header[54] = {0};
@@ -3043,34 +3057,184 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
             std::memcpy(header + 34, &image_bytes, 4);
             std::fwrite(header, 1, sizeof header, file);
 
-            /* BMP rows run bottom-up. */
+            /* Write a whole row: per-pixel stdio locking stalls capture replay. */
             for (unsigned y = 0u; y < height; ++y) {
                 const unsigned char *row =
                     static_cast<const unsigned char *>(mapped.pData) +
                     static_cast<size_t>(height - 1u - y) * mapped.RowPitch;
-                unsigned written = 0u;
-
                 for (unsigned x = 0u; x < width; ++x) {
                     /* Back buffer is B8G8R8A8, which already matches BMP order. */
-                    std::fwrite(row + x * 4u, 1, 3, file);
-                    written += 3u;
+                    std::memcpy(bmp_row.get()+x*3u, row+x*4u, 3u);
                 }
-                const unsigned char pad[3] = {0, 0, 0};
-                if (padded > written) {
-                    std::fwrite(pad, 1, padded - written, file);
-                }
+                std::fwrite(bmp_row.get(), 1, padded, file);
             }
             std::fclose(file);
             std::fprintf(
                 stderr,
-                "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u\n",
+                "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u captured_ms=%llu\n",
                 path, width, height,
-                static_cast<unsigned>(present_count));
+                static_cast<unsigned>(present_count), static_cast<unsigned long long>(captured_ms));
         }
         presenter->context->Unmap(staging, 0u);
     }
-    staging->Release();
+}
+
+void flushFrameDumps(RecompD3dPresenter *presenter)
+{
+    for (const auto &dump : presenter->deferred_dumps)
+        writeFrameDump(presenter, dump.texture.get(), dump.path.c_str(), dump.present, dump.captured_ms);
+    presenter->deferred_dumps.clear();
+}
+
+bool frameDumpFits(const D3D11_TEXTURE2D_DESC &desc, unsigned count)
+{
+    return count <= 300 && uint64_t(desc.Width)*desc.Height*4*count <= 12ull*1024*1024*1024;
+}
+
+/* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
+   INTERVAL_MS optionally spaces captures in host time. TRIGGER names a file
+   whose appearance starts each burst of the length it contains; the file is
+   deleted once the burst is written, so scripted navigation can capture
+   several scenes in one run.
+   Capture stays inside the renderer, without cross-process window painting
+   or missed-frame bursts. */
+void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
+{
+    const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
+    if (path == nullptr) {
+        return;
+    }
+    /* A single dump cannot answer whether content moves between frames, only
+       whether one frame is correct. RECOMP_D3D_FRAME_DUMP_COUNT captures a
+       burst of consecutive presents so successive back buffers can be
+       compared against each other. Default 1 keeps existing gates identical. */
+    const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
+    unsigned count = count_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
+        : 1u;
+    const char *trigger = std::getenv("RECOMP_D3D_FRAME_DUMP_TRIGGER");
+    if (trigger != nullptr) {
+        count = presenter->frame_dump_burst_count;
+    } else if (count > 300) {
+        const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+        if (defer && std::strcmp(defer, "1") == 0) return;
+    }
+    if (presenter->frame_dump_count - presenter->frame_dump_burst_base >=
+            (count == 0u ? 1u : count)) {
+        // Flush on the following frame so every captured frame was presented first.
+        flushFrameDumps(presenter);
+        if (trigger != nullptr) {
+            DeleteFileA(trigger);
+            presenter->frame_dump_burst_base = presenter->frame_dump_count;
+            presenter->frame_dump_burst_count = 0u;
+        }
+        return;
+    }
+    if (trigger != nullptr && count == 0u) {
+        FILE *file = std::fopen(trigger, "rb");
+        if (file == nullptr) {
+            return;
+        }
+        unsigned requested = 0u;
+        if (std::fscanf(file, "%u", &requested) != 1 || requested == 0u) {
+            requested = 1u;
+        }
+        std::fclose(file);
+        count = presenter->frame_dump_burst_count = requested;
+        const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+        ID3D11Texture2D *back_buffer = nullptr;
+        if (defer && std::strcmp(defer, "1") == 0 && SUCCEEDED(
+                presenter->swap_chain->GetBuffer(0u, __uuidof(ID3D11Texture2D),
+                    reinterpret_cast<void **>(&back_buffer)))) {
+            D3D11_TEXTURE2D_DESC desc{};
+            back_buffer->GetDesc(&desc);
+            back_buffer->Release();
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0u;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            desc.MiscFlags = 0u;
+            if (!frameDumpFits(desc, requested)) {
+                std::fprintf(stderr, "recomp frame dump: deferred capture exceeds frame dump bound\n");
+                DeleteFileA(trigger);
+                presenter->frame_dump_burst_base = presenter->frame_dump_count;
+                presenter->frame_dump_burst_count = 0u;
+                return;
+            }
+            for (unsigned i = 0u; i < requested; ++i) {
+                ID3D11Texture2D *staging = nullptr;
+                if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) break;
+                presenter->dump_pool.emplace_back(staging);
+            }
+            return; // Start the burst on the next present, after the allocation hitch.
+        }
+    }
+    const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
+    // A comma list ("1800,3600,5400") takes dump k at the k-th listed present.
+    char *at_next = nullptr;
+    unsigned at = at_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(at_text, &at_next, 10))
+        : 1u;
+    for (unsigned i = 0u; at_next != nullptr && *at_next == ',' &&
+            i < presenter->frame_dump_count - presenter->frame_dump_burst_base; ++i) {
+        at = static_cast<unsigned>(std::strtoul(at_next + 1, &at_next, 10));
+    }
+    if (present_count < at) {
+        return;
+    }
+    const char *interval_text =
+        std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
+    const unsigned interval_ms = interval_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
+        : 0u;
+    if (!frameDumpDue(GetTickCount64(), interval_ms,
+            presenter->next_frame_dump_ms)) {
+        return;
+    }
+    const unsigned dump_index = presenter->frame_dump_count++;
+
+    /* One name per frame in a burst; the single-dump case keeps the exact
+       path it always used so existing gates and receipts still match. */
+    char burst_path[1024];
+    if (count > 1u || trigger != nullptr) {
+        std::snprintf(
+            burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
+        path = burst_path;
+    }
+
+    ID3D11Texture2D *back_buffer = nullptr;
+    if (FAILED(presenter->swap_chain->GetBuffer(
+            0u, __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void **>(&back_buffer)))) {
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    back_buffer->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0u;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0u;
+
+    ID3D11Texture2D *staging = nullptr;
+    if (!presenter->dump_pool.empty()) {
+        staging = presenter->dump_pool.back().release();
+        presenter->dump_pool.pop_back();
+    } else if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
+        back_buffer->Release();
+        return;
+    }
+    presenter->context->CopyResource(staging, back_buffer);
+
     back_buffer->Release();
+    std::unique_ptr<ID3D11Texture2D, DumpTextureRelease> owned(staging);
+    const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+    if (defer && std::strcmp(defer, "1") == 0) {
+        // Bound this diagnostic to 300 4K frames (about 10 GiB of readback memory).
+        if (!frameDumpFits(desc, count)) {
+            std::fprintf(stderr, "recomp frame dump: deferred capture exceeds frame dump bound\n");
+            return;
+        }
+        presenter->deferred_dumps.push_back({std::move(owned), path, present_count, GetTickCount64()});
+    } else writeFrameDump(presenter, owned.get(), path, present_count, GetTickCount64());
     presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
 }
 
@@ -3329,6 +3493,59 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     return true;
 }
 
+bool compareReplay(RecompD3dPresenter *presenter)
+{
+    if (!presenter->replay_verify_frame) return true;
+    ID3D11Texture2D *back = nullptr, *staging = nullptr;
+    if (FAILED(presenter->swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void **>(&back)))) return false;
+    D3D11_TEXTURE2D_DESC desc{};
+    back->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
+    HRESULT result = presenter->device->CreateTexture2D(&desc, nullptr, &staging);
+    if (FAILED(result)) { back->Release(); return false; }
+    presenter->context->CopyResource(staging, back);
+    back->Release();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    result = presenter->context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(result)) { staging->Release(); return false; }
+    const size_t row_bytes = size_t(desc.Width)*4;
+    auto &reference = presenter->replay_reference;
+    try {
+        if (!presenter->replay_verify_second) reference.resize(row_bytes*desc.Height);
+    } catch (...) {
+        presenter->context->Unmap(staging, 0);
+        staging->Release();
+        throw;
+    }
+    bool valid = reference.size() == row_bytes*desc.Height;
+    uint64_t changed = 0;
+    unsigned maximum = 0;
+    if (valid) for (unsigned y = 0; y < desc.Height; ++y) {
+        const auto *row = static_cast<const uint8_t *>(mapped.pData)+size_t(y)*mapped.RowPitch;
+        auto *old = reference.data()+size_t(y)*row_bytes;
+        if (!presenter->replay_verify_second) std::memcpy(old, row, row_bytes);
+        else for (unsigned x = 0; x < desc.Width; ++x) {
+            bool different = false;
+            for (unsigned c = 0; c < 3; ++c) {
+                unsigned delta = static_cast<unsigned>(std::abs(int(row[x*4+c])-int(old[x*4+c])));
+                maximum = (std::max)(maximum, delta);
+                different |= delta != 0;
+            }
+            changed += different;
+        }
+    }
+    presenter->context->Unmap(staging, 0);
+    staging->Release();
+    if (presenter->replay_verify_second) std::fprintf(stderr,
+        "recomp replay identity: frame=%u pixels=%llu changed=%llu max_channel=%u valid=%u\n",
+        presenter->replay_verify_frame, static_cast<unsigned long long>(desc.Width)*desc.Height,
+        static_cast<unsigned long long>(changed), maximum, valid);
+    presenter->replay_verify_frame = 0;
+    return valid && changed == 0;
+}
+
 /* The guest runs at 60 Hz. On a 120 or 240 Hz display, interval 1 shows its
    frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
    refresh/60. Rechecked each second, as the window can change monitors.
@@ -3342,6 +3559,7 @@ UINT fixedRefreshInterval(UINT hz)
 
 UINT syncInterval(RecompD3dPresenter *presenter)
 {
+    if (split_presentation) return 1u;
     const auto now = std::chrono::steady_clock::now();
     if (now >= presenter->next_refresh_check) {
         presenter->next_refresh_check = now + std::chrono::seconds(1);
@@ -3435,6 +3653,7 @@ RecompD3dPresenterError submitPresent(
         context->ClearState();
     }
     // Capture the rendered buffer before flip presentation releases it.
+    if (!compareReplay(presenter)) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
 
     const auto clock_ms = [] {
@@ -3446,7 +3665,7 @@ RecompD3dPresenterError submitPresent(
     const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
     const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
         : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
-    if (presenter->vrr) {
+    if (presenter->vrr && !split_presentation) {
         /* VRR shows a frame the moment it is presented, so render-time jitter
            became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
            late frame presents now and moves the grid, as the guest timer does. */
@@ -3637,7 +3856,8 @@ RecompD3dPresenterError d3d11_backend_create(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     try {
-        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop);
+        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop,
+            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1);
     } catch (const std::system_error &) {
         // Shaders then compile on first use, as before.
     }
@@ -3645,6 +3865,68 @@ RecompD3dPresenterError d3d11_backend_create(
     active_presenter = created;
     *presenter = created;
     return RECOMP_D3D_PRESENTER_OK;
+}
+
+/* Creates a cache-miss texture before its draw needs it. Addresses already
+   cached, render targets and dynamic linear textures are skipped, so entries
+   the packet on screen still uses are not replaced. */
+bool textureMissing(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    const RecompD3dTextureDesc &desc = draw.texture;
+    return !draw.texture_is_backbuffer && !desc.linear && draw.texture_bytes != nullptr &&
+        presenter->texture_index.count(desc.data) == 0u &&
+        findRenderTarget(presenter, desc) == nullptr;
+}
+
+void prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    if (textureMissing(presenter, draw)) lookupTexture(presenter, draw);
+}
+
+/* The draw's main texture plus its alpha mask or reflection texture, as drawn. */
+template <typename Visit>
+void visitPrepareTextures(const RecompD3dPresenterDrawCommand &draw, Visit visit)
+{
+    if (draw.has_texture) visit(draw);
+    RecompD3dPresenterDrawCommand extra{};
+    if (draw.has_alpha_mask) {
+        extra.texture = draw.alpha_mask;
+        extra.texture_bytes = draw.alpha_mask_bytes;
+        extra.texture_byte_count = draw.alpha_mask_byte_count;
+        extra.palette_bytes = draw.alpha_mask_palette;
+        extra.palette_byte_count = draw.alpha_mask_palette_byte_count;
+        visit(extra);
+    } else if (draw.has_reflection || draw.program_alpha_mask) {
+        extra.texture = draw.reflection_texture;
+        extra.texture_bytes = draw.reflection_bytes;
+        extra.texture_byte_count = draw.reflection_byte_count;
+        visit(extra);
+    }
+}
+
+bool prepareAllowed(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    return presenter != nullptr && presenter == active_presenter && command != nullptr &&
+        GetCurrentThreadId() == presenter->owner_thread &&
+        command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+}
+
+void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    if (!prepareAllowed(presenter, command)) return;
+    visitPrepareTextures(command->data.draw, [presenter](const RecompD3dPresenterDrawCommand &draw) {
+        prepareTexture(presenter, draw);
+    });
+}
+
+uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    uint64_t bytes = 0;
+    if (!prepareAllowed(presenter, command)) return 0;
+    visitPrepareTextures(command->data.draw, [presenter, &bytes](const RecompD3dPresenterDrawCommand &draw) {
+        if (textureMissing(presenter, draw)) bytes += draw.texture_byte_count;
+    });
+    return bytes;
 }
 
 RecompD3dPresenterError d3d11_backend_submit(
@@ -3765,6 +4047,19 @@ RecompD3dPresenterError d3d11_backend_destroy(
 void d3d11_backend_set_immediate_present(bool enabled)
 {
     immediate_present = enabled;
+}
+
+/* Split presentation paces itself: a third buffer absorbs a late compositor
+   frame instead of blocking the next Present. */
+void d3d11_backend_set_split_presentation(bool enabled)
+{
+    split_presentation = enabled;
+}
+
+void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay)
+{
+    presenter->replay_verify_frame = frame;
+    presenter->replay_verify_second = replay;
 }
 
 

@@ -33,6 +33,8 @@
     "docs/recomp-save-contract.md",
     "docs/wayfinder/research/audio-movie-replacements.md",
     "docs/wayfinder/research/host-shell-redistribution.md",
+    "docs/wayfinder/research/high-frame-rate-split.md",
+    "docs/wayfinder/research/high-frame-rate-split-review.md",
     "docs/wayfinder/research/og-xbox-custom-soundtracks.md",
     "docs/wayfinder/research/texture-replacement.md",
     "docs/wayfinder/research/vrr-frame-pacing.md",
@@ -127,6 +129,10 @@
     ".jsonl"
   ],
   "byte_literal_exceptions": [
+    {
+      "sha256": "4765463d844a412639298ff7ed691726722db592ea5bee51f7586bc575fa5ed0",
+      "reason": "Synthetic DXT3 fixture: 0/85/170/255 alpha ramp per row, RGB565 endpoints and zero selectors for the alpha-to-coverage test in d3d_presenter_d3d11_test.cpp."
+    },
     {
       "sha256": "649c5b82067b429cdbd2ad9709a090db5dbaae0bb32dc1a7b00b01479efc37ed",
       "reason": "Synthetic DXT3 fixture: repeated alpha nibbles, RGB565 red endpoint and zero color selectors in d3d_presenter_d3d11_test.cpp."
