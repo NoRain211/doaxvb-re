@@ -386,23 +386,7 @@ static bool swizzled_byte_count(
     if (desc->linear || desc->width == 0u || desc->height == 0u) {
         return false;
     }
-    if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
-        uint64_t bytes = (uint64_t)desc->width * desc->height;
-        if (desc->bits_per_pixel != 8u || bytes > UINT32_MAX) return false;
-        *out = (uint32_t)bytes;
-        return true;
-    }
-    if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ||
-        desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) {
-        *out = desc->width * desc->height * (desc->bits_per_pixel / 8u);
-        return true;
-    }
-    if (desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT1 &&
-        desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT3 &&
-        desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) {
-        return false;
-    }
-    *out = recomp_d3d_texture_compressed_mip_span(desc);
+    *out = recomp_d3d_texture_mip_span(desc);
     return *out != 0u;
 }
 

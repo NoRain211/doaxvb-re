@@ -476,6 +476,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_adapter.c
         d3d_vblank.cpp
         d3d_presenter_d3d11.cpp
+        texture_replacement.cpp
         d3d_presenter_capture.cpp
         d3d_presenter_thread.cpp
         d3d_pose_replay.c
@@ -537,7 +538,7 @@ if(RECOMP_PROGRAM_DIR)
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+        bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
     target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
@@ -557,16 +558,25 @@ if(RECOMP_PROGRAM_DIR)
 endif()
 
 if(WIN32)
+    add_executable(recomp_texture_replacement_test
+        texture_replacement_test.cpp d3d_presenter_capture.cpp
+        d3d_texture_model.c ../xbe/sha.cpp)
+    target_link_libraries(recomp_texture_replacement_test PRIVATE
+        d3d11 d3dcompiler windowscodecs ole32 bcrypt)
+    add_test(NAME recomp-runtime-texture-replacement COMMAND recomp_texture_replacement_test)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        texture_replacement.cpp
+        ../xbe/sha.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
-        d3d11 d3dcompiler dxgi user32)
+        d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
+        ../xbe/sha.cpp
         d3d_presenter_thread.cpp
         d3d_pose_replay.c
         d3d_split_pose.c
@@ -578,12 +588,13 @@ if(WIN32)
         animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
+        texture_replacement.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
-        d3d11 d3dcompiler dwmapi dxgi user32)
+        d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c

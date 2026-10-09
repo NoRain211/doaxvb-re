@@ -2,6 +2,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#include "texture_replacement.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -386,6 +387,7 @@ struct TextureEntry {
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     uint64_t fingerprint;
+    TextureIdentity identity;
     ID3D11ShaderResourceView *view;
 };
 
@@ -509,6 +511,8 @@ struct RecompD3dPresenter {
     uint32_t next_blend_state_slot = 0u;
     std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
     std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
+    TextureReplacements replacements;
+    size_t texture_identity_bytes = 0;
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
@@ -617,6 +621,14 @@ LRESULT CALLBACK presenterWindowProc(
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
+    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30))) {
+        auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (presenter && presenter->replacements.enabled()) {
+            presenter->replacements.request((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+            return 0;
+        }
+    }
     if (message == WM_CLOSE) {
         auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
             GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -648,6 +660,7 @@ void releaseSmaa(RecompD3dPresenter *presenter)
 
 void releaseGraphics(RecompD3dPresenter *presenter)
 {
+    presenter->replacements.clear();
     if (presenter->context != nullptr) {
         presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
         presenter->context->ClearState();
@@ -697,8 +710,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         TextureEntry &entry = presenter->textures[i];
 
         releaseCom(entry.view);
+        entry.identity = {};
         entry.used = false;
     }
+    presenter->texture_identity_bytes = 0;
     presenter->texture_index.clear();
     presenter->texture_count = 0u;
     presenter->next_texture_slot = 0u;
@@ -2276,6 +2291,9 @@ ID3D11SamplerState *lookupDrawSampler(
 
 void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 {
+    auto &identity = presenter->textures[slot].identity;
+    presenter->texture_identity_bytes -= identity.bytes.size();
+    identity = {};
     const auto range = presenter->texture_index.equal_range(presenter->textures[slot].data);
     for (auto it = range.first; it != range.second; ++it) {
         if (it->second == slot) {
@@ -2295,7 +2313,7 @@ ID3D11ShaderResourceView *lookupTexture(
     const bool linear_bgra = desc.format_byte == 0x12u;
     const bool compressed = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ||
         desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT3 || desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5;
-    const uint32_t levels = compressed && desc.mip_levels ? desc.mip_levels : 1u;
+    const uint32_t levels = !linear_bgra && desc.mip_levels ? desc.mip_levels : 1u;
     if (compressed) {
         const uint32_t span = recomp_d3d_texture_compressed_mip_span(&desc);
         if (span == 0u || span > draw.texture_byte_count ||
@@ -2323,6 +2341,9 @@ ID3D11ShaderResourceView *lookupTexture(
             draw.texture_byte_count)) {
         return nullptr;
     }
+    const bool replaceable = presenter->replacements.enabled() && !desc.linear &&
+        !desc.depth && draw.texture_bytes &&
+        draw.texture_byte_count == recomp_d3d_texture_mip_span(&desc);
     const auto cached = presenter->texture_index.equal_range(desc.data);
     const bool fingerprinted = !linear_bgra && draw.texture_bytes != nullptr;
     const uint64_t fingerprint = fingerprinted
@@ -2333,7 +2354,8 @@ ID3D11ShaderResourceView *lookupTexture(
         if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
-            if (fingerprinted && entry.fingerprint != fingerprint) {
+            if (fingerprinted && (entry.fingerprint != fingerprint ||
+                (replaceable && !entry.identity.key.empty() && !entry.identity.matches(draw)))) {
                 static unsigned reported;
                 if (reported < 32u) {
                     ++reported;
@@ -2352,7 +2374,7 @@ ID3D11ShaderResourceView *lookupTexture(
                     resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
                 releaseCom(resource);
             }
-            return entry.view;
+            return replaceable ? presenter->replacements.lookup(entry.identity.key, entry.view) : entry.view;
         }
     }
     const DXGI_FORMAT format = linear_bgra
@@ -2374,48 +2396,37 @@ ID3D11ShaderResourceView *lookupTexture(
 
     std::vector<D3D11_SUBRESOURCE_DATA> subresources(levels);
     D3D11_SUBRESOURCE_DATA &initial = subresources[0];
-    std::vector<uint8_t> unswizzled;
+    std::vector<std::vector<uint8_t>> mip_pixels(levels);
 
     if (linear_bgra) {
         initial.pSysMem = draw.texture_bytes;
         initial.SysMemPitch = desc.pitch;
-    } else if (palettized) {
-        const size_t texels = static_cast<size_t>(desc.width) * desc.height;
-        if (desc.width == 0u || desc.height == 0u ||
+    } else if (palettized || isSwizzledTextureFormat(desc.format_byte)) {
+        const uint32_t texel_bytes = palettized ? 1u : desc.bits_per_pixel / 8u;
+        const uint32_t span = recomp_d3d_texture_mip_span(&desc);
+        if (span == 0u || span > draw.texture_byte_count ||
             desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            texels > draw.texture_byte_count) {
-            return nullptr;
+            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
+        uint32_t width = desc.width, height = desc.height, offset = 0u;
+        for (uint32_t level = 0u; level < levels; ++level) {
+            const size_t texels = size_t(width) * height;
+            auto &pixels = mip_pixels[level];
+            pixels.resize(texels * (palettized ? 4u : texel_bytes));
+            const auto *source = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            if (palettized) {
+                std::vector<uint8_t> indices(texels);
+                if (!recomp_d3d_texture_unswizzle(source, indices.data(), width, height, 1u)) return nullptr;
+                const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
+                for (size_t i = 0u; i < texels; ++i)
+                    std::memcpy(pixels.data() + i * 4u, palette + indices[i] * 4u, 4u);
+            } else if (!recomp_d3d_texture_unswizzle(source, pixels.data(), width, height, texel_bytes)) {
+                return nullptr;
+            }
+            subresources[level].pSysMem = pixels.data();
+            subresources[level].SysMemPitch = width * (palettized ? 4u : texel_bytes);
+            offset += static_cast<uint32_t>(texels * texel_bytes);
+            width = (std::max)(1u, width / 2u); height = (std::max)(1u, height / 2u);
         }
-        std::vector<uint8_t> indices(texels);
-        if (!recomp_d3d_texture_unswizzle(
-                static_cast<const uint8_t *>(draw.texture_bytes),
-                indices.data(), desc.width, desc.height, 1u)) {
-            return nullptr;
-        }
-        unswizzled.resize(texels * 4u);
-        const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
-        for (size_t i = 0u; i < texels; ++i) {
-            /* Little-endian ARGB palette words are already BGRA bytes. */
-            std::memcpy(unswizzled.data() + i * 4u, palette + indices[i] * 4u, 4u);
-        }
-        initial.pSysMem = unswizzled.data();
-        initial.SysMemPitch = desc.width * 4u;
-    } else if (isSwizzledTextureFormat(desc.format_byte)) {
-        const uint32_t texel_bytes = desc.bits_per_pixel / 8u;
-
-        unswizzled.resize(
-            static_cast<size_t>(desc.width) * desc.height * texel_bytes);
-        if (!recomp_d3d_texture_unswizzle(
-                static_cast<const uint8_t *>(draw.texture_bytes),
-                unswizzled.data(),
-                desc.width,
-                desc.height,
-                texel_bytes)) {
-            return nullptr;
-        }
-        initial.pSysMem = unswizzled.data();
-        initial.SysMemPitch = desc.width * texel_bytes;
     } else {
         const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
         uint32_t width = desc.width, height = desc.height, offset = 0u;
@@ -2460,6 +2471,14 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.fingerprint = fingerprint;
+    presenter->texture_identity_bytes -= entry.identity.bytes.size();
+    entry.identity = {};
+    if (replaceable && presenter->texture_identity_bytes + draw.texture_byte_count +
+        kPaletteBytes <= 128u * 1024u * 1024u) {
+        try { entry.identity.assign(draw); }
+        catch (const std::exception &) { entry.identity = {}; }
+    }
+    presenter->texture_identity_bytes += entry.identity.bytes.size();
     entry.view = view;
     try {
         presenter->texture_index.emplace(desc.data, slot);
@@ -2468,7 +2487,7 @@ ID3D11ShaderResourceView *lookupTexture(
         entry.used = false;
         return nullptr;
     }
-    return view;
+    return replaceable ? presenter->replacements.lookup(entry.identity.key, view) : view;
 }
 
 ID3D11BlendState *lookupBlendState(
@@ -3674,6 +3693,7 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    presenter->replacements.finishFrame(presenter->device, presenter->context, presenter->present_count);
     DXGI_FRAME_STATISTICS stats{};
     const HRESULT stats_result = presenter->present_log != nullptr || presenter->performance_counter
         ? presenter->swap_chain->GetFrameStatistics(&stats) : E_FAIL;

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <new>
 #include <stdexcept>
 
@@ -37,7 +38,13 @@ bool borrowed(const Draw &draw, size_t field)
 {
     const RecompD3dTextureDesc *desc = field == 2u ? &draw.texture
         : field == 4u ? &draw.alpha_mask : field == 6u ? &draw.reflection_texture : nullptr;
-    return desc != nullptr && desc->format_byte != 0x12u;
+    // Replacement identity and deferred dumps must observe the submitted bytes.
+    static const bool snapshot_textures = [] {
+        const char *dump = std::getenv("RECOMP_TEXTURE_DUMP");
+        const char *replace = std::getenv("RECOMP_TEXTURES");
+        return (dump && std::strcmp(dump, "1") == 0) || (replace && *replace);
+    }();
+    return !snapshot_textures && desc != nullptr && desc->format_byte != 0x12u;
 }
 
 void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand &from)
