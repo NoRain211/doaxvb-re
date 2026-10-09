@@ -2162,7 +2162,7 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
 
 static bool testTextureAntialiasing()
 {
-    for (auto feature : {D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0})
+    for (auto feature : {D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0})
     for (uint32_t samples : {1u, 4u}) {
         RecompD3dPresenter presenter{};
         presenter.msaa = samples;
@@ -2171,6 +2171,19 @@ static bool testTextureAntialiasing()
                 &presenter.device, nullptr, &presenter.context))) return false;
         ID3D11Texture2D *color = nullptr, *readback = nullptr, *resolved = nullptr;
         const auto run = [&]() {
+            if (samples == 1u) {
+                const bool coverage = feature >= D3D_FEATURE_LEVEL_10_1;
+                const std::atomic<bool> stop{false};
+                precompileDrawShaders(&stop, coverage);
+                std::lock_guard<std::mutex> lock(compiled_shaders_lock);
+                for (const uint32_t fvf : kBootDrawFvfs) {
+                    RecompD3dVertexLayout layout;
+                    std::string source;
+                    if (!drawShaderSource(fvf, DrawPipeline{}, layout, source, coverage)) return false;
+                    for (const char *entry : {"vs_main", "ps_main"})
+                        if (!compiled_shaders.count(std::string(entry) + '\n' + source)) return false;
+                }
+            }
             if (!createTestTargets(&presenter, &color, &readback)) return false;
             D3D11_TEXTURE2D_DESC desc{};
             color->GetDesc(&desc);

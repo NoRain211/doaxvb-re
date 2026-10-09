@@ -1409,7 +1409,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
-void precompileDrawShaders(const std::atomic<bool> *stop)
+void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     const ULONGLONG start = GetTickCount64();
@@ -1419,13 +1419,13 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
             std::string source;
-            if (!drawShaderSource(fvf, no_program, layout, source)) continue;
+            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage)) continue;
             for (const char *stage : {"vs", "ps"}) {
                 if (stop->load()) return;
                 ID3DBlob *blob = nullptr;
                 const bool vertex = stage[0] == 'v';
                 compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
-                    vertex ? "vs_4_0" : "ps_4_1", &blob);
+                    vertex ? "vs_4_0" : explicit_coverage ? "ps_4_1" : "ps_4_0", &blob);
                 releaseCom(blob);
             }
         }
@@ -3485,7 +3485,8 @@ RecompD3dPresenterError d3d11_backend_create(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     try {
-        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop);
+        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop,
+            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1);
     } catch (const std::system_error &) {
         // Shaders then compile on first use, as before.
     }
