@@ -108,7 +108,10 @@ constexpr char kDrawShaderPrologue[] =
     "    if (a & 0x10) v = 1.0f - v;\n"
     "    return v;\n"
     "}\n"
-    /* Xbox D3DTOP values 2-24; DISABLE and unknown ops keep CURRENT. */
+    /* Xbox values differ from PC D3D8: BLENDCURRENTALPHA=13,
+       DOTPRODUCT3=22, MULTIPLYADD=23, LERP=24. See Cxbx XbD3D8Types.h:
+       https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/hle/D3D8/XbD3D8Types.h
+       PREMODULATE is declined by the adapter. */
     "float4 ff_op(float4 o, float4 cur, float4 dif, float4 tex) {\n"
     "    float4 a0 = ff_arg((int)o.y, cur, dif, tex);\n"
     "    float4 a1 = ff_arg((int)o.z, cur, dif, tex);\n"
@@ -224,8 +227,11 @@ void buildDrawShaderSource(
         "    if (reflection_flags.x > 2.5f) {\n"
         "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
         "        if (lighting_flags.y > 0.5f) t0.rgb = 1.0f;\n"
-        "        shaded = ff_combine(input.color, t0,\n"
-        "            alpha_mask.Sample(mask_sampler, input.reflection_coord));\n"
+        "        float4 t1 = alpha_mask.Sample(mask_sampler, input.reflection_coord * lighting_flags.zw);\n"
+        "        if (reflection_flags.y > 0.5f) t1.rgb = 1.0f;\n"
+        "        float4 dif = input.color;\n"
+        "        if (directional_flags.x > 0.5f) dif.a *= blend_flags.z;\n"
+        "        shaded = ff_combine(dif, t0, t1);\n"
         "    } else if (reflection_flags.x > 0.5f) {\n"
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= reflection_diffuse.a;\n"
@@ -2392,7 +2398,9 @@ RecompD3dPresenterError submitDraw(
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
         mask_view = lookupTexture(presenter, reflection);
-        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask_view == nullptr ||
+            (texture_view == nullptr && (!draw.has_combiner || draw.has_texture)))
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (draw.four_tap_filter && texture_view == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2497,6 +2505,12 @@ RecompD3dPresenterError submitDraw(
     if (draw.has_combiner) {
         std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
         draw_constants[136] = 3.0f;
+        draw_constants[137] = draw.reflection_texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8
+            ? 1.0f : 0.0f;
+        draw_constants[78] = draw.reflection_texture.linear && draw.reflection_texture.width
+            ? 1.0f / draw.reflection_texture.width : 1.0f;
+        draw_constants[79] = draw.reflection_texture.linear && draw.reflection_texture.height
+            ? 1.0f / draw.reflection_texture.height : 1.0f;
         for (unsigned i = 0u; i < 16u; ++i) {
             draw_constants[140 + 192 * 4 + 140 + i] =
                 static_cast<float>(draw.combiner[i / 8u][i % 8u]);

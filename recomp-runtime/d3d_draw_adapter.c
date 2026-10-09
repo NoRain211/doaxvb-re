@@ -827,9 +827,13 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
     if (stages[1][12] <= 1u || stages[1][12] > 24u || stages[2][12] != 1u ||
         stages[1][28] != 0u || (stages[1][21] != 0u && stages[1][21] != 2u)) return;
     for (uint32_t s = 0u; s < 2u; ++s) {
+        if (stages[s][20] != 0u) return;
         for (uint32_t i = 0u; i < 8u; ++i) {
             const uint32_t word = stages[s][12u + i];
-            if ((i == 0u || i == 4u) ? word > 24u : (word & 15u) > 4u) return;
+            if (i == 0u || i == 4u) {
+                if (word > 24u || word == 17u) return;
+            } else if ((word & ~0x3fu) != 0u || (word & 15u) > 4u ||
+                ((word & 15u) == 4u && layout.specular_offset != RECOMP_D3D_FVF_ABSENT)) return;
             draw->combiner[s][i] = word;
         }
     }

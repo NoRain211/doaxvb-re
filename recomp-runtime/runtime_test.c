@@ -12,6 +12,7 @@ int recomp_xapi_time_adapter_test(void);
 int recomp_device_model_test(void);
 int recomp_d3d_creation_model_test(void);
 int recomp_d3d_draw_model_test(void);
+int recomp_d3d_draw_adapter_test(void);
 int recomp_d3d_frame_model_test(void);
 int recomp_d3d_frame_adapter_test(void);
 int recomp_d3d_presenter_memory_test(void);
@@ -898,6 +899,7 @@ int main(int argc, char **argv)
     passed &= recomp_device_model_test();
     passed &= recomp_d3d_creation_model_test();
     passed &= recomp_d3d_draw_model_test();
+    passed &= recomp_d3d_draw_adapter_test();
     passed &= recomp_d3d_frame_model_test();
     passed &= recomp_d3d_presenter_memory_test();
     passed &= recomp_d3d_frame_adapter_test();

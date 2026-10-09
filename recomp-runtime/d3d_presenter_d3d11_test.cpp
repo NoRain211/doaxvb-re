@@ -2020,6 +2020,73 @@ static bool testAddressSamplers(RecompD3dPresenter *presenter)
     return true;
 }
 
+static bool testCombiner(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z; uint32_t color; float u, v; };
+    Vertex vertices[] = {{-1,1,.5f,0xffff0000u,0,0}, {1,1,.5f,0xffff0000u,0,0},
+        {-1,-1,.5f,0xffff0000u,0,0}, {1,-1,.5f,0xffff0000u,0,0}};
+    const uint16_t indices[] = {0,1,2,3};
+    const uint32_t green = 0xff00ff00u, blue = 0xff0000ffu;
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x142; draw.vertex_stride = sizeof(Vertex);
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_count = draw.index_count = 4; draw.triangle_count = 2;
+    draw.vertex_bytes = vertices; draw.index_bytes = indices;
+    draw.has_transform = draw.has_combiner = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    std::memcpy(draw.reflection_transform, draw.transform, sizeof draw.transform);
+    draw.blend.color_write_mask = 15;
+    draw.combiner[0][0] = draw.combiner[0][4] = 2;
+    draw.combiner[1][0] = 23; draw.combiner[1][1] = 1;
+    draw.combiner[1][2] = draw.combiner[1][3] = 2;
+    draw.combiner[1][4] = 2; draw.combiner[1][6] = 1;
+    draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.reflection_texture.bits_per_pixel = 32;
+    draw.reflection_texture.width = draw.reflection_texture.height = 1;
+    draw.reflection_texture.data = 0x00750000u;
+    draw.reflection_bytes = &green; draw.reflection_byte_count = sizeof green;
+    const RecompD3dPresenterClearCommand clear = {true,false,false,0xff000000u,1,0};
+    const auto render = [&](uint32_t pixel, const char *label) {
+        const uint32_t expected[] = {pixel,pixel,pixel,pixel};
+        return submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter, color, readback, label, expected);
+    };
+    if (!render(0xffffff00u, "combiner without stage zero texture")) return false;
+    draw.has_texture = true; draw.texture = draw.reflection_texture;
+    draw.texture.data += 0x100; draw.texture_bytes = &blue; draw.texture_byte_count = sizeof blue;
+    if (!render(0xffffff00u, "combiner bypasses legacy texture path")) return false;
+    const uint8_t alpha = 128;
+    draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8;
+    draw.reflection_texture.bits_per_pixel = 8;
+    draw.reflection_texture.data += 0x200;
+    draw.reflection_bytes = &alpha; draw.reflection_byte_count = 1;
+    draw.combiner[1][0] = draw.combiner[1][4] = 2; draw.combiner[1][6] = 2;
+    if (!render(0x80ffffffu, "stage one A8 has white RGB")) return false;
+    const uint32_t row[] = {0xffff0000u,0xff00ff00u,0xff0000ffu,0xffffffffu};
+    draw.reflection_texture.format_byte = 0x12u;
+    draw.reflection_texture.bits_per_pixel = 32; draw.reflection_texture.linear = true;
+    draw.reflection_texture.width = 4; draw.reflection_texture.pitch = sizeof row;
+    draw.reflection_texture.data += 0x100;
+    draw.reflection_bytes = row; draw.reflection_byte_count = sizeof row;
+    draw.combiner_address_u = draw.combiner_address_v = 3;
+    for (auto &vertex : vertices) { vertex.u = 1.5f; vertex.v = 0.5f; }
+    if (!render(0xff00ff00u, "stage one linear texel coordinates")) return false;
+    struct LitVertex { float x,y,z,nx,ny,nz,u,v; };
+    const LitVertex lit[] = {{-1,1,.5f,0,0,1,0,0},{1,1,.5f,0,0,1,0,0},
+        {-1,-1,.5f,0,0,1,0,0},{1,-1,.5f,0,0,1,0,0}};
+    draw.fvf = 0x112; draw.vertex_bytes = lit; draw.vertex_stride = sizeof(LitVertex);
+    draw.directional.enabled = true; draw.directional.ambient_emissive[0] = 1;
+    draw.directional.material_diffuse[3] = 0.25f;
+    draw.directional.normal_transforms[0][0] = draw.directional.normal_transforms[0][5] =
+        draw.directional.normal_transforms[0][10] = draw.directional.normal_transforms[0][15] = 1;
+    draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE;
+    draw.material_alpha = 0.25f;
+    draw.combiner[1][2] = draw.combiner[1][6] = 0;
+    return render(0x40ff0000u, "combiner uses material diffuse alpha");
+}
+
 int main()
 {
     if (!testWidescreenClientWidth()) {
@@ -2091,6 +2158,7 @@ int main()
     if (status == 0 && !testConstantBlend(&presenter, color, readback)) status = 97;
     if (status == 0 && !testCullRendering(&presenter, color, readback)) status = 98;
     if (status == 0 && !testSupersampledBackBuffer(&presenter)) status = 84;
+    if (status == 0 && !testCombiner(&presenter, color, readback)) status = 99;
     if (status == 0 && !testAddressSamplers(&presenter)) status = 83;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
