@@ -1,5 +1,6 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
+#include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -7,6 +8,7 @@
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_5.h>
 #include <d3dcompiler.h>
 
 #include <cmath>
@@ -69,9 +71,9 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
    serve both, so the shader is assembled per FVF from the decoded layout and
    cached with its matching input layout.
 
-   Vertex color comes from the stream or the admitted directional-lighting
+   Vertex color comes from the stream or the admitted fixed-function lighting
    path. Unsupported lighting configurations retain the earlier texture/normal
-   fallback. Texture alpha remains independent of directional diffuse RGB. */
+   fallback. Texture alpha remains independent of lit diffuse RGB. */
 constexpr char kDrawShaderPrologue[] =
     "cbuffer Transform : register(b0) {\n"
     "    row_major float4x4 wvp[4];\n"
@@ -93,6 +95,10 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 directional_colors[8];\n"
     "    float4 directional_flags;\n"
     "    float4 combiner[4];\n"
+    "    row_major float4x4 light_world[4];\n"
+    "    float4 light_positions[8];\n"
+    "    float4 light_attenuation[8];\n"
+    "    float4 light_ambient[8];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -488,6 +494,12 @@ struct RecompD3dPresenter {
     IDXGISwapChain *swap_chain = nullptr;
     ID3D11RenderTargetView *render_target_view = nullptr;
     ID3D11RenderTargetView *present_target_view = nullptr;
+    // VRR only: main-sized output, downscaled into the window-sized swap chain.
+    ID3D11RenderTargetView *vrr_target_view = nullptr;
+    ID3D11ShaderResourceView *vrr_source = nullptr;
+    ID3D11VertexShader *vrr_vs = nullptr;
+    ID3D11PixelShader *vrr_ps = nullptr;
+    ID3D11SamplerState *vrr_sampler = nullptr;
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -541,6 +553,16 @@ struct RecompD3dPresenter {
     double last_present_ms = 0.0;
     double present_call_max_ms = 0.0;
     std::vector<double> present_gaps;
+    // Display refreshes each present stayed on screen (DXGI statistics), 1..8+.
+    unsigned refresh_holds[9]{};
+    UINT last_stat_present = 0u, last_stat_refresh = 0u;
+    /* RECOMP_D3D_PRESENT_LOG: one CSV row of raw DXGI counters per present,
+       in QPC ticks, to line up with a PresentMon --qpc_time capture. */
+    FILE *present_log = nullptr;
+    UINT sync_interval = 1u;
+    std::chrono::steady_clock::time_point next_refresh_check{};
+    bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
+    long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
@@ -580,6 +602,20 @@ uint32_t windowHeight(const RecompD3dPresenter *presenter)
 {
     return presenter->scale == 1.0f ? presenter->config.height : (std::min)(
         mainHeight(presenter), static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
+}
+
+/* VRR needs direct flip, which a DWM-scaled swap chain loses; with VRR the
+   swap chain matches the window and the presenter scales into it itself. */
+bool immediatePresent(const RecompD3dPresenter *presenter)
+{
+    return immediate_present && !presenter->vrr;
+}
+
+bool vrrScaled(const RecompD3dPresenter *presenter)
+{
+    return presenter->vrr &&
+        (mainWidth(presenter) != presentClientWidth(presenter, windowHeight(presenter)) ||
+         mainHeight(presenter) != windowHeight(presenter));
 }
 
 LRESULT CALLBACK presenterWindowProc(
@@ -630,6 +666,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->Flush();
     }
     releaseCom(presenter->present_target_view);
+    releaseCom(presenter->vrr_target_view);
+    releaseCom(presenter->vrr_source);
+    releaseCom(presenter->vrr_vs);
+    releaseCom(presenter->vrr_ps);
+    releaseCom(presenter->vrr_sampler);
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -707,6 +748,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
 void releasePresenter(RecompD3dPresenter *presenter)
 {
     releaseGraphics(presenter);
+    if (presenter->present_log != nullptr) {
+        std::fclose(presenter->present_log);
+        presenter->present_log = nullptr;
+    }
     if (presenter->window != nullptr && IsWindow(presenter->window)) {
         DestroyWindow(presenter->window);
     }
@@ -783,6 +828,7 @@ HRESULT createDeviceWithDriver(
     RecompD3dPresenter *presenter,
     D3D_DRIVER_TYPE driver_type)
 {
+    const bool immediate = immediatePresent(presenter);
     DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
     const D3D_FEATURE_LEVEL feature_levels[] = {
         D3D_FEATURE_LEVEL_11_0,
@@ -791,21 +837,25 @@ HRESULT createDeviceWithDriver(
     };
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    swap_chain_desc.BufferDesc.Width = mainWidth(presenter);
-    swap_chain_desc.BufferDesc.Height = mainHeight(presenter);
+    swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
+        ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
+    swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
+        ? windowHeight(presenter) : mainHeight(presenter);
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 0u;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1u;
     swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     swap_chain_desc.SampleDesc.Count = 1u;
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = immediate_present ? 1u : 2u;
+    swap_chain_desc.BufferCount = immediate ? 1u : 2u;
     swap_chain_desc.OutputWindow = presenter->window;
     swap_chain_desc.Windowed = TRUE;
-    swap_chain_desc.SwapEffect = immediate_present
+    swap_chain_desc.SwapEffect = immediate
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swap_chain_desc.Flags = immediate ? 0u : DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (presenter->vrr) swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    return D3D11CreateDeviceAndSwapChain(
+    HRESULT result = D3D11CreateDeviceAndSwapChain(
         nullptr,
         driver_type,
         nullptr,
@@ -818,6 +868,14 @@ HRESULT createDeviceWithDriver(
         &presenter->device,
         &selected_feature_level,
         &presenter->context);
+    // Flip chains use the per-chain limit; immediate presents retain the default.
+    if (SUCCEEDED(result) && !immediate) {
+        IDXGISwapChain2 *chain = nullptr;
+        result = presenter->swap_chain->QueryInterface(IID_PPV_ARGS(&chain));
+        if (SUCCEEDED(result)) result = chain->SetMaximumFrameLatency(1u);
+        releaseCom(chain);
+    }
+    return result;
 }
 
 HRESULT createGraphics(RecompD3dPresenter *presenter)
@@ -848,7 +906,6 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         presenter->create_result = warp_result;
         std::fprintf(stderr, "recomp d3d presenter: using WARP driver\n");
     }
-
     ID3D11Texture2D *back_buffer = nullptr;
     HRESULT result = presenter->swap_chain->GetBuffer(
         0u,
@@ -880,6 +937,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     if (SUCCEEDED(result)) {
         D3D11_TEXTURE2D_DESC desc{};
         back_buffer->GetDesc(&desc);
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
         desc.MiscFlags = 0u;
         desc.SampleDesc.Count = presenter->msaa;
@@ -890,6 +949,47 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
                 guest_buffer, nullptr, &presenter->render_target_view);
         }
         releaseCom(guest_buffer);
+    }
+    if (SUCCEEDED(result) && vrrScaled(presenter)) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
+        desc.MipLevels = desc.ArraySize = 1u;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1u;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture2D *output = nullptr;
+        result = presenter->device->CreateTexture2D(&desc, nullptr, &output);
+        if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(
+            output, nullptr, &presenter->vrr_target_view);
+        if (SUCCEEDED(result)) result = presenter->device->CreateShaderResourceView(
+            output, nullptr, &presenter->vrr_source);
+        releaseCom(output);
+        static const char shader[] =
+            "Texture2D pixels : register(t0);\n"
+            "SamplerState bilinear : register(s0);\n"
+            "float4 vs(uint id : SV_VertexID, out float2 uv : TEXCOORD0) : SV_Position {\n"
+            " uv = float2((id << 1) & 2, id & 2);\n"
+            " return float4(uv * float2(2,-2) + float2(-1,1), 0, 1); }\n"
+            "float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+            " return pixels.SampleLevel(bilinear, uv, 0); }\n";
+        ID3DBlob *vertex = nullptr, *pixel = nullptr;
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
+        if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
+            vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &presenter->vrr_vs);
+        if (SUCCEEDED(result)) result = presenter->device->CreatePixelShader(
+            pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr, &presenter->vrr_ps);
+        releaseCom(vertex);
+        releaseCom(pixel);
+        D3D11_SAMPLER_DESC sampler{};
+        sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler.MaxLOD = D3D11_FLOAT32_MAX;
+        if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
+            &sampler, &presenter->vrr_sampler);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -1291,21 +1391,34 @@ bool drawShaderSource(
     if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
-            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n";
+            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n"
+            "        float3 world_pos = mul(float4(input.position,1),light_world[0]).xyz;\n";
         if (layout.blend_weight_count) {
-            lighting += "        if (blend_flags.x > 0.5f) { n=0; float remainder=1;\n";
+            lighting += "        if (blend_flags.x > 0.5f) { n=0; world_pos=0; float remainder=1;\n";
             for (uint32_t i=0; i<layout.blend_weight_count; ++i) {
                 const auto index=std::to_string(i);
                 lighting += "n += input.weights["+index+"] * mul(float4(input.normal,0),directional_normals["+index+"]).xyz;\n"
+                    "world_pos += input.weights["+index+"] * mul(float4(input.position,1),light_world["+index+"]).xyz;\n"
                     "remainder -= input.weights["+index+"];\n";
             }
             lighting += "n += remainder * mul(float4(input.normal,0),directional_normals["+
+                std::to_string(layout.blend_weight_count)+"]).xyz;\n"
+                "world_pos += remainder * mul(float4(input.position,1),light_world["+
                 std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
         }
         lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
             "        float3 rgb=directional_base.rgb;\n"
-            "        for (uint i=0; i<(uint)directional_flags.z; ++i)\n"
-            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,directional_directions[i].xyz));\n"
+            "        for (uint i=0; i<(uint)directional_flags.z; ++i) {\n"
+            "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
+            "            if (light_positions[i].w > 0.5f) {\n"
+            "                l = light_positions[i].xyz - world_pos;\n"
+            "                float d = length(l);\n"
+            "                float denominator = dot(light_attenuation[i].xyz,float3(1,d,d*d));\n"
+            "                atten = d <= light_attenuation[i].w && denominator > 0 ? 1/denominator : 0;\n"
+            "                l = d > 0 ? l/d : float3(0,0,0);\n"
+            "            }\n"
+            "            rgb += (directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) + light_ambient[i].rgb) * atten;\n"
+            "        }\n"
             "        output.color.rgb=saturate(rgb);\n"
             "    }\n";
         const auto uv = compiled_source.find("    output.texcoord =");
@@ -1489,8 +1602,10 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
-    /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 140u + 16u) * sizeof(float);
+    /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
+       normal transforms, material/base, directions/colors/flags, world transforms,
+       point positions, attenuation/range and material-scaled ambient (300 floats). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 300u + 16u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2419,7 +2534,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 140 + 16]{};
+    float draw_constants[140 + 192 * 4 + 300 + 16]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2474,6 +2589,10 @@ RecompD3dPresenterError submitDraw(
         constants[136]=1;
         constants[137]=light.normalize ? 1.0f:0.0f;
         constants[138]=static_cast<float>(light.count);
+        std::memcpy(constants+140, light.world_transforms, sizeof light.world_transforms);
+        std::memcpy(constants+204, light.positions, sizeof light.positions);
+        std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
+        std::memcpy(constants+268, light.ambient, sizeof light.ambient);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
@@ -2522,7 +2641,7 @@ RecompD3dPresenterError submitDraw(
         draw_constants[79] = draw.reflection_texture.linear && draw.reflection_texture.height
             ? 1.0f / draw.reflection_texture.height : 1.0f;
         for (unsigned i = 0u; i < 16u; ++i) {
-            draw_constants[140 + 192 * 4 + 140 + i] =
+            draw_constants[140 + 192 * 4 + 300 + i] =
                 static_cast<float>(draw.combiner[i / 8u][i % 8u]);
         }
     }
@@ -3118,6 +3237,52 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     return true;
 }
 
+/* The guest runs at 60 Hz. On a 120 or 240 Hz display, interval 1 shows its
+   frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
+   refresh/60. Rechecked each second, as the window can change monitors.
+   ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
+UINT fixedRefreshInterval(UINT hz)
+{
+    // Rates below the multiple cannot retire sixty frames per second.
+    const UINT k = (hz + 30u) / 60u;
+    return (k == 2u || k == 4u) && hz >= 60u * k && hz <= 60u * k + 1u ? k : 1u;
+}
+
+UINT syncInterval(RecompD3dPresenter *presenter)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= presenter->next_refresh_check) {
+        presenter->next_refresh_check = now + std::chrono::seconds(1);
+        MONITORINFOEXW monitor{};
+        monitor.cbSize = sizeof monitor;
+        DEVMODEW mode{};
+        mode.dmSize = sizeof mode;
+        UINT interval = 1u;
+        if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+            interval = fixedRefreshInterval(mode.dmDisplayFrequency);
+        }
+        presenter->sync_interval = interval;
+    }
+    return presenter->sync_interval;
+}
+
+void recordFrameStatistics(RecompD3dPresenter *presenter,
+    HRESULT result, const DXGI_FRAME_STATISTICS &stats)
+{
+    if (FAILED(result)) {
+        presenter->last_stat_present = presenter->last_stat_refresh = 0u;
+        return;
+    }
+    if (presenter->last_stat_present != 0u &&
+        stats.PresentCount == presenter->last_stat_present + 1u) {
+        const UINT hold = stats.PresentRefreshCount - presenter->last_stat_refresh;
+        ++presenter->refresh_holds[(std::min)(hold, 8u)];
+    }
+    presenter->last_stat_present = stats.PresentCount;
+    presenter->last_stat_refresh = stats.PresentRefreshCount;
+}
+
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterPresentCommand &present)
@@ -3151,8 +3316,30 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
-    if (!renderOutput(presenter, presenter->present_target_view)) {
+    if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
+            ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    if (presenter->vrr_target_view != nullptr) {
+        auto *context = presenter->context;
+        D3D11_TEXTURE2D_DESC window{};
+        ID3D11Texture2D *back_buffer = nullptr;
+        presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+        if (back_buffer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        back_buffer->GetDesc(&window);
+        releaseCom(back_buffer);
+        const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
+            static_cast<float>(window.Width), static_cast<float>(window.Height), 0.0f, 1.0f};
+        context->ClearState();
+        context->RSSetViewports(1u, &viewport);
+        context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
+        context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
+        context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
+        context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
+        context->Draw(3u, 0u);
+        context->ClearState();
     }
     // Capture the rendered buffer before flip presentation releases it.
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
@@ -3162,9 +3349,25 @@ RecompD3dPresenterError submitPresent(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
-    const HRESULT present_result = presenter->swap_chain->Present(
-        immediate_present ? 0u : 1u,
-        immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
+    const bool immediate = immediatePresent(presenter);
+    const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
+    const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
+        : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    if (presenter->vrr) {
+        /* VRR shows a frame the moment it is presented, so render-time jitter
+           became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
+           late frame presents now and moves the grid, as the guest timer does. */
+        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now);
+        // Submit the frame's last commands now, so the GPU finishes them before the flip.
+        presenter->context->Flush();
+        recomp_d3d_sleep_until(presenter->vrr_slot_ns);
+    }
+    LARGE_INTEGER qpc_before{}, qpc_after{};
+    QueryPerformanceCounter(&qpc_before);
+    const HRESULT present_result = presenter->swap_chain->Present(sync_interval, present_flags);
+    QueryPerformanceCounter(&qpc_after);
     if (FAILED(present_result)) {
         std::fprintf(
             stderr,
@@ -3178,6 +3381,20 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    DXGI_FRAME_STATISTICS stats{};
+    const HRESULT stats_result = presenter->present_log != nullptr || presenter->performance_counter
+        ? presenter->swap_chain->GetFrameStatistics(&stats) : E_FAIL;
+    if (presenter->present_log != nullptr) {
+        UINT last_present = 0u;
+        presenter->swap_chain->GetLastPresentCount(&last_present);
+        std::fprintf(presenter->present_log,
+            "%u,%lld,%lld,%u,0x%X,0x%08lX,%u,0x%08lX,%u,%u,%u,%lld\n",
+            presenter->present_count, qpc_before.QuadPart, qpc_after.QuadPart,
+            sync_interval, present_flags, static_cast<unsigned long>(present_result),
+            last_present, static_cast<unsigned long>(stats_result), stats.PresentCount,
+            stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+        std::fflush(presenter->present_log);
+    }
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
         // The first Present lands before the sampled window opens.
@@ -3189,6 +3406,7 @@ RecompD3dPresenterError submitPresent(
             presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
         }
         presenter->last_present_ms = present_end_ms;
+        recordFrameStatistics(presenter, stats_result, stats);
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
@@ -3203,9 +3421,13 @@ RecompD3dPresenterError submitPresent(
                 late += gap > frame_ms * 1.5;
             }
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
-                max_ms, late, presenter->present_call_max_ms);
+                max_ms, late, presenter->present_call_max_ms,
+                presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
+                presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+            std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
         }
@@ -3284,6 +3506,30 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
+    /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
+       evenly. DXGI cannot tell whether VRR is active; without it this tears. */
+    const char *vrr = std::getenv("RECOMP_D3D_VRR");
+    if (vrr != nullptr && std::strcmp(vrr, "1") == 0) {
+        IDXGIFactory5 *factory = nullptr;
+        BOOL tearing = FALSE;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+            factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing);
+            factory->Release();
+        }
+        created->vrr = tearing != FALSE;
+        std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+    }
+    if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
+        created->present_log = std::fopen(log, "w");
+        if (created->present_log != nullptr) {
+            LARGE_INTEGER frequency{};
+            QueryPerformanceFrequency(&frequency);
+            std::fprintf(created->present_log, "# qpc_frequency=%lld\n"
+                "present,qpc_before,qpc_after,sync_interval,flags,present_hr,last_present_count,"
+                "stats_hr,stats_present_count,present_refresh_count,sync_refresh_count,sync_qpc\n",
+                frequency.QuadPart);
+        }
+    }
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);

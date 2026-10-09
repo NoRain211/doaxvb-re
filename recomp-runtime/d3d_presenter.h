@@ -62,7 +62,7 @@ typedef struct RecompD3dPresenterPresentCommand {
     uint32_t swap_counter;
 } RecompD3dPresenterPresentCommand;
 
-/* Directional diffuse/ambient lighting for the material-source path. */
+/* Directional and point diffuse/ambient lighting for the material-source path. */
 typedef struct RecompD3dDirectionalLighting {
     bool enabled;
     bool normalize;
@@ -72,6 +72,13 @@ typedef struct RecompD3dDirectionalLighting {
     float material_diffuse[4];
     float directions[8][4];
     float colors[8][4];
+    float world_transforms[4][16];
+    /* World position xyz; w is 1 for point lights, 0 for directional. */
+    float positions[8][4];
+    /* Constant, linear, quadratic attenuation, and range. */
+    float attenuation[8][4];
+    /* Point-light ambient multiplied by material ambient, before attenuation. */
+    float ambient[8][4];
 } RecompD3dDirectionalLighting;
 
 typedef enum RecompD3dCullMode {
