@@ -513,7 +513,11 @@ if(RECOMP_PROGRAM_DIR)
         $<$<PLATFORM_ID:Windows>:d3d_presenter_d3d11.cpp>
         $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
         $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
+        $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
+        $<$<PLATFORM_ID:Windows>:input_host_win32.c>
         $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:audio_output_sdl.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:input_host_sdl.c>
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
@@ -528,7 +532,6 @@ if(RECOMP_PROGRAM_DIR)
         xbox_adpcm.c
         dsound_service_model.c
         dsound_service_adapter.c
-        audio_output_xaudio2.cpp
         custom_music.cpp
         soundtrack_adapter.c
         movie_color_model.c
@@ -542,7 +545,6 @@ if(RECOMP_PROGRAM_DIR)
         directory_model.c
         input_model.c
         input_adapter.c
-        input_host_win32.c
         input_pulse_source.c
         symbolic_link_model.c
         kernel_ordinals.c
@@ -573,14 +575,21 @@ if(RECOMP_PROGRAM_DIR)
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
-    target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+    if(WIN32)
+        target_link_libraries(recomp_program_runner PRIVATE
+            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+        target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+        recomp_use_sdl3(recomp_program_runner)
+    else()
+        target_sources(recomp_program_runner PRIVATE win32_compat.c)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+            enable_language(ASM)
+            target_sources(recomp_program_runner PRIVATE fiber_switch_arm64.s)
+        endif()
+        recomp_use_sdl3(recomp_program_runner)
+    endif()
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
-    endif()
-    if(WIN32)
-        recomp_use_sdl3(recomp_program_runner)
     endif()
 
     # The binary .ico stays out of git; see docs/building.md.
@@ -658,6 +667,10 @@ else()
         d3d_draw_model.c
         d3d_texture_model.c)
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
+    add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
+    recomp_use_sdl3(recomp_audio_output_sdl_test)
+    add_executable(recomp_input_host_test input_host_sdl.c input_host_win32_test.c)
+    recomp_use_sdl3(recomp_input_host_test)
 endif()
 
 add_executable(recomp_d3d_presenter_capture_test
@@ -697,6 +710,8 @@ add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
+elseif(TARGET recomp_audio_output_sdl_test)
+    add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_sdl_test)
 endif()
 if(TARGET recomp_input_host_test)
     add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
