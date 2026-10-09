@@ -1974,6 +1974,91 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     return !recomp_d3d_normal_transform(world,light.normal_transforms[0]);
 }
 
+static bool testBackBufferMips(RecompD3dPresenter *presenter)
+{
+    RecompD3dPresenter scaled{};
+    scaled.config = {4u, 3u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+    scaled.scale = 2.0f;
+    scaled.device = presenter->device;
+    scaled.context = presenter->context;
+    scaled.device->AddRef();
+    scaled.context->AddRef();
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = 8u; desc.Height = 6u;
+    desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1u;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ID3D11Texture2D *source = nullptr, *readback = nullptr;
+    bool passed = SUCCEEDED(scaled.device->CreateTexture2D(&desc, nullptr, &source)) &&
+        SUCCEEDED(scaled.device->CreateRenderTargetView(source, nullptr, &scaled.render_target_view));
+    desc.Width = 4u; desc.Height = 3u;
+    desc.BindFlags = 0u;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    passed = passed && SUCCEEDED(scaled.device->CreateTexture2D(&desc, nullptr, &readback));
+    RecompD3dPresenterDrawCommand draw{};
+    draw.texture_is_backbuffer = true;
+    draw.texture.format_byte = 0x12u;
+    draw.texture.linear = true;
+    draw.texture.width = 8u; draw.texture.height = 3u; // Supersampled guest size.
+    const float red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    const float blue[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    if (passed) {
+        scaled.context->ClearRenderTargetView(scaled.render_target_view, red);
+        ID3D11ShaderResourceView *view = lookupTexture(&scaled, draw);
+        passed = view != nullptr;
+        if (passed) scaled.context->GenerateMips(view);
+        scaled.context->ClearRenderTargetView(scaled.render_target_view, blue);
+    }
+    const auto checkMip = [&](const char *label, uint32_t expected) {
+        if (lookupTexture(&scaled, draw) == nullptr) {
+            std::fprintf(stderr, "FAIL %s lookup\n", label);
+            return false;
+        }
+        scaled.context->CopySubresourceRegion(readback, 0u, 0u, 0u, 0u,
+            scaled.back_buffer_copy, 1u, nullptr);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(scaled.context->Map(readback, 0u, D3D11_MAP_READ, 0u, &mapped))) {
+            std::fprintf(stderr, "FAIL %s readback\n", label);
+            return false;
+        }
+        bool matched = true;
+        for (unsigned y = 0u; y < 3u; ++y) {
+            const auto *row = reinterpret_cast<const uint32_t *>(
+                static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
+            for (unsigned x = 0u; x < 4u; ++x) {
+                if (row[x] != expected) {
+                    std::fprintf(stderr, "FAIL %s pixel=(%u,%u) got=%08x expected=%08x\n",
+                        label, x, y, row[x], expected);
+                    matched = false;
+                }
+            }
+        }
+        scaled.context->Unmap(readback, 0u);
+        return matched;
+    };
+    passed = passed && checkMip("main-target snapshot refresh", 0xff0000ffu);
+    if (passed) scaled.context->ClearRenderTargetView(scaled.render_target_view, red);
+    draw.target.offscreen = true;
+    draw.target.color.width = 8u; draw.target.color.height = 6u;
+    passed = passed && checkMip("host-sized snapshot refresh", 0xffff0000u);
+    if (passed) {
+        uint32_t texels[6][8];
+        for (unsigned y = 0u; y < 6u; ++y)
+            for (unsigned x = 0u; x < 8u; ++x)
+                texels[y][x] = y % 2u ? 0xff0000ffu : 0xffff0000u;
+        scaled.context->UpdateSubresource(source, 0u, nullptr, texels, sizeof texels[0], 0u);
+    }
+    draw.target.color.width = 4u; draw.target.color.height = 3u;
+    passed = passed && checkMip("minified snapshot averages red and blue rows", 0xff800080u);
+    releaseCom(readback);
+    releaseCom(source);
+    releaseGraphics(&scaled);
+    if (!passed) std::fprintf(stderr, "FAIL backbuffer snapshot mips\n");
+    return passed;
+}
+
 static bool testSupersampledBackBuffer(RecompD3dPresenter *presenter)
 {
     /* The casino transition fills from the supersampled 2x-wide guest back
@@ -2157,6 +2242,7 @@ int main()
     if (status == 0 && !testDirectionalLighting(&presenter, color, readback)) status = 96;
     if (status == 0 && !testConstantBlend(&presenter, color, readback)) status = 97;
     if (status == 0 && !testCullRendering(&presenter, color, readback)) status = 98;
+    if (status == 0 && !testBackBufferMips(&presenter)) status = 99;
     if (status == 0 && !testSupersampledBackBuffer(&presenter)) status = 84;
     if (status == 0 && !testCombiner(&presenter, color, readback)) status = 99;
     if (status == 0 && !testAddressSamplers(&presenter)) status = 83;
