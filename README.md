@@ -100,7 +100,7 @@ IDE is not required.
    then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
 On macOS:
-1. Install prerequisites (`brew install cmake ninja sdl3 extract-xiso`, `pip3 install capstone==5.0.9`).
+1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).
 2. Run `./build_game.sh /path/to/game.iso` and wait for setup to complete.
 3. Run `./launcher.sh` to select resolution, volume, and soundtrack options, then press **Play** (or run `./run_game.sh` directly).
 

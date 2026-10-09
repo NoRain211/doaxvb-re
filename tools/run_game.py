@@ -71,26 +71,28 @@ def launch(root, receipt_path=None):
     return run(runner, images[0], root, release_path if release_path.is_file() else None)
 
 
+def saved_launcher_settings(root):
+    path = root / "private" / "launcher.json"
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        return {"RECOMP_D3D_SCALE": f"{int(settings.get('height', 480)) / 480:.4f}",
+                "RECOMP_D3D_MSAA": str(int(settings.get("msaa", 1))),
+                "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
+                "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
+                "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0"}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
 def run(runner, image, root, receipt_path=None):
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
-    launcher_path = root / "private" / "launcher.json"
-    if launcher_path.is_file():
-        try:
-            settings = json.loads(launcher_path.read_text(encoding="utf-8"))
-            height = int(settings.get("height", 480))
-            msaa = int(settings.get("msaa", 1))
-            smaa = "1" if settings.get("smaa", False) else "0"
-            volume = int(settings.get("volume", 100))
-            shuffle = "1" if settings.get("shuffle", False) else "0"
-            env.setdefault("RECOMP_D3D_SCALE", f"{height / 480.0:.4f}")
-            env.setdefault("RECOMP_D3D_MSAA", str(msaa))
-            env.setdefault("RECOMP_D3D_SMAA", smaa)
-            env.setdefault("RECOMP_AUDIO_GAIN", f"{volume / 100.0:.4f}")
-            env.setdefault("RECOMP_MUSIC_SHUFFLE", shuffle)
-        except Exception:
-            pass
-    env.setdefault("RECOMP_AUDIO_GAIN", "1")  # fallback if no launcher.json or env set
+    if os.name != "nt":
+        # Launcher.cmd passes its choices in the environment; run_game.sh
+        # applies the choices launcher.sh saved.
+        for name, value in saved_launcher_settings(root).items():
+            env.setdefault(name, value)
+    env.setdefault("RECOMP_AUDIO_GAIN", "1")  # the launcher's Volume choice overrides this
     env.setdefault("RECOMP_PERF_COUNTER", "1")
     print(f"Starting runner. Log: {log_path}", flush=True)
     with log_path.open("x", encoding="utf-8") as log:
