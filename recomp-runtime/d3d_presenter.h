@@ -142,6 +142,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool linear_mip_filter;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
+    /* Storage aliases the guest front buffer: the last presented frame. */
+    bool texture_is_frontbuffer;
     const void *texture_bytes;
     uint32_t texture_byte_count;
     /* Bound P8 palette in guest ARGB32 order, valid during the submit. */
