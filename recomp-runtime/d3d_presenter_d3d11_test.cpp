@@ -1971,7 +1971,60 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     light.enabled=false;
     if (!pixels("unlit texture unchanged",0xff804020)) return false;
     world[0]=0;
-    return !recomp_d3d_normal_transform(world,light.normal_transforms[0]);
+    if (recomp_d3d_normal_transform(world,light.normal_transforms[0])) return false;
+
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices; draw.blend_weight_count=0;
+    light={}; light.enabled=light.normalize=true; light.count=1;
+    for (unsigned c=0;c<3;++c) light.colors[0][c]=light.material_diffuse[c]=1;
+    for (unsigned i=0;i<4;++i) {
+        light.world_transforms[0][i*5]=light.normal_transforms[0][i*5]=1;
+        vertices[i][3]=0; vertices[i][5]=1;
+    }
+    light.world_transforms[0][14]=10;
+    light.positions[0][2]=30; light.positions[0][3]=1;
+    light.attenuation[0][0]=1; light.attenuation[0][1]=0.05f; light.attenuation[0][3]=100;
+    // Corner distances are sqrt(402) and sqrt(3602); the resulting UNORM colors round to 1/2 and 1/4.
+    if (!pixels("point light near attenuation in world space",0xff402010)) return false;
+    light.world_transforms[0][14]=-30;
+    if (!pixels("point light far attenuation",0xff201008)) return false;
+    for (auto &vertex : vertices) vertex[5]=-1;
+    if (!pixels("point light back-facing diffuse is zero",0xff000000)) return false;
+    for (auto &vertex : vertices) vertex[5]=1;
+    light.attenuation[0][3]=50;
+    if (!pixels("point light outside range is zero",0xff000000)) return false;
+    light.world_transforms[0][14]=10;
+    light.attenuation[0][1]=0; light.attenuation[0][2]=0.0025f;
+    if (!pixels("point light quadratic attenuation",0xff402010)) return false;
+    light.attenuation[0][0]=2; light.attenuation[0][2]=0;
+    if (!pixels("point light constant attenuation",0xff402010)) return false;
+    light.attenuation[0][0]=1; light.attenuation[0][1]=0.05f; light.attenuation[0][3]=100;
+    light.count=2; light.directions[1][2]=1;
+    for (unsigned c=0;c<3;++c) light.colors[1][c]=0.25f;
+    if (!pixels("mixed point and directional lights",0xff603018)) return false;
+    light.count=1;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=0; light.ambient[0][c]=1; }
+    if (!pixels("point ambient near attenuation",0xff402010)) return false;
+    light.world_transforms[0][14]=-30;
+    if (!pixels("point ambient far attenuation",0xff201008)) return false;
+    for (auto &vertex : vertices) vertex[5]=-1;
+    if (!pixels("point ambient ignores normal",0xff201008)) return false;
+    light.attenuation[0][3]=50;
+    if (!pixels("point ambient outside range is zero",0xff000000)) return false;
+    light.ambient_emissive[0]=0.25f;
+    if (!pixels("out-of-range point ambient retains global ambient",0xff200000)) return false;
+    light.ambient_emissive[0]=0;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=1; light.ambient[0][c]=0; }
+    light.world_transforms[0][14]=10; light.attenuation[0][3]=100;
+    for (unsigned i=0;i<4;++i) {
+        weighted[i][4]=0; weighted[i][6]=1;
+    }
+    draw.fvf=0x116; draw.vertex_stride=36; draw.vertex_bytes=weighted; draw.blend_weight_count=1;
+    std::memcpy(light.world_transforms[1],light.world_transforms[0],64);
+    std::memcpy(light.normal_transforms[1],light.normal_transforms[0],64);
+    light.world_transforms[0][14]=-50; light.world_transforms[1][14]=30;
+    if (!pixels("point light weighted world position uses remainder matrix",0xff402010)) return false;
+    draw.blend_weight_count=0;
+    return pixels("point light disabled blending uses world zero",0xff1a0d06);
 }
 
 static bool testBackBufferMips(RecompD3dPresenter *presenter)
@@ -2207,9 +2260,86 @@ static bool testHeldFrameTargets()
     return passed;
 }
 
+static bool testPacingPolicies()
+{
+    const UINT rates[][2] = {{60,1}, {119,1}, {120,2}, {121,2}, {144,1},
+        {179,1}, {180,1}, {181,1}, {239,1}, {240,4}, {241,4}, {360,1}};
+    for (const auto &rate : rates) {
+        if (fixedRefreshInterval(rate[0]) != rate[1]) return false;
+    }
+    RecompD3dPresenter stats_presenter{};
+    DXGI_FRAME_STATISTICS stats{};
+    stats.PresentCount = 10u; stats.PresentRefreshCount = 100u;
+    recordFrameStatistics(&stats_presenter, S_OK, stats);
+    for (HRESULT error : {DXGI_ERROR_FRAME_STATISTICS_DISJOINT, E_FAIL}) {
+        recordFrameStatistics(&stats_presenter, error, stats);
+        if (stats_presenter.last_stat_present != 0u || stats_presenter.last_stat_refresh != 0u) return false;
+        ++stats.PresentCount; stats.PresentRefreshCount = 1u;
+        recordFrameStatistics(&stats_presenter, S_OK, stats);
+        if (stats_presenter.refresh_holds[8] != 0u) return false;
+        ++stats.PresentCount; stats.PresentRefreshCount += 2u;
+        recordFrameStatistics(&stats_presenter, S_OK, stats);
+    }
+    if (stats_presenter.refresh_holds[2] != 2u) return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    stats_presenter.sync_interval = 4u;
+    stats_presenter.next_refresh_check = now + std::chrono::seconds(1);
+    if (syncInterval(&stats_presenter) != 4u) return false;
+    stats_presenter.present_count = 1u; // Below 60 FPS, a due check still runs.
+    stats_presenter.next_refresh_check = now - std::chrono::seconds(1);
+    syncInterval(&stats_presenter);
+    if (stats_presenter.next_refresh_check <= now) return false;
+
+    const auto worker = [] { recomp_d3d_sleep_until(0); };
+    std::thread(worker).join(); // Initialize thread support before counting handles.
+    DWORD before = 0u, after = 0u;
+    if (!GetProcessHandleCount(GetCurrentProcess(), &before)) return false;
+    for (unsigned i = 0u; i < 8u; ++i) std::thread(worker).join();
+    if (!GetProcessHandleCount(GetCurrentProcess(), &after) || after != before) return false;
+
+    const bool saved_immediate = immediate_present;
+    bool passed = true;
+    for (unsigned mode = 0u; mode < 3u; ++mode) {
+        RecompD3dPresenter presenter{};
+        presenter.config = {320u, 240u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+            RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+        immediate_present = mode != 1u;
+        presenter.vrr = mode == 2u;
+        const bool immediate = mode == 0u;
+        IDXGIDevice1 *device = nullptr;
+        IDXGISwapChain2 *chain = nullptr;
+        UINT latency = 0u;
+        DXGI_SWAP_CHAIN_DESC desc{};
+        passed = createWindow(&presenter) &&
+            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP)) &&
+            SUCCEEDED(presenter.swap_chain->GetDesc(&desc)) &&
+            desc.SwapEffect == (immediate ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD) &&
+            ((desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0u) == presenter.vrr &&
+            ((desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0u) == !immediate;
+        if (passed && immediate) {
+            passed = SUCCEEDED(presenter.device->QueryInterface(IID_PPV_ARGS(&device))) &&
+                SUCCEEDED(device->GetMaximumFrameLatency(&latency)) && latency == 3u;
+        } else if (passed) {
+            passed = SUCCEEDED(presenter.swap_chain->QueryInterface(IID_PPV_ARGS(&chain))) &&
+                SUCCEEDED(chain->GetMaximumFrameLatency(&latency)) && latency == 1u;
+        }
+        releaseCom(chain);
+        releaseCom(device);
+        releasePresenter(&presenter);
+        if (!passed) break;
+    }
+    immediate_present = saved_immediate;
+    return passed;
+}
+
 int main()
 {
     if (!testHeldFrameTargets()) return 1;
+    if (!testPacingPolicies()) {
+        std::fprintf(stderr, "FAIL refresh intervals, statistics epochs, timer handles or frame latency\n");
+        return 1;
+    }
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;

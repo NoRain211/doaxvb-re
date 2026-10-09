@@ -20,6 +20,8 @@ typedef struct RecompD3dPresenterMemorySnapshot {
         commands[RECOMP_D3D_PRESENTER_MEMORY_COMMAND_CAPACITY];
 } RecompD3dPresenterMemorySnapshot;
 
+void recomp_d3d_presenter_memory_set_error(RecompD3dPresenterError error);
+
 bool recomp_d3d_presenter_memory_snapshot(
     RecompD3dPresenterMemorySnapshot *snapshot);
 
