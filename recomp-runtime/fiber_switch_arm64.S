@@ -1,3 +1,8 @@
+/* Native fiber switch for POSIX AArch64 hosts. recomp_fiber_switch saves the
+   callee-saved registers on the current stack, stores that stack pointer in
+   *from_sp, and resumes the fiber whose saved stack pointer is to_sp. A new
+   fiber's frame (built by CreateFiberEx in fiber_adapter.c) returns into
+   recomp_fiber_trampoline with x19 = parameter and x20 = entry. */
 #if defined(__arm64__) || defined(__aarch64__)
 
 #if defined(__APPLE__)
@@ -8,15 +13,8 @@
 
 .text
 .globl CSYM(recomp_fiber_switch)
-.globl _recomp_fiber_switch
-.globl recomp_fiber_switch
 .p2align 2
 CSYM(recomp_fiber_switch):
-#if defined(__APPLE__)
-recomp_fiber_switch:
-#else
-_recomp_fiber_switch:
-#endif
     stp x19, x20, [sp, #-16]!
     stp x21, x22, [sp, #-16]!
     stp x23, x24, [sp, #-16]!
@@ -43,16 +41,13 @@ _recomp_fiber_switch:
     ret
 
 .globl CSYM(recomp_fiber_trampoline)
-.globl _recomp_fiber_trampoline
-.globl recomp_fiber_trampoline
 .p2align 2
 CSYM(recomp_fiber_trampoline):
-#if defined(__APPLE__)
-recomp_fiber_trampoline:
-#else
-_recomp_fiber_trampoline:
-#endif
     mov x0, x19
     blr x20
     brk #1
+#endif
+
+#if defined(__ELF__)
+.section .note.GNU-stack,"",%progbits
 #endif

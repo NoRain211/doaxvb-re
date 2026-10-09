@@ -33,6 +33,12 @@ else()
     endfunction()
 endif()
 
+# Clang contracts a*b+c into FMA by default on AArch64. Keep IEEE operation
+# order so guest float results match the x86 hosts and the Windows build.
+if(NOT MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-ffp-contract=off>)
+endif()
+
 if(NOT WIN32)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
         set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
