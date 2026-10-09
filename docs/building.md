@@ -236,3 +236,5 @@ Set `RECOMP_SPLIT_RATE=auto`, or to your display's refresh rate such as 120 or
 original timing. Use it with `--vsync`. The picture runs one 60 Hz tick
 behind, and some objects such as water still move at 60 Hz. See
 [the split-rate notes](wayfinder/research/high-frame-rate-split.md#current-state).
+[Runtime options](runtime-options.md) lists every runner flag and `RECOMP_*`
+setting, including VRR and diagnostics.

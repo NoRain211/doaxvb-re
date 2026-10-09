@@ -24,6 +24,8 @@
     "docs/agents/issue-tracker.md",
     "docs/agents/triage-labels.md",
     "docs/building.md",
+    "docs/history.md",
+    "docs/runtime-options.md",
     "docs/texture-replacement.md",
     "docs/fog.md",
     "docs/custom-soundtracks.md",
