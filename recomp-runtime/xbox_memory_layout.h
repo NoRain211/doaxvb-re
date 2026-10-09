@@ -6,7 +6,8 @@
 
 /* Kernel data exports and synthetic thread objects. Above the main stack top
    (0x00f7fff0) and below the heap; the runner rejects an XBE image that
-   reaches it. DOAXBV used 0x00740000, which is inside DOA3's .data BSS. */
+   reaches it. The old base, 0x00740000, is inside .data BSS in both DOAXBV
+   (0x003b2224-0x00eeb29c) and DOA3. */
 #define XBOX_KERNEL_DATA_BASE 0x00f80000u
 #define XBOX_STARTUP_THREAD_OBJECT (XBOX_KERNEL_DATA_BASE + 0x500u)
 #define XBOX_STARTUP_THREAD_STACK_SLOT 0x03ffffc0u
