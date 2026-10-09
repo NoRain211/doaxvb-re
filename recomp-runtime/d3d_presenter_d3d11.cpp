@@ -2501,7 +2501,8 @@ RecompD3dPresenterError submitDraw(
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
         return target_result;
     }
-    if (draw.has_texture) {
+    const bool needs_texture = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[0]);
+    if (draw.has_texture && needs_texture) {
         const RenderTargetEntry *sampled = findRenderTarget(presenter, draw.texture);
         if (sampled != nullptr && sampled->render_view == color_view) {
             std::fprintf(stderr,
@@ -2543,7 +2544,7 @@ RecompD3dPresenterError submitDraw(
 
     const UINT index_size = draw_index_count * 2u;
     ID3D11ShaderResourceView *texture_view =
-        draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
+        draw.has_texture && needs_texture ? lookupTexture(presenter, draw) : nullptr;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
     const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection ||
@@ -2573,9 +2574,14 @@ RecompD3dPresenterError submitDraw(
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
         const bool needs_mask = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[1]);
+        if (draw.has_combiner && needs_mask) {
+            const RenderTargetEntry *sampled = findRenderTarget(presenter, reflection.texture);
+            if (sampled != nullptr && sampled->render_view == color_view)
+                return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
         mask_view = needs_mask ? lookupTexture(presenter, reflection) : nullptr;
         if ((needs_mask && mask_view == nullptr) ||
-            (texture_view == nullptr && (!draw.has_combiner || draw.has_texture)))
+            (texture_view == nullptr && needs_texture))
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (draw.four_tap_filter && texture_view == nullptr) {

@@ -2295,6 +2295,9 @@ static bool testCombiner(RecompD3dPresenter *presenter,
             checkPixels(presenter, color, readback, label, expected);
     };
     if (!render(0xffffff00u, "combiner without stage zero texture")) return false;
+    draw.combiner[0][2] = 2;
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    draw.combiner[0][2] = 0;
     draw.combiner_lod_bias = -2.0f;
     if (!render(0xffffff00u, "combiner stage one LOD bias")) return false;
     ID3D11SamplerState *biased = nullptr;
@@ -2316,6 +2319,13 @@ static bool testCombiner(RecompD3dPresenter *presenter,
     draw.has_texture = true; draw.texture = draw.reflection_texture;
     draw.texture.data += 0x100; draw.texture_bytes = &blue; draw.texture_byte_count = sizeof blue;
     if (!render(0xffffff00u, "combiner bypasses legacy texture path")) return false;
+    draw.texture.width = 0;
+    if (!render(0xffffff00u, "combiner ignores unconsumed stage zero binding")) return false;
+    draw.texture.width = 1;
+    draw.target.offscreen = draw.target.no_depth = true;
+    draw.target.color = draw.reflection_texture;
+    if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
+    draw.target = {};
     const uint8_t alpha = 128;
     draw.reflection_texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8;
     draw.reflection_texture.bits_per_pixel = 8;
