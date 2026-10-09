@@ -2077,11 +2077,11 @@ static bool testTextureAntialiasing()
                     (!anisotropic || state.MaxAnisotropy == 16u);
             };
             /* Toggle blend and test states on the same cached pipeline. */
-            for (unsigned mode = 0; mode < 5; ++mode) {
+            for (unsigned mode = 0; mode < 6; ++mode) {
                 draw.blend.blend_enable = mode == 1;
                 draw.depth.alpha_test_enable = mode != 2;
-                draw.depth.alpha_func = mode == 4 ? RECOMP_D3D_COMPARE_GREATER_EQUAL : RECOMP_D3D_COMPARE_GREATER;
-                draw.depth.alpha_ref = mode == 3 ? 0u : 85u;
+                draw.depth.alpha_func = mode >= 4 ? RECOMP_D3D_COMPARE_GREATER_EQUAL : RECOMP_D3D_COMPARE_GREATER;
+                draw.depth.alpha_ref = mode == 3 || mode == 5 ? 0u : 85u;
                 if (submitClear(&presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
                     submitDraw(&presenter, draw) != RECOMP_D3D_PRESENTER_OK || !checkSampler(false)) return false;
                 if (samples > 1u) {
@@ -2099,7 +2099,7 @@ static bool testTextureAntialiasing()
                     for (unsigned x = 0; x < 4; ++x) {
                         const unsigned red = (row[x] >> 16u) & 255u;
                         const bool partial = samples > 1u && (mode == 0 || mode == 4) && x == 1;
-                        const unsigned hard = mode == 2 || x >= 2 ||
+                        const unsigned hard = mode == 2 || mode == 5 || x >= 2 ||
                             (x == 1 && (mode == 3 || mode == 4)) ? 255u : 0u;
                         if ((partial ? red == 0 || red == 255 : red != hard) || (row[x] & 0xffffu)) {
                             std::fprintf(stderr, "FAIL coverage samples=%u mode=%u pixel=(%u,%u) color=%08x\n",

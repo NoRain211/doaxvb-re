@@ -203,11 +203,11 @@ void buildDrawShaderSource(
         "            (func == 6 && alpha >= ref);\n"
         "        if (draw_flags.y > 1.5f) {\n"
         /* Smooth cutout edges around the byte comparison boundary. Flat alpha
-           and the inclusive upper endpoint retain the exact hard test. */
+           and the inclusive endpoints retain the exact hard test. */
         "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
         "            float width = fwidth(shaded.a);\n"
         "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
-        "            shaded.a = width <= 1e-4f || (func == 6 && ref == 255)\n"
+        "            shaded.a = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
         "                ? (alpha_pass ? 1.0f : 0.0f)\n"
         "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
         "        } else if (!alpha_pass) discard;\n"
