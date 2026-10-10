@@ -173,7 +173,12 @@ void sync_to_disk(const fs::path &path)
     for (const fs::path &target : {path, path.parent_path()}) {
         const int fd = open(target.c_str(), O_RDONLY | O_CLOEXEC);
         require(fd >= 0);
+#ifdef __APPLE__
+        // macOS fsync leaves data in the drive cache; F_FULLFSYNC flushes it.
+        const bool synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
+#else
         const bool synced = fsync(fd) == 0;
+#endif
         close(fd);
         require(synced);
     }
