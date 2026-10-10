@@ -616,7 +616,10 @@ BOOL SetFileAttributesA(
     } else {
         mode |= S_IWUSR;
     }
-    if (chmod(norm, mode) != 0) {
+    /* Linux needs write permission to set a user xattr: grant write before the
+       xattr, and remove it only after. */
+    const bool writable = (mode & S_IWUSR) != 0;
+    if (writable && chmod(norm, mode) != 0) {
         set_last_error_from_errno();
         return FALSE;
     }
@@ -629,6 +632,10 @@ BOOL SetFileAttributesA(
     uint32_t val = (uint32_t)dwFileAttributes;
     setxattr(norm, "user.win32_attrs", &val, sizeof(val), 0);
 #endif
+    if (!writable && chmod(norm, mode) != 0) {
+        set_last_error_from_errno();
+        return FALSE;
+    }
     return TRUE;
 }
 
@@ -932,7 +939,9 @@ BOOL SetFileInformationByHandle(
                     mode |= S_IWOTH;
                 }
             }
-            fchmod(h->fd, mode);
+            /* Write permission must be present while the xattr is set; see SetFileAttributesA. */
+            const bool writable = (mode & S_IWUSR) != 0;
+            if (writable) fchmod(h->fd, mode);
 #if defined(__APPLE__)
             u_int flags = (info->FileAttributes & FILE_ATTRIBUTE_HIDDEN) ? 0x8000 : 0;
             fchflags(h->fd, flags);
@@ -942,6 +951,7 @@ BOOL SetFileInformationByHandle(
             uint32_t val = (uint32_t)info->FileAttributes;
             fsetxattr(h->fd, "user.win32_attrs", &val, sizeof(val), 0);
 #endif
+            if (!writable) fchmod(h->fd, mode);
         }
         if (info->LastWriteTime.QuadPart != 0 || info->LastAccessTime.QuadPart != 0) {
             struct timeval tv[2];

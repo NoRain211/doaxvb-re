@@ -41,6 +41,13 @@ int main(void)
     CHECK(strcmp(found.cFileName, "File.TXT") == 0);
     FindClose(find);
 
+    /* Read-only must not drop the other attributes, and clearing it must stick. */
+    const DWORD hidden_readonly = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
+    CHECK(SetFileAttributesA("Dir/File.TXT", hidden_readonly));
+    CHECK((GetFileAttributesA("Dir/File.TXT") & hidden_readonly) == hidden_readonly);
+    CHECK(SetFileAttributesA("Dir/File.TXT", FILE_ATTRIBUTE_NORMAL));
+    CHECK((GetFileAttributesA("Dir/File.TXT") & hidden_readonly) == 0);
+
     unlink("Dir/NewLeaf.bin");
     unlink("Dir/File.TXT");
     rmdir("Dir");
