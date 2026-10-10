@@ -508,10 +508,11 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
 #endif
         if (created) {
             write_file(journal / "version", version);
-            /* Persist the marker and the new directories' entries. */
-            sync_to_disk(journal / "version");
-            sync_to_disk(storage);
         }
+        /* Persist the marker and the directory entries on every start, so a sync
+           that failed on an earlier launch is retried. */
+        sync_to_disk(journal / "version");
+        sync_to_disk(storage);
         upgrade_version = check_journal();
         recover();
         if (upgrade_version) {
@@ -575,6 +576,8 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
         } else {
             check_tree(live);
             remove_file(undo);
+            /* A lost unlink would restore the old image over a save reported done. */
+            sync_to_disk(journal);
         }
         return !failed;
     } catch (const std::exception &error) {
