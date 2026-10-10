@@ -1467,6 +1467,19 @@ static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_G
 }
 #endif
 
+// Failures are cached too, so a shader that cannot build is not retried on every draw.
+// The boot-shader thread may finish the same key first; keep its pair and drop ours.
+ShaderPair rememberShaderPair(RecompD3dPresenter *presenter, uint64_t key, ShaderPair pair)
+{
+    std::lock_guard<std::mutex> lock(presenter->shader_mutex);
+    const auto [it, inserted] = presenter->shader_cache.emplace(key, pair);
+    if (!inserted) {
+        if (pair.vertex_shader) SDL_ReleaseGPUShader(presenter->device, pair.vertex_shader);
+        if (pair.fragment_shader) SDL_ReleaseGPUShader(presenter->device, pair.fragment_shader);
+    }
+    return it->second;
+}
+
 ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dVertexLayout &layout,
                                  uint32_t fvf, uint32_t program_count, const uint32_t (*program_tokens)[4])
 {
@@ -1482,17 +1495,17 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         }
     }
     // The D3D11 presenter accepts vertex programs only with this FVF.
-    if (program_count && fvf != 0x112u) return {nullptr, nullptr};
+    if (program_count && fvf != 0x112u) return rememberShaderPair(presenter, shader_key, {});
 
     if (presenter->use_spirv) {
         const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens);
-        if (vs_source.empty()) return {nullptr, nullptr};
+        if (vs_source.empty()) return rememberShaderPair(presenter, shader_key, {});
         const std::vector<uint32_t> vs_spv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
         const std::vector<uint32_t> fs_spv = compileGlslToSpirv(
             buildGlslFragmentShader(layout, fvf, program_count), SDL_GPU_SHADERSTAGE_FRAGMENT);
         if (vs_spv.empty() || fs_spv.empty()) {
             std::fprintf(stderr, "[presenter] failed to compile GLSL->SPIR-V shader fvf=0x%08X\n", fvf);
-            return {nullptr, nullptr};
+            return rememberShaderPair(presenter, shader_key, {});
         }
         const uint32_t *vs_code = vs_spv.data();
         const size_t vs_size = vs_spv.size() * sizeof(uint32_t);
@@ -1522,19 +1535,14 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
             std::fprintf(stderr, "[presenter] failed to create SPIR-V shader fvf=0x%08X: %s\n", fvf, SDL_GetError());
             if (vs) SDL_ReleaseGPUShader(presenter->device, vs);
             if (fs) SDL_ReleaseGPUShader(presenter->device, fs);
-            return {nullptr, nullptr};
+            return rememberShaderPair(presenter, shader_key, {});
         }
 
-        ShaderPair pair{vs, fs};
-        {
-            std::lock_guard<std::mutex> lock(presenter->shader_mutex);
-            presenter->shader_cache[shader_key] = pair;
-        }
-        return pair;
+        return rememberShaderPair(presenter, shader_key, {vs, fs});
     }
 
     std::string msl = buildMslShader(layout, fvf, program_count, program_tokens);
-    if (msl.empty()) return {nullptr, nullptr};
+    if (msl.empty()) return rememberShaderPair(presenter, shader_key, {});
     SDL_GPUShaderCreateInfo vs_info{};
     vs_info.code_size = msl.size();
     vs_info.code = reinterpret_cast<const Uint8 *>(msl.c_str());
@@ -1558,15 +1566,10 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         std::fprintf(stderr, "[presenter] failed to compile MSL shader fvf=0x%08X: %s\n", fvf, SDL_GetError());
         if (vs) SDL_ReleaseGPUShader(presenter->device, vs);
         if (fs) SDL_ReleaseGPUShader(presenter->device, fs);
-        return {nullptr, nullptr};
+        return rememberShaderPair(presenter, shader_key, {});
     }
 
-    ShaderPair pair{vs, fs};
-    {
-        std::lock_guard<std::mutex> lock(presenter->shader_mutex);
-        presenter->shader_cache[shader_key] = pair;
-    }
-    return pair;
+    return rememberShaderPair(presenter, shader_key, {vs, fs});
 }
 
 void precompileBootShaders(RecompD3dPresenter *p)
@@ -1649,6 +1652,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     ShaderPair shaders = getOrCreateShaderPair(presenter, layout, draw.fvf, draw.program_count,
                                                draw.program_count ? draw.program : nullptr);
     if (!shaders.vertex_shader || !shaders.fragment_shader) {
+        presenter->pipelines[pkey] = nullptr;  // like D3D11, do not retry a failed draw state
         return nullptr;
     }
 
@@ -1767,6 +1771,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     SDL_GPUGraphicsPipeline *pipe = SDL_CreateGPUGraphicsPipeline(presenter->device, &pinfo);
     if (!pipe) {
         std::fprintf(stderr, "[presenter] failed to create pipeline fvf=0x%08X: %s\n", draw.fvf, SDL_GetError());
+        presenter->pipelines[pkey] = nullptr;
         return nullptr;
     }
 
@@ -2025,8 +2030,11 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
                           std::getenv("DOAXBV_HEADLESS") != nullptr;
     // Steam sets these in Game Mode and on the Deck, where gamescope would
     // only letterbox a window.
-    const bool fullscreen = std::getenv("SteamTenfoot") != nullptr ||
-                            std::getenv("SteamDeck") != nullptr;
+    const auto steam_flag = [](const char *name) {
+        const char *value = std::getenv(name);
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    };
+    const bool fullscreen = steam_flag("SteamTenfoot") || steam_flag("SteamDeck");
     SDL_WindowFlags win_flags = SDL_WINDOW_RESIZABLE;
     if (headless) {
         win_flags |= SDL_WINDOW_HIDDEN;
@@ -2589,7 +2597,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPUSampler *s0 = (draw.four_tap_filter || draw.has_alpha_mask || draw.program_count)
             ? presenter->filter_sampler
             : lookupDrawSampler(presenter, draw.address_u, draw.address_v);
-        SDL_GPUSampler *s1 = draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler;
+        // Like D3D11, the reflection environment map uses the draw's own sampler. GLSL binds
+        // one sampler per texture, so slot 1 carries it.
+        SDL_GPUSampler *s1 = draw.program_alpha_mask ? presenter->program_mask_sampler
+            : (draw.has_reflection && !draw.has_alpha_mask) ? s0 : presenter->filter_sampler;
 
         float constants[kTransformUniformFloats]{};
 
