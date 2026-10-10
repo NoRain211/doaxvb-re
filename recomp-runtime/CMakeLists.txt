@@ -710,7 +710,16 @@ else()
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     recomp_use_sdl3(recomp_input_host_test)
+    add_executable(recomp_win32_compat_test win32_compat.c win32_compat_test.c)
+    add_test(NAME recomp-runtime-win32-compat COMMAND recomp_win32_compat_test)
 endif()
+
+add_executable(recomp_sha_test sha_test.cpp ../xbe/sha.cpp)
+target_include_directories(recomp_sha_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+if(WIN32)
+    target_link_libraries(recomp_sha_test PRIVATE bcrypt)
+endif()
+add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
