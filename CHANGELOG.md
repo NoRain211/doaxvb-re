@@ -62,9 +62,9 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
   has not played (#99). This also runs on Windows, where it has not yet been
   play-tested.
 - On macOS and Linux, mipmapped textures now sample their smaller levels
-  (#103), and the save undo journal and save folders are flushed to disk when
-  a save starts and commits (#104). Saves still carry no power-loss guarantee;
-  see `docs/recomp-save-contract.md`.
+  (#103). A save now flushes its undo journal to disk when it starts, and its
+  save folders when it commits (#104). Saves still carry no power-loss
+  guarantee; see `docs/recomp-save-contract.md`.
 
 ### Known issues
 
