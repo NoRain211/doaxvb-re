@@ -158,6 +158,11 @@ controller, and the stop or crash message
 Remove private paths from logs, and never upload game binaries, generated game
 C, assets, extracted filenames, saves, BIOS data or private run evidence.
 
+### Contributors
+
+- [Tommy McLeroy (@tmcleroy)](https://github.com/tmcleroy): creator of the
+  macOS port (#99).
+
 ## AI assistance
 
 This project uses large language models and AI coding agents extensively for
