@@ -49,6 +49,7 @@ bool jsonValue(const std::string &text, const char *key, std::string &value)
     start = text.find_first_not_of(" \t\r\n", start + 1);
     if (start == std::string::npos) return false;
     value = text.substr(start, text.find_first_of(",}\r\n", start) - start);
+    value.erase(value.find_last_not_of(" \t") + 1);
     return true;
 }
 
@@ -146,6 +147,9 @@ struct Launcher {
 
     void draw()
     {
+        // Logical presentation letterboxes the 640x400 canvas; clear the bars too.
+        SDL_SetRenderDrawColor(renderer, kBackground.r, kBackground.g, kBackground.b, 255);
+        SDL_RenderClear(renderer);
         fill({0, 0, kWidth, kHeight}, kBackground);
         fill({0, 0, kWidth, 3}, kAccent);
         centered(40, "DEAD OR ALIVE", kAccent);
@@ -203,6 +207,7 @@ void heldDirection(int &dx, int &dy)
         if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || x > 20000) dx = 1;
     }
     SDL_free(ids);
+    if (dy != 0) dx = 0;  // a diagonal moves a row without also changing a value
 }
 
 } // namespace

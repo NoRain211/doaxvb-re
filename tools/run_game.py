@@ -87,7 +87,11 @@ def saved_launcher_settings(root):
 def run(runner, image, root, receipt_path=None, settings=False):
     if settings:
         # Linux builds the settings launcher beside the runner; see launcher.sh.
-        if subprocess.run([str(runner.parent / "recomp_launcher"), str(root)]).returncode != 0:
+        launcher = runner.parent / "recomp_launcher"
+        if not launcher.is_file():
+            raise ValueError(f"{launcher} is missing. Rebuild with ./build_game.sh, "
+                             "or start the game with ./run_game.sh.")
+        if subprocess.run([str(launcher), str(root)]).returncode != 0:
             return 1
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
