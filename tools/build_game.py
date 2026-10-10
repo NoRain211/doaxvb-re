@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -23,6 +24,17 @@ SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438
 
 def command(args, cwd, log):
     run_logged(args, log, cwd)
+
+
+def use_windows_newlines(generated):
+    """The recipe authenticates the lifter's Windows output, which Python writes
+    with CRLF line endings; other hosts write LF, so match the proven bytes."""
+    if sys.platform == "win32":
+        return
+    for path in generated.iterdir():
+        if path.is_file():
+            data = path.read_bytes()
+            path.write_bytes(data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
 
 
 def program_manifest(generated):
@@ -135,6 +147,7 @@ def build(args, verify_parity=True, lifter_revision=None):
         receipt["unresolved_targets"] = unresolved
         print(f"Generated {summary['translated']} bodies; {unresolved} unresolved targets. "
               "The runner will stop if it reaches an unresolved target.", flush=True)
+        use_windows_newlines(generated)
         manifest, ebp = program_manifest(generated)
         receipt.update(program_manifest_sha256=manifest, ebp_overrides=ebp)
         if verify_parity:
@@ -148,20 +161,35 @@ def build(args, verify_parity=True, lifter_revision=None):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
-        receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
-                       configuration="Release", build_parallelism=2)
-        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
-                     "-G", "Visual Studio 17 2022", "-A", "x64",
-                     f"-DCMAKE_GENERATOR_INSTANCE={instance}",
-                     f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
-                     f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
-        icon = ROOT / "private/doaxbv.ico"
-        if icon.is_file():
-            configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
-        command(configure, ROOT, work / "configure.log")
-        command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
-                 "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
-        runner = output / "Release/recomp_program_runner.exe"
+        if sys.platform == "win32":
+            receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
+                           configuration="Release", build_parallelism=2)
+            configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
+                         "-G", "Visual Studio 17 2022", "-A", "x64",
+                         f"-DCMAKE_GENERATOR_INSTANCE={instance}",
+                         f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
+                         f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
+            icon = ROOT / "private/doaxbv.ico"
+            if icon.is_file():
+                configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
+            command(configure, ROOT, work / "configure.log")
+            command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
+                     "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
+            runner = output / "Release/recomp_program_runner.exe"
+        else:
+            generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+            arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+            # Generated chunks are large; more jobs than this can exhaust memory.
+            receipt.update(cmake_generator=generator, platform=arch,
+                           configuration="Release", build_parallelism=4)
+            configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output, "-G", generator,
+                         "-DCMAKE_BUILD_TYPE=Release",
+                         f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
+                         f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
+            command(configure, ROOT, work / "configure.log")
+            command(["cmake", "--build", output, "--parallel", "4",
+                     "--target", "recomp_program_runner"], ROOT, work / "build.log")
+            runner = output / "recomp_program_runner"
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
@@ -174,7 +202,8 @@ def build(args, verify_parity=True, lifter_revision=None):
             selected = ROOT / "private" / ("active-build-" + uuid.uuid4().hex + ".tmp")
             selected.write_text(json.dumps({"receipt": str(receipt_path.relative_to(ROOT))}) + "\n", encoding="utf-8")
             selected.replace(ROOT / "private/active-build.json")
-            print("Setup complete. Open Launcher.cmd to play this build.", flush=True)
+            launcher = "Launcher.cmd" if sys.platform == "win32" else "launcher.sh"
+            print(f"Setup complete. Open {launcher} to play this build.", flush=True)
         print(f"Build receipt: {receipt_path}", flush=True)
 
 

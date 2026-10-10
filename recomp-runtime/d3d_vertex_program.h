@@ -9,4 +9,8 @@
 bool recomp_d3d_vertex_program_source(
     const uint32_t (*tokens)[4], uint32_t count, std::string &body);
 
+/* Translate straight-line Xbox vertex instructions to native MSL. */
+bool recomp_d3d_vertex_program_msl_source(
+    const uint32_t (*tokens)[4], uint32_t count, std::string &body);
+
 #endif

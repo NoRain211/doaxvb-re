@@ -64,3 +64,16 @@ jobs:
             throw "configure accepted a generated source with the wrong receipt hash"
           }
           exit 0
+
+  runtime-tests-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install sdl3 ninja
+      - name: Configure public runtime tests
+        run: cmake -S recomp-runtime -B build/recomp-runtime -G Ninja
+      - name: Build public runtime tests
+        run: cmake --build build/recomp-runtime
+      - name: Run public runtime tests
+        run: ctest --test-dir build/recomp-runtime --output-on-failure

@@ -49,7 +49,9 @@ def launch(root, receipt_path=None):
         print(f"Using build receipt: {receipt_path}", flush=True)
         return run(runner, image, root, receipt_path)
     candidates = [root / "recomp_program_runner.exe",
-                  root / "build/recomp-program/Release/recomp_program_runner.exe"]
+                  root / "recomp_program_runner",
+                  root / "build/recomp-program/Release/recomp_program_runner.exe",
+                  root / "build/recomp-program/recomp_program_runner"]
     runner = next((path for path in candidates if path.is_file()), None)
     if runner is None:
         raise ValueError("No playable runner found. Drop your ISO onto BuildGame.cmd first; "
@@ -69,9 +71,27 @@ def launch(root, receipt_path=None):
     return run(runner, images[0], root, release_path if release_path.is_file() else None)
 
 
+def saved_launcher_settings(root):
+    path = root / "private" / "launcher.json"
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        return {"RECOMP_D3D_SCALE": f"{int(settings.get('height', 480)) / 480:.4f}",
+                "RECOMP_D3D_MSAA": str(int(settings.get("msaa", 1))),
+                "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
+                "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
+                "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0"}
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return {}
+
+
 def run(runner, image, root, receipt_path=None):
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
+    if os.name != "nt":
+        # Launcher.cmd passes its choices in the environment; run_game.sh
+        # applies the choices launcher.sh saved.
+        for name, value in saved_launcher_settings(root).items():
+            env.setdefault(name, value)
     env.setdefault("RECOMP_AUDIO_GAIN", "1")  # the launcher's Volume choice overrides this
     env.setdefault("RECOMP_PERF_COUNTER", "1")
     print(f"Starting runner. Log: {log_path}", flush=True)

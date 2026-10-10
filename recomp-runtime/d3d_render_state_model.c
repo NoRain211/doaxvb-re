@@ -1,4 +1,5 @@
 #include "d3d_render_state_model.h"
+#include <stddef.h>
 
 #include <string.h>
 

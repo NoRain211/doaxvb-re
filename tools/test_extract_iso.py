@@ -47,7 +47,7 @@ class ExtractionTests(unittest.TestCase):
 
     def test_built_runner_receipt_selection_and_identity(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             work = root / "private/setup-synthetic"
             disc = work / "disc"
             disc.mkdir(parents=True)

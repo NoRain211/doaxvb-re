@@ -1,8 +1,13 @@
 #include "sha.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <array>
 #include <bcrypt.h>
+#elif defined(__APPLE__)
+#include <CommonCrypto/CommonDigest.h>
+#endif
+
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -10,16 +15,22 @@
 namespace doaxbv {
 namespace {
 
-std::string hexLower(const std::vector<std::uint8_t>& bytes)
+std::string hexLower(const std::uint8_t* bytes, std::size_t size)
 {
     std::ostringstream out;
     out << std::hex << std::setfill('0');
-    for (const auto byte : bytes) {
-        out << std::setw(2) << static_cast<int>(byte);
+    for (std::size_t i = 0; i < size; ++i) {
+        out << std::setw(2) << static_cast<int>(bytes[i]);
     }
     return out.str();
 }
 
+std::string hexLower(const std::vector<std::uint8_t>& bytes)
+{
+    return hexLower(bytes.data(), bytes.size());
+}
+
+#ifdef _WIN32
 std::string hashHex(const wchar_t* algorithm, const std::uint8_t* bytes, std::size_t size)
 {
     BCRYPT_ALG_HANDLE algorithmHandle = nullptr;
@@ -101,9 +112,11 @@ std::string hashHex(const wchar_t* algorithm, const std::uint8_t* bytes, std::si
     closeHash();
     return hexLower(hash);
 }
+#endif
 
 } // namespace
 
+#ifdef _WIN32
 std::string sha1Hex(const std::vector<std::uint8_t>& bytes)
 {
     return sha1Hex(bytes.data(), bytes.size());
@@ -118,5 +131,25 @@ std::string sha256Hex(const std::vector<std::uint8_t>& bytes)
 {
     return hashHex(BCRYPT_SHA256_ALGORITHM, bytes.data(), bytes.size());
 }
+#elif defined(__APPLE__)
+std::string sha1Hex(const std::vector<std::uint8_t>& bytes)
+{
+    return sha1Hex(bytes.data(), bytes.size());
+}
+
+std::string sha1Hex(const std::uint8_t* bytes, std::size_t size)
+{
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(bytes, static_cast<CC_LONG>(size), digest);
+    return hexLower(reinterpret_cast<const std::uint8_t*>(digest), sizeof(digest));
+}
+
+std::string sha256Hex(const std::vector<std::uint8_t>& bytes)
+{
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(bytes.data(), static_cast<CC_LONG>(bytes.size()), digest);
+    return hexLower(reinterpret_cast<const std::uint8_t*>(digest), sizeof(digest));
+}
+#endif
 
 } // namespace doaxbv
