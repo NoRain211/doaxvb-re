@@ -1408,6 +1408,7 @@ static ShadercResultReleaseFn s_shaderc_res_release = nullptr;
 static bool loadShadercSymbols() {
     void *h = dlopen("libshaderc_shared.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!h) h = dlopen("libshaderc_shared.so", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libshaderc.so.1", RTLD_NOW | RTLD_LOCAL);  // Debian and Ubuntu name
     if (!h) return false;
     s_shaderc_init = (ShadercCompilerInitFn)dlsym(h, "shaderc_compiler_initialize");
     s_shaderc_opt_init = (ShadercCompileOptionsInitFn)dlsym(h, "shaderc_compile_options_initialize");
@@ -1440,7 +1441,8 @@ static std::mutex s_compiler_mutex;
 static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_GPUShaderStage stage) {
     std::vector<uint32_t> spv;
     if (!loadShaderc()) {
-        std::fprintf(stderr, "[presenter] Vulkan shaders need libshaderc_shared.so.1 (shaderc)\n");
+        std::fprintf(stderr, "[presenter] Vulkan shaders need shaderc (libshaderc_shared.so.1, "
+                             "or libshaderc.so.1 from the libshaderc1 package)\n");
         return spv;
     }
     std::lock_guard<std::mutex> lock(s_compiler_mutex);

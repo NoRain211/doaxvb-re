@@ -112,7 +112,8 @@ with the saved choices.
 ### Linux and SteamOS build
 
 Linux builds use Vulkan through SDL3 and compile shaders at runtime with
-shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it).
+shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it) or,
+on Debian and Ubuntu, `libshaderc.so.1` from the `libshaderc1` package.
 Build in an x86-64 distribution with CMake, Ninja, a C++17 compiler,
 Python 3 with `capstone==5.0.9`, `extract-xiso` built as above, and SDL3's
 build dependencies; `build_game.sh` builds SDL3 when the distribution has none.
