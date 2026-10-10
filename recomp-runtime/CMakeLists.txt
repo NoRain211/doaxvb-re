@@ -540,6 +540,7 @@ if(RECOMP_PROGRAM_DIR)
         animation_split_adapter.c
         d3d_split_pose.c
         save_adapter.c
+        unlock_swimsuits.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c

@@ -30,13 +30,14 @@ let screenHeight: Int = {
 }()
 
 final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 214),
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 240),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
     let resolution = NSPopUpButton()
     let msaa = NSPopUpButton()
     let volume = NSPopUpButton()
     let smaa = NSButton(checkboxWithTitle: "SMAA", target: nil, action: nil)
     let shuffle = NSButton(checkboxWithTitle: "Shuffle music", target: nil, action: nil)
+    let unlock = NSButton(checkboxWithTitle: "Unlock swimsuits", target: nil, action: nil)
     var launched = false
 
     func addRow(_ title: String, _ popup: NSPopUpButton, _ items: [String], _ index: Int, _ y: CGFloat) {
@@ -55,23 +56,25 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let savedHeight = intSetting("height", screenHeight)
         let nearest = heights.lastIndex(where: { $0 <= savedHeight }) ?? 0
         addRow("Resolution", resolution,
-               heights.map { $0 == 480 ? "480p (windowed)" : "\($0)p" }, nearest, 172)
+               heights.map { $0 == 480 ? "480p (windowed)" : "\($0)p" }, nearest, 198)
         let savedMsaa = intSetting("msaa", 1)
         addRow("MSAA", msaa, samples.map { $0 == 1 ? "Off" : "\($0)x" },
-               samples.firstIndex(of: savedMsaa) ?? 0, 140)
-        smaa.frame = NSRect(x: 104, y: 114, width: 140, height: 20)
+               samples.firstIndex(of: savedMsaa) ?? 0, 166)
+        smaa.frame = NSRect(x: 104, y: 140, width: 140, height: 20)
         smaa.title = "SMAA (unsupported)"
         smaa.state = .off
         smaa.isEnabled = false
         addRow("Volume", volume, volumes.map { $0 == 0 ? "Mute" : "\($0)%" },
-               volumes.firstIndex(of: intSetting("volume", 100)) ?? 0, 80)
-        shuffle.frame = NSRect(x: 104, y: 54, width: 140, height: 20)
+               volumes.firstIndex(of: intSetting("volume", 100)) ?? 0, 106)
+        shuffle.frame = NSRect(x: 104, y: 80, width: 140, height: 20)
         shuffle.state = boolSetting("shuffle") ? .on : .off
+        unlock.frame = NSRect(x: 104, y: 54, width: 140, height: 20)
+        unlock.state = boolSetting("unlock_swimsuits") ? .on : .off
 
         let play = NSButton(title: "Play", target: self, action: #selector(play))
         play.frame = NSRect(x: 160, y: 12, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, shuffle, play] { window.contentView!.addSubview(view) }
+        for view in [smaa, shuffle, unlock, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -85,6 +88,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "smaa": false,
             "volume": volumes[volume.indexOfSelectedItem],
             "shuffle": shuffle.state == .on,
+            "unlock_swimsuits": unlock.state == .on,
         ]
         do {
             try FileManager.default.createDirectory(

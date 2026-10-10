@@ -1,4 +1,5 @@
 #include "kernel_abi.h"
+#include "unlock_swimsuits.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -236,6 +237,13 @@ static void bridge_xc_sha_update(void)
         RecompShaContext context;
 
         sha_context_load(context_address, &context);
+#ifdef RECOMP_FULL_PROGRAM
+        /* The game's save signature is the one place its save image passes
+           through the runtime before it is written. */
+        if (input == RECOMP_SAVE_STATE_ADDRESS && length == RECOMP_SAVE_STATE_SIZE) {
+            recomp_unlock_swimsuits_strip(recomp_memory(input, length));
+        }
+#endif
         if (length != 0u) {
             recomp_kernel_sha_update(
                 &context, (const uint8_t *)(const void *)recomp_memory_i8(input), length);

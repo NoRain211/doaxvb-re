@@ -19,20 +19,21 @@ namespace {
 // Everything is laid out on a 640x400 canvas and scaled by whole numbers,
 // so SDL's 8x8 debug font stays sharp: 2x on the Steam Deck's 1280x800.
 constexpr int kWidth = 640, kHeight = 400;
-constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 128, kRowGap = 32;
-constexpr float kButtonY = kFirstRowY + 4 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
+constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 112, kRowGap = 32;
+constexpr float kButtonY = kFirstRowY + 5 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
 
 const int kHeights[] = {480, 720, 1080, 1440, 2160};
 const int kSamples[] = {1, 2, 4, 8};
 const int kVolumes[] = {100, 75, 50, 25, 0};
 
-enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, PLAY, QUIT, ITEM_COUNT };
+enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, UNLOCK, PLAY, QUIT, ITEM_COUNT };
 
 struct Settings {
     int height = 0;
     int msaa = 1;
     int volume = 100;
     bool shuffle = false;
+    bool unlock_swimsuits = false;
 };
 
 struct Color { Uint8 r, g, b; };
@@ -63,6 +64,7 @@ Settings loadSettings(const std::string &path)
     if (jsonValue(text, "msaa", value)) settings.msaa = std::atoi(value.c_str());
     if (jsonValue(text, "volume", value)) settings.volume = std::atoi(value.c_str());
     if (jsonValue(text, "shuffle", value)) settings.shuffle = value == "true";
+    if (jsonValue(text, "unlock_swimsuits", value)) settings.unlock_swimsuits = value == "true";
     return settings;
 }
 
@@ -71,7 +73,8 @@ bool saveSettings(const std::string &path, const Settings &settings)
     std::ofstream file(path, std::ios::trunc);
     file << "{\n  \"height\": " << settings.height << ",\n  \"msaa\": " << settings.msaa
          << ",\n  \"smaa\": false,\n  \"volume\": " << settings.volume
-         << ",\n  \"shuffle\": " << (settings.shuffle ? "true" : "false") << "\n}\n";
+         << ",\n  \"shuffle\": " << (settings.shuffle ? "true" : "false")
+         << ",\n  \"unlock_swimsuits\": " << (settings.unlock_swimsuits ? "true" : "false") << "\n}\n";
     return static_cast<bool>(file);
 }
 
@@ -91,7 +94,7 @@ SDL_FRect itemRect(int item)
 
 struct Launcher {
     SDL_Renderer *renderer = nullptr;
-    int choice[4] = {};
+    int choice[5] = {};
     int selected = PLAY;
 
     std::string valueText(int item) const
@@ -110,14 +113,14 @@ struct Launcher {
     void change(int item, int step)
     {
         static const int counts[] = {static_cast<int>(std::size(kHeights)),
-            static_cast<int>(std::size(kSamples)), static_cast<int>(std::size(kVolumes)), 2};
+            static_cast<int>(std::size(kSamples)), static_cast<int>(std::size(kVolumes)), 2, 2};
         if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
 
     // Play and Quit share the bottom row.
     void move(int dy, int dx)
     {
-        if (dy < 0 && selected > RESOLUTION) selected = selected >= PLAY ? SHUFFLE : selected - 1;
+        if (dy < 0 && selected > RESOLUTION) selected = selected >= PLAY ? UNLOCK : selected - 1;
         if (dy > 0 && selected < PLAY) ++selected;
         if (dx != 0) {
             if (selected >= PLAY) selected = dx > 0 ? QUIT : PLAY;
@@ -156,7 +159,8 @@ struct Launcher {
         centered(56, "XTREME BEACH VOLLEYBALL", kText, 2);
         centered(82, "Native port settings", kMuted);
 
-        static const char *labels[] = {"Resolution", "Anti-aliasing", "Volume", "Shuffle music"};
+        static const char *labels[] = {"Resolution", "Anti-aliasing", "Volume", "Shuffle music",
+            "Unlock swimsuits"};
         for (int item = RESOLUTION; item < PLAY; ++item) {
             const SDL_FRect row = itemRect(item);
             const bool active = item == selected;
@@ -248,6 +252,7 @@ int main(int argc, char **argv)
     launcher.choice[MSAA] = indexOf(kSamples, settings.msaa, 0);
     launcher.choice[VOLUME] = indexOf(kVolumes, settings.volume, 0);
     launcher.choice[SHUFFLE] = settings.shuffle ? 1 : 0;
+    launcher.choice[UNLOCK] = settings.unlock_swimsuits ? 1 : 0;
 
     int result = -1;
     int held_dx = 0, held_dy = 0;
@@ -334,6 +339,7 @@ int main(int argc, char **argv)
         settings.msaa = kSamples[launcher.choice[MSAA]];
         settings.volume = kVolumes[launcher.choice[VOLUME]];
         settings.shuffle = launcher.choice[SHUFFLE] != 0;
+        settings.unlock_swimsuits = launcher.choice[UNLOCK] != 0;
         if (!saveSettings(settings_path, settings)) {
             std::fprintf(stderr, "launcher: cannot write %s\n", settings_path.c_str());
             result = 1;
