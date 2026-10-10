@@ -9,17 +9,18 @@ enum {
     REG_DWORD = 4u,
 };
 
-/* XC_VIDEO flags: 60Hz, 480p/720p/1080i, widescreen 0x010000 and letterbox
-   0x100000 (nxdk hal/video.h). RECOMP_D3D_WIDESCREEN=0 clears the last two,
-   the dashboard's Normal setting, so the game renders 4:3. The presenter
-   reads the same variable to size the window; keep the two in step. */
+/* XC_VIDEO flags: 60Hz, 480p/720p/1080i and widescreen 0x010000 (nxdk
+   hal/video.h). The dashboard's Widescreen choice never also sets letterbox
+   0x100000. RECOMP_D3D_WIDESCREEN=0 clears widescreen, the dashboard's Normal
+   setting, so the game renders 4:3. The presenter reads the same variable to
+   size the window; keep the two in step. */
 static uint32_t video_flags(void)
 {
     const char *widescreen = getenv("RECOMP_D3D_WIDESCREEN");
 
     return widescreen != NULL && strcmp(widescreen, "0") == 0
         ? 0x004e0000u
-        : 0x005f0000u;
+        : 0x004f0000u;
 }
 
 uint32_t recomp_kernel_query_nonvolatile_setting(
