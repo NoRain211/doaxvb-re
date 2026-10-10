@@ -508,8 +508,8 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
 #endif
         if (created) {
             write_file(journal / "version", version);
-            /* Persist the new journal's directory entries, not only its files. */
-            sync_to_disk(journal);
+            /* Persist the marker and the new directories' entries. */
+            sync_to_disk(journal / "version");
             sync_to_disk(storage);
         }
         upgrade_version = check_journal();
