@@ -165,6 +165,30 @@ void write_file(const fs::path &path, std::string_view data)
     require(!stream.fail());
 }
 
+/* Syncs a path and the directory holding it. The undo journal must be on disk
+   before the guest changes live saves, or a power loss can leave a torn save
+   with no rollback. */
+void sync_to_disk(const fs::path &path)
+{
+#ifndef _WIN32
+    for (const fs::path &target : {path, path.parent_path()}) {
+        const int fd = open(target.c_str(), O_RDONLY | O_CLOEXEC);
+        require(fd >= 0);
+#ifdef __APPLE__
+        // macOS fsync leaves data in the drive cache; F_FULLFSYNC flushes it.
+        const bool synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
+#else
+        const bool synced = fsync(fd) == 0;
+#endif
+        close(fd);
+        require(synced);
+    }
+#else
+    // shortcut: Windows keeps its tested behavior; flush here if a Windows torn save is reported.
+    (void)path;
+#endif
+}
+
 std::string read_file(const fs::path &path)
 {
 #ifdef _WIN32
@@ -486,6 +510,10 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
             write_file(journal / "version", version);
         }
         upgrade_version = check_journal();
+        /* Persist the validated marker and the directory entries on every start,
+           so a sync that failed on an earlier launch is retried. */
+        sync_to_disk(journal / "version");
+        sync_to_disk(storage);
         recover();
         if (upgrade_version) {
             /* Keep the v1 marker valid until the same-directory rename. */
@@ -524,6 +552,7 @@ extern "C" bool recomp_save_begin(uint32_t owner)
     try {
         require(!exists_plain(undo));
         write_file(undo, snapshot_live());
+        sync_to_disk(undo);
         active_owner = owner;
         depth = 1;
         failed = false;
@@ -546,7 +575,18 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
             recover();
         } else {
             check_tree(live);
+            /* File syncs do not persist the save's directory entries; sync every
+               save directory before the unlink that commits the save. */
+            if (exists_plain(live)) {
+                sync_to_disk(live);
+                for (const auto &entry : fs::recursive_directory_iterator(live))
+                    if (entry.is_directory()) sync_to_disk(entry.path());
+            } else {
+                sync_to_disk(live.parent_path());
+            }
             remove_file(undo);
+            /* A lost unlink would restore the old image over a save reported done. */
+            sync_to_disk(journal);
         }
         return !failed;
     } catch (const std::exception &error) {
