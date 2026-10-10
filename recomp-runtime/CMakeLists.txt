@@ -27,9 +27,16 @@ if(WIN32)
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
 else()
-    find_package(SDL3 REQUIRED)
+    # macOS builds need SDL3 (brew install sdl3). Other hosts only configure,
+    # which the tools tests do without it.
+    find_package(SDL3 QUIET)
+    if(APPLE AND NOT SDL3_FOUND)
+        message(FATAL_ERROR "SDL3 is required: brew install sdl3")
+    endif()
     function(recomp_use_sdl3 target)
-        target_link_libraries(${target} PRIVATE SDL3::SDL3)
+        if(SDL3_FOUND)
+            target_link_libraries(${target} PRIVATE SDL3::SDL3)
+        endif()
     endfunction()
 endif()
 
