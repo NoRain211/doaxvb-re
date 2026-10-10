@@ -238,11 +238,9 @@ static void bridge_xc_sha_update(void)
 
         sha_context_load(context_address, &context);
 #ifdef RECOMP_FULL_PROGRAM
-        /* The game's save signature is the one place its save image passes
-           through the runtime before it is written. */
-        if (input == RECOMP_SAVE_STATE_ADDRESS && length == RECOMP_SAVE_STATE_SIZE) {
-            recomp_unlock_swimsuits_strip(recomp_memory(input, length));
-        }
+        /* The hash is the one place a save image passes through the
+           runtime, before it is written and after it is read. */
+        recomp_unlock_swimsuits_hash(input, length);
 #endif
         if (length != 0u) {
             recomp_kernel_sha_update(

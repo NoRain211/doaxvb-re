@@ -1,6 +1,7 @@
 #ifndef DOAXBV_RECOMP_UNLOCK_SWIMSUITS_H
 #define DOAXBV_RECOMP_UNLOCK_SWIMSUITS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -13,10 +14,12 @@ enum {
     RECOMP_SAVE_STATE_SIZE = 0x2178u
 };
 
-/* Tops up every girl's free inventory slots with her missing swimsuits. */
+/* Lends the girl being played every swimsuit she can wear. */
 void recomp_unlock_swimsuits_frame(void);
-/* Removes granted swimsuits from a save image about to be signed. */
-void recomp_unlock_swimsuits_strip(uint8_t *save_state);
+/* Takes the lent swimsuits back out of a save image the game is hashing. */
+void recomp_unlock_swimsuits_hash(uint32_t address, uint32_t length);
+/* Brackets the game's save routine; nothing is lent while it runs. */
+void recomp_unlock_swimsuits_saving(bool active);
 
 #ifdef __cplusplus
 }
