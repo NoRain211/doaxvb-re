@@ -80,7 +80,7 @@ def saved_launcher_settings(root):
                 "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
                 "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
                 "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0"}
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         return {}
 
 
