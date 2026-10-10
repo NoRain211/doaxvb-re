@@ -165,8 +165,9 @@ void write_file(const fs::path &path, std::string_view data)
     require(!stream.fail());
 }
 
-/* The undo image must be on disk before the guest changes live saves, or a
-   power loss can leave a torn save with no rollback. */
+/* Syncs a path and the directory holding it. The undo journal must be on disk
+   before the guest changes live saves, or a power loss can leave a torn save
+   with no rollback. */
 void sync_to_disk(const fs::path &path)
 {
 #ifndef _WIN32
@@ -507,6 +508,9 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
 #endif
         if (created) {
             write_file(journal / "version", version);
+            /* Persist the new journal's directory entries, not only its files. */
+            sync_to_disk(journal);
+            sync_to_disk(storage);
         }
         upgrade_version = check_journal();
         recover();
