@@ -81,6 +81,34 @@ To reuse a completed extraction, run:
 python tools/build_game.py --imported private/imported-disc
 ```
 
+### macOS build
+
+On macOS (Apple Silicon or Intel), install CMake, Ninja, SDL3 and Capstone:
+
+```bash
+brew install cmake ninja sdl3
+python3 -m pip install capstone==5.0.9
+```
+
+Homebrew has no `extract-xiso`; build it from
+[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) and put it on
+`PATH`, or pass its location with `--extractor`:
+
+```bash
+git clone https://github.com/XboxDev/extract-xiso.git
+cmake -S extract-xiso -B extract-xiso/build && cmake --build extract-xiso/build
+```
+
+Then build the runner:
+
+```bash
+./build_game.sh /path/to/game.iso
+```
+
+`./launcher.sh` opens the launcher to pick resolution, anti-aliasing, volume
+and soundtrack options, then starts the game. `./run_game.sh` starts the game
+with the saved choices.
+
 Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
 records a build. A supervised native run provides the behavior evidence.
@@ -115,6 +143,16 @@ cd doaxbv-re
 cmake -S recomp-runtime -B build/recomp-runtime -G "Visual Studio 17 2022"
 cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
+```
+
+On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run:
+
+```bash
+git clone --recurse-submodules https://github.com/NoRain211/doaxvb-re.git
+cd doaxvb-re
+cmake -S recomp-runtime -B build/recomp-runtime -G Ninja
+cmake --build build/recomp-runtime
+ctest --test-dir build/recomp-runtime --output-on-failure
 ```
 
 These commands build public tests in `build/recomp-runtime/Release`. They do

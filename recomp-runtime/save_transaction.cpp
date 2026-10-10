@@ -13,6 +13,10 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -44,6 +48,8 @@ constexpr DWORD unsupported_attributes = FILE_ATTRIBUTE_REPARSE_POINT |
 constexpr DWORD settable_attributes = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |
     FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_NORMAL |
     FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+#else
+int journal_lock = -1;
 #endif
 
 struct Times { uint64_t creation, access, write, change; };
@@ -72,8 +78,17 @@ bool exists_plain(const fs::path &path)
     require((attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0);
     return true;
 #else
-    require(!fs::is_symlink(fs::symlink_status(path)));
-    return fs::exists(path);
+    std::error_code ec;
+    auto status = fs::symlink_status(path, ec);
+    if (ec) {
+        require(ec == std::errc::no_such_file_or_directory);
+        return false;
+    }
+    if (status.type() == fs::file_type::not_found) {
+        return false;
+    }
+    require(status.type() != fs::file_type::symlink);
+    return true;
 #endif
 }
 
@@ -417,13 +432,26 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         CloseHandle(journal_lock);
         journal_lock = INVALID_HANDLE_VALUE;
     }
+#else
+    if (journal_lock >= 0) {
+        close(journal_lock);
+        journal_lock = -1;
+    }
 #endif
     ready = false;
     depth = 0;
     failed = false;
     try {
         require(disc_root != nullptr && *disc_root != '\0');
+#ifdef _WIN32
         fs::path root = fs::absolute(disc_root).lexically_normal();
+#else
+        // macOS reaches /tmp and /var through symlinks, which check_parents
+        // rejects; resolve the root first.
+        std::error_code ec;
+        fs::path root = fs::canonical(disc_root, ec);
+        if (ec) root = fs::absolute(disc_root).lexically_normal();
+#endif
         check_parents(root);
         require(exists_plain(root) && fs::is_directory(root));
         storage = root / ".recomp-storage";
@@ -447,6 +475,12 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         require(GetFileInformationByHandle(journal_lock, &lock_info) != 0);
         require((lock_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0);
         require(lock_info.nFileSizeHigh == 0 && lock_info.nFileSizeLow == 0);
+#else
+        const auto lock_path = journal / "lock";
+        if (exists_plain(lock_path)) require(fs::is_regular_file(lock_path));
+        journal_lock = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        require(journal_lock >= 0);
+        require(flock(journal_lock, LOCK_EX | LOCK_NB) == 0);
 #endif
         if (created) {
             write_file(journal / "version", version);
@@ -467,6 +501,11 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         if (journal_lock != INVALID_HANDLE_VALUE) {
             CloseHandle(journal_lock);
             journal_lock = INVALID_HANDLE_VALUE;
+        }
+#else
+        if (journal_lock >= 0) {
+            close(journal_lock);
+            journal_lock = -1;
         }
 #endif
         return false;

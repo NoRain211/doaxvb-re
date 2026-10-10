@@ -7,10 +7,11 @@
 
 #include <math.h>
 #include <string.h>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
-
 #if defined(_MSC_VER)
 #include <intrin.h>
+#endif
 #endif
 
 static inline uint32_t BSWAP32(uint32_t value)
@@ -90,11 +91,13 @@ static inline int recomp_parity8(uint32_t x)
 #define MEMD(address) \
     (*(double *)(void *)recomp_memory_u64((uint32_t)(address)))
 #define XBOX_PTR(address) ((void *)(uintptr_t)(uint32_t)(address))
+#undef memcpy
 #define memcpy(destination, source, size) \
     recomp_guest_memcpy( \
         (uint32_t)(uintptr_t)(destination), \
         (uint32_t)(uintptr_t)(source), \
         (size_t)(size))
+#undef memset
 #define memset(destination, value, size) \
     recomp_guest_memset( \
         (uint32_t)(uintptr_t)(destination), \
@@ -286,6 +289,7 @@ RECOMP_XMM_LANEWISE(XMM_CMP_NEQ, r.u[i] = a.f[i] != b.f[i] ? 0xffffffffu : 0u)
 
 /* SHUFPS takes the low half from the destination and the high half from the
    source. It is the broadcast in every matrix concatenation. */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 static inline RecompXmm recomp_xmm_from_native(__m128 value)
 {
     RecompXmm r;
@@ -298,6 +302,18 @@ static inline RecompXmm recomp_xmm_from_native(__m128 value)
 #define XMM_SHUFFLE(a, b, imm) \
     recomp_xmm_from_native(_mm_shuffle_ps( \
         _mm_loadu_ps((a).f), _mm_loadu_ps((b).f), (imm)))
+#else
+static inline RecompXmm recomp_xmm_shuffle(RecompXmm a, RecompXmm b, unsigned int imm)
+{
+    RecompXmm r;
+    r.u[0] = a.u[(imm >> 0) & 3u];
+    r.u[1] = a.u[(imm >> 2) & 3u];
+    r.u[2] = b.u[(imm >> 4) & 3u];
+    r.u[3] = b.u[(imm >> 6) & 3u];
+    return r;
+}
+#define XMM_SHUFFLE(a, b, imm) recomp_xmm_shuffle((a), (b), (imm))
+#endif
 
 static inline RecompXmm XMM_UNPACK_LOW(RecompXmm a, RecompXmm b)
 {
@@ -349,12 +365,28 @@ static inline uint32_t XMM_MOVEMASK(RecompXmm a)
 
 /* ponytail: use host MXCSR rounding; model guest MXCSR when a lifted caller
    writes it. SSE conversions avoid disturbing the host x87/MMX register file. */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 static inline uint64_t MMX_CVTPS2PI(float low, float high)
 {
     uint32_t a = (uint32_t)_mm_cvtss_si32(_mm_set_ss(low));
     uint32_t b = (uint32_t)_mm_cvtss_si32(_mm_set_ss(high));
     return a | ((uint64_t)b << 32);
 }
+#else
+static inline uint32_t recomp_cvtss_si32(float val)
+{
+    if (isnan(val) || isinf(val)) return 0x80000000u;
+    if (val >= 2147483584.0f || val < -2147483648.0f) return 0x80000000u;
+    return (uint32_t)(int32_t)lrintf(val);
+}
+
+static inline uint64_t MMX_CVTPS2PI(float low, float high)
+{
+    uint32_t a = recomp_cvtss_si32(low);
+    uint32_t b = recomp_cvtss_si32(high);
+    return a | ((uint64_t)b << 32);
+}
+#endif
 
 static inline uint64_t MMX_PACKSSDW(uint64_t a, uint64_t b)
 {

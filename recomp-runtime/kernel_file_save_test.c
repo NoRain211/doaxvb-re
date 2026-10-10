@@ -3,7 +3,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "win32_compat.h"
+#endif
 
 enum {
     TEST_BASE = 0x2b000000u,

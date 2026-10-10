@@ -11,6 +11,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <pthread.h>
+#include <stdatomic.h>
 #include <time.h>
 #endif
 
@@ -71,9 +73,18 @@ static volatile DWORD clock_owner;
 #define LOCK_CLOCKS() \
     (AcquireSRWLockExclusive(&clock_lock), clock_owner = GetCurrentThreadId())
 #define UNLOCK_CLOCKS() (clock_owner = 0u, ReleaseSRWLockExclusive(&clock_lock))
+static inline int is_clock_owner(void) { return clock_owner == GetCurrentThreadId(); }
 #else
-#define LOCK_CLOCKS() ((void)0)
-#define UNLOCK_CLOCKS() ((void)0)
+static pthread_mutex_t clock_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile pthread_t clock_owner;
+static volatile int clock_locked = 0;
+#define LOCK_CLOCKS() \
+    (pthread_mutex_lock(&clock_lock), clock_owner = pthread_self(), clock_locked = 1)
+#define UNLOCK_CLOCKS() \
+    (clock_locked = 0, pthread_mutex_unlock(&clock_lock))
+static inline int is_clock_owner(void) {
+    return clock_locked && pthread_equal(clock_owner, pthread_self());
+}
 #endif
 
 static void retire_buffer(BufferClock *clock)
@@ -82,11 +93,16 @@ static void retire_buffer(BufferClock *clock)
     *clock = (BufferClock){0};
 }
 
-static void pump_buffer(BufferClock *clock, uint64_t now)
+/* Copies the ring from the last output position up to `now` into host output.
+   Guest-facing calls pass `force`: everything up to the cursor the guest is
+   about to observe must be copied first, because the guest's streaming
+   decoder refills the ring right behind that cursor. The background pump
+   batches into >= 10 ms chunks instead. */
+static void pump_buffer(BufferClock *clock, uint64_t now, int force)
 {
     RecompDsoundBufferModel *output = &clock->output_model;
-    if (!output->playing || clock->pcm == NULL ||
-        now <= output->last_ms || now - output->last_ms < 10u) {
+    if (!output->playing || clock->pcm == NULL || now <= output->last_ms ||
+        (!force && now - output->last_ms < 10u)) {
         return;
     }
     uint32_t channels = (clock->format >> 16u) & 0xffu;
@@ -145,6 +161,10 @@ static uint64_t buffer_now_ms(void)
     return recomp_test_dsound_now_ms();
 #elif defined(_WIN32)
     return GetTickCount64();
+#elif defined(__APPLE__) || defined(_POSIX_TIMERS)
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 #else
     struct timespec now;
     timespec_get(&now, TIME_UTC);
@@ -205,7 +225,7 @@ static BufferClock *buffer_clock(uint32_t address)
     if (clock != NULL) {
         if (clock->model.loop_start_bytes != decoded_loop_start) {
             uint64_t now = buffer_now_ms();
-            pump_buffer(clock, now);
+            pump_buffer(clock, now, 1);
             recomp_dsound_buffer_cursor(&clock->model, now);
             recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
             clock->model.loop_start_bytes = decoded_loop_start;
@@ -337,7 +357,7 @@ static void buffer_call(uint32_t operation, uint32_t argument_count)
         return;
     }
     now = buffer_now_ms();
-    pump_buffer(clock, now);
+    pump_buffer(clock, now, 1);
     switch (operation) {
     case 0x001f8fd8u:
         recomp_dsound_buffer_cursor(&clock->model, now);
@@ -552,7 +572,8 @@ static void write_created_objects(const RecompDsoundServiceModel *model)
     *recomp_memory_u32(DIRECT_SOUND_MANAGER_GLOBAL) = model->manager;
 }
 
-#if defined(RECOMP_FULL_PROGRAM) && defined(_WIN32)
+#if defined(RECOMP_FULL_PROGRAM)
+#ifdef _WIN32
 static volatile LONG output_pump_stop;
 static HANDLE output_pump;
 
@@ -567,7 +588,7 @@ static DWORD WINAPI output_pump_loop(void *unused)
         LOCK_CLOCKS();
         uint64_t now = buffer_now_ms();
         for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
-            if (buffer_clocks[i].address != 0u) pump_buffer(&buffer_clocks[i], now);
+            if (buffer_clocks[i].address != 0u) pump_buffer(&buffer_clocks[i], now, 0);
         }
         UNLOCK_CLOCKS();
     }
@@ -594,6 +615,51 @@ static void start_output_pump(void)
         atexit(stop_output_pump);
     }
 }
+#else
+static atomic_int output_pump_stop;
+static pthread_t output_pump;
+static int output_pump_started;
+
+static void *output_pump_loop(void *unused)
+{
+    (void)unused;
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+    struct timespec sleep_time = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 }; /* 5ms */
+    while (!atomic_load(&output_pump_stop)) {
+        nanosleep(&sleep_time, NULL);
+        LOCK_CLOCKS();
+        uint64_t now = buffer_now_ms();
+        for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
+            if (buffer_clocks[i].address != 0u) pump_buffer(&buffer_clocks[i], now, 0);
+        }
+        UNLOCK_CLOCKS();
+    }
+    return NULL;
+}
+
+static void stop_output_pump(void)
+{
+    atomic_store(&output_pump_stop, 1);
+    if (output_pump_started) {
+        if (!is_clock_owner()) {
+            pthread_join(output_pump, NULL);
+        }
+        output_pump_started = 0;
+    }
+}
+
+static void start_output_pump(void)
+{
+    if (output_pump_started || !recomp_audio_output_enabled()) return;
+    output_pump_stop = 0;
+    if (pthread_create(&output_pump, NULL, output_pump_loop, NULL) == 0) {
+        output_pump_started = 1;
+        atexit(stop_output_pump);
+    }
+}
+#endif
 #endif
 
 static void recomp_dsound_create_adapter(void)
@@ -627,7 +693,7 @@ static void recomp_dsound_create_adapter(void)
     if (result == RECOMP_DSOUND_OK) {
         write_created_objects(&dsound_service_model);
         *recomp_memory_u32(output_address) = public_device;
-#if defined(RECOMP_FULL_PROGRAM) && defined(_WIN32)
+#if defined(RECOMP_FULL_PROGRAM)
         start_output_pump();
 #endif
     } else if (resources.manager != 0u &&
@@ -676,7 +742,7 @@ static void recomp_dsound_do_work_adapter(void)
     for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
         if (buffer_clocks[i].address != 0u) {
             BufferClock *clock = buffer_clock(buffer_clocks[i].address);
-            if (clock != NULL) pump_buffer(clock, now);
+            if (clock != NULL) pump_buffer(clock, now, 1);
         }
     }
     UNLOCK_CLOCKS();

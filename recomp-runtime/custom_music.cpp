@@ -1,5 +1,6 @@
 #include "custom_music.h"
 
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
 #include <mfapi.h>
@@ -292,3 +293,16 @@ extern "C" int recomp_music_rewind(RecompMusicDecoder *decoder)
     decoder->eof = decoder->failed = false;
     return 1;
 }
+#else
+// Non-Windows stub: custom music catalog remains empty
+void recomp_music_initialize(const char *folder) { (void)folder; }
+void recomp_music_shutdown(void) {}
+uint32_t recomp_music_count(void) { return 0; }
+uint32_t recomp_music_duration(void) { return 0; }
+const RecompMusicTrack *recomp_music_track(uint32_t index) { (void)index; return nullptr; }
+const wchar_t *recomp_music_path(uint32_t id) { (void)id; return nullptr; }
+RecompMusicDecoder *recomp_music_open(uint32_t id) { (void)id; return nullptr; }
+void recomp_music_close(RecompMusicDecoder *decoder) { (void)decoder; }
+int recomp_music_read(RecompMusicDecoder *decoder, void *pcm, uint32_t bytes) { (void)decoder; (void)pcm; (void)bytes; return -1; }
+int recomp_music_rewind(RecompMusicDecoder *decoder) { (void)decoder; return 0; }
+#endif

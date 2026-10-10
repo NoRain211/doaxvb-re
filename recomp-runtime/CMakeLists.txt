@@ -26,6 +26,37 @@ if(WIN32)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
+else()
+    # macOS builds need SDL3 (brew install sdl3). Other hosts only configure,
+    # which the tools tests do without it.
+    find_package(SDL3 QUIET)
+    if(APPLE AND NOT SDL3_FOUND)
+        message(FATAL_ERROR "SDL3 is required: brew install sdl3")
+    endif()
+    function(recomp_use_sdl3 target)
+        if(SDL3_FOUND)
+            target_link_libraries(${target} PRIVATE SDL3::SDL3)
+        endif()
+    endfunction()
+endif()
+
+# Clang contracts a*b+c into FMA by default on AArch64. Keep IEEE operation
+# order so guest float results match the x86 hosts and the Windows build.
+if(NOT MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-ffp-contract=off>)
+endif()
+
+if(NOT WIN32)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        set(RECOMP_FIBER_ASM fiber_switch_x86_64.S)
+    endif()
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
+    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        set(RECOMP_FIBER_ASM fiber_switch_x86_64.S)
+    endif()
 endif()
 
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
@@ -217,12 +248,20 @@ if(NOT MSVC)
 endif()
 target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
-# Media Foundation is delay-loaded: Windows N editions and Server without the
-# Media Foundation feature lack it, and custom music then stays disabled.
-set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
-set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
-target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
-target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+if(WIN32)
+    # Media Foundation is delay-loaded: Windows N editions and Server without the
+    # Media Foundation feature lack it, and custom music then stays disabled.
+    set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
+    set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+    target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
+    target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+else()
+    target_sources(recomp_runtime_test PRIVATE win32_compat.c)
+    if(RECOMP_FIBER_ASM)
+        enable_language(ASM)
+        target_sources(recomp_runtime_test PRIVATE ${RECOMP_FIBER_ASM})
+    endif()
+endif()
 target_compile_definitions(recomp_runtime_test PRIVATE
     RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
 
@@ -307,7 +346,16 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    if(WIN32)
+        target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    else()
+        target_sources(recomp_runner PRIVATE win32_compat.c)
+        if(RECOMP_FIBER_ASM)
+            enable_language(ASM)
+            target_sources(recomp_runner PRIVATE ${RECOMP_FIBER_ASM})
+        endif()
+        recomp_use_sdl3(recomp_runner)
+    endif()
 endif()
 
 if(RECOMP_PROGRAM_DIR)
@@ -475,10 +523,13 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_model.c
         d3d_frame_adapter.c
         d3d_vblank.cpp
-        d3d_presenter_d3d11.cpp
-        texture_replacement.cpp
+        $<$<PLATFORM_ID:Windows>:d3d_presenter_d3d11.cpp>
+        $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
+        $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:audio_output_sdl.cpp>
         d3d_presenter_capture.cpp
-        d3d_presenter_thread.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
         d3d_render_state_model.c
@@ -492,7 +543,6 @@ if(RECOMP_PROGRAM_DIR)
         xbox_adpcm.c
         dsound_service_model.c
         dsound_service_adapter.c
-        audio_output_xaudio2.cpp
         custom_music.cpp
         soundtrack_adapter.c
         movie_color_model.c
@@ -537,14 +587,21 @@ if(RECOMP_PROGRAM_DIR)
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
-    target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+    if(WIN32)
+        target_link_libraries(recomp_program_runner PRIVATE
+            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+        target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+        recomp_use_sdl3(recomp_program_runner)
+    else()
+        target_sources(recomp_program_runner PRIVATE win32_compat.c)
+        if(RECOMP_FIBER_ASM)
+            enable_language(ASM)
+            target_sources(recomp_program_runner PRIVATE ${RECOMP_FIBER_ASM})
+        endif()
+        recomp_use_sdl3(recomp_program_runner)
+    endif()
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
-    endif()
-    if(WIN32)
-        recomp_use_sdl3(recomp_program_runner)
     endif()
 
     # The binary .ico stays out of git; see docs/building.md.
@@ -614,6 +671,18 @@ if(WIN32)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     target_link_libraries(recomp_input_host_test PRIVATE user32)
     recomp_use_sdl3(recomp_input_host_test)
+else()
+    add_executable(recomp_d3d_presenter_sdl_gpu_test
+        d3d_presenter_sdl_gpu.cpp
+        d3d_presenter_sdl_gpu_test.cpp
+        d3d_vertex_program.cpp
+        d3d_draw_model.c
+        d3d_texture_model.c)
+    recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
+    add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
+    recomp_use_sdl3(recomp_audio_output_sdl_test)
+    add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
+    recomp_use_sdl3(recomp_input_host_test)
 endif()
 
 add_executable(recomp_d3d_presenter_capture_test
@@ -653,9 +722,16 @@ add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
+elseif(TARGET recomp_audio_output_sdl_test)
+    add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_sdl_test)
 endif()
 if(TARGET recomp_input_host_test)
     add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
+endif()
+if(TARGET recomp_d3d_presenter_thread_test)
+    add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_thread_test)
+elseif(TARGET recomp_d3d_presenter_sdl_gpu_test)
+    add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_sdl_gpu_test)
 endif()
 add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
 add_test(NAME recomp-runtime-d3d-presenter-capture COMMAND recomp_d3d_presenter_capture_test)

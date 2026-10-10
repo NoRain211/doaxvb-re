@@ -1,5 +1,7 @@
 #include <stdio.h>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
+#endif
 
 #include "recomp_types.h"
 
@@ -167,6 +169,7 @@ int recomp_sse_semantics_test(void)
     passed &= expect_u32("xorps self lane3", r.u[3], 0u);
 
     {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
         unsigned saved_csr = _mm_getcsr();
         unsigned masked_csr = (saved_csr | _MM_MASK_MASK) &
             ~(_MM_ROUND_MASK | _MM_EXCEPT_MASK);
@@ -187,20 +190,40 @@ int recomp_sse_semantics_test(void)
                     (uint32_t)expected[mode][pair + 1u]);
             }
         }
+        _mm_setcsr(masked_csr | _MM_ROUND_NEAREST);
+#endif
+        /* Nearest-even rounding validation for fractional inputs on all platforms */
+        {
+            uint64_t conv1 = MMX_CVTPS2PI(-2.5f, -1.5f);
+            passed &= expect_u32("cvtps2pi -2.5f nearest-even", (uint32_t)conv1, (uint32_t)-2);
+            passed &= expect_u32("cvtps2pi -1.5f nearest-even", (uint32_t)(conv1 >> 32), (uint32_t)-2);
+            uint64_t conv2 = MMX_CVTPS2PI(1.5f, 2.5f);
+            passed &= expect_u32("cvtps2pi 1.5f nearest-even", (uint32_t)conv2, 2u);
+            passed &= expect_u32("cvtps2pi 2.5f nearest-even", (uint32_t)(conv2 >> 32), 2u);
+            uint64_t conv3 = MMX_CVTPS2PI(0.5f, -0.5f);
+            passed &= expect_u32("cvtps2pi 0.5f nearest-even", (uint32_t)conv3, 0u);
+            passed &= expect_u32("cvtps2pi -0.5f nearest-even", (uint32_t)(conv3 >> 32), 0u);
+        }
         volatile float limits[] = {
             NAN, INFINITY, -INFINITY, 2147483648.0f, -2147483904.0f,
             -2147483648.0f, 2147483520.0f
         };
         for (unsigned i = 0u; i < 7u; ++i) {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
             _mm_setcsr(masked_csr | _MM_ROUND_NEAREST);
+#endif
             uint64_t converted = MMX_CVTPS2PI(limits[i], 7.0f);
             passed &= expect_u32("cvtps2pi limits", (uint32_t)converted,
                 i == 6u ? 0x7fffff80u : 0x80000000u);
             passed &= expect_u32("cvtps2pi independent lane", (uint32_t)(converted >> 32), 7u);
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
             passed &= expect_u32("cvtps2pi invalid flag", _mm_getcsr() & _MM_EXCEPT_INVALID,
                 i < 5u ? _MM_EXCEPT_INVALID : 0u);
+#endif
         }
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
         _mm_setcsr(masked_csr | _MM_ROUND_NEAREST);
+#endif
         uint64_t packed = MMX_PACKSSDW(
             MMX_CVTPS2PI(-32768.0f, 32767.0f),
             MMX_CVTPS2PI(-40000.0f, 40000.0f));
@@ -213,7 +236,9 @@ int recomp_sse_semantics_test(void)
             UINT64_C(0x1180fe01ffff0000), UINT64_C(0x127f0102fffe0100));
         passed &= expect_u32("pavgb unsigned extremes", (uint32_t)averaged, 0xffff0100u);
         passed &= expect_u32("pavgb rounded lanes", (uint32_t)(averaged >> 32), 0x12808002u);
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
         _mm_setcsr(saved_csr);
+#endif
     }
 
     return passed;
