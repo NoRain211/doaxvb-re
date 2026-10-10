@@ -912,6 +912,8 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
             s += "}\n";
             has_prog = true;
         }
+        // Like the D3D11 presenter, skip a draw whose program does not translate.
+        if (!has_prog) return {};
     }
     if (!has_prog) {
         if (layout.pretransformed) {
@@ -1187,6 +1189,8 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
             s += "}\n";
             has_prog = true;
         }
+        // Like the D3D11 presenter, skip a draw whose program does not translate.
+        if (!has_prog) return {};
     }
 
     if (!has_prog) {
@@ -1399,11 +1403,8 @@ static ShadercResultErrorFn s_shaderc_error = nullptr;
 static ShadercResultBytesFn s_shaderc_bytes = nullptr;
 static ShadercResultLengthFn s_shaderc_length = nullptr;
 static ShadercResultReleaseFn s_shaderc_res_release = nullptr;
-static bool s_shaderc_checked = false;
 
-static bool loadShaderc() {
-    if (s_shaderc_checked) return s_shaderc_compile != nullptr;
-    s_shaderc_checked = true;
+static bool loadShadercSymbols() {
     void *h = dlopen("libshaderc_shared.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!h) h = dlopen("libshaderc_shared.so", RTLD_NOW | RTLD_LOCAL);
     if (!h) return false;
@@ -1421,6 +1422,12 @@ static bool loadShaderc() {
         return false;
     }
     return true;
+}
+
+// The boot-shader thread and the render thread both compile; load shaderc once.
+static bool loadShaderc() {
+    static const bool loaded = loadShadercSymbols();
+    return loaded;
 }
 #endif
 
@@ -1474,10 +1481,13 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
             return it->second;
         }
     }
+    // The D3D11 presenter accepts vertex programs only with this FVF.
+    if (program_count && fvf != 0x112u) return {nullptr, nullptr};
 
     if (presenter->use_spirv) {
-        const std::vector<uint32_t> vs_spv = compileGlslToSpirv(
-            buildGlslVertexShader(layout, fvf, program_count, program_tokens), SDL_GPU_SHADERSTAGE_VERTEX);
+        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens);
+        if (vs_source.empty()) return {nullptr, nullptr};
+        const std::vector<uint32_t> vs_spv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
         const std::vector<uint32_t> fs_spv = compileGlslToSpirv(
             buildGlslFragmentShader(layout, fvf, program_count), SDL_GPU_SHADERSTAGE_FRAGMENT);
         if (vs_spv.empty() || fs_spv.empty()) {
@@ -1524,6 +1534,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     }
 
     std::string msl = buildMslShader(layout, fvf, program_count, program_tokens);
+    if (msl.empty()) return {nullptr, nullptr};
     SDL_GPUShaderCreateInfo vs_info{};
     vs_info.code_size = msl.size();
     vs_info.code = reinterpret_cast<const Uint8 *>(msl.c_str());
@@ -2570,6 +2581,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // A draw whose shader or pipeline failed is skipped, as before.
         SDL_GPUGraphicsPipeline *pipeline = getOrCreatePipeline(presenter, draw, layout, color_fmt, depth_fmt, pass_samples);
         if (!pipeline) {
+            vdata.resize(v_offset);
+            idata.resize(i_offset);
             return RECOMP_D3D_PRESENTER_OK;
         }
 
