@@ -6,6 +6,10 @@
 
 #include <SDL3/SDL.h>
 
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -17,6 +21,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +33,13 @@ constexpr uint32_t kPaletteBytes = 256u * 4u;
 constexpr uint64_t kTargetByteLimit = 64u * 1024u * 1024u;
 constexpr uint32_t kInitialVertexCapacity = 32u * 1024u * 1024u; // 32 MB
 constexpr uint32_t kInitialIndexCapacity = 16u * 1024u * 1024u;  // 16 MB
+// TransformUniforms in floats: the header every draw pushes, then the
+// directional block. SDL's Vulkan backend binds 4 KB per uniform slot, so
+// vertex program constants live in their own slot.
+constexpr uint32_t kHeaderUniformFloats = 144u;
+constexpr uint32_t kTransformUniformFloats = 280u;
+constexpr uint32_t kProgramConstantFloats = 192u * 4u;
+constexpr uint32_t kNoProgramConstants = UINT32_MAX;
 
 constexpr uint32_t kBootDrawFvfs[] = {
     0x042u, 0x104u, 0x112u, 0x116u, 0x118u, 0x11Au,
@@ -49,13 +61,16 @@ struct TransformUniforms {
     float4x4 reflection_transform;
     float4 reflection_diffuse;
     float4 reflection_flags;
-    float4 vc[192];
+    float4 directional_flags;
     float4x4 directional_normals[4];
     float4 directional_base;
     float4 directional_material;
     float4 directional_directions[8];
     float4 directional_colors[8];
-    float4 directional_flags;
+};
+
+struct ProgramConstants {
+    float4 vc[192];
 };
 )";
 
@@ -210,8 +225,7 @@ bool isSwizzledTextureFormat(uint32_t format_byte)
 }
 
 struct QueuedDraw {
-    RecompD3dPresenterDrawCommand draw;
-    RecompD3dVertexLayout layout;
+    SDL_GPUGraphicsPipeline *pipeline = nullptr;
     uint32_t vertex_offset = 0;
     uint32_t vertex_size = 0;
     uint32_t index_offset = 0;
@@ -219,7 +233,14 @@ struct QueuedDraw {
     uint32_t index_count = 0;
     SDL_GPUTexture *texture = nullptr;
     SDL_GPUTexture *mask_texture = nullptr;
-    float draw_constants[1048]{};
+    SDL_GPUSampler *sampler0 = nullptr;
+    SDL_GPUSampler *sampler1 = nullptr;
+    uint32_t constant_color = 0;
+    uint8_t stencil_ref = 0;
+    uint32_t uniform_offset = 0;
+    uint32_t vs_uniform_size = 0;
+    uint32_t fs_uniform_size = 0;
+    uint32_t program_offset = 0;
 };
 
 struct DrawSegment {
@@ -230,6 +251,7 @@ struct DrawSegment {
     float target_h = 0.0f;
     std::vector<uint8_t> vertex_data;
     std::vector<uint8_t> index_data;
+    std::vector<float> uniform_data;
     std::vector<QueuedDraw> draws;
 };
 
@@ -370,8 +392,20 @@ struct RecompD3dPresenter {
     uint32_t present_count = 0u;
     uint32_t draw_count = 0u;
 
+    // RECOMP_PERF_COUNTER: present rate and gaps, reported once per second.
+    bool performance_counter = false;
+    std::chrono::steady_clock::time_point second_start{}, last_present{};
+    uint32_t second_presents = 0u;
+    double second_max_ms = 0.0;
+
     float scale = 1.0f;
     bool widescreen = true;
+    bool use_spirv = false;
+    bool backbuffer_resolved = false;
+
+    // Consecutive draws usually share a pipeline; skip the map lookup.
+    PipelineKey last_pkey{};
+    SDL_GPUGraphicsPipeline *last_pipeline = nullptr;
 };
 
 inline uint32_t mainHeight(const RecompD3dPresenter *p) {
@@ -395,6 +429,18 @@ namespace {
 RecompD3dPresenter *active_presenter = nullptr;
 bool immediate_present_setting = false;
 
+// The guest paces itself to 60 Hz. On Linux (gamescope on Steam Deck),
+// MAILBOX presents without a second wait for the swapchain.
+bool preferMailbox(bool immediate)
+{
+#ifdef __linux__
+    (void)immediate;
+    return true;
+#else
+    return immediate;
+#endif
+}
+
 void pumpEvents(RecompD3dPresenter *presenter)
 {
     SDL_PumpEvents();
@@ -411,12 +457,51 @@ void pumpEvents(RecompD3dPresenter *presenter)
     }
 }
 
+void reportPerformance(RecompD3dPresenter *presenter)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto now = Clock::now();
+    if (presenter->second_presents++ == 0u) presenter->second_start = now;
+    else presenter->second_max_ms = std::max(presenter->second_max_ms,
+        std::chrono::duration<double, std::milli>(now - presenter->last_present).count());
+    presenter->last_present = now;
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(now - presenter->second_start).count();
+    if (elapsed_ms < 1000.0) return;
+    const uint32_t frames = presenter->second_presents - 1u;
+    std::fprintf(stderr, "recomp performance: present=%u fps=%.2f frame_ms=%.3f max_ms=%.1f draws=%u\n",
+        presenter->present_count, frames * 1000.0 / elapsed_ms, elapsed_ms / frames,
+        presenter->second_max_ms, presenter->draw_count / frames);
+    presenter->second_presents = 1u;
+    presenter->second_start = now;
+    presenter->second_max_ms = 0.0;
+    presenter->draw_count = 0u;
+}
+
 SDL_GPUCommandBuffer *getCommandBuffer(RecompD3dPresenter *presenter)
 {
     if (!presenter->current_command_buffer) {
         presenter->current_command_buffer = SDL_AcquireGPUCommandBuffer(presenter->device);
     }
     return presenter->current_command_buffer;
+}
+
+void ensureBackbufferResolved(RecompD3dPresenter *presenter)
+{
+    if (!presenter->backbuffer_resolved && presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1 &&
+        presenter->backbuffer_resolve && presenter->backbuffer_color &&
+        presenter->backbuffer_resolve != presenter->backbuffer_color) {
+        SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
+        SDL_GPUColorTargetInfo color_info{};
+        color_info.texture = presenter->backbuffer_color;
+        color_info.load_op = SDL_GPU_LOADOP_LOAD;
+        color_info.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+        color_info.resolve_texture = presenter->backbuffer_resolve;
+        SDL_GPURenderPass *rpass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, nullptr);
+        if (rpass) {
+            SDL_EndGPURenderPass(rpass);
+        }
+        presenter->backbuffer_resolved = true;
+    }
 }
 
 void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
@@ -510,6 +595,7 @@ SDL_GPUSampler *lookupDrawSampler(RecompD3dPresenter *presenter, uint32_t addres
     desc.address_mode_v = hostAddressMode(v);
     desc.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
     desc.enable_anisotropy = false;
+    desc.max_lod = 1000.0f;  // the zero default would sample only the base mip level
     presenter->address_samplers[u][v] = SDL_CreateGPUSampler(presenter->device, &desc);
     return presenter->address_samplers[u][v] ? presenter->address_samplers[u][v] : presenter->filter_sampler;
 }
@@ -562,6 +648,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
     }
     if (draw.texture_is_backbuffer) {
         if (!presenter->backbuffer_copy) return presenter->dummy_texture;
+        ensureBackbufferResolved(presenter);
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUCopyPass *copypass = SDL_BeginGPUCopyPass(cmdbuf);
         if (copypass) {
@@ -811,7 +898,10 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "};\n";
 
     // vs_main
-    s += "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]]) {\n";
+    s += program_count
+        ? "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]],\n"
+          "                    constant ProgramConstants &pc [[buffer(1)]]) {\n"
+        : "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]]) {\n";
     s += "    VSOut out;\n";
 
     bool has_prog = false;
@@ -823,6 +913,8 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
             s += "}\n";
             has_prog = true;
         }
+        // Like the D3D11 presenter, skip a draw whose program does not translate.
+        if (!has_prog) return {};
     }
     if (!has_prog) {
         if (layout.pretransformed) {
@@ -988,6 +1080,409 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     return s;
 }
 
+static const char kGlslUniformsVertex[] = R"(
+layout(set = 1, binding = 0, std140) uniform TransformUniforms {
+    mat4 wvp[4];
+    vec4 draw_flags;
+    vec4 blend_flags;
+    vec4 texture_factor;
+    vec4 lighting_flags;
+    vec4 texture_flags;
+    mat4 reflection_world_view;
+    mat4 reflection_normal;
+    mat4 reflection_transform;
+    vec4 reflection_diffuse;
+    vec4 reflection_flags;
+    vec4 directional_flags;
+    mat4 directional_normals[4];
+    vec4 directional_base;
+    vec4 directional_material;
+    vec4 directional_directions[8];
+    vec4 directional_colors[8];
+} u;
+)";
+
+static const char kGlslUniformsFragment[] = R"(
+layout(set = 3, binding = 0, std140) uniform TransformUniforms {
+    mat4 wvp[4];
+    vec4 draw_flags;
+    vec4 blend_flags;
+    vec4 texture_factor;
+    vec4 lighting_flags;
+    vec4 texture_flags;
+    mat4 reflection_world_view;
+    mat4 reflection_normal;
+    mat4 reflection_transform;
+    vec4 reflection_diffuse;
+    vec4 reflection_flags;
+    vec4 directional_flags;
+    mat4 directional_normals[4];
+    vec4 directional_base;
+    vec4 directional_material;
+    vec4 directional_directions[8];
+    vec4 directional_colors[8];
+} u;
+)";
+
+std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
+                                  uint32_t program_count, const uint32_t (*program_tokens)[4])
+{
+    const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool has_texcoord = layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool four_coords = (layout.texcoord_count == 4u);
+    const bool two_coords = (layout.texcoord_count == 2u);
+
+    std::string s;
+    s.reserve(4096);
+    s += "#version 450\n";
+    s += kGlslUniformsVertex;
+    if (program_count) {
+        s += "layout(set = 1, binding = 1, std140) uniform ProgramConstants { vec4 vc[192]; } pc;\n";
+    }
+
+    if (layout.pretransformed) {
+        s += "layout(location = 0) in vec4 in_position;\n";
+    } else {
+        s += "layout(location = 0) in vec3 in_position;\n";
+    }
+
+    if (layout.blend_weight_count == 1u) {
+        s += "layout(location = 1) in float in_weights;\n";
+    } else if (layout.blend_weight_count == 2u) {
+        s += "layout(location = 1) in vec2 in_weights;\n";
+    } else if (layout.blend_weight_count == 3u) {
+        s += "layout(location = 1) in vec3 in_weights;\n";
+    }
+
+    if (has_normal) s += "layout(location = 2) in vec3 in_normal;\n";
+    if (has_diffuse) s += "layout(location = 3) in vec4 in_diffuse;\n";
+    if (has_texcoord) s += "layout(location = 4) in vec2 in_texcoord;\n";
+    if (four_coords) {
+        s += "layout(location = 5) in vec2 in_texcoord1;\n";
+        s += "layout(location = 6) in vec2 in_texcoord2;\n";
+        s += "layout(location = 7) in vec2 in_texcoord3;\n";
+    } else if (two_coords) {
+        s += "layout(location = 5) in vec2 in_texcoord1;\n";
+    }
+
+    s += "layout(location = 0) out vec4 v_color;\n";
+    s += "layout(location = 1) out vec2 v_texcoord;\n";
+    s += "layout(location = 2) out vec2 v_reflection_coord;\n";
+    if (four_coords) {
+        s += "layout(location = 3) out vec2 v_texcoord1;\n";
+        s += "layout(location = 4) out vec2 v_texcoord2;\n";
+        s += "layout(location = 5) out vec2 v_texcoord3;\n";
+    } else if (two_coords) {
+        s += "layout(location = 3) out vec2 v_texcoord1;\n";
+    }
+    if (program_count) {
+        s += "layout(location = 6) out vec2 v_program_q;\n";
+    }
+
+    s += "void main() {\n";
+
+    bool has_prog = false;
+    if (program_count) {
+        std::string prog_body;
+        if (recomp_d3d_vertex_program_glsl_source(program_tokens, program_count, prog_body)) {
+            s += prog_body;
+            s += "}\n";
+            has_prog = true;
+        }
+        // Like the D3D11 presenter, skip a draw whose program does not translate.
+        if (!has_prog) return {};
+    }
+
+    if (!has_prog) {
+        if (layout.pretransformed) {
+            s += "    gl_Position = (u.wvp[0] * vec4(in_position.xyz, 1.0)) / in_position.w;\n";
+        } else if (layout.blend_weight_count != 0u) {
+            s += "    if (u.blend_flags.x > 0.5) {\n";
+            s += "        vec4 p = vec4(0.0);\n";
+            s += "        float remainder = 1.0;\n";
+            if (layout.blend_weight_count == 1u) {
+                s += "        p += in_weights * (u.wvp[0] * vec4(in_position, 1.0));\n";
+                s += "        remainder -= in_weights;\n";
+            } else {
+                for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
+                    s += "        p += in_weights[" + std::to_string(i) + "] * (u.wvp[" + std::to_string(i) + "] * vec4(in_position, 1.0));\n";
+                    s += "        remainder -= in_weights[" + std::to_string(i) + "];\n";
+                }
+            }
+            s += "        p += remainder * (u.wvp[" + std::to_string(layout.blend_weight_count) + "] * vec4(in_position, 1.0));\n";
+            s += "        gl_Position = p;\n";
+            s += "    } else {\n";
+            s += "        gl_Position = u.wvp[0] * vec4(in_position, 1.0);\n";
+            s += "    }\n";
+        } else {
+            s += "    gl_Position = u.wvp[0] * vec4(in_position, 1.0);\n";
+        }
+
+        // Color & lighting
+        if (has_diffuse) {
+            s += "    v_color = in_diffuse.zyxw;\n";
+        } else if (has_normal && !layout.pretransformed) {
+            s += "    if (u.directional_flags.x > 0.5) {\n";
+            s += "        vec3 n = (u.directional_normals[0] * vec4(in_normal, 0.0)).xyz;\n";
+            if (layout.blend_weight_count != 0u) {
+                s += "        if (u.blend_flags.x > 0.5) {\n";
+                s += "            n = vec3(0.0);\n";
+                s += "            float remainder = 1.0;\n";
+                if (layout.blend_weight_count == 1u) {
+                    s += "            n += in_weights * (u.directional_normals[0] * vec4(in_normal, 0.0)).xyz;\n";
+                    s += "            remainder -= in_weights;\n";
+                } else {
+                    for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
+                        s += "            n += in_weights[" + std::to_string(i) + "] * (u.directional_normals[" + std::to_string(i) + "] * vec4(in_normal, 0.0)).xyz;\n";
+                        s += "            remainder -= in_weights[" + std::to_string(i) + "];\n";
+                    }
+                }
+                s += "            n += remainder * (u.directional_normals[" + std::to_string(layout.blend_weight_count) + "] * vec4(in_normal, 0.0)).xyz;\n";
+                s += "        }\n";
+            }
+            s += "        if (u.directional_flags.y > 0.5 && dot(n, n) > 0.0) n = normalize(n);\n";
+            s += "        vec3 rgb = u.directional_base.rgb;\n";
+            s += "        uint light_cnt = uint(u.directional_flags.z);\n";
+            s += "        for (uint i = 0u; i < light_cnt; ++i) {\n";
+            s += "            rgb += u.directional_material.rgb * u.directional_colors[i].rgb * max(0.0, dot(n, u.directional_directions[i].xyz));\n";
+            s += "        }\n";
+            s += "        v_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n";
+            s += "    } else {\n";
+            s += "        v_color = vec4(abs(normalize(in_normal)), 1.0);\n";
+            s += "    }\n";
+        } else {
+            s += "    v_color = vec4(0.75, 0.75, 0.78, 1.0);\n";
+        }
+
+        s += has_texcoord ? "    v_texcoord = in_texcoord;\n" : "    v_texcoord = vec2(0.0);\n";
+        if (four_coords) {
+            s += "    v_texcoord1 = in_texcoord1;\n";
+            s += "    v_texcoord2 = in_texcoord2;\n";
+            s += "    v_texcoord3 = in_texcoord3;\n";
+        } else if (two_coords) {
+            s += "    v_texcoord1 = in_texcoord1;\n";
+        }
+
+        s += "    v_reflection_coord = vec2(0.0);\n";
+        if (has_texcoord && !layout.pretransformed) {
+            if (has_normal) {
+                s += "    if (u.reflection_flags.x > 1.5) {\n";
+                s += "        v_reflection_coord = in_texcoord;\n";
+                s += "    } else if (u.reflection_flags.x > 0.5) {\n";
+                s += "        vec3 eye = (u.reflection_world_view * vec4(in_position, 1.0)).xyz;\n";
+                s += "        vec3 n = (u.reflection_normal * vec4(in_normal, 0.0)).xyz;\n";
+                s += "        if (u.reflection_flags.y > 0.5) n = normalize(n);\n";
+                s += "        vec3 r = reflect(normalize(eye), n);\n";
+                s += "        v_reflection_coord = (u.reflection_transform * vec4(r, 1.0)).xy;\n";
+                s += "    }\n";
+            } else {
+                s += "    if (u.reflection_flags.x > 1.5) {\n";
+                s += "        v_reflection_coord = in_texcoord;\n";
+                s += "    } else if (u.reflection_flags.x > 0.5) {\n";
+                s += "        vec3 eye = (u.reflection_world_view * vec4(in_position, 1.0)).xyz;\n";
+                s += "        vec3 r = normalize(eye);\n";
+                s += "        v_reflection_coord = (u.reflection_transform * vec4(r, 1.0)).xy;\n";
+                s += "    }\n";
+            }
+        }
+        s += "}\n";
+    }
+    return s;
+}
+
+std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
+                                    uint32_t program_count)
+{
+    const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool four_coords = (layout.texcoord_count == 4u);
+    const bool two_coords = (layout.texcoord_count == 2u);
+
+    std::string s;
+    s.reserve(4096);
+    s += "#version 450\n";
+    s += kGlslUniformsFragment;
+    s += "layout(set = 2, binding = 0) uniform sampler2D guest_texture;\n";
+    s += "layout(set = 2, binding = 1) uniform sampler2D alpha_mask;\n";
+    s += "layout(location = 0) in vec4 v_color;\n";
+    s += "layout(location = 1) in vec2 v_texcoord;\n";
+    s += "layout(location = 2) in vec2 v_reflection_coord;\n";
+    if (four_coords) {
+        s += "layout(location = 3) in vec2 v_texcoord1;\n";
+        s += "layout(location = 4) in vec2 v_texcoord2;\n";
+        s += "layout(location = 5) in vec2 v_texcoord3;\n";
+    } else if (two_coords) {
+        s += "layout(location = 3) in vec2 v_texcoord1;\n";
+    }
+    if (program_count) {
+        s += "layout(location = 6) in vec2 v_program_q;\n";
+    }
+
+    s += "layout(location = 0) out vec4 out_color;\n";
+    s += "void main() {\n";
+    s += "    vec2 tc = v_texcoord;\n";
+    s += "    vec2 refl_tc = v_reflection_coord;\n";
+    if (program_count) {
+        s += "    tc /= v_program_q.x;\n";
+        s += "    if (u.reflection_flags.z > 0.5) refl_tc /= v_program_q.y;\n";
+    }
+    s += "    vec4 shaded = v_color;\n";
+    s += "    if (u.reflection_flags.x > 0.5) {\n";
+    s += "        vec4 base = texture(guest_texture, tc);\n";
+    s += "        base.a *= u.reflection_diffuse.a;\n";
+    s += "        vec4 env = texture(alpha_mask, refl_tc);\n";
+    s += "        vec4 diffuse = u.reflection_diffuse;\n";
+    s += "        if (u.directional_flags.x > 0.5) diffuse.rgb = v_color.rgb;\n";
+    s += "        shaded = mix(base, env, env.a) * diffuse;\n";
+    s += "    } else\n";
+    if (four_coords) {
+        s += "    if (u.texture_flags.z > 0.5) {\n";
+        s += "        vec4 t0 = texture(guest_texture, tc * u.texture_flags.xy);\n";
+        s += "        vec4 t1 = texture(guest_texture, v_texcoord1 * u.texture_flags.xy);\n";
+        s += "        vec4 t2 = texture(guest_texture, v_texcoord2 * u.texture_flags.xy);\n";
+        s += "        vec4 t3 = texture(guest_texture, v_texcoord3 * u.texture_flags.xy);\n";
+        s += "        shaded = 0.5 * (clamp((128.0 / 255.0) * (t0 + t1), 0.0, 1.0) + clamp((128.0 / 255.0) * (t2 + t3), 0.0, 1.0));\n";
+        s += "    } else\n";
+    } else if (two_coords) {
+        s += "    if (u.texture_flags.w > 0.5) {\n";
+        s += "        vec3 rgb = texture(guest_texture, v_texcoord1 * u.texture_flags.xy).rgb;\n";
+        s += "        float alpha = texture(alpha_mask, tc * u.lighting_flags.zw).a;\n";
+        s += "        shaded = v_color * vec4(rgb, alpha);\n";
+        s += "    } else\n";
+    }
+    s += "    if (u.blend_flags.y == 1.0) {\n";
+    s += "        shaded = u.texture_factor;\n";
+    s += "    } else if (u.draw_flags.x > 0.5) {\n";
+    s += "        vec4 sampled = texture(guest_texture, tc * u.texture_flags.xy);\n";
+    s += "        if (u.lighting_flags.y > 0.5) sampled.rgb = vec3(1.0);\n";
+    s += has_diffuse ? "        shaded *= sampled;\n" : "        shaded = sampled;\n";
+    s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= v_color.rgb;\n";
+    s += "        if (u.lighting_flags.x > 0.5) shaded.rgb = vec3(0.0);\n";
+    s += "        shaded.a = (u.blend_flags.w > 0.5) ? u.blend_flags.z : (shaded.a * u.blend_flags.z);\n";
+    s += "        if (u.blend_flags.y > 1.5) shaded *= u.texture_factor;\n";
+    s += "    }\n";
+    s += "    if (u.reflection_flags.z > 0.5) {\n";
+    s += "        shaded.a *= texture(alpha_mask, refl_tc, u.reflection_flags.w).a;\n";
+    s += "    }\n";
+    s += "    if (u.draw_flags.y > 0.5) {\n";
+    s += "        float alpha = round(clamp(shaded.a, 0.0, 1.0) * 255.0);\n";
+    s += "        float ref = u.draw_flags.w;\n";
+    s += "        int func = int(u.draw_flags.z);\n";
+    s += "        bool alpha_pass = (func == 7) ||\n";
+    s += "            (func == 1 && alpha < ref) ||\n";
+    s += "            (func == 2 && alpha == ref) ||\n";
+    s += "            (func == 3 && alpha <= ref) ||\n";
+    s += "            (func == 4 && alpha > ref) ||\n";
+    s += "            (func == 5 && alpha != ref) ||\n";
+    s += "            (func == 6 && alpha >= ref);\n";
+    s += "        if (!alpha_pass) discard;\n";
+    s += "    }\n";
+    s += "    out_color = shaded;\n";
+    s += "}\n";
+
+    return s;
+}
+
+#if !defined(_WIN32)
+// Vulkan takes SPIR-V; the generated GLSL is compiled at runtime by shaderc,
+// loaded on demand so the runner has no build-time dependency on it. SteamOS
+// and most distributions ship libshaderc_shared.
+typedef void *(*ShadercCompilerInitFn)();
+typedef void *(*ShadercCompileOptionsInitFn)();
+typedef void *(*ShadercCompileIntoSpvFn)(void *, const char *, size_t, int, const char *, const char *, void *);
+typedef int (*ShadercResultStatusFn)(void *);
+typedef const char *(*ShadercResultErrorFn)(void *);
+typedef const char *(*ShadercResultBytesFn)(void *);
+typedef size_t (*ShadercResultLengthFn)(void *);
+typedef void (*ShadercResultReleaseFn)(void *);
+
+static ShadercCompilerInitFn s_shaderc_init = nullptr;
+static ShadercCompileOptionsInitFn s_shaderc_opt_init = nullptr;
+static ShadercCompileIntoSpvFn s_shaderc_compile = nullptr;
+static ShadercResultStatusFn s_shaderc_status = nullptr;
+static ShadercResultErrorFn s_shaderc_error = nullptr;
+static ShadercResultBytesFn s_shaderc_bytes = nullptr;
+static ShadercResultLengthFn s_shaderc_length = nullptr;
+static ShadercResultReleaseFn s_shaderc_res_release = nullptr;
+
+static bool loadShadercSymbols() {
+    void *h = dlopen("libshaderc_shared.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libshaderc_shared.so", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libshaderc.so.1", RTLD_NOW | RTLD_LOCAL);  // Debian and Ubuntu name
+    if (!h) return false;
+    s_shaderc_init = (ShadercCompilerInitFn)dlsym(h, "shaderc_compiler_initialize");
+    s_shaderc_opt_init = (ShadercCompileOptionsInitFn)dlsym(h, "shaderc_compile_options_initialize");
+    s_shaderc_compile = (ShadercCompileIntoSpvFn)dlsym(h, "shaderc_compile_into_spv");
+    s_shaderc_status = (ShadercResultStatusFn)dlsym(h, "shaderc_result_get_compilation_status");
+    s_shaderc_error = (ShadercResultErrorFn)dlsym(h, "shaderc_result_get_error_message");
+    s_shaderc_bytes = (ShadercResultBytesFn)dlsym(h, "shaderc_result_get_bytes");
+    s_shaderc_length = (ShadercResultLengthFn)dlsym(h, "shaderc_result_get_length");
+    s_shaderc_res_release = (ShadercResultReleaseFn)dlsym(h, "shaderc_result_release");
+    if (!s_shaderc_init || !s_shaderc_compile || !s_shaderc_status || !s_shaderc_bytes ||
+        !s_shaderc_length || !s_shaderc_res_release) {
+        s_shaderc_compile = nullptr;
+        return false;
+    }
+    return true;
+}
+
+// The boot-shader thread and the render thread both compile; load shaderc once.
+static bool loadShaderc() {
+    static const bool loaded = loadShadercSymbols();
+    return loaded;
+}
+#endif
+
+#if !defined(_WIN32)
+static void *s_persistent_compiler = nullptr;
+static void *s_persistent_options = nullptr;
+static std::mutex s_compiler_mutex;
+
+static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_GPUShaderStage stage) {
+    std::vector<uint32_t> spv;
+    if (!loadShaderc()) {
+        std::fprintf(stderr, "[presenter] Vulkan shaders need shaderc (libshaderc_shared.so.1, "
+                             "or libshaderc.so.1 from the libshaderc1 package)\n");
+        return spv;
+    }
+    std::lock_guard<std::mutex> lock(s_compiler_mutex);
+    if (!s_persistent_compiler) {
+        s_persistent_compiler = s_shaderc_init();
+        if (s_shaderc_opt_init) {
+            s_persistent_options = s_shaderc_opt_init();
+        }
+    }
+    if (!s_persistent_compiler) return spv;
+    const int kind = (stage == SDL_GPU_SHADERSTAGE_VERTEX) ? 0 : 1; // shaderc_vertex_shader, shaderc_fragment_shader
+    void *result = s_shaderc_compile(s_persistent_compiler, source.c_str(), source.size(), kind, "main.glsl", "main", s_persistent_options);
+    if (!result) return spv;
+    if (s_shaderc_status(result) == 0) {
+        const size_t len = s_shaderc_length(result);
+        if (len >= 4 && (len % 4 == 0)) {
+            spv.resize(len / 4);
+            std::memcpy(spv.data(), s_shaderc_bytes(result), len);
+        }
+    } else if (s_shaderc_error) {
+        std::fprintf(stderr, "[presenter] shaderc compilation failed: %s\n", s_shaderc_error(result));
+    }
+    s_shaderc_res_release(result);
+    return spv;
+}
+#endif
+
+// Failures are cached too, so a shader that cannot build is not retried on every draw.
+// The boot-shader thread may finish the same key first; keep its pair and drop ours.
+ShaderPair rememberShaderPair(RecompD3dPresenter *presenter, uint64_t key, ShaderPair pair)
+{
+    std::lock_guard<std::mutex> lock(presenter->shader_mutex);
+    const auto [it, inserted] = presenter->shader_cache.emplace(key, pair);
+    if (!inserted) {
+        if (pair.vertex_shader) SDL_ReleaseGPUShader(presenter->device, pair.vertex_shader);
+        if (pair.fragment_shader) SDL_ReleaseGPUShader(presenter->device, pair.fragment_shader);
+    }
+    return it->second;
+}
+
 ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dVertexLayout &layout,
                                  uint32_t fvf, uint32_t program_count, const uint32_t (*program_tokens)[4])
 {
@@ -1002,15 +1497,62 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
             return it->second;
         }
     }
+    // The D3D11 presenter accepts vertex programs only with this FVF.
+    if (program_count && fvf != 0x112u) return rememberShaderPair(presenter, shader_key, {});
+
+    if (presenter->use_spirv) {
+        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens);
+        if (vs_source.empty()) return rememberShaderPair(presenter, shader_key, {});
+        const std::vector<uint32_t> vs_spv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
+        const std::vector<uint32_t> fs_spv = compileGlslToSpirv(
+            buildGlslFragmentShader(layout, fvf, program_count), SDL_GPU_SHADERSTAGE_FRAGMENT);
+        if (vs_spv.empty() || fs_spv.empty()) {
+            std::fprintf(stderr, "[presenter] failed to compile GLSL->SPIR-V shader fvf=0x%08X\n", fvf);
+            return rememberShaderPair(presenter, shader_key, {});
+        }
+        const uint32_t *vs_code = vs_spv.data();
+        const size_t vs_size = vs_spv.size() * sizeof(uint32_t);
+        const uint32_t *fs_code = fs_spv.data();
+        const size_t fs_size = fs_spv.size() * sizeof(uint32_t);
+
+        SDL_GPUShaderCreateInfo vs_info{};
+        vs_info.code_size = vs_size;
+        vs_info.code = reinterpret_cast<const Uint8 *>(vs_code);
+        vs_info.entrypoint = "main";
+        vs_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        vs_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        vs_info.num_uniform_buffers = program_count ? 2 : 1;
+        SDL_GPUShader *vs = SDL_CreateGPUShader(presenter->device, &vs_info);
+
+        SDL_GPUShaderCreateInfo fs_info{};
+        fs_info.code_size = fs_size;
+        fs_info.code = reinterpret_cast<const Uint8 *>(fs_code);
+        fs_info.entrypoint = "main";
+        fs_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        fs_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+        fs_info.num_samplers = 2;
+        fs_info.num_uniform_buffers = 1;
+        SDL_GPUShader *fs = SDL_CreateGPUShader(presenter->device, &fs_info);
+
+        if (!vs || !fs) {
+            std::fprintf(stderr, "[presenter] failed to create SPIR-V shader fvf=0x%08X: %s\n", fvf, SDL_GetError());
+            if (vs) SDL_ReleaseGPUShader(presenter->device, vs);
+            if (fs) SDL_ReleaseGPUShader(presenter->device, fs);
+            return rememberShaderPair(presenter, shader_key, {});
+        }
+
+        return rememberShaderPair(presenter, shader_key, {vs, fs});
+    }
 
     std::string msl = buildMslShader(layout, fvf, program_count, program_tokens);
+    if (msl.empty()) return rememberShaderPair(presenter, shader_key, {});
     SDL_GPUShaderCreateInfo vs_info{};
     vs_info.code_size = msl.size();
     vs_info.code = reinterpret_cast<const Uint8 *>(msl.c_str());
     vs_info.entrypoint = "vs_main";
     vs_info.format = SDL_GPU_SHADERFORMAT_MSL;
     vs_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
-    vs_info.num_uniform_buffers = 1;
+    vs_info.num_uniform_buffers = program_count ? 2 : 1;
     SDL_GPUShader *vs = SDL_CreateGPUShader(presenter->device, &vs_info);
 
     SDL_GPUShaderCreateInfo fs_info{};
@@ -1027,15 +1569,10 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         std::fprintf(stderr, "[presenter] failed to compile MSL shader fvf=0x%08X: %s\n", fvf, SDL_GetError());
         if (vs) SDL_ReleaseGPUShader(presenter->device, vs);
         if (fs) SDL_ReleaseGPUShader(presenter->device, fs);
-        return {nullptr, nullptr};
+        return rememberShaderPair(presenter, shader_key, {});
     }
 
-    ShaderPair pair{vs, fs};
-    {
-        std::lock_guard<std::mutex> lock(presenter->shader_mutex);
-        presenter->shader_cache[shader_key] = pair;
-    }
-    return pair;
+    return rememberShaderPair(presenter, shader_key, {vs, fs});
 }
 
 void precompileBootShaders(RecompD3dPresenter *p)
@@ -1048,50 +1585,77 @@ void precompileBootShaders(RecompD3dPresenter *p)
     }
 }
 
-SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, const QueuedDraw &q,
-                                             SDL_GPUTextureFormat color_fmt, SDL_GPUTextureFormat depth_fmt,
+SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
+                                             const RecompD3dPresenterDrawCommand &draw,
+                                             const RecompD3dVertexLayout &layout,
+                                             SDL_GPUTextureFormat color_fmt,
+                                             SDL_GPUTextureFormat depth_fmt,
                                              SDL_GPUSampleCount sample_count)
 {
-    const bool is_strip = (q.draw.primitive_type == RECOMP_D3D_PT_TRIANGLESTRIP);
-    uint64_t prog_hash = q.draw.program_count ? programHash(q.draw.program, q.draw.program_count) : 0u;
+    const bool is_strip = (draw.primitive_type == RECOMP_D3D_PT_TRIANGLESTRIP);
+    uint64_t prog_hash = draw.program_count ? programHash(draw.program, draw.program_count) : 0u;
 
     PipelineKey pkey{};
-    pkey.fvf = q.draw.fvf;
-    pkey.vertex_stride = q.draw.vertex_stride;
-    pkey.program_count = q.draw.program_count;
+    pkey.fvf = draw.fvf;
+    pkey.vertex_stride = draw.vertex_stride;
+    pkey.program_count = draw.program_count;
     pkey.program_hash = prog_hash;
     pkey.is_strip = is_strip;
-    pkey.cull_mode = q.draw.cull_mode;
+    pkey.cull_mode = draw.cull_mode;
     pkey.color_format = color_fmt;
     pkey.depth_format = depth_fmt;
     pkey.sample_count = sample_count;
-    pkey.alpha_to_coverage = sample_count != SDL_GPU_SAMPLECOUNT_1 && q.draw.depth.alpha_test_enable;
+    pkey.alpha_to_coverage = sample_count != SDL_GPU_SAMPLECOUNT_1 && draw.depth.alpha_test_enable;
 
-    pkey.depth_test_enable = q.draw.depth.depth_test_enable;
-    pkey.depth_write_enable = q.draw.depth.depth_write_enable;
-    pkey.depth_func = q.draw.depth.depth_func;
-    pkey.stencil_enable = q.draw.depth.stencil_enable;
-    pkey.stencil_read_mask = static_cast<uint8_t>(q.draw.depth.stencil_read_mask);
-    pkey.stencil_write_mask = static_cast<uint8_t>(q.draw.depth.stencil_write_mask);
-    pkey.stencil_func = q.draw.depth.stencil_func;
-    pkey.stencil_fail = q.draw.depth.stencil_fail;
-    pkey.stencil_zfail = q.draw.depth.stencil_zfail;
-    pkey.stencil_pass = q.draw.depth.stencil_pass;
+    pkey.depth_test_enable = draw.depth.depth_test_enable;
+    pkey.depth_write_enable = draw.depth.depth_write_enable;
+    pkey.depth_func = (pkey.depth_test_enable || pkey.depth_write_enable)
+        ? draw.depth.depth_func : RECOMP_D3D_COMPARE_LESS_EQUAL;
 
-    pkey.blend_enable = q.draw.blend.blend_enable;
-    pkey.color_write_mask = q.draw.blend.color_write_mask;
-    pkey.src_factor = q.draw.blend.src_factor;
-    pkey.dst_factor = q.draw.blend.dst_factor;
-    pkey.blend_op = q.draw.blend.op;
+    pkey.stencil_enable = draw.depth.stencil_enable;
+    if (pkey.stencil_enable) {
+        pkey.stencil_read_mask = static_cast<uint8_t>(draw.depth.stencil_read_mask);
+        pkey.stencil_write_mask = static_cast<uint8_t>(draw.depth.stencil_write_mask);
+        pkey.stencil_func = draw.depth.stencil_func;
+        pkey.stencil_fail = draw.depth.stencil_fail;
+        pkey.stencil_zfail = draw.depth.stencil_zfail;
+        pkey.stencil_pass = draw.depth.stencil_pass;
+    } else {
+        pkey.stencil_read_mask = 0xff;
+        pkey.stencil_write_mask = 0xff;
+        pkey.stencil_func = RECOMP_D3D_COMPARE_ALWAYS;
+        pkey.stencil_fail = RECOMP_D3D_STENCIL_KEEP;
+        pkey.stencil_zfail = RECOMP_D3D_STENCIL_KEEP;
+        pkey.stencil_pass = RECOMP_D3D_STENCIL_KEEP;
+    }
+
+    pkey.blend_enable = draw.blend.blend_enable;
+    pkey.color_write_mask = draw.blend.color_write_mask;
+    if (pkey.blend_enable) {
+        pkey.src_factor = draw.blend.src_factor;
+        pkey.dst_factor = draw.blend.dst_factor;
+        pkey.blend_op = draw.blend.op;
+    } else {
+        pkey.src_factor = RECOMP_D3D_BLEND_ONE;
+        pkey.dst_factor = RECOMP_D3D_BLEND_ZERO;
+        pkey.blend_op = RECOMP_D3D_BLEND_OP_ADD;
+    }
+
+    if (presenter->last_pipeline != nullptr && presenter->last_pkey == pkey) {
+        return presenter->last_pipeline;
+    }
 
     auto it = presenter->pipelines.find(pkey);
     if (it != presenter->pipelines.end()) {
+        presenter->last_pkey = pkey;
+        presenter->last_pipeline = it->second;
         return it->second;
     }
 
-    ShaderPair shaders = getOrCreateShaderPair(presenter, q.layout, q.draw.fvf, q.draw.program_count,
-                                               q.draw.program_count ? q.draw.program : nullptr);
+    ShaderPair shaders = getOrCreateShaderPair(presenter, layout, draw.fvf, draw.program_count,
+                                               draw.program_count ? draw.program : nullptr);
     if (!shaders.vertex_shader || !shaders.fragment_shader) {
+        presenter->pipelines[pkey] = nullptr;  // like D3D11, do not retry a failed draw state
         return nullptr;
     }
 
@@ -1104,10 +1668,10 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
 
     // Rasterizer state
     pinfo.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    if (q.draw.cull_mode == RECOMP_D3D_CULL_NONE) {
+    if (draw.cull_mode == RECOMP_D3D_CULL_NONE) {
         pinfo.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         pinfo.rasterizer_state.front_face = SDL_GPU_FRONTFACE_CLOCKWISE;
-    } else if (q.draw.cull_mode == RECOMP_D3D_CULL_CLOCKWISE) {
+    } else if (draw.cull_mode == RECOMP_D3D_CULL_CLOCKWISE) {
         pinfo.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pinfo.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     } else {
@@ -1149,7 +1713,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
     // Vertex input layout
     SDL_GPUVertexBufferDescription vb_desc{};
     vb_desc.slot = 0;
-    vb_desc.pitch = q.draw.vertex_stride;
+    vb_desc.pitch = draw.vertex_stride;
     vb_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
     SDL_GPUVertexAttribute attributes[8]{};
@@ -1158,46 +1722,46 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
     // Position (attr 0)
     attributes[attr_count].location = 0;
     attributes[attr_count].buffer_slot = 0;
-    attributes[attr_count].format = q.layout.pretransformed ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4 : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-    attributes[attr_count].offset = q.layout.position_offset;
+    attributes[attr_count].format = layout.pretransformed ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4 : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+    attributes[attr_count].offset = layout.position_offset;
     ++attr_count;
 
     // Weights (attr 1)
-    if (q.layout.blend_weight_count != 0u) {
+    if (layout.blend_weight_count != 0u) {
         attributes[attr_count].location = 1;
         attributes[attr_count].buffer_slot = 0;
-        attributes[attr_count].format = (q.layout.blend_weight_count == 1u) ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT :
-            ((q.layout.blend_weight_count == 2u) ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2 : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3);
+        attributes[attr_count].format = (layout.blend_weight_count == 1u) ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT :
+            ((layout.blend_weight_count == 2u) ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2 : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3);
         attributes[attr_count].offset = 12u;
         ++attr_count;
     }
 
     // Normal (attr 2)
-    if (q.layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
+    if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
         attributes[attr_count].location = 2;
         attributes[attr_count].buffer_slot = 0;
         attributes[attr_count].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-        attributes[attr_count].offset = q.layout.normal_offset;
+        attributes[attr_count].offset = layout.normal_offset;
         ++attr_count;
     }
 
     // Diffuse (attr 3)
-    if (q.layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
+    if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
         attributes[attr_count].location = 3;
         attributes[attr_count].buffer_slot = 0;
         attributes[attr_count].format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM;
-        attributes[attr_count].offset = q.layout.diffuse_offset;
+        attributes[attr_count].offset = layout.diffuse_offset;
         ++attr_count;
     }
 
     // Texcoords (attr 4..7)
-    if (q.layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT) {
-        const uint32_t tc_count = (q.layout.texcoord_count == 4u) ? 4u : ((q.layout.texcoord_count == 2u) ? 2u : 1u);
+    if (layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT) {
+        const uint32_t tc_count = (layout.texcoord_count == 4u) ? 4u : ((layout.texcoord_count == 2u) ? 2u : 1u);
         for (uint32_t i = 0u; i < tc_count; ++i) {
             attributes[attr_count].location = 4u + i;
             attributes[attr_count].buffer_slot = 0;
             attributes[attr_count].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-            attributes[attr_count].offset = q.layout.texcoord_offset + i * 8u;
+            attributes[attr_count].offset = layout.texcoord_offset + i * 8u;
             ++attr_count;
         }
     }
@@ -1209,11 +1773,14 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter, cons
 
     SDL_GPUGraphicsPipeline *pipe = SDL_CreateGPUGraphicsPipeline(presenter->device, &pinfo);
     if (!pipe) {
-        std::fprintf(stderr, "[presenter] failed to create pipeline fvf=0x%08X: %s\n", q.draw.fvf, SDL_GetError());
+        std::fprintf(stderr, "[presenter] failed to create pipeline fvf=0x%08X: %s\n", draw.fvf, SDL_GetError());
+        presenter->pipelines[pkey] = nullptr;
         return nullptr;
     }
 
     presenter->pipelines[pkey] = pipe;
+    presenter->last_pkey = pkey;
+    presenter->last_pipeline = pipe;
     return pipe;
 }
 
@@ -1231,6 +1798,7 @@ void flushSegment(RecompD3dPresenter *presenter)
             seg.draws.clear();
             seg.vertex_data.clear();
             seg.index_data.clear();
+            seg.uniform_data.clear();
             return;
         }
     }
@@ -1268,25 +1836,14 @@ void flushSegment(RecompD3dPresenter *presenter)
     }
 
     const bool is_main = (seg.target_color == presenter->backbuffer_color);
-    const bool use_msaa = is_main && (presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1);
-    const SDL_GPUSampleCount pass_samples = use_msaa ? presenter->msaa_samples : SDL_GPU_SAMPLECOUNT_1;
-    const SDL_GPUTextureFormat color_fmt = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
     const bool use_depth = (seg.target_depth != nullptr);
-    const SDL_GPUTextureFormat depth_fmt = use_depth ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_INVALID;
-
-    // Pre-create/warm all graphics pipelines before opening the render pass
-    for (const QueuedDraw &q : seg.draws) {
-        getOrCreatePipeline(presenter, q, color_fmt, depth_fmt, pass_samples);
-    }
 
     SDL_GPUColorTargetInfo color_info{};
     color_info.texture = seg.target_color;
     color_info.load_op = SDL_GPU_LOADOP_LOAD;
-    if (use_msaa) {
-        color_info.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
-        color_info.resolve_texture = presenter->backbuffer_resolve;
-    } else {
-        color_info.store_op = SDL_GPU_STOREOP_STORE;
+    color_info.store_op = SDL_GPU_STOREOP_STORE;
+    if (is_main) {
+        presenter->backbuffer_resolved = false;
     }
 
     SDL_GPUDepthStencilTargetInfo depth_info{};
@@ -1305,41 +1862,91 @@ void flushSegment(RecompD3dPresenter *presenter)
         SDL_Rect scissor{0, 0, static_cast<int>(seg.target_w), static_cast<int>(seg.target_h)};
         SDL_SetGPUScissor(rpass, &scissor);
 
+        SDL_GPUGraphicsPipeline *last_pipe = nullptr;
+        uint32_t last_v_offset = UINT32_MAX;
+        uint32_t last_i_offset = UINT32_MAX;
+        uint32_t last_vs_offset = UINT32_MAX;
+        uint32_t last_vs_size = 0;
+        uint32_t last_fs_offset = UINT32_MAX;
+        uint32_t last_program_offset = UINT32_MAX;
+        uint32_t last_fs_size = 0;
+        SDL_GPUTexture *last_t0 = nullptr;
+        SDL_GPUSampler *last_s0 = nullptr;
+        SDL_GPUTexture *last_t1 = nullptr;
+        SDL_GPUSampler *last_s1 = nullptr;
+        // Wider than the values they track, so the first draw always sets them.
+        uint64_t last_constant_color = UINT64_MAX;
+        int last_stencil_ref = -1;
+
         for (const QueuedDraw &q : seg.draws) {
-            SDL_GPUGraphicsPipeline *pipe = getOrCreatePipeline(presenter, q, color_fmt, depth_fmt, pass_samples);
-            if (!pipe) continue;
+            if (!q.pipeline) continue;
 
-            SDL_BindGPUGraphicsPipeline(rpass, pipe);
+            if (q.pipeline != last_pipe) {
+                SDL_BindGPUGraphicsPipeline(rpass, q.pipeline);
+                last_pipe = q.pipeline;
+            }
 
-            SDL_GPUBufferBinding vbinding{presenter->draw_vertex_buffer, seg_v_base + q.vertex_offset};
-            SDL_BindGPUVertexBuffers(rpass, 0, &vbinding, 1);
+            const uint32_t cur_v_offset = seg_v_base + q.vertex_offset;
+            if (cur_v_offset != last_v_offset) {
+                SDL_GPUBufferBinding vbinding{presenter->draw_vertex_buffer, cur_v_offset};
+                SDL_BindGPUVertexBuffers(rpass, 0, &vbinding, 1);
+                last_v_offset = cur_v_offset;
+            }
 
-            SDL_GPUBufferBinding ibinding{presenter->draw_index_buffer, seg_i_base + q.index_offset};
-            SDL_BindGPUIndexBuffer(rpass, &ibinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+            const uint32_t cur_i_offset = seg_i_base + q.index_offset;
+            if (cur_i_offset != last_i_offset) {
+                SDL_GPUBufferBinding ibinding{presenter->draw_index_buffer, cur_i_offset};
+                SDL_BindGPUIndexBuffer(rpass, &ibinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+                last_i_offset = cur_i_offset;
+            }
 
-            SDL_PushGPUVertexUniformData(cmdbuf, 0, q.draw_constants, sizeof(q.draw_constants));
-            SDL_PushGPUFragmentUniformData(cmdbuf, 0, q.draw_constants, sizeof(q.draw_constants));
+            if (q.uniform_offset != last_vs_offset || q.vs_uniform_size != last_vs_size) {
+                SDL_PushGPUVertexUniformData(cmdbuf, 0, &seg.uniform_data[q.uniform_offset], q.vs_uniform_size * sizeof(float));
+                last_vs_offset = q.uniform_offset;
+                last_vs_size = q.vs_uniform_size;
+            }
 
-            SDL_GPUSampler *s0 = (q.draw.four_tap_filter || q.draw.has_alpha_mask || q.draw.program_count)
-                ? presenter->filter_sampler
-                : lookupDrawSampler(presenter, q.draw.address_u, q.draw.address_v);
-            SDL_GPUSampler *s1 = q.draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler;
+            if (q.program_offset != kNoProgramConstants && q.program_offset != last_program_offset) {
+                SDL_PushGPUVertexUniformData(cmdbuf, 1, &seg.uniform_data[q.program_offset], kProgramConstantFloats * sizeof(float));
+                last_program_offset = q.program_offset;
+            }
 
-            SDL_GPUTextureSamplerBinding samplers[2] = {
-                {q.texture ? q.texture : presenter->dummy_texture, s0},
-                {q.mask_texture ? q.mask_texture : presenter->dummy_texture, s1}
-            };
-            SDL_BindGPUFragmentSamplers(rpass, 0, samplers, 2);
+            if (q.uniform_offset != last_fs_offset || q.fs_uniform_size != last_fs_size) {
+                SDL_PushGPUFragmentUniformData(cmdbuf, 0, &seg.uniform_data[q.uniform_offset], q.fs_uniform_size * sizeof(float));
+                last_fs_offset = q.uniform_offset;
+                last_fs_size = q.fs_uniform_size;
+            }
 
-            const uint32_t color = q.draw.blend.constant_color;
-            SDL_FColor blend_factor = {
-                ((color >> 16u) & 255u) / 255.0f,
-                ((color >> 8u) & 255u) / 255.0f,
-                (color & 255u) / 255.0f,
-                ((color >> 24u) & 255u) / 255.0f
-            };
-            SDL_SetGPUBlendConstants(rpass, blend_factor);
-            SDL_SetGPUStencilReference(rpass, static_cast<Uint8>(q.draw.depth.stencil_ref));
+            SDL_GPUTexture *t0 = q.texture ? q.texture : presenter->dummy_texture;
+            SDL_GPUTexture *t1 = q.mask_texture ? q.mask_texture : presenter->dummy_texture;
+            if (t0 != last_t0 || q.sampler0 != last_s0 || t1 != last_t1 || q.sampler1 != last_s1) {
+                SDL_GPUTextureSamplerBinding samplers[2] = {
+                    {t0, q.sampler0},
+                    {t1, q.sampler1}
+                };
+                SDL_BindGPUFragmentSamplers(rpass, 0, samplers, 2);
+                last_t0 = t0;
+                last_s0 = q.sampler0;
+                last_t1 = t1;
+                last_s1 = q.sampler1;
+            }
+
+            if (q.constant_color != last_constant_color) {
+                const uint32_t color = q.constant_color;
+                SDL_FColor blend_factor = {
+                    ((color >> 16u) & 255u) / 255.0f,
+                    ((color >> 8u) & 255u) / 255.0f,
+                    (color & 255u) / 255.0f,
+                    ((color >> 24u) & 255u) / 255.0f
+                };
+                SDL_SetGPUBlendConstants(rpass, blend_factor);
+                last_constant_color = color;
+            }
+
+            if (q.stencil_ref != last_stencil_ref) {
+                SDL_SetGPUStencilReference(rpass, q.stencil_ref);
+                last_stencil_ref = q.stencil_ref;
+            }
 
             SDL_DrawGPUIndexedPrimitives(rpass, q.index_count, 1, 0, 0, 0);
         }
@@ -1352,6 +1959,7 @@ void flushSegment(RecompD3dPresenter *presenter)
     seg.draws.clear();
     seg.vertex_data.clear();
     seg.index_data.clear();
+    seg.uniform_data.clear();
 }
 
 } // namespace
@@ -1423,9 +2031,18 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
 
     const bool headless = std::getenv("RECOMP_HEADLESS") != nullptr ||
                           std::getenv("DOAXBV_HEADLESS") != nullptr;
+    // Steam sets these in Game Mode and on the Deck, where gamescope would
+    // only letterbox a window.
+    const auto steam_flag = [](const char *name) {
+        const char *value = std::getenv(name);
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    };
+    const bool fullscreen = steam_flag("SteamTenfoot") || steam_flag("SteamDeck");
     SDL_WindowFlags win_flags = SDL_WINDOW_RESIZABLE;
     if (headless) {
         win_flags |= SDL_WINDOW_HIDDEN;
+    } else if (fullscreen) {
+        win_flags |= SDL_WINDOW_FULLSCREEN;
     }
 
     SDL_Window *window = SDL_CreateWindow(
@@ -1438,9 +2055,11 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
-    const auto present_mode = immediate_present_setting &&
-        SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_MAILBOX)
-        ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
+    SDL_GPUPresentMode present_mode = SDL_GPU_PRESENTMODE_VSYNC;
+    if (preferMailbox(immediate_present_setting) &&
+        SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_MAILBOX)) {
+        present_mode = SDL_GPU_PRESENTMODE_MAILBOX;
+    }
     SDL_SetGPUSwapchainParameters(
         device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present_mode);
 
@@ -1569,6 +2188,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.max_lod = 1000.0f;  // the zero default would sample only the base mip level
     SDL_GPUSampler *filter_sampler = SDL_CreateGPUSampler(device, &sampler_info);
 
     sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
@@ -1641,7 +2261,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->config = *config;
     p->scale = scale;
     p->widescreen = widescreen;
+    p->use_spirv = (SDL_GetGPUShaderFormats(device) & SDL_GPU_SHADERFORMAT_SPIRV) != 0;
     p->owner_thread = std::this_thread::get_id();
+    const char *performance = std::getenv("RECOMP_PERF_COUNTER");
+    p->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
     p->window = window;
     p->device = device;
     p->backbuffer_color = backbuffer_color;
@@ -1736,12 +2359,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPUColorTargetInfo color_info{};
         color_info.texture = target_color;
         const bool is_main = (target_color == presenter->backbuffer_color);
-        const bool use_msaa = is_main && (presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1);
-        if (use_msaa) {
-            color_info.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
-            color_info.resolve_texture = presenter->backbuffer_resolve;
-        } else {
-            color_info.store_op = SDL_GPU_STOREOP_STORE;
+        color_info.store_op = SDL_GPU_STOREOP_STORE;
+        if (is_main) {
+            presenter->backbuffer_resolved = false;
         }
         if (clear.clear_color) {
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -1778,6 +2398,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
         flushSegment(presenter);
+        ensureBackbufferResolved(presenter);
 
         pumpEvents(presenter);
         if (presenter->close_requested) {
@@ -1831,6 +2452,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
         ++presenter->present_count;
+
+        if (presenter->performance_counter) reportPerformance(presenter);
+
         return RECOMP_D3D_PRESENTER_OK;
     }
 
@@ -1959,9 +2583,143 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
         const uint32_t i_size = queued_index_count * sizeof(uint16_t);
 
+        const bool is_main = (target_color == presenter->backbuffer_color);
+        const bool use_msaa = is_main && (presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1);
+        const SDL_GPUSampleCount pass_samples = use_msaa ? presenter->msaa_samples : SDL_GPU_SAMPLECOUNT_1;
+        const SDL_GPUTextureFormat color_fmt = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+        const bool use_depth = (target_depth != nullptr);
+        const SDL_GPUTextureFormat depth_fmt = use_depth ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_INVALID;
+
+        // A draw whose shader or pipeline failed is skipped, as before.
+        SDL_GPUGraphicsPipeline *pipeline = getOrCreatePipeline(presenter, draw, layout, color_fmt, depth_fmt, pass_samples);
+        if (!pipeline) {
+            vdata.resize(v_offset);
+            idata.resize(i_offset);
+            return RECOMP_D3D_PRESENTER_OK;
+        }
+
+        SDL_GPUSampler *s0 = (draw.four_tap_filter || draw.has_alpha_mask || draw.program_count)
+            ? presenter->filter_sampler
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v);
+        // Like D3D11, the reflection environment map uses the draw's own sampler. GLSL binds
+        // one sampler per texture, so slot 1 carries it.
+        SDL_GPUSampler *s1 = draw.program_alpha_mask ? presenter->program_mask_sampler
+            : (draw.has_reflection && !draw.has_alpha_mask) ? s0 : presenter->filter_sampler;
+
+        float constants[kTransformUniformFloats]{};
+
+        // Setup draw constants matching D3D11 layout
+        std::memcpy(constants, draw.transform, sizeof(draw.transform));
+        std::memcpy(constants + 16, draw.blend_transforms, sizeof(draw.blend_transforms));
+
+        if (layout.pretransformed || draw.program_count) {
+            std::memset(constants, 0, sizeof(draw.transform));
+            const float guest_w = draw.target.offscreen ? target_w : static_cast<float>(presenter->config.width);
+            const float guest_h = draw.target.offscreen ? target_h : static_cast<float>(presenter->config.height);
+            constants[0] = 2.0f / guest_w;
+            constants[5] = -2.0f / guest_h;
+            constants[10] = 1.0f;
+            constants[12] = -1.0f + 0.5f * constants[0];
+            constants[13] = 1.0f + 0.5f * constants[5];
+            constants[14] = 0.0f;
+            constants[15] = 1.0f;
+        }
+
+        if (draw.program_count) {
+            for (unsigned axis = 0; axis < 2; ++axis) {
+                const float scale = draw.program_constants[58][axis];
+                if (std::isfinite(scale) && scale != 0.0f) {
+                    constants[axis * 5] = 1.0f / scale;
+                    constants[12 + axis] = -draw.program_constants[59][axis] / scale;
+                }
+            }
+            const float depth_scale = draw.program_constants[58][2];
+            if (std::isfinite(depth_scale) && depth_scale > 0.0f) {
+                constants[10] = 1.0f / depth_scale;
+                constants[14] = -draw.program_constants[59][2] / depth_scale;
+            }
+            constants[138] = draw.program_alpha_mask ? 1.0f : 0.0f;
+            constants[139] = draw.program_mask_lod_bias;
+        }
+
+        if (draw.directional.enabled && !draw.program_count) {
+            const auto &light = draw.directional;
+            float *dir_constants = constants + 144;
+            std::memcpy(dir_constants, light.normal_transforms, sizeof(light.normal_transforms));
+            std::memcpy(dir_constants + 64, light.ambient_emissive, sizeof(light.ambient_emissive));
+            std::memcpy(dir_constants + 68, light.material_diffuse, sizeof(light.material_diffuse));
+            std::memcpy(dir_constants + 72, light.directions, sizeof(light.directions));
+            std::memcpy(dir_constants + 104, light.colors, sizeof(light.colors));
+            constants[140] = 1.0f;
+            constants[141] = light.normalize ? 1.0f : 0.0f;
+            constants[142] = static_cast<float>(light.count);
+        }
+
+        constants[64] = (texture != nullptr) ? 1.0f : 0.0f;
+        constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+        constants[66] = static_cast<float>(draw.depth.alpha_func);
+        constants[67] = static_cast<float>(draw.depth.alpha_ref);
+        constants[68] = (draw.blend_weight_count != 0u) ? 1.0f : 0.0f;
+        constants[69] = draw.use_texture_factor ? 1.0f : (draw.modulate_texture_factor ? 2.0f : 0.0f);
+        constants[70] = (draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE) ? 1.0f : draw.material_alpha;
+        constants[71] = (draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE) ? 1.0f : 0.0f;
+
+        constants[72] = ((draw.texture_factor >> 16u) & 0xffu) / 255.0f;
+        constants[73] = ((draw.texture_factor >> 8u) & 0xffu) / 255.0f;
+        constants[74] = (draw.texture_factor & 0xffu) / 255.0f;
+        constants[75] = ((draw.texture_factor >> 24u) & 0xffu) / 255.0f;
+
+        constants[76] = draw.zero_diffuse_rgb ? 1.0f : 0.0f;
+        constants[77] = (draw.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) ? 1.0f : 0.0f;
+        constants[78] = (draw.alpha_mask.linear && draw.alpha_mask.width) ? 1.0f / draw.alpha_mask.width : 1.0f;
+        constants[79] = (draw.alpha_mask.linear && draw.alpha_mask.height) ? 1.0f / draw.alpha_mask.height : 1.0f;
+        constants[80] = (draw.texture.linear && draw.texture.width) ? 1.0f / draw.texture.width : 1.0f;
+        constants[81] = (draw.texture.linear && draw.texture.height) ? 1.0f / draw.texture.height : 1.0f;
+        constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
+        constants[83] = draw.has_alpha_mask ? 1.0f : 0.0f;
+
+        if (draw.has_reflection) {
+            std::memcpy(constants + 84, draw.reflection_world_view, 64u);
+            std::memcpy(constants + 100, draw.reflection_normal, 64u);
+            std::memcpy(constants + 116, draw.reflection_transform, 64u);
+            std::memcpy(constants + 132, draw.reflection_diffuse, 16u);
+            constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
+            constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
+        }
+
+        // Only lit draws push the directional block; vertex programs push
+        // their constants to the second vertex uniform slot.
+        const uint32_t vs_uniform_size = (draw.directional.enabled && !draw.program_count)
+            ? kTransformUniformFloats : kHeaderUniformFloats;
+        const uint32_t fs_uniform_size = kHeaderUniformFloats;
+
+        auto &udata = presenter->segment.uniform_data;
+        uint32_t uniform_offset = 0;
+        bool reused_uniforms = false;
+        if (!presenter->segment.draws.empty()) {
+            const auto &prev = presenter->segment.draws.back();
+            if (prev.vs_uniform_size == vs_uniform_size &&
+                prev.fs_uniform_size == fs_uniform_size &&
+                prev.uniform_offset + vs_uniform_size <= udata.size() &&
+                std::memcmp(constants, &udata[prev.uniform_offset], vs_uniform_size * sizeof(float)) == 0) {
+                uniform_offset = prev.uniform_offset;
+                reused_uniforms = true;
+            }
+        }
+
+        if (!reused_uniforms) {
+            uniform_offset = static_cast<uint32_t>(udata.size());
+            udata.insert(udata.end(), constants, constants + vs_uniform_size);
+        }
+        uint32_t program_offset = kNoProgramConstants;
+        if (draw.program_count) {
+            program_offset = static_cast<uint32_t>(udata.size());
+            const float *program_constants = &draw.program_constants[0][0];
+            udata.insert(udata.end(), program_constants, program_constants + kProgramConstantFloats);
+        }
+
         QueuedDraw q{};
-        q.draw = draw;
-        q.layout = layout;
+        q.pipeline = pipeline;
         q.vertex_offset = v_offset;
         q.vertex_size = v_size;
         q.index_offset = i_offset;
@@ -1969,86 +2727,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         q.index_count = queued_index_count;
         q.texture = texture;
         q.mask_texture = mask_texture;
-
-        // Setup draw constants matching D3D11 layout
-        std::memcpy(q.draw_constants, draw.transform, sizeof(draw.transform));
-        std::memcpy(q.draw_constants + 16, draw.blend_transforms, sizeof(draw.blend_transforms));
-
-        if (layout.pretransformed || draw.program_count) {
-            std::memset(q.draw_constants, 0, sizeof(draw.transform));
-            const float guest_w = draw.target.offscreen ? target_w : static_cast<float>(presenter->config.width);
-            const float guest_h = draw.target.offscreen ? target_h : static_cast<float>(presenter->config.height);
-            q.draw_constants[0] = 2.0f / guest_w;
-            q.draw_constants[5] = -2.0f / guest_h;
-            q.draw_constants[10] = 1.0f;
-            q.draw_constants[12] = -1.0f + 0.5f * q.draw_constants[0];
-            q.draw_constants[13] = 1.0f + 0.5f * q.draw_constants[5];
-            q.draw_constants[14] = 0.0f;
-            q.draw_constants[15] = 1.0f;
-        }
-
-        if (draw.program_count) {
-            std::memcpy(q.draw_constants + 140, draw.program_constants, sizeof(draw.program_constants));
-            for (unsigned axis = 0; axis < 2; ++axis) {
-                const float scale = draw.program_constants[58][axis];
-                if (std::isfinite(scale) && scale != 0.0f) {
-                    q.draw_constants[axis * 5] = 1.0f / scale;
-                    q.draw_constants[12 + axis] = -draw.program_constants[59][axis] / scale;
-                }
-            }
-            const float depth_scale = draw.program_constants[58][2];
-            if (std::isfinite(depth_scale) && depth_scale > 0.0f) {
-                q.draw_constants[10] = 1.0f / depth_scale;
-                q.draw_constants[14] = -draw.program_constants[59][2] / depth_scale;
-            }
-            q.draw_constants[138] = draw.program_alpha_mask ? 1.0f : 0.0f;
-            q.draw_constants[139] = draw.program_mask_lod_bias;
-        }
-
-        if (draw.directional.enabled && !draw.program_count) {
-            const auto &light = draw.directional;
-            float *constants = q.draw_constants + 140 + 192 * 4;
-            std::memcpy(constants, light.normal_transforms, sizeof(light.normal_transforms));
-            std::memcpy(constants + 64, light.ambient_emissive, sizeof(light.ambient_emissive));
-            std::memcpy(constants + 68, light.material_diffuse, sizeof(light.material_diffuse));
-            std::memcpy(constants + 72, light.directions, sizeof(light.directions));
-            std::memcpy(constants + 104, light.colors, sizeof(light.colors));
-            constants[136] = 1.0f;
-            constants[137] = light.normalize ? 1.0f : 0.0f;
-            constants[138] = static_cast<float>(light.count);
-        }
-
-        q.draw_constants[64] = (texture != nullptr) ? 1.0f : 0.0f;
-        q.draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
-        q.draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
-        q.draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
-        q.draw_constants[68] = (draw.blend_weight_count != 0u) ? 1.0f : 0.0f;
-        q.draw_constants[69] = draw.use_texture_factor ? 1.0f : (draw.modulate_texture_factor ? 2.0f : 0.0f);
-        q.draw_constants[70] = (draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE) ? 1.0f : draw.material_alpha;
-        q.draw_constants[71] = (draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE) ? 1.0f : 0.0f;
-
-        q.draw_constants[72] = ((draw.texture_factor >> 16u) & 0xffu) / 255.0f;
-        q.draw_constants[73] = ((draw.texture_factor >> 8u) & 0xffu) / 255.0f;
-        q.draw_constants[74] = (draw.texture_factor & 0xffu) / 255.0f;
-        q.draw_constants[75] = ((draw.texture_factor >> 24u) & 0xffu) / 255.0f;
-
-        q.draw_constants[76] = draw.zero_diffuse_rgb ? 1.0f : 0.0f;
-        q.draw_constants[77] = (draw.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) ? 1.0f : 0.0f;
-        q.draw_constants[78] = (draw.alpha_mask.linear && draw.alpha_mask.width) ? 1.0f / draw.alpha_mask.width : 1.0f;
-        q.draw_constants[79] = (draw.alpha_mask.linear && draw.alpha_mask.height) ? 1.0f / draw.alpha_mask.height : 1.0f;
-        q.draw_constants[80] = (draw.texture.linear && draw.texture.width) ? 1.0f / draw.texture.width : 1.0f;
-        q.draw_constants[81] = (draw.texture.linear && draw.texture.height) ? 1.0f / draw.texture.height : 1.0f;
-        q.draw_constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
-        q.draw_constants[83] = draw.has_alpha_mask ? 1.0f : 0.0f;
-
-        if (draw.has_reflection) {
-            std::memcpy(q.draw_constants + 84, draw.reflection_world_view, 64u);
-            std::memcpy(q.draw_constants + 100, draw.reflection_normal, 64u);
-            std::memcpy(q.draw_constants + 116, draw.reflection_transform, 64u);
-            std::memcpy(q.draw_constants + 132, draw.reflection_diffuse, 16u);
-            q.draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
-            q.draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
-        }
+        q.sampler0 = s0;
+        q.sampler1 = s1;
+        q.constant_color = draw.blend.constant_color;
+        q.stencil_ref = static_cast<uint8_t>(draw.depth.stencil_ref);
+        q.uniform_offset = uniform_offset;
+        q.vs_uniform_size = vs_uniform_size;
+        q.program_offset = program_offset;
+        q.fs_uniform_size = fs_uniform_size;
 
         presenter->segment.draws.push_back(q);
         ++presenter->draw_count;
@@ -2201,7 +2887,7 @@ void recomp_d3d_presenter_set_immediate_present(bool enabled)
 {
     immediate_present_setting = enabled;
     if (active_presenter && active_presenter->window && active_presenter->device) {
-        const auto mode = enabled &&
+        const auto mode = preferMailbox(enabled) &&
             SDL_WindowSupportsGPUPresentMode(
                 active_presenter->device, active_presenter->window, SDL_GPU_PRESENTMODE_MAILBOX)
             ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;

@@ -113,8 +113,8 @@ bool recomp_d3d_vertex_program_msl_source(
         auto y = source((b >> 11) & 3u, (b >> 13) & 15u, (b >> 17) & 255u, (b & (1u << 25)) != 0, attr, constant);
         auto z = source((c >> 28) & 3u, ((b & 3u) << 2) | (c >> 30), (b >> 2) & 255u, (b & 1024u) != 0, attr, constant);
         auto fix_vc = [](std::string &src) {
-            if (src.rfind("vc[", 0) == 0) src = "u." + src;
-            else if (src.rfind("(-vc[", 0) == 0) src = "(-u." + src.substr(2);
+            if (src.rfind("vc[", 0) == 0) src = "pc." + src;
+            else if (src.rfind("(-vc[", 0) == 0) src = "(-pc." + src.substr(2);
         };
         fix_vc(x); fix_vc(y); fix_vc(z);
         std::string m = "float4(0.0)", l = "float4(0.0)";
@@ -164,4 +164,74 @@ bool recomp_d3d_vertex_program_msl_source(
     body = std::move(s);
     return true;
 }
+
+bool recomp_d3d_vertex_program_glsl_source(
+    const uint32_t (*tokens)[4], uint32_t count, std::string &body)
+{
+    body.clear();
+    if (!tokens || !count || count > 136) return false;
+    std::string s = "    vec4 v0 = vec4(in_position.xyz, 1.0), v2 = vec4(in_normal, 1.0), v9 = vec4(in_texcoord, 0.0, 1.0);\n";
+    for (unsigned i = 0; i < 13; ++i) s += "    vec4 r" + std::to_string(i) + " = vec4(0.0);\n";
+    s += "    vec4 o3 = vec4(0.0), o5 = vec4(0.0), o9 = vec4(0.0), o10 = vec4(0.0);\n";
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto a = tokens[i][1], b = tokens[i][2], c = tokens[i][3];
+        const auto mac = (a >> 21) & 15u, ilu = (a >> 25) & 7u;
+        const auto attr = (a >> 9) & 15u, constant = (a >> 13) & 255u;
+        if ((c & 2u) || bool(c & 1u) != (i + 1 == count)) return false;
+        auto x = source((b >> 26) & 3u, (b >> 28) & 15u, a & 255u, (a & 256u) != 0, attr, constant);
+        auto y = source((b >> 11) & 3u, (b >> 13) & 15u, (b >> 17) & 255u, (b & (1u << 25)) != 0, attr, constant);
+        auto z = source((c >> 28) & 3u, ((b & 3u) << 2) | (c >> 30), (b >> 2) & 255u, (b & 1024u) != 0, attr, constant);
+        auto fix_vc = [](std::string &src) {
+            if (src.rfind("vc[", 0) == 0) src = "pc." + src;
+            else if (src.rfind("(-vc[", 0) == 0) src = "(-pc." + src.substr(2);
+        };
+        fix_vc(x); fix_vc(y); fix_vc(z);
+        std::string m = "vec4(0.0)", l = "vec4(0.0)";
+        if (mac) {
+            if (x.empty()) return false;
+            if ((mac == 2 || mac == 4 || mac == 5 || mac == 7) && y.empty()) return false;
+            if ((mac == 3 || mac == 4) && z.empty()) return false;
+            switch(mac) {
+            case 1: m = x; break;
+            case 2: m = x + " * " + y; break;
+            case 3: m = x + " + " + z; break;
+            case 4: m = x + " * " + y + " + " + z; break;
+            case 5: m = "vec4(dot(" + x + ".xyz, " + y + ".xyz))"; break;
+            case 7: m = "vec4(dot(" + x + ", " + y + "))"; break;
+            default: return false;
+            }
+        }
+        if (ilu) {
+            if (z.empty()) return false;
+            switch(ilu) {
+            case 1: l = z; break;
+            case 2: l = "vec4(1.0 / (" + z + ").x)"; break;
+            case 3: l = "vec4((((" + z + ").x < 0.0 ? -1.0 : 1.0) * clamp(abs(1.0 / (" + z + ").x), 5.42101e-20, 1.884467e19)))"; break;
+            case 4: l = "vec4(inversesqrt(abs((" + z + ").x)))"; break;
+            default: return false;
+            }
+        }
+        s += "    { vec4 m = " + m + ", l = " + l + ";\n";
+        const auto reg = (c >> 20) & 15u;
+        if ((!mac && ((c >> 24) & 15u)) || (!ilu && ((c >> 16) & 15u))) return false;
+        if (reg > 12 && (((c >> 24) & 15u) || ((c >> 16) & 15u))) return false;
+        if (!write(s, "r" + std::to_string(reg), ilu && reg == 1u ? 0u : (c >> 24) & 15u, "m") ||
+            !write(s, "r" + std::to_string(mac ? 1u : reg), (c >> 16) & 15u, "l")) return false;
+        const auto om = (c >> 12) & 15u, out = (c >> 3) & 255u;
+        if (om) {
+            if (!(c & 2048u)) return false;
+            std::string dest = out == 0 ? "r12" : (out == 3 || out == 5 || out == 9 || out == 10) ? "o" + std::to_string(out) : "";
+            if (!write(s, dest, om, (c & 4u) ? "l" : "m")) return false;
+        }
+        s += "    }\n";
+    }
+    s += "    gl_Position = (u.wvp[0] * vec4(r12.xyz, 1.0)) * r12.w;\n"
+         "    v_color = clamp(o3, 0.0, 1.0);\n"
+         "    v_texcoord = o9.xy;\n"
+         "    v_reflection_coord = o10.xy;\n"
+         "    v_program_q = vec2(o9.w, o10.w);\n";
+    body = std::move(s);
+    return true;
+}
+
 

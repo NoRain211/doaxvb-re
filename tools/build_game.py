@@ -186,9 +186,12 @@ def build(args, verify_parity=True, lifter_revision=None):
                          "-DCMAKE_BUILD_TYPE=Release",
                          f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                          f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
+            if sys.platform.startswith("linux"):
+                configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
             command(configure, ROOT, work / "configure.log")
-            command(["cmake", "--build", output, "--parallel", "4",
-                     "--target", "recomp_program_runner"], ROOT, work / "build.log")
+            targets = ["recomp_program_runner"] + (["recomp_launcher"] if sys.platform.startswith("linux") else [])
+            command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
+                    ROOT, work / "build.log")
             runner = output / "recomp_program_runner"
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)

@@ -42,12 +42,12 @@ def build_inputs(root, receipt_path=None):
     return runner, images[0], receipt_path
 
 
-def launch(root, receipt_path=None):
+def launch(root, receipt_path=None, settings=False):
     built = build_inputs(root, receipt_path)
     if built is not None:
         runner, image, receipt_path = built
         print(f"Using build receipt: {receipt_path}", flush=True)
-        return run(runner, image, root, receipt_path)
+        return run(runner, image, root, receipt_path, settings)
     candidates = [root / "recomp_program_runner.exe",
                   root / "recomp_program_runner",
                   root / "build/recomp-program/Release/recomp_program_runner.exe",
@@ -68,7 +68,7 @@ def launch(root, receipt_path=None):
         release = json.loads(release_path.read_text(encoding="utf-8"))
         if sha256(runner) != release["runner_sha256"] or sha256(images[0]) != release["xbe_sha256"]:
             raise ValueError("Runner or game executable does not match this release.")
-    return run(runner, images[0], root, release_path if release_path.is_file() else None)
+    return run(runner, images[0], root, release_path if release_path.is_file() else None, settings)
 
 
 def saved_launcher_settings(root):
@@ -84,7 +84,15 @@ def saved_launcher_settings(root):
         return {}
 
 
-def run(runner, image, root, receipt_path=None):
+def run(runner, image, root, receipt_path=None, settings=False):
+    if settings:
+        # Linux builds the settings launcher beside the runner; see launcher.sh.
+        launcher = runner.parent / "recomp_launcher"
+        if not launcher.is_file():
+            raise ValueError(f"{launcher} is missing. Rebuild with ./build_game.sh, "
+                             "or start the game with ./run_game.sh.")
+        if subprocess.run([str(launcher), str(root)]).returncode != 0:
+            return 1
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
     if os.name != "nt":
@@ -115,8 +123,10 @@ def run(runner, image, root, receipt_path=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("receipt", nargs="?", type=Path, help="Select a private build-receipt.json")
+    parser.add_argument("--launcher", action="store_true", help="Pick settings first (Linux; see launcher.sh)")
+    args = parser.parse_args()
     try:
-        sys.exit(launch(package_root(), parser.parse_args().receipt))
+        sys.exit(launch(package_root(), args.receipt, args.launcher))
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Cannot launch: {error}", file=sys.stderr)
         sys.exit(1)

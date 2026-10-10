@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <errno.h>
 #include <limits.h>
 #include <fnmatch.h>
@@ -50,6 +51,107 @@ void SetLastError(DWORD err)
     last_error = err;
 }
 
+static void resolve_case_insensitive(char *path, size_t path_size)
+{
+    if (!path || path[0] == '\0') return;
+    if (access(path, F_OK) == 0) return;
+
+    char temp[PATH_MAX];
+    if (strlen(path) >= sizeof(temp)) return;
+    strcpy(temp, path);
+
+    char resolved[PATH_MAX];
+    size_t res_len = 0;
+    resolved[0] = '\0';
+
+    char *saveptr = NULL;
+    bool is_absolute = (temp[0] == '/');
+    if (is_absolute) {
+        resolved[0] = '/';
+        resolved[1] = '\0';
+        res_len = 1;
+    }
+
+    char *token = strtok_r(temp, "/", &saveptr);
+    bool missing_parent = false;
+
+    while (token != NULL) {
+        if (missing_parent || strcmp(token, ".") == 0 || strcmp(token, "..") == 0 ||
+            strchr(token, '*') != NULL || strchr(token, '?') != NULL) {
+            if (res_len > 0 && resolved[res_len - 1] != '/') {
+                if (res_len + 1 < sizeof(resolved)) resolved[res_len++] = '/';
+            }
+            size_t tlen = strlen(token);
+            if (res_len + tlen < sizeof(resolved)) {
+                memcpy(&resolved[res_len], token, tlen);
+                res_len += tlen;
+                resolved[res_len] = '\0';
+            }
+            token = strtok_r(NULL, "/", &saveptr);
+            continue;
+        }
+
+        char test_path[PATH_MAX];
+        if (res_len == 0) {
+            snprintf(test_path, sizeof(test_path), "%s", token);
+        } else if (res_len == 1 && resolved[0] == '/') {
+            snprintf(test_path, sizeof(test_path), "/%s", token);
+        } else {
+            snprintf(test_path, sizeof(test_path), "%s/%s", resolved, token);
+        }
+
+        if (access(test_path, F_OK) == 0) {
+            if (res_len > 0 && resolved[res_len - 1] != '/') {
+                if (res_len + 1 < sizeof(resolved)) resolved[res_len++] = '/';
+            }
+            size_t tlen = strlen(token);
+            if (res_len + tlen < sizeof(resolved)) {
+                memcpy(&resolved[res_len], token, tlen);
+                res_len += tlen;
+                resolved[res_len] = '\0';
+            }
+        } else {
+            const char *dir_to_open = (res_len == 0) ? "." : resolved;
+            DIR *d = opendir(dir_to_open);
+            const char *matched_name = NULL;
+            char match_buf[256];
+            if (d) {
+                struct dirent *ent;
+                while ((ent = readdir(d)) != NULL) {
+                    if (strcasecmp(ent->d_name, token) == 0) {
+                        strncpy(match_buf, ent->d_name, sizeof(match_buf) - 1);
+                        match_buf[sizeof(match_buf) - 1] = '\0';
+                        matched_name = match_buf;
+                        break;
+                    }
+                }
+                closedir(d);
+            }
+
+            const char *name_to_append = matched_name ? matched_name : token;
+            if (!matched_name) {
+                missing_parent = true;
+            }
+
+            if (res_len > 0 && resolved[res_len - 1] != '/') {
+                if (res_len + 1 < sizeof(resolved)) resolved[res_len++] = '/';
+            }
+            size_t tlen = strlen(name_to_append);
+            if (res_len + tlen < sizeof(resolved)) {
+                memcpy(&resolved[res_len], name_to_append, tlen);
+                res_len += tlen;
+                resolved[res_len] = '\0';
+            }
+        }
+
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+
+    if (res_len < path_size) {
+        strcpy(path, resolved);
+    }
+}
+
 static void normalize_path(const char *in, char *out, size_t out_size)
 {
     if (!in || !out || out_size == 0) return;
@@ -66,6 +168,8 @@ static void normalize_path(const char *in, char *out, size_t out_size)
         j--;
     }
     out[j] = '\0';
+
+    resolve_case_insensitive(out, out_size);
 }
 
 static void set_last_error_from_errno(void)
@@ -80,6 +184,18 @@ static void set_last_error_from_errno(void)
     default:     last_error = ERROR_ACCESS_DENIED; break;
     }
 }
+
+#if defined(__APPLE__)
+#define STAT_ATIME(st) ((st).st_atimespec)
+#define STAT_MTIME(st) ((st).st_mtimespec)
+#define STAT_CTIME(st) ((st).st_ctimespec)
+#define STAT_BTIME(st) ((st).st_birthtimespec)
+#else
+#define STAT_ATIME(st) ((st).st_atim)
+#define STAT_MTIME(st) ((st).st_mtim)
+#define STAT_CTIME(st) ((st).st_ctim)
+#define STAT_BTIME(st) ((st).st_ctim)
+#endif
 
 static void timespec_to_filetime(const struct timespec *ts, FILETIME *ft)
 {
@@ -443,6 +559,7 @@ DWORD GetFileAttributesA(LPCSTR lpFileName)
     if ((st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0) {
         attrs |= FILE_ATTRIBUTE_READONLY;
     }
+#if defined(__APPLE__)
     if ((st.st_flags & 0x8000) != 0) {
         attrs |= FILE_ATTRIBUTE_HIDDEN;
     }
@@ -450,6 +567,12 @@ DWORD GetFileAttributesA(LPCSTR lpFileName)
     if (getxattr(norm, "user.win32_attrs", &xattr_val, sizeof(xattr_val), 0, 0) == sizeof(xattr_val)) {
         attrs |= xattr_val;
     }
+#else
+    uint32_t xattr_val = 0;
+    if (getxattr(norm, "user.win32_attrs", &xattr_val, sizeof(xattr_val)) == sizeof(xattr_val)) {
+        attrs |= xattr_val;
+    }
+#endif
     return attrs;
 }
 
@@ -468,9 +591,9 @@ BOOL GetFileAttributesExA(
     }
     WIN32_FILE_ATTRIBUTE_DATA *data = (WIN32_FILE_ATTRIBUTE_DATA *)lpFileInformation;
     data->dwFileAttributes = GetFileAttributesA(norm);
-    timespec_to_filetime(&st.st_ctimespec, &data->ftCreationTime);
-    timespec_to_filetime(&st.st_atimespec, &data->ftLastAccessTime);
-    timespec_to_filetime(&st.st_mtimespec, &data->ftLastWriteTime);
+    timespec_to_filetime(&STAT_CTIME(st), &data->ftCreationTime);
+    timespec_to_filetime(&STAT_ATIME(st), &data->ftLastAccessTime);
+    timespec_to_filetime(&STAT_MTIME(st), &data->ftLastWriteTime);
     data->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32u);
     data->nFileSizeLow = (DWORD)((uint64_t)st.st_size & 0xffffffffu);
     return TRUE;
@@ -493,14 +616,25 @@ BOOL SetFileAttributesA(
     } else {
         mode |= S_IWUSR;
     }
-    if (chmod(norm, mode) != 0) {
+    /* Linux needs write permission to set a user xattr, so hold owner write while
+       it is stored. A chmod we may not make fails here, before anything changes. */
+    if (chmod(norm, mode | S_IWUSR) != 0) {
         set_last_error_from_errno();
         return FALSE;
     }
+#if defined(__APPLE__)
     u_int flags = (dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) ? 0x8000 : 0;
     chflags(norm, flags);
     uint32_t val = (uint32_t)dwFileAttributes;
     setxattr(norm, "user.win32_attrs", &val, sizeof(val), 0, 0);
+#else
+    uint32_t val = (uint32_t)dwFileAttributes;
+    setxattr(norm, "user.win32_attrs", &val, sizeof(val), 0);
+#endif
+    if ((mode & S_IWUSR) == 0 && chmod(norm, mode) != 0) {
+        set_last_error_from_errno();
+        return FALSE;
+    }
     return TRUE;
 }
 
@@ -618,9 +752,9 @@ BOOL FindNextFileA(
         strncpy(lpFindFileData->cFileName, entry->d_name, sizeof(lpFindFileData->cFileName) - 1);
         lpFindFileData->cFileName[sizeof(lpFindFileData->cFileName) - 1] = '\0';
         lpFindFileData->dwFileAttributes = GetFileAttributesA(full);
-        timespec_to_filetime(&st.st_ctimespec, &lpFindFileData->ftCreationTime);
-        timespec_to_filetime(&st.st_atimespec, &lpFindFileData->ftLastAccessTime);
-        timespec_to_filetime(&st.st_mtimespec, &lpFindFileData->ftLastWriteTime);
+        timespec_to_filetime(&STAT_CTIME(st), &lpFindFileData->ftCreationTime);
+        timespec_to_filetime(&STAT_ATIME(st), &lpFindFileData->ftLastAccessTime);
+        timespec_to_filetime(&STAT_MTIME(st), &lpFindFileData->ftLastWriteTime);
         lpFindFileData->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32u);
         lpFindFileData->nFileSizeLow = (DWORD)((uint64_t)st.st_size & 0xffffffffu);
         return TRUE;
@@ -759,15 +893,11 @@ BOOL GetFileInformationByHandleEx(
         }
         FILE_BASIC_INFO *info = (FILE_BASIC_INFO *)lpFileInformation;
         FILETIME ft;
-#if defined(__APPLE__)
-        timespec_to_filetime(&st.st_birthtimespec, &ft);
-#else
-        timespec_to_filetime(&st.st_ctimespec, &ft);
-#endif
+        timespec_to_filetime(&STAT_BTIME(st), &ft);
         info->CreationTime.QuadPart = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
-        timespec_to_filetime(&st.st_atimespec, &ft);
+        timespec_to_filetime(&STAT_ATIME(st), &ft);
         info->LastAccessTime.QuadPart = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
-        timespec_to_filetime(&st.st_mtimespec, &ft);
+        timespec_to_filetime(&STAT_MTIME(st), &ft);
         info->LastWriteTime.QuadPart = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
         info->ChangeTime.QuadPart = info->LastWriteTime.QuadPart;
         info->FileAttributes = GetFileAttributesA(h->path);
@@ -808,11 +938,19 @@ BOOL SetFileInformationByHandle(
                     mode |= S_IWOTH;
                 }
             }
-            fchmod(h->fd, mode);
-            u_int flags = (info->FileAttributes & FILE_ATTRIBUTE_HIDDEN) ? 0x8000 : 0;
-            fchflags(h->fd, flags);
-            uint32_t val = (uint32_t)info->FileAttributes;
-            fsetxattr(h->fd, "user.win32_attrs", &val, sizeof(val), 0, 0);
+            /* Hold owner write while the xattr is stored; see SetFileAttributesA. */
+            if (fchmod(h->fd, mode | S_IWUSR) == 0) {
+#if defined(__APPLE__)
+                u_int flags = (info->FileAttributes & FILE_ATTRIBUTE_HIDDEN) ? 0x8000 : 0;
+                fchflags(h->fd, flags);
+                uint32_t val = (uint32_t)info->FileAttributes;
+                fsetxattr(h->fd, "user.win32_attrs", &val, sizeof(val), 0, 0);
+#else
+                uint32_t val = (uint32_t)info->FileAttributes;
+                fsetxattr(h->fd, "user.win32_attrs", &val, sizeof(val), 0);
+#endif
+                if ((mode & S_IWUSR) == 0) fchmod(h->fd, mode);
+            }
         }
         if (info->LastWriteTime.QuadPart != 0 || info->LastAccessTime.QuadPart != 0) {
             struct timeval tv[2];
@@ -820,15 +958,15 @@ BOOL SetFileInformationByHandle(
                 tv[0].tv_sec = (time_t)((info->LastAccessTime.QuadPart / 10000000ULL) - 11644473600ULL);
                 tv[0].tv_usec = (suseconds_t)((info->LastAccessTime.QuadPart % 10000000ULL) / 10);
             } else {
-                tv[0].tv_sec = st.st_atimespec.tv_sec;
-                tv[0].tv_usec = (suseconds_t)(st.st_atimespec.tv_nsec / 1000);
+                tv[0].tv_sec = STAT_ATIME(st).tv_sec;
+                tv[0].tv_usec = (suseconds_t)(STAT_ATIME(st).tv_nsec / 1000);
             }
             if (info->LastWriteTime.QuadPart != 0) {
                 tv[1].tv_sec = (time_t)((info->LastWriteTime.QuadPart / 10000000ULL) - 11644473600ULL);
                 tv[1].tv_usec = (suseconds_t)((info->LastWriteTime.QuadPart % 10000000ULL) / 10);
             } else {
-                tv[1].tv_sec = st.st_mtimespec.tv_sec;
-                tv[1].tv_usec = (suseconds_t)(st.st_mtimespec.tv_nsec / 1000);
+                tv[1].tv_sec = STAT_MTIME(st).tv_sec;
+                tv[1].tv_usec = (suseconds_t)(STAT_MTIME(st).tv_nsec / 1000);
             }
             futimes(h->fd, tv);
         }

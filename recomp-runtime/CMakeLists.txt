@@ -27,17 +27,41 @@ if(WIN32)
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
 else()
-    # macOS builds need SDL3 (brew install sdl3). Other hosts only configure,
-    # which the tools tests do without it.
+    # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
+    # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
+    # 24.04 has no package). Hosts with neither only configure, which the
+    # tools tests do without it.
+    option(RECOMP_FETCH_SDL3 "Build SDL3 when the system has none" OFF)
     find_package(SDL3 QUIET)
     if(APPLE AND NOT SDL3_FOUND)
         message(FATAL_ERROR "SDL3 is required: brew install sdl3")
+    endif()
+    if(NOT SDL3_FOUND AND RECOMP_FETCH_SDL3)
+        if(POLICY CMP0135)
+            cmake_policy(SET CMP0135 NEW)
+        endif()
+        include(FetchContent)
+        # The release the Steam Deck build was tested with, pinned like the Windows zip.
+        FetchContent_Declare(SDL3
+            URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-3.4.12.tar.gz
+            URL_HASH SHA256=f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_SHARED ON CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(SDL3)
+        set(SDL3_FOUND TRUE)
     endif()
     function(recomp_use_sdl3 target)
         if(SDL3_FOUND)
             target_link_libraries(${target} PRIVATE SDL3::SDL3)
         endif()
     endfunction()
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
+    add_compile_definitions(_GNU_SOURCE)
+    link_libraries(Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 # Clang contracts a*b+c into FMA by default on AArch64. Keep IEEE operation
@@ -612,6 +636,13 @@ if(RECOMP_PROGRAM_DIR)
             CONTENT "1 ICON \"${app_icon}\"\n")
         target_sources(recomp_program_runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
     endif()
+
+    # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
+    # beside the runner rather than on first use like the macOS launcher.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(recomp_launcher ../tools/launcher_sdl.cpp)
+        recomp_use_sdl3(recomp_launcher)
+    endif()
 endif()
 
 if(WIN32)
@@ -683,7 +714,16 @@ else()
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     recomp_use_sdl3(recomp_input_host_test)
+    add_executable(recomp_win32_compat_test win32_compat.c win32_compat_test.c)
+    add_test(NAME recomp-runtime-win32-compat COMMAND recomp_win32_compat_test)
 endif()
+
+add_executable(recomp_sha_test sha_test.cpp ../xbe/sha.cpp)
+target_include_directories(recomp_sha_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+if(WIN32)
+    target_link_libraries(recomp_sha_test PRIVATE bcrypt)
+endif()
+add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)

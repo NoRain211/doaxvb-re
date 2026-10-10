@@ -51,6 +51,7 @@
     "tools/run_game.py",
     "tools/launcher.ps1",
     "tools/launcher_macos.swift",
+    "tools/launcher_sdl.cpp",
     "tools/test_extract_iso.py",
     "tools/xboxrecomp",
     "tools/xboxrecomp-patches/**",
