@@ -595,6 +595,7 @@ SDL_GPUSampler *lookupDrawSampler(RecompD3dPresenter *presenter, uint32_t addres
     desc.address_mode_v = hostAddressMode(v);
     desc.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
     desc.enable_anisotropy = false;
+    desc.max_lod = 1000.0f;  // the zero default would sample only the base mip level
     presenter->address_samplers[u][v] = SDL_CreateGPUSampler(presenter->device, &desc);
     return presenter->address_samplers[u][v] ? presenter->address_samplers[u][v] : presenter->filter_sampler;
 }
@@ -2185,6 +2186,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.max_lod = 1000.0f;  // the zero default would sample only the base mip level
     SDL_GPUSampler *filter_sampler = SDL_CreateGPUSampler(device, &sampler_info);
 
     sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
