@@ -509,11 +509,11 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         if (created) {
             write_file(journal / "version", version);
         }
-        /* Persist the marker and the directory entries on every start, so a sync
-           that failed on an earlier launch is retried. */
+        upgrade_version = check_journal();
+        /* Persist the validated marker and the directory entries on every start,
+           so a sync that failed on an earlier launch is retried. */
         sync_to_disk(journal / "version");
         sync_to_disk(storage);
-        upgrade_version = check_journal();
         recover();
         if (upgrade_version) {
             /* Keep the v1 marker valid until the same-directory rename. */
@@ -575,6 +575,15 @@ extern "C" bool recomp_save_end(uint32_t owner, bool success)
             recover();
         } else {
             check_tree(live);
+            /* File syncs do not persist the save's directory entries; sync every
+               save directory before the unlink that commits the save. */
+            if (exists_plain(live)) {
+                sync_to_disk(live);
+                for (const auto &entry : fs::recursive_directory_iterator(live))
+                    if (entry.is_directory()) sync_to_disk(entry.path());
+            } else {
+                sync_to_disk(live.parent_path());
+            }
             remove_file(undo);
             /* A lost unlink would restore the old image over a save reported done. */
             sync_to_disk(journal);
