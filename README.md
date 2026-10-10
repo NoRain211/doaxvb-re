@@ -164,7 +164,7 @@ C, assets, extracted filenames, saves, BIOS data or private run evidence.
 ### Contributors
 
 - [Tommy McLeroy (@tmcleroy)](https://github.com/tmcleroy): creator of the
-  macOS port (#99).
+  macOS and Linux ports (#99, #103).
 
 ## AI assistance
 

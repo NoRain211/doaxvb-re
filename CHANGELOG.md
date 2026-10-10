@@ -29,6 +29,13 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
   audio and the keyboard. SMAA and custom soundtracks are not available on
   macOS yet. A contributor's smoke run on an Apple Silicon Mac reached the
   save-select and options menus; it has not been play-tested.
+- **Linux and Steam Deck build** (#103). x86-64 Linux, including SteamOS
+  through a container build, can build the game with `build_game.sh` and play
+  it with `launcher.sh`, which opens a gamepad settings screen; see
+  `docs/building.md`. It presents through SDL_GPU on Vulkan and compiles
+  shaders at runtime with the system's shaderc. SMAA and custom soundtracks are
+  not available on Linux yet. Smoke runs on a Steam Deck reached the
+  save-select and settings menus at 60 fps; it has not been play-tested.
 
 ### Fixed
 
@@ -54,6 +61,14 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
   game is about to read, so the streaming decoder cannot overwrite audio that
   has not played (#99). This also runs on Windows, where it has not yet been
   play-tested.
+- On macOS and Linux, mipmapped textures now sample their smaller levels
+  (#103), and the save undo journal is flushed to disk before live saves
+  change, so a power loss mid-save can roll back (#104).
+
+### Known issues
+
+- macOS and Linux do not yet render fog, point lights or the title sea
+  shimmer (#105).
 
 ## 0.5.3 Beta "Mixtape" — 2026-09-30
 
