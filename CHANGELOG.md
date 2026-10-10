@@ -23,6 +23,12 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
   presentation path for G-Sync and FreeSync. VRR must already be active for
   the game window, or the picture tears. Its effect on displayed pacing is
   not yet verified.
+- **macOS build** (#99). Apple Silicon and Intel Macs can build the game from
+  source with `build_game.sh` and play it with `launcher.sh`; see
+  `docs/building.md`. It presents through SDL_GPU on Metal and uses SDL for
+  audio and the keyboard. SMAA and custom soundtracks are not available on
+  macOS yet. A contributor's smoke run on an Apple Silicon Mac reached the
+  save-select and options menus; it has not been play-tested.
 
 ### Fixed
 
@@ -44,6 +50,10 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
 
 - The recipe routes selected pose calls through hand-written adapters for
   high refresh presentation (#98). The lifter is unchanged.
+- Guest DirectSound buffer calls now copy streamed audio up to the cursor the
+  game is about to read, so the streaming decoder cannot overwrite audio that
+  has not played (#99). This also runs on Windows, where it has not yet been
+  play-tested.
 
 ## 0.5.3 Beta "Mixtape" — 2026-09-30
 
