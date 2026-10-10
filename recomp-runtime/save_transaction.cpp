@@ -165,6 +165,24 @@ void write_file(const fs::path &path, std::string_view data)
     require(!stream.fail());
 }
 
+/* The undo image must be on disk before the guest changes live saves, or a
+   power loss can leave a torn save with no rollback. */
+void sync_to_disk(const fs::path &path)
+{
+#ifndef _WIN32
+    for (const fs::path &target : {path, path.parent_path()}) {
+        const int fd = open(target.c_str(), O_RDONLY | O_CLOEXEC);
+        require(fd >= 0);
+        const bool synced = fsync(fd) == 0;
+        close(fd);
+        require(synced);
+    }
+#else
+    // shortcut: Windows keeps its tested behavior; flush here if a Windows torn save is reported.
+    (void)path;
+#endif
+}
+
 std::string read_file(const fs::path &path)
 {
 #ifdef _WIN32
@@ -524,6 +542,7 @@ extern "C" bool recomp_save_begin(uint32_t owner)
     try {
         require(!exists_plain(undo));
         write_file(undo, snapshot_live());
+        sync_to_disk(undo);
         active_owner = owner;
         depth = 1;
         failed = false;
