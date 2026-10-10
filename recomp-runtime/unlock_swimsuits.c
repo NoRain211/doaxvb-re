@@ -36,7 +36,13 @@
    is wearing or has wrapped as a gift stays, because the game refers to
    it. Nothing is lent again until the save routine has returned, and
    nothing is lent outside a vacation (scene byte 0x5DECE0), where the game
-   reads saves into the table. */
+   reads saves into the table.
+
+   Outside a vacation the game offers the suits in a second table of the
+   same shape at 0x9DAE08, which 0x000F82F0 rebuilds from the default suits
+   and all three save files, counting each girl's suits into the eight words
+   at 0x9DB3C8. That table is never saved, so every girl's wearable suits are
+   simply marked in it each frame. */
 enum {
     INVENTORY_POINTER = 0x00317634u,
     COLLECTION_POINTER = 0x00B5B244u,
@@ -44,6 +50,8 @@ enum {
     SCENE_VACATION = 1,
     PLAYER_CHARACTER = 0x009D9939u,
     CHARACTER_IDS = 0x002A7B00u,
+    GALLERY = 0x009DAE08u,
+    GALLERY_COUNTS = 0x009DB3C8u,
     ITEM_TABLE = 0x003003E8u,
     GIRL_COUNT = 8,
     SLOT_COUNT = 51,
@@ -158,6 +166,25 @@ static void withdraw(void)
     memset(lent, 0, sizeof lent);
 }
 
+static void lend_gallery(void)
+{
+    uint16_t counts[GIRL_COUNT] = {0};
+
+    for (uint16_t id = 1u; id < SWIMSUIT_END; ++id) {
+        const uint16_t wear = *recomp_memory_u16(shadow_item(id) + ITEM_WEAR_MASK);
+        uint16_t owned = 0;
+
+        for (unsigned girl = 0; girl < GIRL_COUNT; ++girl) {
+            if ((wear & (1u << girl)) != 0u) {
+                owned |= (uint16_t)((HAD | IN_COLLECTION) << (girl * 2u));
+                ++counts[girl];
+            }
+        }
+        *recomp_memory_u16(GALLERY + id * 2u) |= owned;
+    }
+    memcpy(recomp_memory(GALLERY_COUNTS, sizeof counts), counts, sizeof counts);
+}
+
 void recomp_unlock_swimsuits_frame(void)
 {
     bool in_bag[SWIMSUIT_END] = {false};
@@ -168,7 +195,11 @@ void recomp_unlock_swimsuits_frame(void)
     uint8_t *slots;
     unsigned girl;
 
-    if (!enabled() || saving) {
+    if (!enabled() || !prepare()) {
+        return;
+    }
+    lend_gallery();
+    if (saving) {
         return;
     }
     if (*recomp_memory(SCENE, 1u) != SCENE_VACATION) {
@@ -178,7 +209,7 @@ void recomp_unlock_swimsuits_frame(void)
     inventory = *recomp_memory_u32(INVENTORY_POINTER);
     collection = *recomp_memory_u32(COLLECTION_POINTER);
     girl = player_girl();
-    if (inventory == 0u || collection == 0u || girl == GIRL_COUNT || !prepare()) {
+    if (inventory == 0u || collection == 0u || girl == GIRL_COUNT) {
         return;
     }
     if (girl != lent_girl) {

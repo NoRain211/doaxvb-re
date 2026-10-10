@@ -11,7 +11,9 @@ default, and with it off the runtime changes nothing.
 - The suits are listed under **View Collection** in the hotel at night. **Take
   out** moves one to the inventory, where it can be worn; **Keep** puts it
   back.
-- Only the girl being played is affected. Partners keep their own Collections,
+- In **Exhibition**, the swimsuit picker on the character select screen
+  offers every girl all the suits she can wear.
+- In a vacation only the girl being played is affected. Partners keep their own Collections,
   so they do not start wearing suits nobody gave them.
 - Lent suits are not written to the save, neither the Collection entries nor
   the plain suits taken out of it. Turning the option off and loading the save
@@ -34,6 +36,8 @@ Addresses are for the verified USA executable.
 | `0x9D9939` | Character id of the girl being played |
 | `0x2A7B00` | Character id of each of the 8 inventory indices |
 | `0x5DECE0` | Scene byte, 1 during a vacation |
+| `0x9DAE08` | Exhibition's ownership table, same shape, rebuilt by `0x000F82F0` |
+| `0x9DB3C8` | Eight words counting each girl's suits in that table |
 | `0x9D77E8` | Save image, `0x2178` bytes; the ownership table is part of it |
 
 An ownership word gives each girl two bits, at twice her inventory index. The
@@ -51,6 +55,10 @@ in neither place and remembers which bits it set. When the game clears a lent
 Collection bit, the suit was taken out, and its slot is pointed at a private
 copy of the item definition. The game rewrites that pointer whenever it loads,
 clears or fills a slot, so the pointer alone marks a lent suit.
+
+Exhibition reads a second table that `0x000F82F0` fills from the default
+suits and all three save files. It is not part of any save, so the unlock
+marks every wearable suit in it each frame and writes the matching counts.
 
 ## Seams
 
@@ -71,6 +79,7 @@ clears or fills a slot, so the pointer alone marks a lent suit.
 A scripted run on macOS against a copy of a save: **View Collection** listed
 the suits over 13 pages and one was taken out. A save made afterwards from the
 hotel had the same ownership table as before and no entry for the suit taken
-out, and it loaded with the option off. Wearing a suit taken out, **Keep**,
-the shops and a second girl's vacation have not been checked with the option
-on.
+out, and it loaded with the option off. In Exhibition the picker went from one
+suit to the full list. Wearing a suit taken out, **Keep**, the shops, a second
+girl's vacation and an Exhibition match in a lent suit have not been checked
+with the option on.
