@@ -9,7 +9,7 @@ $settingsPath = Join-Path $root 'private\launcher.json'
 $heights = 480, 720, 1080, 1440, 2160
 $samples = 1, 2, 4, 8
 $volumes = 100, 75, 50, 25, 0
-$settings = [pscustomobject]@{ height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; volume = 100; shuffle = $false }
+$settings = [pscustomobject]@{ height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; volume = 100; shuffle = $false; attract_no_movies = $false }
 try { $settings = Get-Content $settingsPath -Raw -ErrorAction Stop | ConvertFrom-Json } catch {}
 
 $form = New-Object Windows.Forms.Form
@@ -17,7 +17,7 @@ $form.Text = 'DOAXBV'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = New-Object Drawing.Size 240, 196
+$form.ClientSize = New-Object Drawing.Size 240, 224
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
 
@@ -41,8 +41,10 @@ $savedVolume = if ($null -ne $settings.volume) { [Array]::IndexOf($volumes, [int
 $volumeNames = [string[]]($volumes | ForEach-Object { if ($_ -eq 0) { 'Mute' } else { "$_%" } })
 $volume = Add-Choice 'Volume' 104 $volumeNames $savedVolume
 $shuffle = New-Object Windows.Forms.CheckBox -Property @{ Text = 'Shuffle music'; Left = 100; Top = 132; Width = 126; Checked = [bool]$settings.shuffle }
-$play = New-Object Windows.Forms.Button -Property @{ Text = 'Play'; Left = 151; Top = 160; DialogResult = 'OK' }
-$music = New-Object Windows.Forms.Button -Property @{ Text = 'Music folder'; Left = 12; Top = 160; Width = 90 }
+# Settings saved before this option have no attract_no_movies; $null casts to off.
+$attract = New-Object Windows.Forms.CheckBox -Property @{ Text = 'Skip attract movies'; Left = 100; Top = 160; Width = 136; Checked = [bool]$settings.attract_no_movies }
+$play = New-Object Windows.Forms.Button -Property @{ Text = 'Play'; Left = 151; Top = 188; DialogResult = 'OK' }
+$music = New-Object Windows.Forms.Button -Property @{ Text = 'Music folder'; Left = 12; Top = 188; Width = 90 }
 $music.Add_Click({
     # Report here; the script-wide trap would close the launcher.
     try {
@@ -53,14 +55,14 @@ $music.Add_Click({
         [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
     }
 })
-$form.Controls.AddRange(@($smaa, $shuffle, $music, $play))
+$form.Controls.AddRange(@($smaa, $shuffle, $attract, $music, $play))
 $form.AcceptButton = $play
 if ($form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]
 $count = $samples[$msaa.SelectedIndex]
 $percent = $volumes[$volume.SelectedIndex]
-[pscustomobject]@{ height = $height; msaa = $count; smaa = $smaa.Checked; volume = $percent; shuffle = $shuffle.Checked } |
+[pscustomobject]@{ height = $height; msaa = $count; smaa = $smaa.Checked; volume = $percent; shuffle = $shuffle.Checked; attract_no_movies = $attract.Checked } |
     ConvertTo-Json | Set-Content $settingsPath -Encoding ASCII
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -68,4 +70,5 @@ $env:RECOMP_D3D_MSAA = "$count"
 $env:RECOMP_D3D_SMAA = if ($smaa.Checked) { '1' } else { '0' }
 $env:RECOMP_AUDIO_GAIN = ($percent / 100).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_MUSIC_SHUFFLE = if ($shuffle.Checked) { '1' } else { '0' }
+$env:RECOMP_ATTRACT_NO_MOVIES = if ($attract.Checked) { '1' } else { '0' }
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root

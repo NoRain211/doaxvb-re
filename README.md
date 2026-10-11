@@ -72,6 +72,7 @@ running; so far only the startup thread entry has been rewritten.
 | Deleting saves | Fixed in 0.4.9 |
 | Custom soundtracks (MP3, WAV, FLAC from `UserMusic`) | Added in 0.5.0 |
 | Radio Station shuffle (launcher checkbox) | Added in 0.5.3 |
+| Idle attract loop without the movies (launcher checkbox) | Opt-in; see [`docs/attract-mode.md`](docs/attract-mode.md) |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
