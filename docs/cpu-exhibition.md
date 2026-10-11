@@ -8,8 +8,9 @@ it off the runtime changes nothing.
 
 ## Behavior
 
-- The game starts with its logos as usual. The opening movie and the title
-  are each left after a second, and a match loads. No controller is needed.
+- The game starts with its logos as usual. The opening movie is not played:
+  the title follows the logos and is left after a second, and a match loads.
+  No controller is needed.
 - Each match has four different girls, chosen at random. Each wears a
   swimsuit chosen at random from all the swimsuits she can wear, 307 of the
   game's 328, whether or not a save owns it.
@@ -17,8 +18,9 @@ it off the runtime changes nothing.
 - A match is a full 7 point match, the Exhibition default.
 - When a match ends, its results stay up for five seconds and the next match
   loads with a new cast.
-- The mode lasts until the game is closed. To play, start the game with
-  **Play**.
+- START on any controller ends the mode. During a match it leaves for the
+  title screen, and the game is then played as usual. Otherwise the mode
+  lasts until the game is closed.
 - The swimsuits are only worn for the match; nothing is added to a save.
 
 ## Guest contract
@@ -28,6 +30,9 @@ Addresses are for the verified USA executable.
 | Address | Meaning |
 |---|---|
 | `0x5DECE0` | Scene running: 0 Exhibition match, 2 attract sequence, 3 menus, 4 title |
+| `0x5DED55` | Scene asked for next |
+| `0x000A4920` | Routine the logos leave through: asks for the attract sequence and starts it at its movie |
+| `0x5F3138` | Buttons held on any controller; START is `0x0010` |
 | `0x4D994C` | Frames the title or attract step now showing has run |
 | `0x4D994A` | Frames left before that step is left; START sets it |
 | `0x9D9D80` | Menu state machine: one screen at a time |
@@ -56,6 +61,10 @@ The players are ordered so that a team is `slot & 1`: players 0 and 2 against
 
 `cpu_exhibition.c` runs once per presented frame:
 
+- **START.** If START is held, it puts back the bytes that say which
+  players are people and, in a match, stores Quit as the results menu's
+  choice with the match over byte. The match scene's update then leaves for
+  the title as it does after Quit. Nothing more is done for the session.
 - **Title or attract sequence.** Once the step showing has run for a second,
   it stores one frame left in `0x4D994A`. The game's own sequence code then
   ends the step as it does after START and moves on to the menus.
@@ -70,6 +79,11 @@ The players are ordered so that a team is `slot & 1`: players 0 and 2 against
 
 ## Seams
 
+- `recomp_cpu_exhibition_lookup_manual`, called from
+  `recomp_lookup_manual`, replaces the routine at `0x000A4920` with
+  `logos_leave`. With the mode on it asks for the title scene, whose own
+  enter routine starts the title step; with the mode off it calls the
+  generated routine.
 - `recomp_d3d_swap_adapter` calls `recomp_cpu_exhibition_frame` once per
   presented frame.
 - `leave_menu` in `cpu_exhibition.c` calls the generated game routine at
@@ -88,7 +102,9 @@ Scripted runs on macOS with no input, against a copy of a save: a match was
 on screen about 30 seconds after the game started, with no menu left over
 it. In a ten minute run the first match was played to 7 points with rallies,
 replays and the match point banner; its results showed, and a second match
-started on another court with another cast. Save storage was byte-identical
-after a 400 second run. Sound, sessions longer than ten minutes, a
-controller pressed during a match, and Windows and Linux have not been
-checked.
+started on another court with another cast. With the movie skipped, the
+title followed the logos directly; START pressed during a match showed the
+title, and from there START and A opened the main menu and the saved game
+list. Save storage was byte-identical
+after a 400 second run. Sound, sessions longer than ten minutes, and Windows and Linux have not
+been checked.

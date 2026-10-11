@@ -43,6 +43,9 @@ bool recomp_dispatch(uint32_t guest_address)
     return dispatch_result;
 }
 
+static unsigned logos_left;
+void sub_000A4920(void) { ++logos_left; }
+
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "CPU Exhibition line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
 static void run_frames(unsigned count)
@@ -77,6 +80,13 @@ int main(void)
     }
     recomp_runtime.registers.esp = TEST_STACK;
     recomp_runtime.registers.ebx = 0x1234u;
+
+    /* The logos leave for the title, not for the movie. */
+    CHECK(recomp_cpu_exhibition_lookup_manual(0u) == NULL);
+    recomp_cpu_exhibition_lookup_manual(LOGOS_LEAVE)();
+    CHECK(*recomp_memory(SCENE_REQUEST, 1u) == SCENE_TITLE);
+    CHECK(logos_left == 0u);
+    *recomp_memory(SCENE_REQUEST, 1u) = 0u;
 
     /* The title is left alone until its step has run for a while, and a
        step already leaving is not hurried. */
@@ -191,6 +201,26 @@ int main(void)
     run_frames(MENU_SETTLE_FRAMES);
     CHECK(dispatches == 3u);
     *recomp_memory_u32(MENU_EXIT) = MENU_NONE;
+    run_frames(MENU_SETTLE_FRAMES * 2u);
+    CHECK(dispatches == 3u);
+
+    /* START during a match ends the mode: the match is quit for the title,
+       the players are people again and nothing more is done. */
+    ended = false;
+    *recomp_memory(SCENE, 1u) = SCENE_MATCH;
+    *recomp_memory_u32(HUMAN) = 0u;
+    *recomp_memory_u32(BUTTONS_HELD) = 0x0100u;
+    run_frames(1);
+    CHECK(*recomp_memory(MATCH_OVER, 1u) == 0u);
+    *recomp_memory_u32(BUTTONS_HELD) = BUTTON_START;
+    run_frames(1);
+    CHECK(*recomp_memory_u32(RESULTS_CHOICE) == RESULTS_QUIT);
+    CHECK(*recomp_memory(MATCH_OVER, 1u) == 1u);
+    CHECK(*recomp_memory_u32(HUMAN) == 0x01010101u);
+    *recomp_memory_u32(BUTTONS_HELD) = 0u;
+    *recomp_memory(SCENE, 1u) = SCENE_MENU;
+    *recomp_memory_u32(MENU_EXIT) = MENU_NONE;
+    dispatch_result = true;
     run_frames(MENU_SETTLE_FRAMES * 2u);
     CHECK(dispatches == 3u);
     return 0;

@@ -27,6 +27,14 @@ enum {
     SCENE_ATTRACT = 2,
     SCENE_MENU = 3,
     SCENE_TITLE = 4,
+    /* The scene asked for next. */
+    SCENE_REQUEST = 0x005DED55u,
+    /* What the logos call when they end: it asks for the attract sequence
+       and starts that at its movie. */
+    LOGOS_LEAVE = 0x000A4920u,
+    /* Buttons held on any controller; START is the Xbox bit. */
+    BUTTONS_HELD = 0x005F3138u,
+    BUTTON_START = 0x0010,
     /* The step of the title or attract sequence now showing has run for
        STEP_FRAMES; START sets STEP_LEAVING to the frames left before the
        sequence moves on. */
@@ -76,6 +84,7 @@ enum {
     RESULTS_WAIT = 0x005D89C4u,
     RESULTS_CHOICE = 0x005D8978u,
     RESULTS_CHARACTER_SELECT = 2,
+    RESULTS_QUIT = 3,
     MATCH_OVER = 0x004D6FC8u,
     /* Frames the results stay up. */
     RESULTS_FRAMES = 300,
@@ -156,6 +165,44 @@ static uint16_t random_swimsuit(unsigned girl)
     return count != 0u ? wearable[random_below(count)] : 0u;
 }
 
+/* Who the players were before the first match was cast, for leave_mode. */
+static struct {
+    bool kept;
+    uint32_t human;
+    uint32_t port;
+    uint32_t port_slot;
+    uint8_t team_human[2];
+} people;
+
+static void keep_people(void)
+{
+    if (!people.kept) {
+        people.kept = true;
+        people.human = *recomp_memory_u32(HUMAN);
+        people.port = *recomp_memory_u32(PORT);
+        people.port_slot = *recomp_memory_u32(PORT_SLOT);
+        people.team_human[0] = *recomp_memory(TEAM_HUMAN, 1u);
+        people.team_human[1] = *recomp_memory(TEAM_HUMAN + TEAM_SIZE, 1u);
+    }
+}
+
+/* START ends the mode: the players are people again and a match under way
+   is left for the title by storing what Quit on its results menu stores. */
+static void leave_mode(uint8_t scene)
+{
+    if (people.kept) {
+        *recomp_memory_u32(HUMAN) = people.human;
+        *recomp_memory_u32(PORT) = people.port;
+        *recomp_memory_u32(PORT_SLOT) = people.port_slot;
+        *recomp_memory(TEAM_HUMAN, 1u) = people.team_human[0];
+        *recomp_memory(TEAM_HUMAN + TEAM_SIZE, 1u) = people.team_human[1];
+    }
+    if (scene == SCENE_MATCH) {
+        *recomp_memory_u32(RESULTS_CHOICE) = RESULTS_QUIT;
+        *recomp_memory(MATCH_OVER, 1u) = 1u;
+    }
+}
+
 /* Four different girls in random swimsuits on a random court, every slot
    for the CPU. */
 static bool cast_match(void)
@@ -183,6 +230,7 @@ static bool cast_match(void)
         choice[CHOICE_GIRL] = (uint8_t)girl;
         memcpy(choice + CHOICE_SWIMSUIT, &swimsuit, sizeof swimsuit);
     }
+    keep_people();
     *recomp_memory_u32(HUMAN) = 0u;
     *recomp_memory_u32(PORT) = 0xFFFFFFFFu;
     *recomp_memory_u32(PORT_SLOT) = 0xFFFFFFFFu;
@@ -239,16 +287,28 @@ static void leave_results(void)
     }
 }
 
+/* Set once the mode is over: START was pressed or the image is not the
+   expected one. */
+static bool ended;
+
 void recomp_cpu_exhibition_frame(void)
 {
     static unsigned menu_frames;
-    static bool failed;
+    static bool started;
     uint8_t scene;
 
-    if (!enabled() || failed) {
+    if (!enabled() || ended) {
         return;
     }
     scene = *recomp_memory(SCENE, 1u);
+    /* The scene byte reads 0 before the game sets it, so START only counts
+       once a real scene has been seen. */
+    started = started || scene != SCENE_MATCH;
+    if (started && (*recomp_memory_u32(BUTTONS_HELD) & BUTTON_START) != 0u) {
+        leave_mode(scene);
+        ended = true;
+        return;
+    }
     if (scene != SCENE_MENU) {
         menu_frames = 0;
     }
@@ -266,11 +326,29 @@ void recomp_cpu_exhibition_frame(void)
         *recomp_memory_u32(MENU_MODE) = MENU_MODE_EXHIBITION;
         if (!cast_match() || !leave_menu()) {
             fprintf(stderr, "[cpu-exhibition] unexpected game image; disabled\n");
-            failed = true;
+            ended = true;
             return;
         }
         menu_frames = 0;
     }
+}
+
+void sub_000A4920(void); /* generated LOGOS_LEAVE */
+
+/* The logos leave for the title, which starts its own step, so the movie
+   is never started. */
+static void logos_leave(void)
+{
+    if (enabled()) {
+        *recomp_memory(SCENE_REQUEST, 1u) = SCENE_TITLE;
+        return;
+    }
+    sub_000A4920();
+}
+
+RecompFunction recomp_cpu_exhibition_lookup_manual(uint32_t guest_address)
+{
+    return guest_address == LOGOS_LEAVE ? logos_leave : NULL;
 }
 #else
 void recomp_cpu_exhibition_frame(void) {}
