@@ -9,17 +9,16 @@ default, and with it off the runtime changes nothing.
 ## Behavior
 
 - The suits are listed under **View Collection** in the hotel at night. **Take
-  out** moves one to the inventory, where it can be worn; **Keep** puts it
-  back.
+  out** moves one to the inventory, where it can be worn.
+- A suit taken out is the player's from then on. It is saved with the rest of
+  the inventory, and **Keep** puts it in the saved Collection.
+- The Collection entries that were only lent are not written to the save.
+  Turning the option off and loading the save shows the Collection the player
+  built, plus whatever was taken out.
 - In **Exhibition**, the swimsuit picker on the character select screen
   offers every girl all the suits she can wear.
-- In a vacation only the girl being played is affected. Partners keep their own Collections,
-  so they do not start wearing suits nobody gave them.
-- Lent suits are not written to the save, neither the Collection entries nor
-  the plain suits taken out of it. Turning the option off and loading the save
-  shows the real Collection and inventory again.
-- A lent suit that the girl is wearing, or that has been wrapped as a gift, is
-  saved, because the game refers to it afterwards.
+- In a vacation only the girl being played is affected. Partners keep their
+  own Collections, so they do not start wearing suits nobody gave them.
 - A suit she holds in her inventory is not lent while it is there, so the
   game still lets a bought suit be kept.
 - The shops report a lent suit as already in the Collection.
@@ -43,18 +42,13 @@ Addresses are for the verified USA executable.
 An ownership word gives each girl two bits, at twice her inventory index. The
 low bit says she has had the item, the high bit that it is in her Collection.
 An item definition holds its type (2 for a swimsuit) and, at offset `0x10`,
-the mask of girls who can wear it. Swimsuits are ids 1 to `0x148`.
-
-An inventory slot holds the item id (`0xFFFF` when empty), two model handles,
-a state byte (0 plain, 2 worn, other values wrapped), the acquisition order, a
-wrap item, a pointer to the item definition and a counter. The save image
-keeps 8 bytes of each slot, packed by `0x000E6BA0`.
+the mask of girls who can wear it. Swimsuits are ids 1 to `0x148`. An
+inventory slot starts with the item id, `0xFFFF` when empty.
 
 `unlock_swimsuits.c` sets both bits for every wearable swimsuit the girl holds
 in neither place and remembers which bits it set. When the game clears a lent
-Collection bit, the suit was taken out, and its slot is pointed at a private
-copy of the item definition. The game rewrites that pointer whenever it loads,
-clears or fills a slot, so the pointer alone marks a lent suit.
+Collection bit, the suit was taken out; the bit is forgotten and the inventory
+slot the game filled is left as it is.
 
 Exhibition reads a second table that `0x000F82F0` fills from the default
 suits and all three save files. It is not part of any save, so the unlock
@@ -67,9 +61,8 @@ marks every wearable suit in it each frame and writes the matching counts.
 - The `XcSHAUpdate` adapter in `kernel_crypto.c` calls
   `recomp_unlock_swimsuits_hash` when the game hashes a save image, the one
   point where that image passes through the runtime before it is written or
-  after it is read. The pack routine and its callers are reached by direct
-  calls, which a manual lookup cannot intercept; replacing them by hand is
-  open work.
+  after it is read. The remembered bits are cleared from the live table
+  there; nothing else in the image is touched.
 - The save hooks in `save_adapter.c` bracket the game's save routine with
   `recomp_unlock_swimsuits_saving`, so nothing is lent between the hash and
   the write.
@@ -77,13 +70,12 @@ marks every wearable suit in it each frame and writes the matching counts.
 ## Checks
 
 `unlock_swimsuits_test.c` runs the lending, take-out, Keep and save paths on
-synthetic guest memory, and checks that a save image with no lent suit in the
-inventory is left byte for byte as the game packed it.
+synthetic guest memory.
 
-A scripted run on macOS against a copy of a save: **View Collection** listed
-the suits over 13 pages and one was taken out. A save made afterwards from the
-hotel had the same ownership table as before and no entry for the suit taken
-out, and it loaded with the option off. In Exhibition the picker went from one
-suit to the full list. Wearing a suit taken out, **Keep**, the shops, a second
-girl's vacation and an Exhibition match in a lent suit have not been checked
-with the option on.
+A scripted run on macOS against a copy of a save, made before taken-out suits
+were kept: **View Collection** listed the suits over 13 pages, one was taken
+out, and a save made afterwards from the hotel had the same ownership table as
+before and loaded with the option off. In Exhibition the picker went from one
+suit to the full list and a match was played. A save holding a suit taken out,
+**Keep**, the shops and a second girl's vacation have not been checked with
+the option on.

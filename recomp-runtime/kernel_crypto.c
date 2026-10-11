@@ -240,7 +240,7 @@ static void bridge_xc_sha_update(void)
 #ifdef RECOMP_FULL_PROGRAM
         /* The hash is the one place a save image passes through the
            runtime, before it is written and after it is read. */
-        recomp_unlock_swimsuits_hash(input, length);
+        recomp_unlock_swimsuits_hash(length);
 #endif
         if (length != 0u) {
             recomp_kernel_sha_update(
