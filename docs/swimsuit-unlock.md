@@ -76,6 +76,10 @@ marks every wearable suit in it each frame and writes the matching counts.
 
 ## Checks
 
+`unlock_swimsuits_test.c` runs the lending, take-out, Keep and save paths on
+synthetic guest memory, and checks that a save image with no lent suit in the
+inventory is left byte for byte as the game packed it.
+
 A scripted run on macOS against a copy of a save: **View Collection** listed
 the suits over 13 pages and one was taken out. A save made afterwards from the
 hotel had the same ownership table as before and no entry for the suit taken

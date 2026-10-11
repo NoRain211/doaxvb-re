@@ -273,13 +273,14 @@ void recomp_unlock_swimsuits_hash(uint32_t address, uint32_t length)
     const uint8_t *slots;
     uint8_t kept[SLOT_COUNT];
     unsigned kept_count = 0;
+    bool removed = false;
 
     if (!enabled() || shadow_items == 0u || length != RECOMP_SAVE_STATE_SIZE) {
         return;
     }
     withdraw();
     inventory = *recomp_memory_u32(INVENTORY_POINTER);
-    if (address != RECOMP_SAVE_STATE_ADDRESS || inventory == 0u) {
+    if (!saving || address != RECOMP_SAVE_STATE_ADDRESS || inventory == 0u) {
         return;
     }
     slots = recomp_memory(inventory + lent_girl * SLOT_COUNT * SLOT_SIZE, SLOT_COUNT * SLOT_SIZE);
@@ -295,9 +296,13 @@ void recomp_unlock_swimsuits_hash(uint32_t address, uint32_t length)
                 {0xFFu, 0xFFu, 0u, 0u, 0u, 0xFFu, 0u, 0u};
 
             memcpy(entry, empty, sizeof empty);
+            removed = true;
         } else if (slot_id(entry) != EMPTY_ID) {
             kept[kept_count++] = (uint8_t)i;
         }
+    }
+    if (!removed) {
+        return;
     }
     /* Close the gaps the removed suits leave in the acquisition order. */
     for (unsigned order = 0; order < kept_count; ++order) {
