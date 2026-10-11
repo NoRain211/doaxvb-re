@@ -17,7 +17,7 @@ $form.Text = 'DOAXBV'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = New-Object Drawing.Size 240, 196
+$form.ClientSize = New-Object Drawing.Size 240, 228
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
 
@@ -53,9 +53,12 @@ $music.Add_Click({
         [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
     }
 })
-$form.Controls.AddRange(@($smaa, $shuffle, $music, $play))
+# Starts endless CPU matches instead of the title screen; docs/cpu-exhibition.md.
+$cpuExhibition = New-Object Windows.Forms.Button -Property @{ Text = 'CPU Exhibition'; Left = 12; Top = 192; Width = 214; DialogResult = 'Yes' }
+$form.Controls.AddRange(@($smaa, $shuffle, $music, $play, $cpuExhibition))
 $form.AcceptButton = $play
-if ($form.ShowDialog() -ne 'OK') { exit }
+$choice = $form.ShowDialog()
+if ($choice -ne 'OK' -and $choice -ne 'Yes') { exit }
 
 $height = $heights[$resolution.SelectedIndex]
 $count = $samples[$msaa.SelectedIndex]
@@ -68,4 +71,5 @@ $env:RECOMP_D3D_MSAA = "$count"
 $env:RECOMP_D3D_SMAA = if ($smaa.Checked) { '1' } else { '0' }
 $env:RECOMP_AUDIO_GAIN = ($percent / 100).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_MUSIC_SHUFFLE = if ($shuffle.Checked) { '1' } else { '0' }
+$env:RECOMP_CPU_EXHIBITION = if ($choice -eq 'Yes') { '1' } else { '0' }
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root

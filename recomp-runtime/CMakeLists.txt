@@ -540,6 +540,7 @@ if(RECOMP_PROGRAM_DIR)
         animation_split_adapter.c
         d3d_split_pose.c
         save_adapter.c
+        cpu_exhibition.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c
@@ -741,6 +742,7 @@ if(NOT MSVC)
 endif()
 
 add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
+add_executable(recomp_cpu_exhibition_test cpu_exhibition_test.c)
 add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
 add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
 add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
@@ -753,6 +755,7 @@ endif()
 include(CTest)
 add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test)
 add_test(NAME recomp-runtime-animation-palette COMMAND recomp_animation_palette_test)
+add_test(NAME recomp-runtime-cpu-exhibition COMMAND recomp_cpu_exhibition_test)
 add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
 add_test(NAME recomp-runtime-animation-pose COMMAND recomp_animation_pose_test)
 add_test(NAME recomp-runtime-pose-replay COMMAND recomp_d3d_pose_replay_test)

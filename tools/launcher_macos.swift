@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // macOS launcher: pick resolution, anti-aliasing, volume and music options,
 // remember them in private/launcher.json, then exit 0 so launcher.sh starts
-// the game. Mirrors tools/launcher.ps1 without the Music folder button: custom
-// soundtracks need Media Foundation. Exits 1 if the window is closed.
+// the game, or 3 so it starts CPU Exhibition. Mirrors tools/launcher.ps1
+// without the Music folder button: custom soundtracks need Media Foundation.
+// Exits 1 if the window is closed.
 import AppKit
 
 let root = URL(fileURLWithPath: CommandLine.arguments.count > 1
@@ -37,7 +38,6 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let volume = NSPopUpButton()
     let smaa = NSButton(checkboxWithTitle: "SMAA", target: nil, action: nil)
     let shuffle = NSButton(checkboxWithTitle: "Shuffle music", target: nil, action: nil)
-    var launched = false
 
     func addRow(_ title: String, _ popup: NSPopUpButton, _ items: [String], _ index: Int, _ y: CGFloat) {
         let label = NSTextField(labelWithString: title)
@@ -71,14 +71,21 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let play = NSButton(title: "Play", target: self, action: #selector(play))
         play.frame = NSRect(x: 160, y: 12, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, shuffle, play] { window.contentView!.addSubview(view) }
+        let cpuExhibition = NSButton(title: "CPU Exhibition", target: self,
+                                     action: #selector(cpuExhibition))
+        cpuExhibition.frame = NSRect(x: 12, y: 12, width: 140, height: 30)
+        for view in [smaa, shuffle, cpuExhibition, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc func play() {
+    @objc func play() { launch(0) }
+    @objc func cpuExhibition() { launch(3) }
+
+    // Exits with the code launcher.sh acts on: 0 for Play, 3 for CPU Exhibition.
+    func launch(_ code: Int32) {
         let chosen: [String: Any] = [
             "height": heights[resolution.indexOfSelectedItem],
             "msaa": samples[msaa.indexOfSelectedItem],
@@ -96,12 +103,11 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSAlert(error: error).runModal()
             return
         }
-        launched = true
-        NSApp.terminate(nil)
+        exit(code)
     }
 
     func windowWillClose(_ notification: Notification) {
-        if !launched { exit(1) }
+        exit(1)
     }
 }
 
@@ -110,4 +116,4 @@ app.setActivationPolicy(.regular)
 let launcher = Launcher()
 app.delegate = launcher
 app.run()
-exit(launcher.launched ? 0 : 1)
+exit(1)

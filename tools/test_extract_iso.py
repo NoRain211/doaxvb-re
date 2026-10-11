@@ -62,8 +62,10 @@ class ExtractionTests(unittest.TestCase):
             receipt.write_text(json.dumps(data))
             with patch("run_game.subprocess.run") as run, patch.dict(os.environ):
                 os.environ.pop("RECOMP_AUDIO_GAIN", None)
+                os.environ.pop("RECOMP_CPU_EXHIBITION", None)
                 run.return_value.returncode = 0
                 self.assertEqual(launch(root), 0)
+                self.assertNotIn("RECOMP_CPU_EXHIBITION", run.call_args.kwargs["env"])
                 self.assertEqual(run.call_args.args[0], [str(runner), "--xbe", str(image), "--vsync"])
                 self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "1")
                 self.assertEqual(run.call_args.kwargs["env"]["RECOMP_USER_MUSIC"],
@@ -73,6 +75,8 @@ class ExtractionTests(unittest.TestCase):
                 self.assertIn(str(receipt), log)
                 self.assertIn("recipe_sha256: synthetic-recipe", log)
                 self.assertIn("generation_parity: exact-local-match", log)
+                self.assertEqual(launch(root, cpu_exhibition=True), 0)
+                self.assertEqual(run.call_args.kwargs["env"]["RECOMP_CPU_EXHIBITION"], "1")
             second = root / "private/setup-second"
             second.mkdir()
             (second / "build-receipt.json").write_text(json.dumps(data))

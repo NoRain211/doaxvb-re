@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Linux launcher: pick resolution, anti-aliasing, volume and music options,
 // remember them in private/launcher.json, then exit 0 so run_game.py starts
-// the game. Mirrors tools/launcher.ps1 without SMAA (Direct3D 11 only) and the
+// the game, or 3 so it starts CPU Exhibition. Mirrors tools/launcher.ps1 without SMAA (Direct3D 11 only) and the
 // Music folder button (custom soundtracks need Media Foundation). Gamepad,
 // keyboard, mouse and touch all work, so it runs from Steam Game Mode.
 // Exits 1 when closed without Play.
@@ -19,14 +19,17 @@ namespace {
 // Everything is laid out on a 640x400 canvas and scaled by whole numbers,
 // so SDL's 8x8 debug font stays sharp: 2x on the Steam Deck's 1280x800.
 constexpr int kWidth = 640, kHeight = 400;
-constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 128, kRowGap = 32;
-constexpr float kButtonY = kFirstRowY + 4 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
+constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 112, kRowGap = 32;
+constexpr float kButtonY = kFirstRowY + 5 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
+// What main returns: run_game.py starts the game on 0 and CPU Exhibition on 3.
+constexpr int kResultPlay = 0, kResultQuit = 1, kResultCpuExhibition = 3;
 
 const int kHeights[] = {480, 720, 1080, 1440, 2160};
 const int kSamples[] = {1, 2, 4, 8};
 const int kVolumes[] = {100, 75, 50, 25, 0};
 
-enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, PLAY, QUIT, ITEM_COUNT };
+// CPU_EXHIBITION is a row that starts the game like Play, not a setting.
+enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, CPU_EXHIBITION, PLAY, QUIT, ITEM_COUNT };
 
 struct Settings {
     int height = 0;
@@ -103,21 +106,33 @@ struct Launcher {
         }
         case MSAA: return kSamples[choice[item]] == 1 ? "Off" : std::to_string(kSamples[choice[item]]) + "x";
         case VOLUME: return kVolumes[choice[item]] == 0 ? "Mute" : std::to_string(kVolumes[choice[item]]) + "%";
+        case CPU_EXHIBITION: return "Watch";
         default: return choice[item] ? "On" : "Off";
         }
+    }
+
+    // What choosing the selected item does: a result to exit with, or -1
+    // after stepping a setting.
+    int activate()
+    {
+        if (selected == PLAY) return kResultPlay;
+        if (selected == QUIT) return kResultQuit;
+        if (selected == CPU_EXHIBITION) return kResultCpuExhibition;
+        change(selected, 1);
+        return -1;
     }
 
     void change(int item, int step)
     {
         static const int counts[] = {static_cast<int>(std::size(kHeights)),
             static_cast<int>(std::size(kSamples)), static_cast<int>(std::size(kVolumes)), 2};
-        if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
+        if (item < CPU_EXHIBITION) choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
 
     // Play and Quit share the bottom row.
     void move(int dy, int dx)
     {
-        if (dy < 0 && selected > RESOLUTION) selected = selected >= PLAY ? SHUFFLE : selected - 1;
+        if (dy < 0 && selected > RESOLUTION) selected = selected >= PLAY ? CPU_EXHIBITION : selected - 1;
         if (dy > 0 && selected < PLAY) ++selected;
         if (dx != 0) {
             if (selected >= PLAY) selected = dx > 0 ? QUIT : PLAY;
@@ -156,7 +171,8 @@ struct Launcher {
         centered(56, "XTREME BEACH VOLLEYBALL", kText, 2);
         centered(82, "Native port settings", kMuted);
 
-        static const char *labels[] = {"Resolution", "Anti-aliasing", "Volume", "Shuffle music"};
+        static const char *labels[] = {"Resolution", "Anti-aliasing", "Volume", "Shuffle music",
+            "CPU Exhibition"};
         for (int item = RESOLUTION; item < PLAY; ++item) {
             const SDL_FRect row = itemRect(item);
             const bool active = item == selected;
@@ -164,7 +180,8 @@ struct Launcher {
             if (active) fill({row.x, row.y, 3, row.h}, kAccent);
             const float y = row.y + (row.h - 8) / 2;
             text(row.x + 14, y, labels[item], active ? kText : kMuted);
-            const std::string value = active ? "<  " + valueText(item) + "  >" : valueText(item);
+            const std::string value = active && item != CPU_EXHIBITION
+                ? "<  " + valueText(item) + "  >" : valueText(item);
             text(row.x + row.w - 14 - value.size() * 8, y, value, active ? kAccent : kText);
         }
         for (int item = PLAY; item <= QUIT; ++item) {
@@ -266,9 +283,7 @@ int main(int argc, char **argv)
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                 if (event.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
                     event.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
-                    if (launcher.selected == PLAY) result = 0;
-                    else if (launcher.selected == QUIT) result = 1;
-                    else launcher.change(launcher.selected, 1);
+                    result = launcher.activate();
                 } else if (event.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
                     result = 1;
                 }
@@ -281,9 +296,7 @@ int main(int argc, char **argv)
                 case SDLK_RIGHT: launcher.move(0, 1); break;
                 case SDLK_RETURN:
                 case SDLK_SPACE:
-                    if (launcher.selected == PLAY) result = 0;
-                    else if (launcher.selected == QUIT) result = 1;
-                    else launcher.change(launcher.selected, 1);
+                    result = launcher.activate();
                     break;
                 case SDLK_ESCAPE: result = 1; break;
                 default: break;
@@ -300,8 +313,7 @@ int main(int argc, char **argv)
                 const int item = launcher.hit(event.button.x, event.button.y);
                 if (item < 0) break;
                 launcher.selected = item;
-                if (item == PLAY) result = 0;
-                else if (item == QUIT) result = 1;
+                if (item >= CPU_EXHIBITION) result = launcher.activate();
                 else {
                     const SDL_FRect row = itemRect(item);
                     launcher.change(item, event.button.x < row.x + row.w / 2 ? -1 : 1);
@@ -329,14 +341,14 @@ int main(int argc, char **argv)
         launcher.draw();
     }
 
-    if (result == 0) {
+    if (result != kResultQuit) {
         settings.height = kHeights[launcher.choice[RESOLUTION]];
         settings.msaa = kSamples[launcher.choice[MSAA]];
         settings.volume = kVolumes[launcher.choice[VOLUME]];
         settings.shuffle = launcher.choice[SHUFFLE] != 0;
         if (!saveSettings(settings_path, settings)) {
             std::fprintf(stderr, "launcher: cannot write %s\n", settings_path.c_str());
-            result = 1;
+            result = kResultQuit;
         }
     }
     SDL_DestroyRenderer(launcher.renderer);

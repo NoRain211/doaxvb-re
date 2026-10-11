@@ -42,12 +42,12 @@ def build_inputs(root, receipt_path=None):
     return runner, images[0], receipt_path
 
 
-def launch(root, receipt_path=None, settings=False):
+def launch(root, receipt_path=None, settings=False, cpu_exhibition=False):
     built = build_inputs(root, receipt_path)
     if built is not None:
         runner, image, receipt_path = built
         print(f"Using build receipt: {receipt_path}", flush=True)
-        return run(runner, image, root, receipt_path, settings)
+        return run(runner, image, root, receipt_path, settings, cpu_exhibition)
     candidates = [root / "recomp_program_runner.exe",
                   root / "recomp_program_runner",
                   root / "build/recomp-program/Release/recomp_program_runner.exe",
@@ -68,7 +68,8 @@ def launch(root, receipt_path=None, settings=False):
         release = json.loads(release_path.read_text(encoding="utf-8"))
         if sha256(runner) != release["runner_sha256"] or sha256(images[0]) != release["xbe_sha256"]:
             raise ValueError("Runner or game executable does not match this release.")
-    return run(runner, images[0], root, release_path if release_path.is_file() else None, settings)
+    return run(runner, images[0], root, release_path if release_path.is_file() else None, settings,
+               cpu_exhibition)
 
 
 def saved_launcher_settings(root):
@@ -84,14 +85,21 @@ def saved_launcher_settings(root):
         return {}
 
 
-def run(runner, image, root, receipt_path=None, settings=False):
+# The settings launcher exits with this when CPU Exhibition was chosen over Play.
+LAUNCHER_CPU_EXHIBITION = 3
+
+
+def run(runner, image, root, receipt_path=None, settings=False, cpu_exhibition=False):
     if settings:
         # Linux builds the settings launcher beside the runner; see launcher.sh.
         launcher = runner.parent / "recomp_launcher"
         if not launcher.is_file():
             raise ValueError(f"{launcher} is missing. Rebuild with ./build_game.sh, "
                              "or start the game with ./run_game.sh.")
-        if subprocess.run([str(launcher), str(root)]).returncode != 0:
+        choice = subprocess.run([str(launcher), str(root)]).returncode
+        if choice == LAUNCHER_CPU_EXHIBITION:
+            cpu_exhibition = True
+        elif choice != 0:
             return 1
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
@@ -100,6 +108,8 @@ def run(runner, image, root, receipt_path=None, settings=False):
         # applies the choices launcher.sh saved.
         for name, value in saved_launcher_settings(root).items():
             env.setdefault(name, value)
+    if cpu_exhibition:
+        env["RECOMP_CPU_EXHIBITION"] = "1"
     env.setdefault("RECOMP_AUDIO_GAIN", "1")  # the launcher's Volume choice overrides this
     env.setdefault("RECOMP_PERF_COUNTER", "1")
     print(f"Starting runner. Log: {log_path}", flush=True)
@@ -124,9 +134,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("receipt", nargs="?", type=Path, help="Select a private build-receipt.json")
     parser.add_argument("--launcher", action="store_true", help="Pick settings first (Linux; see launcher.sh)")
+    parser.add_argument("--cpu-exhibition", action="store_true",
+                        help="Watch endless CPU matches; see docs/cpu-exhibition.md")
     args = parser.parse_args()
     try:
-        sys.exit(launch(package_root(), args.receipt, args.launcher))
+        sys.exit(launch(package_root(), args.receipt, args.launcher, args.cpu_exhibition))
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Cannot launch: {error}", file=sys.stderr)
         sys.exit(1)

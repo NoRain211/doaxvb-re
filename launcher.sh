@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # macOS and Linux counterpart of Launcher.cmd: pick resolution, anti-aliasing,
 # volume and music options (saved to private/launcher.json), then start
-# run_game.sh, which applies those saved settings.
+# run_game.sh, which applies those saved settings. The launcher exits 3 for
+# CPU Exhibition instead of Play.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -25,8 +26,10 @@ if [[ ! -x "${BINARY}" || "${SOURCE}" -nt "${BINARY}" ]]; then
     swiftc -O "${SOURCE}" -o "${BINARY}"
 fi
 
-if "${BINARY}" "${ROOT}"; then
-    exec "${ROOT}/run_game.sh"
-else
-    exit 1
-fi
+choice=0
+"${BINARY}" "${ROOT}" || choice=$?
+case "${choice}" in
+    0) exec "${ROOT}/run_game.sh" ;;
+    3) exec "${ROOT}/run_game.sh" --cpu-exhibition ;;
+    *) exit 1 ;;
+esac
