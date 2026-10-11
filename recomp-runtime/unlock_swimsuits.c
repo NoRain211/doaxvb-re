@@ -21,7 +21,7 @@
    swimsuit (ids 1..0x148) her wear mask allows and she holds in neither
    place. `lent` remembers which bits are ours. A suit she takes out is hers
    from then on: the game clears the bit and fills an inventory slot, and
-   nothing is lent for a suit she holds.
+   nothing is lent, or remembered as lent, for a suit she holds.
 
    The table is part of the save image at 0x9D77E8. Whenever the game hashes
    an image of that size, to sign a save or to check one it has read, the
@@ -62,7 +62,7 @@ enum {
 static uint16_t wear_mask[SWIMSUIT_END];
 static uint16_t lent[SWIMSUIT_END];
 static unsigned lent_girl;
-static bool saving;
+static unsigned saving;
 
 static bool enabled(void)
 {
@@ -155,7 +155,7 @@ void recomp_unlock_swimsuits_frame(void)
         return;
     }
     lend_gallery();
-    if (saving) {
+    if (saving != 0u) {
         return;
     }
     if (*recomp_memory(SCENE, 1u) != SCENE_VACATION) {
@@ -195,6 +195,10 @@ void recomp_unlock_swimsuits_frame(void)
         if ((wear_mask[id] & (1u << girl)) == 0u) {
             continue;
         }
+        if (in_bag[id]) {
+            /* Hers now, whether bought or taken out. */
+            lent[id] &= (uint16_t)~(in_collection | had);
+        }
         if ((*owned & in_collection) == 0u) {
             /* Taken out, or the table was reloaded: the bit is no longer ours. */
             lent[id] &= (uint16_t)~in_collection;
@@ -215,7 +219,12 @@ void recomp_unlock_swimsuits_hash(uint32_t length)
 
 void recomp_unlock_swimsuits_saving(bool active)
 {
-    saving = active;
+    /* A region save nests inside the profile save. */
+    if (active) {
+        ++saving;
+    } else if (saving != 0u) {
+        --saving;
+    }
 }
 #else
 void recomp_unlock_swimsuits_frame(void) {}

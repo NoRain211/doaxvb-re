@@ -99,6 +99,7 @@ int main(void)
     CHECK((*owned(LENT_SUIT) & IN_COLLECTION) == 0u);
     recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
     CHECK(*slot(2) == LENT_SUIT);
+    CHECK(*owned(LENT_SUIT) == HAD);
     CHECK(*owned(3) == 0u);
 
     /* Keep: the game empties the slot and sets the bit, which is now real. */
@@ -107,8 +108,16 @@ int main(void)
     *owned(LENT_SUIT) |= IN_COLLECTION;
     recomp_unlock_swimsuits_frame();
     recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK((*owned(LENT_SUIT) & IN_COLLECTION) != 0u);
+    CHECK(*owned(LENT_SUIT) == (HAD | IN_COLLECTION));
     CHECK(*owned(3) == 0u);
+
+    /* A region save nested in the profile save does not resume lending. */
+    recomp_unlock_swimsuits_saving(true);
+    recomp_unlock_swimsuits_saving(true);
+    recomp_unlock_swimsuits_saving(false);
+    recomp_unlock_swimsuits_frame();
+    CHECK(*owned(3) == 0u);
+    recomp_unlock_swimsuits_saving(false);
 
     /* Outside a vacation the Collection is left as the game has it. */
     recomp_unlock_swimsuits_frame();

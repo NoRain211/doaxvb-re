@@ -46,9 +46,10 @@ the mask of girls who can wear it. Swimsuits are ids 1 to `0x148`. An
 inventory slot starts with the item id, `0xFFFF` when empty.
 
 `unlock_swimsuits.c` sets both bits for every wearable swimsuit the girl holds
-in neither place and remembers which bits it set. When the game clears a lent
-Collection bit, the suit was taken out; the bit is forgotten and the inventory
-slot the game filled is left as it is.
+in neither place and remembers which bits it set. A lent Collection bit that
+turns up clear was either taken out or lost to a reloaded table. Either way
+the bit is forgotten. A suit found in the inventory has both its bits
+forgotten, so they are saved, and the slot the game filled is left as it is.
 
 Exhibition reads a second table that `0x000F82F0` fills from the default
 suits and all three save files. It is not part of any save, so the unlock
