@@ -4,12 +4,12 @@
 
 ### Added
 
-- **Attract mode without the movies**. With the launcher's **Skip attract
-  movies** checkbox, or `RECOMP_ATTRACT_NO_MOVIES=1`, the game left idle
-  alternates between the title screen and the real-time volleyball demo, and
-  the title screen stays for 10 seconds instead of 30. The movie after the
-  logos still plays once at startup. Off by default; off, nothing changes.
-  See `docs/attract-mode.md`.
+- **Attract mode without the movies** (#114). With the launcher's **Skip
+  attract movies** checkbox, or `RECOMP_ATTRACT_NO_MOVIES=1`, the game left
+  idle alternates between the title screen and the real-time volleyball demo,
+  and the title screen stays for 10 seconds instead of 30. The movie after
+  the logos still plays once at startup. Off by default; off, nothing
+  changes. See `docs/attract-mode.md`.
 
 ## 0.6.0 Beta RC1 — 2026-10-09
 
