@@ -36,7 +36,7 @@ static uint32_t title_frame(uint32_t frame)
     return *recomp_memory_u32(TEST_STATE + STATE_FRAME);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     static const uint8_t table[STEP_COUNT * STEP_SIZE] = {
         KIND_WAIT, 0, 0, 0,
@@ -58,6 +58,20 @@ int main(void)
     *recomp_memory_u32(TEST_STACK + 4u) = TEST_STATE;
     memcpy(recomp_memory(STEP_TABLE, sizeof table), table, sizeof table);
     CHECK(recomp_attract_sequence_lookup_manual(TITLE_UPDATE + 1u) == NULL);
+
+    /* A table that is not the expected sequence is left alone, and so is the
+       title's hold. */
+    if (argc > 1 && strcmp(argv[1], "--unexpected-table") == 0) {
+        memcpy(patched, table, sizeof table);
+        patched[3 * STEP_SIZE] = KIND_DEMO;
+        memcpy(recomp_memory(STEP_TABLE, sizeof table), patched, sizeof table);
+        recomp_attract_sequence_frame();
+        recomp_attract_sequence_frame();
+        CHECK(memcmp(recomp_memory(STEP_TABLE, sizeof table), patched, sizeof table) == 0);
+        CHECK(title_frame(TITLE_HOLD_FRAMES) == TITLE_HOLD_FRAMES);
+        CHECK(title_updates == 1u);
+        return 0;
+    }
 
     /* Only the jump changes, and it lands on the title that precedes the demo. */
     recomp_attract_sequence_frame();

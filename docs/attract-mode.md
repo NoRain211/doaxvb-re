@@ -69,7 +69,8 @@ search without an end, which is why the table keeps them.
 ## Checks
 
 `attract_sequence_test.c` runs the table change and the title hold on
-synthetic guest memory.
+synthetic guest memory, and with `--unexpected-table` checks that a table
+holding another sequence, and the title's hold with it, is left alone.
 
 Scripted runs on macOS with step changes logged and a screenshot every 200
 frames:
