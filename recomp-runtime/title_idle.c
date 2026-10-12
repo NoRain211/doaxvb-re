@@ -31,8 +31,8 @@
    START ends a match runs the same step. For "no-cutscene" the frame counter
    in the step state (offset 8 of the block the update is handed) is moved
    to the fade once the title has been up for TITLE_HOLD_FRAMES. For
-   "cpu-exhibition" the matches are started just before the fade would
-   begin, so the title is idle for as long as the game holds it. */
+   "cpu-exhibition" the matches are started once the title has been up for
+   the same TITLE_HOLD_FRAMES. */
 enum {
     STEP_TABLE = 0x00328C14u,
     STEP_SIZE = 4,
@@ -52,8 +52,7 @@ enum {
     STATE_LEAVING = 6u,
     STATE_FRAME = 8u,
     TITLE_FADE_FRAME = 1740,
-    TITLE_HOLD_FRAMES = 540,
-    EXHIBITION_FRAME = TITLE_FADE_FRAME - 2
+    TITLE_HOLD_FRAMES = 540
 };
 
 typedef enum {
@@ -127,7 +126,7 @@ static void title_update(void)
         if (*frame >= TITLE_HOLD_FRAMES && *frame < TITLE_FADE_FRAME) {
             *frame = TITLE_FADE_FRAME;
         }
-    } else if (behavior() == IDLE_CPU_EXHIBITION && *frame >= EXHIBITION_FRAME &&
+    } else if (behavior() == IDLE_CPU_EXHIBITION && *frame >= TITLE_HOLD_FRAMES &&
         *recomp_memory(state + STATE_LEAVING, 1u) == 0u) {
         /* A title already leaving was not left idle: START was pressed. */
         recomp_cpu_exhibition_start();

@@ -36,8 +36,8 @@ again. The title screen stays for 30 seconds.
 
 ### CPU Exhibition
 
-- When the title screen has been idle for 29 seconds, just before it would
-  fade to the attract sequence, an Exhibition match loads in which the CPU
+- When the title screen has been idle for 9 seconds, an Exhibition match
+  loads in which the CPU
   plays all four girls. The main menu shows for a moment on the way.
 - Each match has four different girls, chosen at random. Each wears a
   swimsuit chosen at random from all the swimsuits she can wear, 307 of the
@@ -124,7 +124,7 @@ The players are ordered so that a team is `slot & 1`: players 0 and 2 against
 1 and 3.
 
 `title_idle.c` starts the matches from the title step's update when its frame
-counter reaches 1738 and the step is not already leaving after START. `cpu_exhibition.c` then runs once per presented frame
+counter reaches 540 and the step is not already leaving after START. `cpu_exhibition.c` then runs once per presented frame
 until START:
 
 - **START.** If START is held, it puts back the bytes that say which
@@ -152,7 +152,7 @@ until START:
 - `recomp_lookup_manual` routes `0x0006B290` to a wrapper in `title_idle.c`
   that then calls the generated update. For No cutscene it first moves the
   step's frame counter from 540 to 1740; for CPU Exhibition it starts the
-  matches at frame 1738. The generated function still owns the title music
+  matches at frame 540. The generated function still owns the title music
   and the fade. Writing the title step by hand is open work.
 - `leave_menu` in `cpu_exhibition.c` calls the generated game routine at
   `0x000F2C10` through `recomp_dispatch`, with the guest registers and FPU
@@ -173,7 +173,8 @@ can wear, and that START ends the matches until they are started again.
 
 A scripted run on macOS with CPU Exhibition chosen, against a copy of a
 save, with scene changes logged: START skipped the logos and the movie, the
-title screen was then left idle, and after 1744 frames the menus showed for
+title screen was then left idle, and after 1744 frames (the idle time was
+then 29 seconds; it is now 9) the menus showed for
 two seconds and a match loaded. That match ran for about five minutes and
 returned to the menus, and a second match loaded two and a half seconds
 later. The run had no screenshots, so the casts were not compared.

@@ -67,20 +67,19 @@ int main(int argc, char **argv)
     CHECK(recomp_title_idle_lookup_manual(TITLE_UPDATE + 1u) == NULL);
 
     /* CPU Exhibition leaves the table and the title's hold alone, and is
-       started once the title has been idle for as long as the game holds
-       it, unless START has already told the title to leave. */
+       started once the title has been idle for a while, unless START has already told the title to leave. */
     if (strcmp(idle, "cpu-exhibition") == 0) {
         recomp_title_idle_frame();
         CHECK(memcmp(recomp_memory(STEP_TABLE, sizeof table), table, sizeof table) == 0);
         CHECK(exhibition_frames == 1u);
-        CHECK(title_frame(TITLE_HOLD_FRAMES) == TITLE_HOLD_FRAMES);
-        CHECK(title_frame(EXHIBITION_FRAME - 1u) == EXHIBITION_FRAME - 1u);
+        CHECK(title_frame(1u) == 1u);
+        CHECK(title_frame(TITLE_HOLD_FRAMES - 1u) == TITLE_HOLD_FRAMES - 1u);
         CHECK(exhibition_starts == 0u);
         *recomp_memory(TEST_STATE + STATE_LEAVING, 1u) = 30u;
-        CHECK(title_frame(EXHIBITION_FRAME) == EXHIBITION_FRAME);
+        CHECK(title_frame(TITLE_HOLD_FRAMES) == TITLE_HOLD_FRAMES);
         CHECK(exhibition_starts == 0u);
         *recomp_memory(TEST_STATE + STATE_LEAVING, 1u) = 0u;
-        CHECK(title_frame(EXHIBITION_FRAME) == EXHIBITION_FRAME);
+        CHECK(title_frame(TITLE_HOLD_FRAMES) == TITLE_HOLD_FRAMES);
         CHECK(exhibition_starts == 1u);
         CHECK(title_updates == 4u);
         return 0;
