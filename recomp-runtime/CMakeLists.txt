@@ -83,13 +83,21 @@ if(NOT WIN32)
     endif()
 endif()
 
+if(MINGW)
+    # Match the Windows SDK default so Windows 10 media and audio declarations exist.
+    add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00)
+    # Link libc++ and libunwind in so the runner needs no toolchain DLLs.
+    add_link_options(-static)
+endif()
+
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
 # reports unavailable. The shader source is embedded as a byte list.
 set(_smaa_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/smaa")
 if(EXISTS "${_smaa_dir}/SMAA.hlsl")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_smaa_dir}/SMAA.hlsl")
     file(READ "${_smaa_dir}/SMAA.hlsl" _smaa_hex HEX)
-    string(REGEX REPLACE "(..)" "0x\\1," _smaa_hex "${_smaa_hex}")
+    # Character literals keep bytes above 0x7f valid in a char array under clang.
+    string(REGEX REPLACE "(..)" "'\\\\x\\1'," _smaa_hex "${_smaa_hex}")
     file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/smaa_hlsl.inc" CONTENT "${_smaa_hex}")
     # Only the presenter uses SMAA; scoping it keeps generated chunks untouched.
     set_source_files_properties(d3d_presenter_d3d11.cpp d3d_presenter_d3d11_test.cpp
@@ -276,7 +284,12 @@ if(WIN32)
     # Media Foundation is delay-loaded: Windows N editions and Server without the
     # Media Foundation feature lack it, and custom music then stays disabled.
     set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
-    set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+    if(MSVC)
+        set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+    else()
+        set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD
+            -Wl,-Xlink=-delayload:mfplat.dll -Wl,-Xlink=-delayload:mfreadwrite.dll)
+    endif()
     target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
     target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
 else()
@@ -613,7 +626,8 @@ if(RECOMP_PROGRAM_DIR)
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     if(WIN32)
         target_link_libraries(recomp_program_runner PRIVATE
-            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
+            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32
+            $<IF:$<BOOL:${MINGW}>,xaudio2_9,xaudio2> ${RECOMP_MEDIA_FOUNDATION})
         target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
         recomp_use_sdl3(recomp_program_runner)
     else()
