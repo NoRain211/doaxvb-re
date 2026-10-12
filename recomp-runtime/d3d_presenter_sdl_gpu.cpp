@@ -343,6 +343,8 @@ struct RecompD3dPresenter {
     SDL_GPUTexture *backbuffer_depth = nullptr;
     SDL_GPUTexture *backbuffer_resolve = nullptr;
     SDL_GPUTexture *backbuffer_copy = nullptr;
+    // Upscaled frames only: a mipped copy for guest downsamples.
+    SDL_GPUTexture *backbuffer_minify = nullptr;
     SDL_GPUTexture *frontbuffer_copy = nullptr;
     SDL_GPUTexture *dummy_texture = nullptr;
     uint32_t msaa_count = 1u;
@@ -648,16 +650,23 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
     }
     if (draw.texture_is_backbuffer) {
         if (!presenter->backbuffer_copy) return presenter->dummy_texture;
+        /* Only a draw into a smaller offscreen target minifies. Mips let that
+           guest downsample (the 256x256 depth-of-field source) average its
+           footprint in the upscaled frame like the Xbox did; 1:1 reads keep
+           the plain copy. */
+        const bool minify = draw.target.offscreen && presenter->backbuffer_minify != nullptr;
+        SDL_GPUTexture *copy = minify ? presenter->backbuffer_minify : presenter->backbuffer_copy;
         ensureBackbufferResolved(presenter);
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUCopyPass *copypass = SDL_BeginGPUCopyPass(cmdbuf);
         if (copypass) {
             SDL_GPUTextureLocation src_loc{presenter->backbuffer_resolve, 0, 0, 0, 0};
-            SDL_GPUTextureLocation dst_loc{presenter->backbuffer_copy, 0, 0, 0, 0};
+            SDL_GPUTextureLocation dst_loc{copy, 0, 0, 0, 0};
             SDL_CopyGPUTextureToTexture(copypass, &src_loc, &dst_loc, mainWidth(presenter), mainHeight(presenter), 1, false);
             SDL_EndGPUCopyPass(copypass);
         }
-        return presenter->backbuffer_copy;
+        if (minify) SDL_GenerateMipmapsForGPUTexture(cmdbuf, copy);
+        return copy;
     }
     if (draw.texture_is_frontbuffer) {
         if (!presenter->frontbuffer_copy) return presenter->dummy_texture;
@@ -1012,6 +1021,27 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
         s += "}\n";
     }
 
+    if (two_coords) {
+        // Cubic B-spline in four bilinear taps: a small blur target stretched
+        // over an upscaled frame shows its texels under plain bilinear.
+        s += "static float4 sample_smooth(texture2d<float> t, sampler smp, float2 uv) {\n";
+        s += "    float2 size = float2(t.get_width(), t.get_height());\n";
+        s += "    float2 p = uv * size - 0.5;\n";
+        s += "    float2 f = fract(p);\n";
+        s += "    p -= f;\n";
+        s += "    float2 f2 = f * f;\n";
+        s += "    float2 f3 = f2 * f;\n";
+        s += "    float2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;\n";
+        s += "    float2 w3 = f3 / 6.0;\n";
+        s += "    float2 g0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0 + w1;\n";
+        s += "    float2 g1 = 1.0 - g0;\n";
+        s += "    float2 h0 = (p - 0.5 + w1 / g0) / size;\n";
+        s += "    float2 h1 = (p + 1.5 + w3 / g1) / size;\n";
+        s += "    return g0.y * (g0.x * t.sample(smp, h0, level(0.0)) + g1.x * t.sample(smp, float2(h1.x, h0.y), level(0.0))) +\n";
+        s += "           g1.y * (g0.x * t.sample(smp, float2(h0.x, h1.y), level(0.0)) + g1.x * t.sample(smp, h1, level(0.0)));\n";
+        s += "}\n";
+    }
+
     // ps_main
     s += "fragment float4 ps_main(VSOut in [[stage_in]],\n";
     s += "                        constant TransformUniforms &u [[buffer(0)]],\n";
@@ -1042,7 +1072,9 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
         s += "    } else\n";
     } else if (two_coords) {
         s += "    if (u.texture_flags.w > 0.5) {\n";
-        s += "        float3 rgb = guest_texture.sample(guest_sampler, in.texcoord1 * u.texture_flags.xy).rgb;\n";
+        s += "        float2 uv1 = in.texcoord1 * u.texture_flags.xy;\n";
+        s += "        float3 rgb = (u.texture_flags.w > 1.5 ? sample_smooth(guest_texture, guest_sampler, uv1)\n";
+        s += "            : guest_texture.sample(guest_sampler, uv1)).rgb;\n";
         s += "        float alpha = alpha_mask.sample(mask_sampler, in.texcoord * u.lighting_flags.zw).a;\n";
         s += "        shaded = in.color * float4(rgb, alpha);\n";
         s += "    } else\n";
@@ -1319,6 +1351,25 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     }
 
     s += "layout(location = 0) out vec4 out_color;\n";
+    if (two_coords) {
+        // Cubic B-spline in four bilinear taps; see the Metal shader.
+        s += "vec4 sample_smooth(sampler2D t, vec2 uv) {\n";
+        s += "    vec2 size = vec2(textureSize(t, 0));\n";
+        s += "    vec2 p = uv * size - 0.5;\n";
+        s += "    vec2 f = fract(p);\n";
+        s += "    p -= f;\n";
+        s += "    vec2 f2 = f * f;\n";
+        s += "    vec2 f3 = f2 * f;\n";
+        s += "    vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;\n";
+        s += "    vec2 w3 = f3 / 6.0;\n";
+        s += "    vec2 g0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0 + w1;\n";
+        s += "    vec2 g1 = 1.0 - g0;\n";
+        s += "    vec2 h0 = (p - 0.5 + w1 / g0) / size;\n";
+        s += "    vec2 h1 = (p + 1.5 + w3 / g1) / size;\n";
+        s += "    return g0.y * (g0.x * textureLod(t, h0, 0.0) + g1.x * textureLod(t, vec2(h1.x, h0.y), 0.0)) +\n";
+        s += "           g1.y * (g0.x * textureLod(t, vec2(h0.x, h1.y), 0.0) + g1.x * textureLod(t, h1, 0.0));\n";
+        s += "}\n";
+    }
     s += "void main() {\n";
     s += "    vec2 tc = v_texcoord;\n";
     s += "    vec2 refl_tc = v_reflection_coord;\n";
@@ -1345,7 +1396,9 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
         s += "    } else\n";
     } else if (two_coords) {
         s += "    if (u.texture_flags.w > 0.5) {\n";
-        s += "        vec3 rgb = texture(guest_texture, v_texcoord1 * u.texture_flags.xy).rgb;\n";
+        s += "        vec2 uv1 = v_texcoord1 * u.texture_flags.xy;\n";
+        s += "        vec3 rgb = (u.texture_flags.w > 1.5 ? sample_smooth(guest_texture, uv1)\n";
+        s += "            : texture(guest_texture, uv1)).rgb;\n";
         s += "        float alpha = texture(alpha_mask, tc * u.lighting_flags.zw).a;\n";
         s += "        shaded = v_color * vec4(rgb, alpha);\n";
         s += "    } else\n";
@@ -2133,6 +2186,14 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     copy_info.num_levels = 1;
     SDL_GPUTexture *backbuffer_copy = SDL_CreateGPUTexture(device, &copy_info);
     SDL_GPUTexture *frontbuffer_copy = SDL_CreateGPUTexture(device, &copy_info);
+    SDL_GPUTexture *backbuffer_minify = nullptr;
+    if (scale != 1.0f) {
+        // Mip generation renders into each level. Without this copy the
+        // downsample only aliases, so a failed create is not fatal.
+        copy_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        for (uint32_t size = std::max(main_w, main_h); size > 1u; size >>= 1u) ++copy_info.num_levels;
+        backbuffer_minify = SDL_CreateGPUTexture(device, &copy_info);
+    }
 
     if (!backbuffer_color || !backbuffer_depth || !backbuffer_resolve || !backbuffer_copy || !frontbuffer_copy) {
         if (backbuffer_color) SDL_ReleaseGPUTexture(device, backbuffer_color);
@@ -2140,6 +2201,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         if (backbuffer_resolve && backbuffer_resolve != backbuffer_color) SDL_ReleaseGPUTexture(device, backbuffer_resolve);
         if (backbuffer_copy) SDL_ReleaseGPUTexture(device, backbuffer_copy);
         if (frontbuffer_copy) SDL_ReleaseGPUTexture(device, frontbuffer_copy);
+        if (backbuffer_minify) SDL_ReleaseGPUTexture(device, backbuffer_minify);
         SDL_ReleaseWindowFromGPUDevice(device, window);
         SDL_DestroyWindow(window);
         SDL_DestroyGPUDevice(device);
@@ -2229,6 +2291,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         if (backbuffer_resolve && backbuffer_resolve != backbuffer_color) SDL_ReleaseGPUTexture(device, backbuffer_resolve);
         SDL_ReleaseGPUTexture(device, backbuffer_copy);
         SDL_ReleaseGPUTexture(device, frontbuffer_copy);
+        if (backbuffer_minify) SDL_ReleaseGPUTexture(device, backbuffer_minify);
         SDL_ReleaseWindowFromGPUDevice(device, window);
         SDL_DestroyWindow(window);
         SDL_DestroyGPUDevice(device);
@@ -2251,6 +2314,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         if (backbuffer_resolve && backbuffer_resolve != backbuffer_color) SDL_ReleaseGPUTexture(device, backbuffer_resolve);
         SDL_ReleaseGPUTexture(device, backbuffer_copy);
         SDL_ReleaseGPUTexture(device, frontbuffer_copy);
+        if (backbuffer_minify) SDL_ReleaseGPUTexture(device, backbuffer_minify);
         SDL_ReleaseWindowFromGPUDevice(device, window);
         SDL_DestroyWindow(window);
         SDL_DestroyGPUDevice(device);
@@ -2272,6 +2336,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->backbuffer_resolve = backbuffer_resolve;
     p->backbuffer_copy = backbuffer_copy;
     p->frontbuffer_copy = frontbuffer_copy;
+    p->backbuffer_minify = backbuffer_minify;
     p->dummy_texture = dummy_texture;
     p->msaa_count = msaa_count;
     p->msaa_samples = sample_count;
@@ -2676,7 +2741,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         constants[80] = (draw.texture.linear && draw.texture.width) ? 1.0f / draw.texture.width : 1.0f;
         constants[81] = (draw.texture.linear && draw.texture.height) ? 1.0f / draw.texture.height : 1.0f;
         constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
-        constants[83] = draw.has_alpha_mask ? 1.0f : 0.0f;
+        // 2 also smooths the stage-1 color: the depth-of-field composite
+        // magnifies its 256x256 blur target far more on an upscaled frame.
+        const bool smooth_magnify = draw.has_alpha_mask && presenter->scale != 1.0f &&
+            !draw.target.offscreen && findRenderTarget(presenter, draw.texture) != nullptr;
+        constants[83] = smooth_magnify ? 2.0f : draw.has_alpha_mask ? 1.0f : 0.0f;
 
         if (draw.has_reflection) {
             std::memcpy(constants + 84, draw.reflection_world_view, 64u);
@@ -2867,6 +2936,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     if (p->backbuffer_resolve && p->backbuffer_resolve != p->backbuffer_color) SDL_ReleaseGPUTexture(p->device, p->backbuffer_resolve);
     if (p->backbuffer_copy) SDL_ReleaseGPUTexture(p->device, p->backbuffer_copy);
     if (p->frontbuffer_copy) SDL_ReleaseGPUTexture(p->device, p->frontbuffer_copy);
+    if (p->backbuffer_minify) SDL_ReleaseGPUTexture(p->device, p->backbuffer_minify);
 
     if (p->window) {
         SDL_ReleaseWindowFromGPUDevice(p->device, p->window);
