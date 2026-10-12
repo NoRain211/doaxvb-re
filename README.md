@@ -86,16 +86,18 @@ Development results do not guarantee every route works in the packaged beta.
 
 **Requirements:** Windows 10/11 x64, a supported USA game ISO and internet
 access. The 0.5.3 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
-extractor. If the Microsoft C++ compiler or Windows SDK is missing, setup
-offers to download and run Microsoft's installer. That installation needs
-administrator approval and several GB of disk space; the full Visual Studio
-IDE is not required.
+extractor. Setup compiles the game with the free
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang compiler. On first
+run it downloads it into the setup folder (190 MB, about 715 MB extracted). This
+needs no administrator approval, Visual Studio or Windows SDK (#115).
+Release ZIPs up to 0.6.0 RC1 instead offer to run Microsoft's C++ Build Tools
+installer, which needs administrator approval and several GB of disk space.
 
 1. Download the ZIP from the
    [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest)
    and extract it into a new folder with a short path.
-2. Drag your ISO onto `BuildGame.cmd`, follow any prerequisite installation
-   prompts and wait for **Setup complete**.
+2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**. With a
+   release ZIP up to 0.6.0 RC1, first follow any Microsoft installer prompts.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
    then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
@@ -134,6 +136,8 @@ cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
 
+To run the same tests with the llvm-mingw clang that setup uses, see the
+[source build guide](docs/building.md#public-test-route).
 This produces test executables, not the game runner. For ISO setup from source,
 follow the [source build guide](docs/building.md). Passing tests does not
 establish full game accuracy.

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Windows setup compiles the game with llvm-mingw clang instead of Visual
+  Studio (#115). `BuildGame.cmd` downloads the pinned llvm-mingw release
+  (190 MB) into `tools/llvm-mingw` on first run and checks its SHA-256. It no
+  longer needs Visual Studio Build Tools, a Windows SDK or administrator
+  approval. The runner needs only Windows system DLLs and `SDL3.dll`. The
+  generation recipe is unchanged, so existing builds keep working and saves
+  are unaffected.
+
 ## 0.6.0 Beta RC1 — 2026-10-09
 
 This release candidate improves rendering and adds opt-in high refresh
