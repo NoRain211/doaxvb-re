@@ -170,6 +170,17 @@ static void keep_people(void)
     }
 }
 
+/* The menu has been asked to start a cast match that is not running yet. */
+static bool match_asked;
+/* START came while that match was loading: quit it once it runs. */
+static bool quit_pending;
+
+static void quit_match(void)
+{
+    *recomp_memory_u32(RESULTS_CHOICE) = RESULTS_QUIT;
+    *recomp_memory(MATCH_OVER, 1u) = 1u;
+}
+
 /* START ends the mode: the players are people again and a match under way
    is left for the title by storing what Quit on its results menu stores. */
 static void leave_mode(uint8_t scene)
@@ -183,9 +194,13 @@ static void leave_mode(uint8_t scene)
         *recomp_memory(TEAM_HUMAN + TEAM_SIZE, 1u) = people.team_human[1];
     }
     if (scene == SCENE_MATCH) {
-        *recomp_memory_u32(RESULTS_CHOICE) = RESULTS_QUIT;
-        *recomp_memory(MATCH_OVER, 1u) = 1u;
+        quit_match();
+    } else if (scene == SCENE_MENU && match_asked) {
+        /* The menu keeps leaving for the cast match, so the scene still
+           reads as the menu until the match has loaded. */
+        quit_pending = true;
     }
+    match_asked = false;
 }
 
 /* Four different girls in random swimsuits on a random court, every slot
@@ -283,6 +298,7 @@ void recomp_cpu_exhibition_start(void)
 {
     if (!active && !unsupported) {
         active = true;
+        quit_pending = false;
         menu_frames = 0;
         results_frames = 0;
         results_answering = false;
@@ -293,6 +309,15 @@ void recomp_cpu_exhibition_frame(void)
 {
     uint8_t scene;
 
+    if (quit_pending) {
+        scene = *recomp_memory(SCENE, 1u);
+        if (scene == SCENE_MATCH) {
+            quit_match();
+        }
+        if (scene != SCENE_MENU) {
+            quit_pending = false;
+        }
+    }
     if (!active) {
         return;
     }
@@ -315,6 +340,7 @@ void recomp_cpu_exhibition_frame(void)
             *recomp_memory(STEP_LEAVING, 1u) = 1u;
         }
     } else if (scene == SCENE_MATCH) {
+        match_asked = false;
         leave_results();
     } else if (++menu_frames >= MENU_SETTLE_FRAMES &&
         *recomp_memory_u32(MENU_CALLBACK) == MENU_CALLBACK_MAIN &&
@@ -328,6 +354,7 @@ void recomp_cpu_exhibition_frame(void)
             unsupported = true;
             return;
         }
+        match_asked = true;
         menu_frames = 0;
     }
 }

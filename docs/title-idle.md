@@ -130,8 +130,10 @@ until START:
 - **START.** If START is held, it puts back the bytes that say which
   players are people and, in a match, stores Quit as the results menu's
   choice with the match over byte. The match scene's update then leaves for
-  the title as it does after Quit. A scene the matches never ask for, which
-  only a person can have chosen, ends them the same way.
+  the title as it does after Quit. When START comes while the menu is still
+  leaving for a cast match, the Quit is stored once the match scene runs. A
+  scene the matches never ask for, which only a person can have chosen, ends
+  them the same way.
 - **Title or attract sequence.** Once the step showing has run for a second,
   it stores one frame left in `0x4D994A`. The game's own sequence code then
   ends the step as it does after START and moves on to the menus.

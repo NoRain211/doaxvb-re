@@ -209,6 +209,32 @@ int main(void)
     CHECK(dispatches == 3u);
     CHECK(*recomp_memory_u32(HUMAN) == 0u);
 
+    /* START while that match is still loading ends the mode too, and the
+       match is quit as soon as it runs. */
+    *recomp_memory_u32(BUTTONS_HELD) = BUTTON_START;
+    run_frames(1);
+    CHECK(*recomp_memory_u32(HUMAN) == 0x01010101u);
+    CHECK(*recomp_memory(MATCH_OVER, 1u) == 0u);
+    *recomp_memory_u32(BUTTONS_HELD) = 0u;
+    run_frames(1);
+    CHECK(*recomp_memory(MATCH_OVER, 1u) == 0u);
+    *recomp_memory(SCENE, 1u) = SCENE_MATCH;
+    run_frames(1);
+    CHECK(*recomp_memory_u32(RESULTS_CHOICE) == RESULTS_QUIT);
+    CHECK(*recomp_memory(MATCH_OVER, 1u) == 1u);
+    *recomp_memory(MATCH_OVER, 1u) = 0u;
+    *recomp_memory_u32(RESULTS_CHOICE) = 0u;
+    run_frames(1);
+    CHECK(*recomp_memory(MATCH_OVER, 1u) == 0u);
+
+    /* Started again from the menu, it casts once more. */
+    *recomp_memory(SCENE, 1u) = SCENE_MENU;
+    *recomp_memory_u32(MENU_EXIT) = MENU_NONE;
+    recomp_cpu_exhibition_start();
+    run_frames(MENU_SETTLE_FRAMES);
+    CHECK(dispatches == 4u);
+    CHECK(*recomp_memory_u32(HUMAN) == 0u);
+
     /* A scene the mode never asks for ends it too. */
     *recomp_memory(SCENE, 1u) = 1u;
     run_frames(1);
@@ -216,17 +242,17 @@ int main(void)
     *recomp_memory(SCENE, 1u) = SCENE_MENU;
     *recomp_memory_u32(MENU_EXIT) = MENU_NONE;
     run_frames(MENU_SETTLE_FRAMES * 2u);
-    CHECK(dispatches == 3u);
+    CHECK(dispatches == 4u);
 
     /* An image without the routine turns the mode off for good. */
     recomp_cpu_exhibition_start();
     dispatch_result = false;
     run_frames(MENU_SETTLE_FRAMES);
-    CHECK(dispatches == 4u);
+    CHECK(dispatches == 5u);
     CHECK(*recomp_memory_u32(HUMAN) == 0x01010101u);
     *recomp_memory_u32(MENU_EXIT) = MENU_NONE;
     recomp_cpu_exhibition_start();
     run_frames(MENU_SETTLE_FRAMES * 2u);
-    CHECK(dispatches == 4u);
+    CHECK(dispatches == 5u);
     return 0;
 }
