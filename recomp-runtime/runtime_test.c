@@ -12,6 +12,7 @@ int recomp_xapi_time_adapter_test(void);
 int recomp_device_model_test(void);
 int recomp_d3d_creation_model_test(void);
 int recomp_d3d_draw_model_test(void);
+int recomp_d3d_draw_adapter_test(void);
 int recomp_d3d_frame_model_test(void);
 int recomp_d3d_frame_adapter_test(void);
 int recomp_d3d_presenter_memory_test(void);
@@ -25,6 +26,7 @@ int recomp_cri_service_model_test(void);
 int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
 int recomp_crt_string_adapter_test(void);
+int recomp_animation_track_adapter_test(void);
 int recomp_fiber_adapter_test(void);
 int recomp_fiber_model_test(void);
 int recomp_flag_macro_test(void);
@@ -37,6 +39,8 @@ int recomp_ohci_model_test(void);
 int recomp_apu_model_test(void);
 int recomp_kernel_memory_test(void);
 int recomp_kernel_allocation_test(void);
+int recomp_kernel_presenter_close_test(void);
+int recomp_d3d_draw_presenter_close_test(int indexed);
 int recomp_kernel_file_save_test(void);
 int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
@@ -855,6 +859,15 @@ int main(int argc, char **argv)
 {
     int passed = 1;
 
+    if (argc == 2 && strcmp(argv[1], "--presenter-close-draw") == 0) {
+        return recomp_d3d_draw_presenter_close_test(1);
+    }
+    if (argc == 2 && strcmp(argv[1], "--presenter-close-up") == 0) {
+        return recomp_d3d_draw_presenter_close_test(0);
+    }
+    if (argc == 2 && strcmp(argv[1], "--presenter-close-release") == 0) {
+        return recomp_kernel_presenter_close_test();
+    }
     if (argc == 2 && strcmp(argv[1], "--custom-music") == 0) {
         return recomp_custom_music_test();
     }
@@ -878,8 +891,8 @@ int main(int argc, char **argv)
             stderr,
             "usage: recomp_runtime_test "
             "[--invalid-access|--fiber-stack-recycling|"
-            "--ram-overrun|--ram-pending-ohci|--kernel-span-overrun|"
-            "--custom-music]\n");
+            "--ram-overrun|--ram-pending-ohci|--kernel-span-overrun|--custom-music|"
+            "--presenter-close-release|--presenter-close-draw|--presenter-close-up]\n");
         return 64;
     }
 
@@ -903,6 +916,7 @@ int main(int argc, char **argv)
     passed &= recomp_device_model_test();
     passed &= recomp_d3d_creation_model_test();
     passed &= recomp_d3d_draw_model_test();
+    passed &= recomp_d3d_draw_adapter_test();
     passed &= recomp_d3d_frame_model_test();
     passed &= recomp_d3d_presenter_memory_test();
     passed &= recomp_d3d_frame_adapter_test();
@@ -915,6 +929,7 @@ int main(int argc, char **argv)
     passed &= recomp_cri_service_adapter_test();
     passed &= recomp_crt_format_adapter_test();
     passed &= recomp_crt_string_adapter_test();
+    passed &= recomp_animation_track_adapter_test();
     passed &= recomp_fiber_model_test();
     passed &= recomp_flag_macro_test();
     passed &= recomp_sse_semantics_test();

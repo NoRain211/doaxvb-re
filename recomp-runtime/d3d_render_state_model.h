@@ -102,6 +102,19 @@ typedef enum RecompD3dStencilOp {
     RECOMP_D3D_STENCIL_DECRWRAP,
 } RecompD3dStencilOp;
 
+/* Xbox has FOGTABLEMODE, but no separate PC FOGVERTEXMODE state.
+   NONE consumes the supplied vertex factor; EXP/EXP2/LINEAR consume depth. */
+typedef struct RecompD3dFogState {
+    bool enabled;
+    bool range;
+    uint32_t mode; /* D3DFOGMODE: NONE=0, EXP=1, EXP2=2, LINEAR=3. */
+    uint32_t color;
+    float start, end, density;
+} RecompD3dFogState;
+
+void recomp_d3d_fog_state(const uint32_t words[6], uint32_t color,
+    RecompD3dFogState *state);
+
 typedef struct RecompD3dDepthState {
     bool depth_test_enable;
     bool depth_write_enable;
@@ -200,6 +213,9 @@ bool recomp_d3d_texture_factor_selected(
 bool recomp_d3d_texture_factor_modulate_selected(
     const uint32_t stage[6],
     uint32_t next_color_op);
+
+/* Consumed TEXTURE arguments and implicit texture-alpha operations. */
+bool recomp_d3d_combiner_uses_texture(const uint32_t words[8]);
 
 /* UV0 base texture, generated reflection blended by texture alpha, then diffuse. */
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32]);

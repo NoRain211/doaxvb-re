@@ -2,14 +2,14 @@
 
 <img src="https://github.com/NoRain211/doaxbv-re/releases/download/readme-media/doaxbv-logo.png" alt="Dead or Alive Xtreme Beach Volleyball logo" width="420">
 
-# DOAXBV Native PC Port
+# DOAXVB Native PC Port
 
-**A native Windows port of _Dead or Alive Xtreme Beach Volleyball_, built by static recompilation, with the goal of rewriting it into readable source.**
+**A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows, macOS & Linux), built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=beta)](https://github.com/NoRain211/doaxbv-re/releases/latest)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D6)
+![Platform: Windows, macOS & Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)
 
 [Download](https://github.com/NoRain211/doaxbv-re/releases/latest) ·
 [Changelog](CHANGELOG.md) ·
@@ -86,20 +86,30 @@ Development results do not guarantee every route works in the packaged beta.
 
 **Requirements:** Windows 10/11 x64, a supported USA game ISO and internet
 access. The 0.5.3 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
-extractor. If the Microsoft C++ compiler or Windows SDK is missing, setup
-offers to download and run Microsoft's installer. That installation needs
-administrator approval and several GB of disk space; the full Visual Studio
-IDE is not required.
+extractor. Setup compiles the game with the free
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang compiler. On first
+run it downloads it into the setup folder (190 MB, about 715 MB extracted). This
+needs no administrator approval, Visual Studio or Windows SDK (#115).
+Release ZIPs up to 0.6.0 RC1 instead offer to run Microsoft's C++ Build Tools
+installer, which needs administrator approval and several GB of disk space.
 
 1. Download the ZIP from the
    [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest)
    and extract it into a new folder with a short path.
-2. Drag your ISO onto `BuildGame.cmd`, follow any prerequisite installation
-   prompts and wait for **Setup complete**.
+2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**. With a
+   release ZIP up to 0.6.0 RC1, first follow any Microsoft installer prompts.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
    then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
-Setup extracts your ISO and builds an x64 Release runner locally; the package
+On macOS:
+1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).
+2. Run `./build_game.sh /path/to/game.iso` and wait for setup to complete.
+3. Run `./launcher.sh` to select resolution, volume, and soundtrack options, then press **Play** (or run `./run_game.sh` directly).
+
+On Linux and Steam Deck, follow [docs/building.md](docs/building.md#linux-and-steamos-build);
+the scripts are the same as on macOS.
+
+Setup extracts your ISO and builds a native Release runner locally; the package
 contains tools and source, never a prebuilt runner or game data. When updating,
 build in a new folder and keep your previous install and saves. GitHub's
 automatic source archives are source only; see the
@@ -126,6 +136,8 @@ cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
 
+To run the same tests with the llvm-mingw clang that setup uses, see the
+[source build guide](docs/building.md#public-test-route).
 This produces test executables, not the game runner. For ISO setup from source,
 follow the [source build guide](docs/building.md). Passing tests does not
 establish full game accuracy.
@@ -152,6 +164,11 @@ controller, and the stop or crash message
 ([how to read logs](recomp-runtime/README.md#reading-stop-and-crash-logs)).
 Remove private paths from logs, and never upload game binaries, generated game
 C, assets, extracted filenames, saves, BIOS data or private run evidence.
+
+### Contributors
+
+- [Tommy McLeroy (@tmcleroy)](https://github.com/tmcleroy): creator of the
+  macOS and Linux ports (#99, #103).
 
 ## AI assistance
 

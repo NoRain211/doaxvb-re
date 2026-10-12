@@ -3,6 +3,9 @@
 #include "d3d_render_state_adapter.h"
 #include "d3d_frame_adapter.h"
 #include "d3d_texture_adapter.h"
+#include "d3d_pose_replay.h"
+#include "animation_split_adapter.h"
+#include "animation_probe.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -383,23 +386,7 @@ static bool swizzled_byte_count(
     if (desc->linear || desc->width == 0u || desc->height == 0u) {
         return false;
     }
-    if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
-        uint64_t bytes = (uint64_t)desc->width * desc->height;
-        if (desc->bits_per_pixel != 8u || bytes > UINT32_MAX) return false;
-        *out = (uint32_t)bytes;
-        return true;
-    }
-    if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ||
-        desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) {
-        *out = desc->width * desc->height * (desc->bits_per_pixel / 8u);
-        return true;
-    }
-    if (desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT1 &&
-        desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT3 &&
-        desc->format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) {
-        return false;
-    }
-    *out = recomp_d3d_texture_compressed_mip_span(desc);
+    *out = recomp_d3d_texture_mip_span(desc);
     return *out != 0u;
 }
 
@@ -442,11 +429,15 @@ static void attach_texture(uint32_t stage, RecompD3dPresenterDrawCommand *draw)
     }
     draw->texture = *desc;
     draw->has_texture = true;
-    /* D3D__TextureState[stage] starts with ADDRESSU, ADDRESSV. */
-    bytes = guest_span(0x001f2988u + stage * 0x80u, 8u);
+    /* Xbox texture states: ADDRESSU/V at 0/1, MAG/MIN/MIPFILTER at 3/4/5. */
+    bytes = guest_span(0x001f2988u + stage * 0x80u, 24u);
     if (bytes != NULL) {
         memcpy(&draw->address_u, bytes, sizeof draw->address_u);
         memcpy(&draw->address_v, bytes + 4u, sizeof draw->address_v);
+        uint32_t filters[3];
+        memcpy(filters, bytes + 12u, sizeof filters);
+        draw->linear_mip_filter = desc->mip_levels > 1u &&
+            filters[0] == 2u && filters[1] == 2u && filters[2] == 2u;
     }
     if (!swizzled_byte_count(desc, &byte_count)) {
         /* A render target may have host-owned pixels without a CPU upload. */
@@ -675,21 +666,28 @@ static bool attach_four_tap_filter(
 static void attach_backbuffer_texture(
     uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
-    const uint8_t *bytes = (uint64_t)device + D3D_BACK_BUFFER_OFFSET + 4u <= UINT32_MAX
-        ? guest_span(device + D3D_BACK_BUFFER_OFFSET, 4u) : NULL;
-    RecompD3dTextureDesc backbuffer;
-    uint32_t resource, format;
+    /* Dword 0x871 is the front buffer, the last presented frame. Scene
+       transitions copy it into a texture and show it while loading. */
+    for (uint32_t front = 0u; front < 2u; ++front) {
+        const uint32_t offset = D3D_BACK_BUFFER_OFFSET + front * 4u;
+        const uint8_t *bytes = (uint64_t)device + offset + 4u <= UINT32_MAX
+            ? guest_span(device + offset, 4u) : NULL;
+        RecompD3dTextureDesc backbuffer;
+        uint32_t resource, format;
 
-    if (!draw->has_texture || bytes == NULL) return;
-    memcpy(&resource, bytes, sizeof resource);
-    bytes = resource != 0u ? guest_span(resource, 20u) : NULL;
-    if (bytes == NULL) return;
-    memcpy(&format, bytes + 12u, sizeof format);
-    if (guest_span(0x001f16b8u + ((format >> 8u) & 0xffu), 1u) == NULL) return;
-    if (recomp_d3d_texture_adapter_describe(resource, &backbuffer) &&
-        backbuffer.data != 0u && !backbuffer.depth &&
-        same_texture_storage(&draw->texture, &backbuffer)) {
-        draw->texture_is_backbuffer = true;
+        if (!draw->has_texture || bytes == NULL) continue;
+        memcpy(&resource, bytes, sizeof resource);
+        bytes = resource != 0u ? guest_span(resource, 20u) : NULL;
+        if (bytes == NULL) continue;
+        memcpy(&format, bytes + 12u, sizeof format);
+        if (guest_span(0x001f16b8u + ((format >> 8u) & 0xffu), 1u) == NULL) continue;
+        if (recomp_d3d_texture_adapter_describe(resource, &backbuffer) &&
+            backbuffer.data != 0u && !backbuffer.depth &&
+            same_texture_storage(&draw->texture, &backbuffer)) {
+            if (front) draw->texture_is_frontbuffer = true;
+            else draw->texture_is_backbuffer = true;
+            return;
+        }
     }
 }
 
@@ -774,27 +772,40 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     memcpy(result.material_diffuse, mat, 16);
     for (uint32_t c=0; c<3; ++c)
         result.ambient_emissive[c] = mat[12+c] + mat[4+c] * ((ambient >> (16-8*c)) & 255u) / 255.0f;
-    /* ponytail: eight directional lights; point/spot and vertex-color sources retain their existing path. */
+    /* ponytail: eight directional/point lights; spot and vertex-color sources retain their existing path. */
     while (light) {
         if (result.count == 8) return;
         const uint8_t *bytes = guest_span(light, 0x90u);
         if (!bytes) return;
         uint32_t type, next; float data[36];
         memcpy(&type, bytes, 4); memcpy(data, bytes, sizeof data); memcpy(&next, bytes+0x8c, 4);
-        if (type != 3) return;
-        float length = data[16]*data[16]+data[17]*data[17]+data[18]*data[18];
-        if (!isfinite(length) || length <= 0) return;
-        length = sqrtf(length);
+        if (type != 1 && type != 3) return;
+        if (type == 1) {
+            if (!isfinite(data[19]) || data[19] < 0) return;
+            for (uint32_t c=0; c<3; ++c) {
+                if (!isfinite(data[13+c]) || !isfinite(data[21+c]) || data[21+c] < 0) return;
+                result.positions[result.count][c] = data[13+c];
+                result.attenuation[result.count][c] = data[21+c];
+            }
+            result.positions[result.count][3] = 1;
+            result.attenuation[result.count][3] = data[19];
+        } else {
+            float length = data[16]*data[16]+data[17]*data[17]+data[18]*data[18];
+            if (!isfinite(length) || length <= 0) return;
+            length = sqrtf(length);
+            for (uint32_t c=0; c<3; ++c)
+                result.directions[result.count][c] = -data[16+c]/length;
+        }
         for (uint32_t c=0; c<3; ++c) {
             if (!isfinite(data[1+c]) || !isfinite(data[9+c])) return;
-            result.directions[result.count][c] = -data[16+c]/length;
             result.colors[result.count][c] = data[1+c];
-            result.ambient_emissive[c] += mat[4+c]*data[9+c];
+            if (type == 1) result.ambient[result.count][c] = mat[4+c]*data[9+c];
+            else result.ambient_emissive[c] += mat[4+c]*data[9+c];
         }
         ++result.count; light=next;
     }
     for (uint32_t i=0; i<=draw->blend_weight_count; ++i) {
-        float world[16];
+        float *world = result.world_transforms[i];
         if (!read_transform(device, D3D_TRANSFORM_WORLD+i, world) ||
             !recomp_d3d_normal_transform(world, result.normal_transforms[i])) return;
     }
@@ -802,6 +813,124 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     result.normalize = recomp_d3d_render_state_adapter_model()->normalize_normals != 0;
     result.enabled = true;
     draw->directional = result;
+}
+
+/* The title sea selects vertex color in stage 0 and adds an animated
+   texture squared in stage 1 (MULTIPLYADD). Snapshot both stages for draws
+   that no special path above already admits. Stage 2 must be disabled and
+   stage 1 must read UV set 0 without texgen. */
+static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    uint32_t stages[3][32];
+    const uint8_t *bytes = guest_span(0x001f2988u, sizeof stages);
+    RecompD3dVertexLayout layout;
+    RecompD3dPresenterDrawCommand texture = {0};
+
+    if (bytes == NULL || draw->program_count || draw->has_reflection ||
+        draw->has_alpha_mask || draw->program_alpha_mask || draw->four_tap_filter ||
+        draw->use_texture_factor || draw->modulate_texture_factor ||
+        !recomp_d3d_fvf_layout(draw->fvf, &layout) || layout.pretransformed ||
+        layout.texcoord_offset == RECOMP_D3D_FVF_ABSENT ||
+        (layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && !draw->directional.enabled)) return;
+    memcpy(stages, bytes, sizeof stages);
+    /* Words 12-19: COLOROP, COLORARG0-2, ALPHAOP, ALPHAARG0-2; 21 is
+       TEXTURETRANSFORMFLAGS and 28 TEXCOORDINDEX. */
+    if (stages[1][12] <= 1u || stages[1][12] > 24u || stages[2][12] != 1u ||
+        stages[1][28] != 0u || (stages[1][21] != 0u && stages[1][21] != 2u)) return;
+    const bool stage0_texture = recomp_d3d_combiner_uses_texture(stages[0] + 12u);
+    if (stage0_texture &&
+        (stages[0][21] != 0u || stages[0][28] != 0u)) return;
+    float stage0_bias;
+    memcpy(&stage0_bias, &stages[0][6], sizeof stage0_bias);
+    // Only stage 1 carries a host MipLODBias; stage 0 samples unbiased.
+    if (stage0_texture && stage0_bias != 0.0f) return;
+    const bool stage1_texture = recomp_d3d_combiner_uses_texture(stages[1] + 12u);
+    // Only the presenter's linear min/mag/mip sampler is implemented here.
+    if ((stage0_texture &&
+         (stages[0][3] != 2u || stages[0][4] != 2u || stages[0][5] != 2u)) ||
+        (stage1_texture &&
+         (stages[1][3] != 2u || stages[1][4] != 2u || stages[1][5] != 2u))) return;
+    for (uint32_t s = 0u; s < 2u; ++s) {
+        if (stages[s][20] != 0u || stages[s][11] != 0u) return;
+        if ((s == 0u ? stage0_texture : stage1_texture) &&
+            (stages[s][7] != 0u || stages[s][9] != 0u || stages[s][10] != 0u ||
+             ((stages[s][0] == 4u || stages[s][1] == 4u) && stages[s][29] != 0u))) return;
+        for (uint32_t i = 0u; i < 8u; ++i) {
+            const uint32_t word = stages[s][12u + i];
+            if (i == 0u || i == 4u) {
+                if (word > 24u || word == 17u) return;
+            } else if ((word & ~0x3fu) != 0u || (word & 15u) > 4u ||
+                ((word & 15u) == 4u && layout.specular_offset != RECOMP_D3D_FVF_ABSENT)) return;
+            draw->combiner[s][i] = word;
+        }
+    }
+    if (stage1_texture) {
+        const uint32_t resource = recomp_d3d_texture_adapter_model()->textures[1];
+        const uint8_t *binding = resource != 0u ? guest_span(resource, 20u) : NULL;
+        uint32_t format;
+        if (binding == NULL) return;
+        memcpy(&format, binding + 12u, sizeof format);
+        if ((format & 0xf4u) != 0x20u) return;
+        attach_texture(1u, &texture);
+        if (!texture.has_texture || texture.palette_bytes != NULL) return;
+        attach_backbuffer_texture(device, &texture);
+        /* Without guest bytes only the back or front buffer has host pixels. */
+        if (texture.texture_bytes == NULL &&
+            !texture.texture_is_backbuffer && !texture.texture_is_frontbuffer) return;
+    }
+    if (stages[1][21] == 2u) {
+        if (!read_transform(device, 3u, draw->reflection_transform)) return;
+        for (uint32_t i = 0u; i < 16u; ++i)
+            if (!isfinite(draw->reflection_transform[i])) return;
+    } else {
+        memset(draw->reflection_transform, 0, sizeof draw->reflection_transform);
+        for (uint32_t i = 0u; i < 4u; ++i) draw->reflection_transform[i * 5u] = 1.0f;
+    }
+    draw->reflection_texture = texture.texture;
+    draw->reflection_bytes = texture.texture_bytes;
+    draw->reflection_byte_count = texture.texture_byte_count;
+    draw->combiner_address_u = texture.address_u;
+    draw->combiner_address_v = texture.address_v;
+    draw->combiner_is_backbuffer = texture.texture_is_backbuffer;
+    draw->combiner_is_frontbuffer = texture.texture_is_frontbuffer;
+    memcpy(&draw->combiner_lod_bias, &stages[1][6], sizeof draw->combiner_lod_bias);
+    if (!isfinite(draw->combiner_lod_bias)) draw->combiner_lod_bias = 0.0f;
+    draw->has_combiner = true;
+}
+
+static void attach_fog(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    draw->fog = (RecompD3dFogState){0};
+    draw->fog_z = false;
+    memset(draw->fog_world_view, 0, sizeof draw->fog_world_view);
+    /* Programmable fog is outside the fixed-function path. */
+    if (draw->program_count) return;
+    /* The generated D3D8 setters retain deferred states in the render-state
+       array. Read at the draw seam; do not depend on emitted GPU methods. */
+    const uint8_t *words = guest_span(0x001f2b88u + 92u * 4u, 6u * 4u);
+    const uint8_t *color = guest_span(0x001f2b88u + 138u * 4u, 4u);
+    if (!words || !color) return;
+    uint32_t values[6], argb;
+    RecompD3dFogState fog;
+    memcpy(values, words, sizeof values);
+    memcpy(&argb, color, sizeof argb);
+    recomp_d3d_fog_state(values, argb, &fog);
+    if (!fog.enabled || !fog.mode) { draw->fog = fog; return; }
+    float projection[16], world_view[4][16] = {0};
+    if (!read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return;
+    const bool fog_z = projection[3] == 0 && projection[7] == 0 &&
+        projection[11] == 0 && projection[15] == 1;
+    if (fog.range) {
+        float view[16], world[16];
+        if (!read_transform(device, D3D_TRANSFORM_VIEW, view)) return;
+        for (uint32_t i = 0; i <= draw->blend_weight_count; ++i) {
+            if (!read_transform(device, D3D_TRANSFORM_WORLD + i, world)) return;
+            multiply_transform(world, view, world_view[i]);
+        }
+    }
+    draw->fog = fog;
+    draw->fog_z = fog_z;
+    memcpy(draw->fog_world_view, world_view, sizeof world_view);
 }
 
 static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *draw)
@@ -831,6 +960,7 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
                 recomp_d3d_texture_factor_modulate_selected(stage1_arguments, next_color_op);
         }
     }
+    attach_fog(device, draw);
     attach_directional_lighting(device, draw);
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
@@ -838,6 +968,7 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
     if (draw->has_reflection && (!draw->has_texture || draw->texture.linear ||
         draw->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
         !attach_reflection(device, draw))) return false;
+    attach_combiner(device, draw);
     return true;
 }
 
@@ -1285,6 +1416,7 @@ static void capture_draw(
 
 void recomp_d3d_draw_adapter_capture_present(uint32_t present, uint32_t presenter_error)
 {
+    if (present) recomp_animation_probe_capture_frame(present-1);
     if (!capture_open(present, 0u)) return;
     fprintf(draw_capture.file,
         "{\"kind\":\"end\",\"present\":%u,\"present_error\":%u,\"rows\":%u,"
@@ -1414,6 +1546,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     uint32_t vertex_data = 0u;
     RecompD3dDrawResult result;
     RecompD3dPresenterCommand command = {0};
+    RecompD3dPoseReplay pose_replay;
+    void *pose_vertices = NULL, *split_pose = NULL;
     const uint8_t *index_bytes;
     const uint8_t *vertex_bytes;
     uint32_t vertex_span;
@@ -1904,11 +2038,42 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "render-target";
         goto finished;
     }
+    bool split_enabled = recomp_animation_split_enabled();
+    /* getenv scans the whole environment; per draw it dominated world rendering. */
+    static int pose_probe = -1;
+    if (pose_probe < 0)
+        pose_probe = getenv("RECOMP_POSE_EXPERIMENT_FRAME") != NULL ||
+            getenv("RECOMP_POSE_STATE_CAPTURE_AT") != NULL;
+    if (split_enabled && command.data.draw.program_count != 0)
+        recomp_split_fallback("split:vertex-program-unimplemented");
+    if (command.data.draw.program_count == 0 && (split_enabled || pose_probe)) {
+        float worlds[4][16];
+        unsigned count = command.data.draw.blend_weight_count+1;
+        bool readable = count <= 4;
+        for (unsigned i = 0; readable && i < count; ++i)
+            readable = read_transform(device, D3D_TRANSFORM_WORLD+i, worlds[i]);
+        if (!split_enabled && readable) recomp_animation_probe_capture_vertices(&command.data.draw, worlds, count);
+        if (!split_enabled && readable && recomp_animation_probe_pose_replay(worlds, count, &pose_replay) &&
+            read_transform(device, D3D_TRANSFORM_VIEW, pose_replay.view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, pose_replay.projection))
+            command.data.draw.pose_replay = &pose_replay;
+        pose_vertices = recomp_animation_probe_pose_vertices(&command.data.draw);
+        command.data.draw.pose_vertex_bytes = pose_vertices;
+        float view[16], projection[16];
+        if (readable && split_enabled &&
+            read_transform(device, D3D_TRANSFORM_VIEW, view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) {
+            split_pose = recomp_animation_split_draw(&command.data.draw, worlds, count, view,
+                projection, &command.data.draw.split_pose_size);
+            command.data.draw.split_pose = split_pose;
+        }
+    }
     capture_command = &command.data.draw;
 
-    if (recomp_d3d_presenter_submit(
-            recomp_d3d_frame_adapter_presenter(), &command) !=
-        RECOMP_D3D_PRESENTER_OK) {
+    RecompD3dPresenterError presenter_error = recomp_d3d_presenter_submit(
+        recomp_d3d_frame_adapter_presenter(), &command);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
+    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         decline = "presenter";
         goto finished;
     }
@@ -1918,6 +2083,9 @@ finished:
     if (decline != NULL) report_decline(decline);
     capture_draw(device, primitive_type, index_count, index_data, &result,
         capture_command, decline != NULL ? decline : "accepted");
+    free(pose_vertices);
+    free(split_pose);
+
 }
 
 static bool attach_alpha_mask(uint32_t device, RecompD3dPresenterDrawCommand *draw)
@@ -2068,8 +2236,10 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         decline = "up-alpha-mask";
         goto finished;
     }
-    if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command) !=
-        RECOMP_D3D_PRESENTER_OK) {
+    RecompD3dPresenterError presenter_error = recomp_d3d_presenter_submit(
+        recomp_d3d_frame_adapter_presenter(), &command);
+    recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
+    if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         decline = "up-presenter";
         goto finished;
     }
@@ -2087,6 +2257,8 @@ finished:
     if (decline != NULL) report_decline(decline);
 }
 
+/* Draws consume deferred fog state retained by generated D3D8 setters;
+   see docs/fog.md. Replacing those library setters remains open work. */
 RecompFunction recomp_d3d_draw_lookup_manual(uint32_t guest_address)
 {
     if (guest_address == D3D_DEVICE_DRAW_VERTICES_UP_ADDRESS) {

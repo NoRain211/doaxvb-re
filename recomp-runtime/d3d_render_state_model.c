@@ -1,4 +1,22 @@
 #include "d3d_render_state_model.h"
+#include <stddef.h>
+
+#include <string.h>
+
+void recomp_d3d_fog_state(const uint32_t words[6], uint32_t color,
+    RecompD3dFogState *state)
+{
+    if (words == NULL || state == NULL) return;
+    *state = (RecompD3dFogState){0};
+    if (words[1] > 3u) return;
+    state->enabled = words[0] != 0u;
+    state->mode = words[1];
+    memcpy(&state->start, words + 2, sizeof(float));
+    memcpy(&state->end, words + 3, sizeof(float));
+    memcpy(&state->density, words + 4, sizeof(float));
+    state->range = words[5] != 0u;
+    state->color = color;
+}
 
 enum {
     D3D_SIMPLE_COMMAND_BASE = 0x00040000u,
@@ -469,6 +487,20 @@ bool recomp_d3d_texture_factor_modulate_selected(
     return stage != NULL && next_color_op == 1u &&
         stage[0] == 4u && stage[1] == 3u && stage[2] == 1u &&
         stage[3] == 4u && stage[4] == 3u && stage[5] == 1u;
+}
+
+bool recomp_d3d_combiner_uses_texture(const uint32_t words[8])
+{
+    if (words[0] <= 1u) return false;
+    for (uint32_t channel = 0u; channel < 8u; channel += 4u) {
+        const uint32_t op = words[channel];
+        if (op <= 1u) continue;
+        if (op == 14u || op == 16u) return true;
+        if (op != 3u && (words[channel + 2u] & 15u) == 2u) return true;
+        if (op != 2u && (words[channel + 3u] & 15u) == 2u) return true;
+        if ((op == 23u || op == 24u) && (words[channel + 1u] & 15u) == 2u) return true;
+    }
+    return false;
 }
 
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32])

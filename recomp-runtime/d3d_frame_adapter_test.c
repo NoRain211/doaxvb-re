@@ -1,4 +1,6 @@
 #include "d3d_frame_adapter.h"
+#include "d3d_draw_model.h"
+#include "d3d_draw_adapter.h"
 #include "d3d_presenter_memory_test.h"
 #include "d3d_vblank.h"
 #include "xapi_time_adapter.h"
@@ -276,10 +278,105 @@ int recomp_d3d_frame_adapter_test(void)
         passed &= memcmp(command->data.gamma, expected, sizeof expected) == 0;
     }
 
+    /* A failed transform/state read must not submit partially enabled fog. */
+    recomp_d3d_frame_adapter_reset();
+    recomp_d3d_frame_adapter_initialize(&config, TEST_DEVICE);
+    *recomp_memory_u32(0x001f2978u) = TEST_DEVICE;
+    *recomp_memory_u32(TEST_DEVICE + 0x384u) = 0x104u;
+    *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = TEST_DEVICE_BASE + 0x6000u;
+    *recomp_memory_u32(TEST_DEVICE + 0x21c0u) = TEST_DEVICE_BASE + 0x6000u;
+    *recomp_memory_u32(TEST_DEVICE + 0x21b8u) = 0;
+    const uint32_t fog_words[] = {1,3,0,0x40800000u,0,1};
+    memcpy(recomp_memory_u32(0x001f2b88u + 92u*4u), fog_words, sizeof fog_words);
+    *recomp_memory_u32(0x001f2b88u + 138u*4u) = 0x000000ffu;
+    float identity[16] = {0};
+    for (unsigned i = 0; i < 4; ++i) identity[i*5] = 1;
+    const uint32_t slots[] = {0,1,6};
+    for (unsigned i = 0; i < 3; ++i)
+        memcpy(recomp_memory_u32(TEST_DEVICE + 0x810u + slots[i]*0x40u), identity, sizeof identity);
+    const float vertices[][6] = {{0,0,0.25f,1,0,0},{4,0,0.25f,1,0,0},
+        {0,4,0.25f,1,0,0},{4,4,0.25f,1,0,0}};
+    const uint32_t draw_args[] = {RECOMP_D3D_PT_TRIANGLESTRIP,4,TEST_CALL_BASE + 0x400u,sizeof vertices[0]};
+    RecompFunction draw = recomp_lookup_manual(0x001e7750u);
+    if (draw == NULL) return 0;
+    const uint32_t holes[] = {0, TEST_DEVICE + 0x850u, TEST_DEVICE + 0x810u,
+        TEST_DEVICE + 0x990u, 0x001f2b88u + 92u*4u, 0x001f2b88u + 138u*4u};
+    for (unsigned i = 0; i < sizeof holes / sizeof holes[0]; ++i) {
+        RecompMemoryRegion split[4] = {regions[0],regions[0],regions[1],regions[2]};
+        if (holes[i]) {
+            split[0].size = holes[i] - TEST_DEVICE_BASE;
+            split[1].address = holes[i] + 4u;
+            split[1].size = TEST_DEVICE_BASE + TEST_DEVICE_SIZE - split[1].address;
+            split[1].data = device_memory + split[1].address - TEST_DEVICE_BASE;
+            recomp_runtime.memory_regions = split;
+            recomp_runtime.memory_region_count = 4;
+        }
+        prepare_stack(call_memory, draw_args, 4);
+        memcpy(call_memory + 0x400u, vertices, sizeof vertices);
+        draw();
+        recomp_runtime.memory_regions = regions;
+        recomp_runtime.memory_region_count = 3;
+        if (!recomp_d3d_presenter_memory_snapshot(&snapshot)) return 0;
+        passed &= expect_u32("fog draw submitted", snapshot.draw_count, i + 1u);
+        const RecompD3dPresenterDrawCommand *captured = &snapshot.commands[i].data.draw;
+        passed &= expect_u32("fog requires all retained state and transforms", captured->fog.enabled, i == 0);
+        passed &= expect_u32("failed fog read clears Z mode", captured->fog_z, i == 0);
+        passed &= expect_u32("failed fog read clears range matrices", captured->fog_world_view[0][0] == 1, i == 0);
+    }
     recomp_d3d_frame_adapter_reset();
     if (recomp_d3d_presenter_memory_snapshot(&snapshot)) {
         fprintf(stderr, "D3D frame adapter: reset left a presenter\n");
         passed = 0;
     }
     return passed;
+}
+
+/* Each close case runs in its own process and must exit inside the draw seam. */
+int recomp_d3d_draw_presenter_close_test(int indexed)
+{
+    static uint8_t device_memory[TEST_DEVICE_SIZE];
+    static uint8_t call_memory[TEST_CALL_SIZE];
+    const RecompMemoryRegion regions[] = {
+        {TEST_DEVICE_BASE, sizeof device_memory, device_memory},
+        {TEST_CALL_BASE, sizeof call_memory, call_memory},
+    };
+    const RecompD3dPresenterConfig config = {
+        4u, 4u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8,
+    };
+    const uint32_t vertices = TEST_CALL_BASE + 0x800u;
+    const uint32_t indices = TEST_CALL_BASE + 0x900u;
+    const uint32_t buffer = TEST_DEVICE_BASE + 0x6100u;
+    const float quad[4][6] = {{0,0,0,1,0,0}, {4,0,0,1,1,0},
+        {0,4,0,1,0,1}, {4,4,0,1,1,1}};
+    const uint16_t order[] = {0,1,2,3};
+    const uint32_t args[] = {RECOMP_D3D_PT_TRIANGLESTRIP, 4u,
+        indexed ? indices : vertices, sizeof quad[0]};
+    recomp_runtime_init(regions, 2u, NULL, 0u, NULL, 0u);
+    recomp_d3d_frame_adapter_initialize(&config, TEST_DEVICE);
+    *recomp_memory_u32(0x001f2978u) = TEST_DEVICE;
+    *recomp_memory_u32(TEST_DEVICE + 0x21b4u) = buffer;
+    *recomp_memory_u32(TEST_DEVICE + 0x21c0u) = buffer;
+    *recomp_memory_u32(TEST_DEVICE + 0x384u) = indexed ? 0x002u : 0x104u;
+    *recomp_memory_u32(0x001f2e20u) = sizeof quad[0];
+    *recomp_memory_u32(0x001f2e28u) = buffer;
+    *recomp_memory_u32(buffer + 4u) = vertices;
+    for (unsigned transform = 0u; transform <= 6u; ++transform) {
+        float identity[16] = {0};
+        identity[0] = identity[5] = identity[10] = identity[15] = 1;
+        memcpy(recomp_memory_u32(TEST_DEVICE + 0x810u + transform * 0x40u),
+            identity, sizeof identity);
+    }
+    prepare_stack(call_memory, args, indexed ? 3u : 4u);
+    memcpy(recomp_memory_u32(vertices), quad, sizeof quad);
+    memcpy(recomp_memory_u32(indices), order, sizeof order);
+    recomp_d3d_presenter_memory_set_error(RECOMP_D3D_PRESENTER_CLOSED);
+    RecompFunction draw = recomp_d3d_draw_lookup_manual(indexed ? 0x001e78b0u : 0x001e7750u);
+    if (draw == NULL) {
+        fprintf(stderr, "FAIL draw lookup failed for %s\n", indexed ? "indexed" : "UP");
+        return 1;
+    }
+    draw();
+    fprintf(stderr, "FAIL closed presenter returned from %s draw\n", indexed ? "indexed" : "UP");
+    return 1;
 }

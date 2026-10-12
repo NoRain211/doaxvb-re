@@ -1,12 +1,15 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
+#include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#include "texture_replacement.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_5.h>
 #include <d3dcompiler.h>
 
 #include <cmath>
@@ -69,9 +72,9 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
    serve both, so the shader is assembled per FVF from the decoded layout and
    cached with its matching input layout.
 
-   Vertex color comes from the stream or the admitted directional-lighting
+   Vertex color comes from the stream or the admitted fixed-function lighting
    path. Unsupported lighting configurations retain the earlier texture/normal
-   fallback. Texture alpha remains independent of directional diffuse RGB. */
+   fallback. Texture alpha remains independent of lit diffuse RGB. */
 constexpr char kDrawShaderPrologue[] =
     "cbuffer Transform : register(b0) {\n"
     "    row_major float4x4 wvp[4];\n"
@@ -92,11 +95,86 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 directional_directions[8];\n"
     "    float4 directional_colors[8];\n"
     "    float4 directional_flags;\n"
+    "    row_major float4x4 light_world[4];\n"
+    "    float4 light_positions[8];\n"
+    "    float4 light_attenuation[8];\n"
+    "    float4 light_ambient[8];\n"
+    "    float4 fog_color;\n"
+    "    float4 fog_params; // start, end, density, mode\n"
+    "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
+    "    row_major float4x4 fog_world_view[4];\n"
+    "    float4 combiner[4];\n"
+    "}\n"
+    "float fogFactor(float depth) {\n"
+    "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
+    "    if (fog_params.w == 2) { float d = depth * fog_params.z; return saturate(exp(-d*d)); }\n"
+    "    if (fog_params.w == 3) {\n"
+    "        float span = fog_params.y - fog_params.x;\n"
+    "        return span == 0 ? (depth < fog_params.y ? 1 : 0) : saturate((fog_params.y-depth)/span);\n"
+    "    }\n"
+    "    return saturate(depth);\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
     "Texture2D alpha_mask : register(t1);\n"
-    "SamplerState mask_sampler : register(s1);\n";
+    "SamplerState mask_sampler : register(s1);\n"
+    /* Xbox D3DTA selectors 0-4 with COMPLEMENT (0x10) and ALPHAREPLICATE
+       (0x20); absent specular is black. */
+    "float4 ff_arg(int a, float4 cur, float4 dif, float4 tex) {\n"
+    "    int s = a & 15;\n"
+    "    float4 v = s == 0 ? dif : s == 2 ? tex : s == 3 ? texture_factor\n"
+    "        : s == 4 ? float4(0, 0, 0, 0) : cur;\n"
+    "    if (a & 0x20) v = v.aaaa;\n"
+    "    if (a & 0x10) v = 1.0f - v;\n"
+    "    return v;\n"
+    "}\n"
+    /* Xbox values differ from PC D3D8: BLENDCURRENTALPHA=13,
+       DOTPRODUCT3=22, MULTIPLYADD=23, LERP=24. See Cxbx XbD3D8Types.h:
+       https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/hle/D3D8/XbD3D8Types.h
+       PREMODULATE is declined by the adapter. */
+    "float4 ff_op(float4 o, float4 cur, float4 dif, float4 tex) {\n"
+    "    float4 a0 = ff_arg((int)o.y, cur, dif, tex);\n"
+    "    float4 a1 = ff_arg((int)o.z, cur, dif, tex);\n"
+    "    float4 a2 = ff_arg((int)o.w, cur, dif, tex);\n"
+    "    float4 r = cur;\n"
+    "    switch ((int)o.x) {\n"
+    "    case 2: r = a1; break;\n"
+    "    case 3: r = a2; break;\n"
+    "    case 4: r = a1 * a2; break;\n"
+    "    case 5: r = 2.0f * a1 * a2; break;\n"
+    "    case 6: r = 4.0f * a1 * a2; break;\n"
+    "    case 7: r = a1 + a2; break;\n"
+    "    case 8: r = a1 + a2 - 0.5f; break;\n"
+    "    case 9: r = 2.0f * (a1 + a2 - 0.5f); break;\n"
+    "    case 10: r = a1 - a2; break;\n"
+    "    case 11: r = a1 + a2 - a1 * a2; break;\n"
+    "    case 12: r = lerp(a2, a1, dif.a); break;\n"
+    "    case 13: r = lerp(a2, a1, cur.a); break;\n"
+    "    case 14: r = lerp(a2, a1, tex.a); break;\n"
+    "    case 15: r = lerp(a2, a1, texture_factor.a); break;\n"
+    "    case 16: r = a1 + a2 * (1.0f - tex.a); break;\n"
+    "    case 18: r = a1 + a1.a * a2; break;\n"
+    "    case 19: r = a1 * a2 + a1.a; break;\n"
+    "    case 20: r = a1 + (1.0f - a1.a) * a2; break;\n"
+    "    case 21: r = (1.0f - a1) * a2 + a1.a; break;\n"
+    "    case 22: r = saturate(4.0f * dot(a1.rgb - 0.5f, a2.rgb - 0.5f)).xxxx; break;\n"
+    "    case 23: r = a0 + a1 * a2; break;\n"
+    "    case 24: r = lerp(a2, a1, a0); break;\n"
+    "    }\n"
+    "    return saturate(r);\n"
+    "}\n"
+    "float4 ff_combine(float4 dif, float4 t0, float4 t1) {\n"
+    "    float4 cur = dif;\n"
+    "    [unroll] for (int s = 0; s < 2; ++s) {\n"
+    "        float4 c = combiner[s * 2], a = combiner[s * 2 + 1];\n"
+    "        if (c.x < 1.5f) break;\n"
+    "        float4 tex = s == 0 ? t0 : t1;\n"
+    "        float4 next = ff_op(c, cur, dif, tex);\n"
+    "        if (a.x > 1.5f) next.a = ff_op(a, cur, dif, tex).a; else next.a = cur.a;\n"
+    "        cur = next;\n"
+    "    }\n"
+    "    return cur;\n"
+    "}\n";
 
 /* Builds the draw shader for one decoded vertex layout. Only the components
    the layout actually carries appear in VSIn, so the input layout and the
@@ -166,7 +244,15 @@ void buildDrawShaderSource(
         "}\n"
         "float4 ps_main(VSOut input) : SV_TARGET {\n"
         "    float4 shaded = input.color;\n"
-        "    if (reflection_flags.x > 0.5f) {\n"
+        "    if (reflection_flags.x > 2.5f) {\n"
+        "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
+        "        if (lighting_flags.y > 0.5f) t0.rgb = 1.0f;\n"
+        "        float4 t1 = alpha_mask.Sample(mask_sampler, input.reflection_coord * lighting_flags.zw);\n"
+        "        if (reflection_flags.y > 0.5f) t1.rgb = 1.0f;\n"
+        "        float4 dif = input.color;\n"
+        "        if (directional_flags.x > 0.5f) dif.a *= blend_flags.z;\n"
+        "        shaded = ff_combine(dif, t0, t1);\n"
+        "    } else if (reflection_flags.x > 0.5f) {\n"
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= reflection_diffuse.a;\n"
         "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
@@ -201,7 +287,25 @@ void buildDrawShaderSource(
         "            (func == 4 && alpha > ref) ||\n"
         "            (func == 5 && alpha != ref) ||\n"
         "            (func == 6 && alpha >= ref);\n"
+        "#ifdef EXPLICIT_COVERAGE\n"
+        "        if (draw_flags.y > 1.5f) {\n"
+        /* Coverage is independent of stored alpha, including flat hard passes. */
+        "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
+        "            float width = fwidth(shaded.a);\n"
+        "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
+        "            coverage = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
+        "                ? (alpha_pass ? 1.0f : 0.0f)\n"
+        "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
+        "            uint count = (uint)round(coverage * draw_flags.y);\n"
+        "            sample_coverage = count >= 32 ? 0xffffffffu : (1u << count) - 1u;\n"
+        "        } else\n"
+        "#endif\n"
         "        if (!alpha_pass) discard;\n"
+        "    }\n"
+        "    if (fog_flags.x > 0.5f) {\n"
+        "        float depth = fog_flags.y > 0.5f && fog_flags.z < 0.5f ? abs(input.position.z) : input.fog_depth;\n"
+        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(depth);\n"
+        "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
         "    }\n"
         "    return shaded;\n"
         "}\n",
@@ -232,7 +336,9 @@ void buildDrawShaderSource(
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
         has_texcoord && !layout.pretransformed
             ? (has_normal
-                ? "    if (reflection_flags.x > 1.5f) {\n"
+                ? "    if (reflection_flags.x > 2.5f) {\n"
+                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    } else if (reflection_flags.x > 1.5f) {\n"
                   "        output.reflection_coord = input.texcoord;\n"
                   "    } else if (reflection_flags.x > 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
@@ -241,7 +347,9 @@ void buildDrawShaderSource(
                   "        float3 r = reflect(normalize(eye), n);\n"
                   "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
                   "    }\n"
-                : "    if (reflection_flags.x > 1.5f) {\n"
+                : "    if (reflection_flags.x > 2.5f) {\n"
+                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    } else if (reflection_flags.x > 1.5f) {\n"
                   "        output.reflection_coord = input.texcoord;\n"
                   "    } else if (reflection_flags.x > 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
@@ -324,6 +432,7 @@ constexpr uint32_t kBlendStateSlots = 16u;
 struct BlendStateEntry {
     bool used;
     bool enable;
+    bool alpha_to_coverage;
     RecompD3dBlendFactor src;
     RecompD3dBlendFactor dst;
     RecompD3dBlendOp op;
@@ -348,6 +457,7 @@ struct TextureEntry {
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     uint64_t fingerprint;
+    TextureIdentity identity;
     ID3D11ShaderResourceView *view;
 };
 
@@ -383,6 +493,8 @@ struct RenderTargetEntry {
     RecompD3dTextureDesc desc;
     ID3D11RenderTargetView *render_view;
     ID3D11ShaderResourceView *sample_view;
+    float scale = 1.0f;  // host texels per guest texel
+    uint64_t bytes = 0u;
 };
 
 /* Depth belongs to its guest storage, which can serve several color targets. */
@@ -395,6 +507,16 @@ struct DepthTargetEntry {
 };
 
 } // namespace
+
+struct DumpTextureRelease {
+    void operator()(ID3D11Texture2D *texture) const { if (texture) texture->Release(); }
+};
+struct DeferredFrameDump {
+    std::unique_ptr<ID3D11Texture2D, DumpTextureRelease> texture;
+    std::string path;
+    unsigned present;
+    ULONGLONG captured_ms;
+};
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
@@ -418,12 +540,22 @@ struct RecompD3dPresenter {
     IDXGISwapChain *swap_chain = nullptr;
     ID3D11RenderTargetView *render_target_view = nullptr;
     ID3D11RenderTargetView *present_target_view = nullptr;
+    // VRR only: main-sized output, downscaled into the window-sized swap chain.
+    ID3D11RenderTargetView *vrr_target_view = nullptr;
+    ID3D11ShaderResourceView *vrr_source = nullptr;
+    ID3D11VertexShader *vrr_vs = nullptr;
+    ID3D11PixelShader *vrr_ps = nullptr;
+    ID3D11SamplerState *vrr_sampler = nullptr;
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
     bool gamma_enabled = false;
     ID3D11Texture2D *back_buffer_copy = nullptr;
     ID3D11ShaderResourceView *back_buffer_sample = nullptr;
+    ID3D11VertexShader *target_copy_vs = nullptr;
+    ID3D11PixelShader *target_copy_ps = nullptr;
+    ID3D11Texture2D *front_buffer_copy = nullptr;
+    ID3D11ShaderResourceView *front_buffer_sample = nullptr;
     ID3D11Texture2D *depth_texture = nullptr;
     ID3D11DepthStencilView *depth_view = nullptr;
     ID3D11Buffer *draw_vertex_buffer = nullptr;
@@ -449,13 +581,15 @@ struct RecompD3dPresenter {
     uint32_t next_blend_state_slot = 0u;
     std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
     std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
+    TextureReplacements replacements;
+    size_t texture_identity_bytes = 0;
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[4][4]{};
+    ID3D11SamplerState *address_samplers[2][4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -471,8 +605,27 @@ struct RecompD3dPresenter {
     double last_present_ms = 0.0;
     double present_call_max_ms = 0.0;
     std::vector<double> present_gaps;
+    // Display refreshes each present stayed on screen (DXGI statistics), 1..8+.
+    unsigned refresh_holds[9]{};
+    UINT last_stat_present = 0u, last_stat_refresh = 0u;
+    /* RECOMP_D3D_PRESENT_LOG: one CSV row of raw DXGI counters per present,
+       in QPC ticks, to line up with a PresentMon --qpc_time capture. */
+    FILE *present_log = nullptr;
+    UINT sync_interval = 1u;
+    std::chrono::steady_clock::time_point next_refresh_check{};
+    bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
+    long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
+    unsigned frame_dump_burst_base = 0u;
+    unsigned frame_dump_burst_count = 0u;
+    std::vector<DeferredFrameDump> deferred_dumps;
+    // Staging textures created when a triggered burst starts, so capturing
+    // during the burst is only a GPU copy and does not disturb pacing.
+    std::vector<std::unique_ptr<ID3D11Texture2D, DumpTextureRelease>> dump_pool;
+    uint32_t replay_verify_frame = 0;
+    bool replay_verify_second = false;
+    std::vector<uint8_t> replay_reference;
     ULONGLONG next_frame_dump_ms = 0u;
 };
 
@@ -481,6 +634,7 @@ namespace {
 RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
+static bool split_presentation;
 
 /* kernel_config.c reports the Xbox widescreen video flag unless
    RECOMP_D3D_WIDESCREEN=0, so the game renders anamorphic 16:9 (or 4:3) into
@@ -505,11 +659,35 @@ uint32_t mainWidth(const RecompD3dPresenter *presenter)
         ? presenter->config.width : presentClientWidth(presenter, mainHeight(presenter));
 }
 
-/* Beyond the screen the swap chain downsamples into a screen-sized window. */
+/* Beyond the screen the swap chain downsamples into the largest window at the
+   presentation aspect that fits inside it on both axes. */
+uint32_t fitWindowHeight(
+    const RecompD3dPresenter *presenter, uint64_t screen_width, uint32_t screen_height)
+{
+    const uint32_t width_fit = static_cast<uint32_t>(presenter->widescreen
+        ? screen_width * 9u / 16u : screen_width * 3u / 4u);
+    return (std::min)((std::min)(mainHeight(presenter), screen_height), width_fit);
+}
+
 uint32_t windowHeight(const RecompD3dPresenter *presenter)
 {
-    return presenter->scale == 1.0f ? presenter->config.height : (std::min)(
-        mainHeight(presenter), static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
+    return presenter->scale == 1.0f ? presenter->config.height : fitWindowHeight(presenter,
+        static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN)),
+        static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
+}
+
+/* VRR needs direct flip, which a DWM-scaled swap chain loses; with VRR the
+   swap chain matches the window and the presenter scales into it itself. */
+bool immediatePresent(const RecompD3dPresenter *presenter)
+{
+    return immediate_present && !presenter->vrr;
+}
+
+bool vrrScaled(const RecompD3dPresenter *presenter)
+{
+    return presenter->vrr &&
+        (mainWidth(presenter) != presentClientWidth(presenter, windowHeight(presenter)) ||
+         mainHeight(presenter) != windowHeight(presenter));
 }
 
 LRESULT CALLBACK presenterWindowProc(
@@ -522,6 +700,14 @@ LRESULT CALLBACK presenterWindowProc(
         const auto *creation = reinterpret_cast<const CREATESTRUCTW *>(lparam);
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
+    }
+    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30))) {
+        auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
+            GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (presenter && presenter->replacements.enabled()) {
+            presenter->replacements.request((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+            return 0;
+        }
     }
     if (message == WM_CLOSE) {
         auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
@@ -554,12 +740,18 @@ void releaseSmaa(RecompD3dPresenter *presenter)
 
 void releaseGraphics(RecompD3dPresenter *presenter)
 {
+    presenter->replacements.clear();
     if (presenter->context != nullptr) {
         presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
         presenter->context->ClearState();
         presenter->context->Flush();
     }
     releaseCom(presenter->present_target_view);
+    releaseCom(presenter->vrr_target_view);
+    releaseCom(presenter->vrr_source);
+    releaseCom(presenter->vrr_vs);
+    releaseCom(presenter->vrr_ps);
+    releaseCom(presenter->vrr_sampler);
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -598,8 +790,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         TextureEntry &entry = presenter->textures[i];
 
         releaseCom(entry.view);
+        entry.identity = {};
         entry.used = false;
     }
+    presenter->texture_identity_bytes = 0;
     presenter->texture_index.clear();
     presenter->texture_count = 0u;
     presenter->next_texture_slot = 0u;
@@ -614,8 +808,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->depth_targets.clear();
     presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
-    for (auto &row : presenter->address_samplers) {
-        for (auto &sampler : row) releaseCom(sampler);
+    for (auto &filter : presenter->address_samplers) {
+        for (auto &row : filter) {
+            for (auto &sampler : row) releaseCom(sampler);
+        }
     }
     releaseCom(presenter->filter_sampler);
     releaseCom(presenter->program_mask_sampler);
@@ -629,14 +825,25 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->render_target_view);
     releaseCom(presenter->back_buffer_sample);
     releaseCom(presenter->back_buffer_copy);
+    releaseCom(presenter->target_copy_vs);
+    releaseCom(presenter->target_copy_ps);
+    releaseCom(presenter->front_buffer_sample);
+    releaseCom(presenter->front_buffer_copy);
     releaseCom(presenter->swap_chain);
     releaseCom(presenter->context);
     releaseCom(presenter->device);
 }
 
+void flushFrameDumps(RecompD3dPresenter *presenter);
+
 void releasePresenter(RecompD3dPresenter *presenter)
 {
+    flushFrameDumps(presenter);
     releaseGraphics(presenter);
+    if (presenter->present_log != nullptr) {
+        std::fclose(presenter->present_log);
+        presenter->present_log = nullptr;
+    }
     if (presenter->window != nullptr && IsWindow(presenter->window)) {
         DestroyWindow(presenter->window);
     }
@@ -649,6 +856,9 @@ void releasePresenter(RecompD3dPresenter *presenter)
 
 bool createWindow(RecompD3dPresenter *presenter)
 {
+    /* Screen metrics and the borderless window must be physical pixels; a
+       DPI-virtualized window is downsampled and then stretched by DWM. */
+    if (presenter->scale > 1.0f) SetProcessDPIAware();
     WNDCLASSEXW window_class{};
     const uint32_t client_width = presentClientWidth(presenter, windowHeight(presenter));
     RECT window_rect = {
@@ -657,8 +867,11 @@ bool createWindow(RecompD3dPresenter *presenter)
         static_cast<LONG>(client_width),
         static_cast<LONG>(windowHeight(presenter)),
     };
-    /* A scaled window fills the screen; decorations would not fit. */
-    const DWORD style = presenter->scale > 1.0f ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    /* A scaled window fills the screen; decorations would not fit. The 1x
+       window keeps a fixed size because a resized client stretches the image. */
+    const bool borderless = presenter->scale > 1.0f;
+    const DWORD style = borderless
+        ? WS_POPUP : WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
 
     presenter->instance = GetModuleHandleW(nullptr);
     window_class.cbSize = sizeof window_class;
@@ -683,14 +896,20 @@ bool createWindow(RecompD3dPresenter *presenter)
     if (!AdjustWindowRectEx(&window_rect, style, FALSE, 0u)) {
         return false;
     }
+    /* shortcut: a screen wider or taller than the image shows the desktop
+       around it; draw black bars from a screen-sized window if that bothers. */
+    const int x = borderless
+        ? (GetSystemMetrics(SM_CXSCREEN) - static_cast<int>(client_width)) / 2 : CW_USEDEFAULT;
+    const int y = borderless
+        ? (GetSystemMetrics(SM_CYSCREEN) - static_cast<int>(windowHeight(presenter))) / 2 : CW_USEDEFAULT;
 
     presenter->window = CreateWindowExW(
         0u,
         kWindowClassName,
         kWindowTitle,
         style,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        x,
+        y,
         window_rect.right - window_rect.left,
         window_rect.bottom - window_rect.top,
         nullptr,
@@ -713,6 +932,7 @@ HRESULT createDeviceWithDriver(
     RecompD3dPresenter *presenter,
     D3D_DRIVER_TYPE driver_type)
 {
+    const bool immediate = immediatePresent(presenter);
     DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
     const D3D_FEATURE_LEVEL feature_levels[] = {
         D3D_FEATURE_LEVEL_11_0,
@@ -721,21 +941,26 @@ HRESULT createDeviceWithDriver(
     };
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    swap_chain_desc.BufferDesc.Width = mainWidth(presenter);
-    swap_chain_desc.BufferDesc.Height = mainHeight(presenter);
+    swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
+        ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
+    swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
+        ? windowHeight(presenter) : mainHeight(presenter);
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 0u;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1u;
     swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     swap_chain_desc.SampleDesc.Count = 1u;
     swap_chain_desc.SampleDesc.Quality = 0u;
     swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = immediate_present ? 1u : 2u;
+    swap_chain_desc.BufferCount = immediate ? 1u :
+        split_presentation ? 3u : 2u;
     swap_chain_desc.OutputWindow = presenter->window;
     swap_chain_desc.Windowed = TRUE;
-    swap_chain_desc.SwapEffect = immediate_present
+    swap_chain_desc.SwapEffect = immediate
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swap_chain_desc.Flags = immediate ? 0u : DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (presenter->vrr) swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
-    return D3D11CreateDeviceAndSwapChain(
+    HRESULT result = D3D11CreateDeviceAndSwapChain(
         nullptr,
         driver_type,
         nullptr,
@@ -748,6 +973,14 @@ HRESULT createDeviceWithDriver(
         &presenter->device,
         &selected_feature_level,
         &presenter->context);
+    // Flip chains use the per-chain limit; immediate presents retain the default.
+    if (SUCCEEDED(result) && !immediate) {
+        IDXGISwapChain2 *chain = nullptr;
+        result = presenter->swap_chain->QueryInterface(IID_PPV_ARGS(&chain));
+        if (SUCCEEDED(result)) result = chain->SetMaximumFrameLatency(1u);
+        releaseCom(chain);
+    }
+    return result;
 }
 
 HRESULT createGraphics(RecompD3dPresenter *presenter)
@@ -778,7 +1011,6 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         presenter->create_result = warp_result;
         std::fprintf(stderr, "recomp d3d presenter: using WARP driver\n");
     }
-
     ID3D11Texture2D *back_buffer = nullptr;
     HRESULT result = presenter->swap_chain->GetBuffer(
         0u,
@@ -810,6 +1042,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     if (SUCCEEDED(result)) {
         D3D11_TEXTURE2D_DESC desc{};
         back_buffer->GetDesc(&desc);
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
         desc.MiscFlags = 0u;
         desc.SampleDesc.Count = presenter->msaa;
@@ -820,6 +1054,47 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
                 guest_buffer, nullptr, &presenter->render_target_view);
         }
         releaseCom(guest_buffer);
+    }
+    if (SUCCEEDED(result) && vrrScaled(presenter)) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = mainWidth(presenter);
+        desc.Height = mainHeight(presenter);
+        desc.MipLevels = desc.ArraySize = 1u;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1u;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture2D *output = nullptr;
+        result = presenter->device->CreateTexture2D(&desc, nullptr, &output);
+        if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(
+            output, nullptr, &presenter->vrr_target_view);
+        if (SUCCEEDED(result)) result = presenter->device->CreateShaderResourceView(
+            output, nullptr, &presenter->vrr_source);
+        releaseCom(output);
+        static const char shader[] =
+            "Texture2D pixels : register(t0);\n"
+            "SamplerState bilinear : register(s0);\n"
+            "float4 vs(uint id : SV_VertexID, out float2 uv : TEXCOORD0) : SV_Position {\n"
+            " uv = float2((id << 1) & 2, id & 2);\n"
+            " return float4(uv * float2(2,-2) + float2(-1,1), 0, 1); }\n"
+            "float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+            " return pixels.SampleLevel(bilinear, uv, 0); }\n";
+        ID3DBlob *vertex = nullptr, *pixel = nullptr;
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
+        if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr,
+            nullptr, nullptr, "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
+        if (SUCCEEDED(result)) result = presenter->device->CreateVertexShader(
+            vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &presenter->vrr_vs);
+        if (SUCCEEDED(result)) result = presenter->device->CreatePixelShader(
+            pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr, &presenter->vrr_ps);
+        releaseCom(vertex);
+        releaseCom(pixel);
+        D3D11_SAMPLER_DESC sampler{};
+        sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler.MaxLOD = D3D11_FLOAT32_MAX;
+        if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
+            &sampler, &presenter->vrr_sampler);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -981,15 +1256,20 @@ RecompD3dPresenterError lookupDepthTarget(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+bool resampleTarget(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *source,
+    ID3D11RenderTargetView *target, uint32_t width, uint32_t height);
+
 RecompD3dPresenterError bindTarget(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterTarget &target,
     ID3D11RenderTargetView *&color_view,
-    ID3D11DepthStencilView *&depth_view)
+    ID3D11DepthStencilView *&depth_view,
+    bool scene_copy = false)
 {
     color_view = presenter->render_target_view;
     uint32_t width = presenter->config.width;
     uint32_t height = presenter->config.height;
+    float offscreen_scale = 1.0f;
 
     if (target.offscreen) {
         const RecompD3dTextureDesc &desc = target.color;
@@ -1008,15 +1288,31 @@ RecompD3dPresenterError bindTarget(
         }
 
         RenderTargetEntry *entry = findRenderTarget(presenter, desc);
-        if (entry == nullptr) {
-            const uint64_t bytes = static_cast<uint64_t>(desc.width) * desc.height * 4u;
-            if (bytes > kTargetByteLimit - presenter->target_bytes) {
+        /* Only new held-frame targets without depth start at main scale.
+           Existing targets retain both their pixels and allocation size.
+           ponytail: size heuristic; key on the consumer if a 512 target blurs. */
+        float scale = scene_copy && target.no_depth && desc.width >= 512u && desc.height >= 512u
+            ? (std::min)(static_cast<float>(mainHeight(presenter)) / presenter->config.height,
+                  static_cast<float>(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) /
+                      (std::max)(desc.width, desc.height))
+            : 1.0f;
+        if (static_cast<uint64_t>(desc.width * scale) * static_cast<uint64_t>(desc.height * scale) * 4u >
+            kTargetByteLimit - presenter->target_bytes) scale = 1.0f;
+        // Restore guest size before binding depth, which belongs to shared guest storage.
+        const bool restore_depth = entry != nullptr && entry->scale != 1.0f && !target.no_depth;
+        if (restore_depth) scale = 1.0f;
+        if (entry == nullptr || restore_depth) {
+            const uint32_t host_width = static_cast<uint32_t>(desc.width * scale);
+            const uint32_t host_height = static_cast<uint32_t>(desc.height * scale);
+            const uint64_t bytes = static_cast<uint64_t>(host_width) * host_height * 4u;
+            const uint64_t replaced_bytes = restore_depth ? entry->bytes : 0u;
+            if (bytes > kTargetByteLimit - (presenter->target_bytes - replaced_bytes)) {
                 std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
                 return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             }
             D3D11_TEXTURE2D_DESC texture_desc{};
-            texture_desc.Width = desc.width;
-            texture_desc.Height = desc.height;
+            texture_desc.Width = host_width;
+            texture_desc.Height = host_height;
             texture_desc.MipLevels = 1u;
             texture_desc.ArraySize = 1u;
             texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1049,23 +1345,36 @@ RecompD3dPresenterError bindTarget(
                 return RECOMP_D3D_PRESENTER_HOST_FAILURE;
             }
             created.desc = desc;
-            try {
-                presenter->render_targets.push_back(created);
-            } catch (const std::bad_alloc &) {
-                releaseCom(created.sample_view);
-                releaseCom(created.render_view);
-                return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+            created.scale = scale;
+            created.bytes = bytes;
+            if (restore_depth) {
+                if (!resampleTarget(presenter, entry->sample_view, created.render_view, host_width, host_height)) {
+                    releaseCom(created.sample_view); releaseCom(created.render_view);
+                    return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+                }
+                presenter->target_bytes -= entry->bytes;
+                releaseCom(entry->sample_view); releaseCom(entry->render_view);
+                *entry = created;
+            } else {
+                try {
+                    presenter->render_targets.push_back(created);
+                } catch (const std::bad_alloc &) {
+                    releaseCom(created.sample_view); releaseCom(created.render_view);
+                    return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+                }
+                entry = &presenter->render_targets.back();
             }
             presenter->target_bytes += bytes;
-            entry = &presenter->render_targets.back();
             std::fprintf(stderr,
                 "recomp d3d presenter: render target data=0x%08X "
-                "fmt=0x%02X size=%ux%u\n",
-                desc.data, desc.format_byte, desc.width, desc.height);
+                "fmt=0x%02X size=%ux%u host=%ux%u\n",
+                desc.data, desc.format_byte, desc.width, desc.height,
+                host_width, host_height);
         }
         color_view = entry->render_view;
         width = desc.width;
         height = desc.height;
+        offscreen_scale = entry->scale;
     }
 
     const RecompD3dPresenterError depth_result =
@@ -1080,9 +1389,9 @@ RecompD3dPresenterError bindTarget(
         depth_view = nullptr;
     }
     const float host_width = static_cast<float>(
-        target.offscreen ? width : mainWidth(presenter));
+        target.offscreen ? static_cast<uint32_t>(width * offscreen_scale) : mainWidth(presenter));
     const float host_height = static_cast<float>(
-        target.offscreen ? height : mainHeight(presenter));
+        target.offscreen ? static_cast<uint32_t>(height * offscreen_scale) : mainHeight(presenter));
     presenter->target_scale_x = host_width / width;
     presenter->target_scale_y = host_height / height;
 
@@ -1209,33 +1518,74 @@ bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source)
+    std::string &compiled_source, bool explicit_coverage = true)
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
     }
 
-    char source[8192];
+    char source[12288];
     buildDrawShaderSource(layout, source, sizeof source);
     compiled_source = source;
+    const auto fields = compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {");
+    compiled_source.insert(fields, "\n    float fog_depth : TEXCOORD6;\n"
+        "    noperspective float fog_factor : TEXCOORD7;\n");
+    if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+        const auto input = compiled_source.find("struct VSIn {") + std::strlen("struct VSIn {");
+        compiled_source.insert(input, "\n    float4 specular : COLOR1;\n");
+    }
+    std::string fog = "    output.fog_depth = fog_flags.y > 0.5f ? abs(output.position.z) : output.position.w;\n";
+    fog += layout.specular_offset != RECOMP_D3D_FVF_ABSENT
+        ? "    output.fog_factor = input.specular.a;\n" : "    output.fog_factor = 1;\n";
+    if (!layout.pretransformed) {
+        fog += "    if (fog_flags.z > 0.5f) {\n"
+            "        float3 eye = mul(float4(input.position,1),fog_world_view[0]).xyz;\n";
+        if (layout.blend_weight_count) {
+            fog += "        if (blend_flags.x > 0.5f) { eye=0; float remainder=1;\n";
+            for (uint32_t i = 0; i < layout.blend_weight_count; ++i) {
+                const auto index = std::to_string(i);
+                fog += "eye += input.weights["+index+"] * mul(float4(input.position,1),fog_world_view["+index+"]).xyz;\n"
+                    "remainder -= input.weights["+index+"];\n";
+            }
+            fog += "eye += remainder * mul(float4(input.position,1),fog_world_view["+
+                std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
+        }
+        fog += "        output.fog_depth = length(eye);\n    }\n";
+    } else {
+        fog += "    if (fog_flags.y > 0.5f) output.fog_depth = abs(output.position.z / output.position.w);\n";
+    }
+    compiled_source.insert(compiled_source.find("    return output;"), fog);
     if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
-            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n";
+            "        float3 n = mul(float4(input.normal,0),directional_normals[0]).xyz;\n"
+            "        float3 world_pos = mul(float4(input.position,1),light_world[0]).xyz;\n";
         if (layout.blend_weight_count) {
-            lighting += "        if (blend_flags.x > 0.5f) { n=0; float remainder=1;\n";
+            lighting += "        if (blend_flags.x > 0.5f) { n=0; world_pos=0; float remainder=1;\n";
             for (uint32_t i=0; i<layout.blend_weight_count; ++i) {
                 const auto index=std::to_string(i);
                 lighting += "n += input.weights["+index+"] * mul(float4(input.normal,0),directional_normals["+index+"]).xyz;\n"
+                    "world_pos += input.weights["+index+"] * mul(float4(input.position,1),light_world["+index+"]).xyz;\n"
                     "remainder -= input.weights["+index+"];\n";
             }
             lighting += "n += remainder * mul(float4(input.normal,0),directional_normals["+
+                std::to_string(layout.blend_weight_count)+"]).xyz;\n"
+                "world_pos += remainder * mul(float4(input.position,1),light_world["+
                 std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
         }
         lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
             "        float3 rgb=directional_base.rgb;\n"
-            "        for (uint i=0; i<(uint)directional_flags.z; ++i)\n"
-            "            rgb += directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,directional_directions[i].xyz));\n"
+            "        for (uint i=0; i<(uint)directional_flags.z; ++i) {\n"
+            "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
+            "            if (light_positions[i].w > 0.5f) {\n"
+            "                l = light_positions[i].xyz - world_pos;\n"
+            "                float d = length(l);\n"
+            "                float denominator = dot(light_attenuation[i].xyz,float3(1,d,d*d));\n"
+            "                atten = d <= light_attenuation[i].w && denominator > 0 ? 1/denominator : 0;\n"
+            "                l = d > 0 ? l/d : float3(0,0,0);\n"
+            "            }\n"
+            "            rgb += (directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) + light_ambient[i].rgb) * atten;\n"
+            "        }\n"
             "        output.color.rgb=saturate(rgb);\n"
             "    }\n";
         const auto uv = compiled_source.find("    output.texcoord =");
@@ -1263,6 +1613,13 @@ bool drawShaderSource(
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
 
     }
+    if (explicit_coverage) {
+        const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
+        compiled_source.replace(compiled_source.find(pixel), pixel.size(),
+            "float4 ps_main(VSOut input, out uint sample_coverage : SV_Coverage) : SV_TARGET {\n"
+            "    sample_coverage = 0xffffffffu;");
+        compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
+    }
     return true;
 }
 
@@ -1273,7 +1630,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
-void precompileDrawShaders(const std::atomic<bool> *stop)
+void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     const ULONGLONG start = GetTickCount64();
@@ -1283,13 +1640,13 @@ void precompileDrawShaders(const std::atomic<bool> *stop)
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
             std::string source;
-            if (!drawShaderSource(fvf, no_program, layout, source)) continue;
+            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage)) continue;
             for (const char *stage : {"vs", "ps"}) {
                 if (stop->load()) return;
                 ID3DBlob *blob = nullptr;
                 const bool vertex = stage[0] == 'v';
                 compiled += compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
-                    vertex ? "vs_4_0" : "ps_4_0", &blob);
+                    vertex ? "vs_4_0" : explicit_coverage ? "ps_4_1" : "ps_4_0", &blob);
                 releaseCom(blob);
             }
         }
@@ -1309,14 +1666,15 @@ bool createDrawPipeline(
 {
     RecompD3dVertexLayout layout;
     std::string compiled_source;
-    if (!drawShaderSource(fvf, pipeline, layout, compiled_source)) {
+    const bool explicit_coverage = presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage)) {
         return false;
     }
 
     ID3DBlob *vertex_blob = nullptr;
     ID3DBlob *pixel_blob = nullptr;
     if (!compileDrawShader(compiled_source.c_str(), "vs_main", "vs_4_0", &vertex_blob) ||
-        !compileDrawShader(compiled_source.c_str(), "ps_main", "ps_4_0", &pixel_blob)) {
+        !compileDrawShader(compiled_source.c_str(), "ps_main", explicit_coverage ? "ps_4_1" : "ps_4_0", &pixel_blob)) {
         releaseCom(vertex_blob);
         releaseCom(pixel_blob);
         return false;
@@ -1335,7 +1693,7 @@ bool createDrawPipeline(
             &pipeline.pixel_shader);
     }
     if (SUCCEEDED(result)) {
-        D3D11_INPUT_ELEMENT_DESC elements[8]{};
+        D3D11_INPUT_ELEMENT_DESC elements[9]{};
         UINT count = 0u;
 
         elements[count++] = {
@@ -1361,6 +1719,11 @@ bool createDrawPipeline(
             elements[count++] = {
                 "COLOR", 0u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
                 layout.diffuse_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+        }
+        if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+            elements[count++] = {
+                "COLOR", 1u, DXGI_FORMAT_B8G8R8A8_UNORM, 0u,
+                layout.specular_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
         const uint32_t texture_coords = layout.texcoord_count == 4u ? 4u
             : layout.texcoord_count == 2u ? 2u
@@ -1419,8 +1782,10 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 
     HRESULT result;
     D3D11_BUFFER_DESC constant_desc{};
-    /* Four WVP matrices, draw/blend flags, and RGBA texture factor. */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 140u) * sizeof(float);
+    /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
+       normal transforms, material/base, directions/colors/flags, world transforms,
+       point positions, attenuation/range and material-scaled ambient (300 floats). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 300u + 76u + 16u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1471,6 +1836,43 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 
     presenter->draw_shared_failed = false;
     presenter->draw_shared_ready = true;
+    return true;
+}
+
+// Resample only color; depth stays in its existing guest-sized storage.
+bool resampleTarget(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *source,
+    ID3D11RenderTargetView *target, uint32_t width, uint32_t height)
+{
+    if (!ensureSharedDrawState(presenter)) return false;
+    if (!presenter->target_copy_vs || !presenter->target_copy_ps) {
+        constexpr char shader[] =
+            "void vs(uint i:SV_VertexID,out float4 p:SV_Position,out float2 uv:TEXCOORD0) {"
+            "uv=float2(i==1?2:0,i==2?2:0); p=float4(uv.x*2-1,1-uv.y*2,0,1); }"
+            "Texture2D image:register(t0); SamplerState sample_image:register(s0);"
+            "float4 ps(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target {"
+            "return image.Sample(sample_image,uv); }";
+        ID3DBlob *vs = nullptr, *ps = nullptr;
+        bool ok = compileDrawShader(shader, "vs", "vs_4_0", &vs) &&
+            compileDrawShader(shader, "ps", "ps_4_0", &ps);
+        if (ok && !presenter->target_copy_vs) ok = SUCCEEDED(presenter->device->CreateVertexShader(
+            vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &presenter->target_copy_vs));
+        if (ok && !presenter->target_copy_ps) ok = SUCCEEDED(presenter->device->CreatePixelShader(
+            ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &presenter->target_copy_ps));
+        releaseCom(vs); releaseCom(ps);
+        if (!ok) return false;
+    }
+    auto *context = presenter->context;
+    context->ClearState();
+    const D3D11_VIEWPORT viewport = {0,0,float(width),float(height),0,1};
+    context->RSSetViewports(1, &viewport);
+    context->OMSetRenderTargets(1, &target, nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(presenter->target_copy_vs, nullptr, 0);
+    context->PSSetShader(presenter->target_copy_ps, nullptr, 0);
+    context->PSSetShaderResources(0, 1, &source);
+    context->PSSetSamplers(0, 1, &presenter->filter_sampler);
+    context->Draw(3, 0);
+    context->ClearState();
     return true;
 }
 
@@ -1877,8 +2279,51 @@ void copyGuestBuffer(RecompD3dPresenter *presenter, ID3D11Resource *target)
     presenter->render_target_view->GetResource(&source);
     if (presenter->msaa > 1u) presenter->context->ResolveSubresource(
         target, 0u, source, 0u, DXGI_FORMAT_B8G8R8A8_UNORM);
-    else presenter->context->CopyResource(target, source);
+    else presenter->context->CopySubresourceRegion(target, 0u, 0u, 0u, 0u, source, 0u, nullptr);
     releaseCom(source);
+}
+
+bool createBufferCopy(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *&copy, ID3D11ShaderResourceView *&sample, bool mips = false)
+{
+    if (copy != nullptr) return true;
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_desc.Width = mainWidth(presenter);
+    texture_desc.Height = mainHeight(presenter);
+    // Upscaled back-buffer snapshots need mips for guest downsampling.
+    texture_desc.MipLevels = mips ? 0u : 1u;
+    texture_desc.ArraySize = 1u;
+    texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texture_desc.SampleDesc.Count = 1u;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
+        (mips ? D3D11_BIND_RENDER_TARGET : 0u);
+    texture_desc.MiscFlags = mips ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0u;
+    HRESULT result = presenter->device->CreateTexture2D(&texture_desc, nullptr, &copy);
+    if (SUCCEEDED(result)) {
+        result = presenter->device->CreateShaderResourceView(copy, nullptr, &sample);
+    }
+    if (FAILED(result)) {
+        releaseCom(sample);
+        releaseCom(copy);
+        return false;
+    }
+    return true;
+}
+
+// Keep the presented frame for draws that sample the guest front buffer.
+void copyFrontBuffer(RecompD3dPresenter *presenter)
+{
+    if (createBufferCopy(presenter, presenter->front_buffer_copy,
+            presenter->front_buffer_sample)) {
+        if (presenter->gamma_enabled || presenter->smaa) {
+            presenter->context->CopySubresourceRegion(
+                presenter->front_buffer_copy, 0u, 0u, 0u, 0u,
+                presenter->back_buffer_copy, 0u, nullptr);
+        } else {
+            copyGuestBuffer(presenter, presenter->front_buffer_copy);
+        }
+    }
 }
 
 ID3D11ShaderResourceView *lookupBackBufferTexture(
@@ -1894,39 +2339,24 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
         desc.height % presenter->config.height != 0u ||
         presenter->render_target_view == nullptr) return nullptr;
 
-    if (presenter->back_buffer_copy == nullptr) {
-        D3D11_TEXTURE2D_DESC texture_desc{};
-        texture_desc.Width = mainWidth(presenter);
-        texture_desc.Height = mainHeight(presenter);
-        texture_desc.MipLevels = texture_desc.ArraySize = 1u;
-        texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        texture_desc.SampleDesc.Count = 1u;
-        texture_desc.Usage = D3D11_USAGE_DEFAULT;
-        texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        HRESULT result = presenter->device->CreateTexture2D(
-            &texture_desc, nullptr, &presenter->back_buffer_copy);
-        if (SUCCEEDED(result)) {
-            result = presenter->device->CreateShaderResourceView(
-                presenter->back_buffer_copy, nullptr, &presenter->back_buffer_sample);
-        }
-        if (FAILED(result)) {
-            releaseCom(presenter->back_buffer_sample);
-            releaseCom(presenter->back_buffer_copy);
-            return nullptr;
-        }
-    }
+    if (!createBufferCopy(presenter, presenter->back_buffer_copy,
+            presenter->back_buffer_sample, presenter->scale != 1.0f)) return nullptr;
     /* Sampling observes the current render buffer at this draw, even if the
        preceding draw sampled an older copy. Keep the copy outside the FIFO. */
-    ID3D11ShaderResourceView *none = nullptr;
-    presenter->context->PSSetShaderResources(0u, 1u, &none);
+    ID3D11ShaderResourceView *none[2] = {};
+    presenter->context->PSSetShaderResources(0u, 2u, none);
     copyGuestBuffer(presenter, presenter->back_buffer_copy);
+    /* Every view exposes the chain; refresh it with each new snapshot. */
+    if (presenter->scale != 1.0f)
+        presenter->context->GenerateMips(presenter->back_buffer_sample);
     return presenter->back_buffer_sample;
 }
 
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
 ID3D11SamplerState *lookupDrawSampler(
-    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
+    bool anisotropic = false)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
@@ -1934,12 +2364,16 @@ ID3D11SamplerState *lookupDrawSampler(
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[u - 1][v - 1];
+    ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
     if (sampler == nullptr) {
         D3D11_SAMPLER_DESC desc{};
         presenter->draw_sampler->GetDesc(&desc);
         desc.AddressU = u;
         desc.AddressV = v;
+        if (anisotropic) {
+            desc.Filter = D3D11_FILTER_ANISOTROPIC;
+            desc.MaxAnisotropy = 16u;
+        }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
         }
@@ -1949,6 +2383,9 @@ ID3D11SamplerState *lookupDrawSampler(
 
 void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 {
+    auto &identity = presenter->textures[slot].identity;
+    presenter->texture_identity_bytes -= identity.bytes.size();
+    identity = {};
     const auto range = presenter->texture_index.equal_range(presenter->textures[slot].data);
     for (auto it = range.first; it != range.second; ++it) {
         if (it->second == slot) {
@@ -1968,7 +2405,7 @@ ID3D11ShaderResourceView *lookupTexture(
     const bool linear_bgra = desc.format_byte == 0x12u;
     const bool compressed = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ||
         desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT3 || desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5;
-    const uint32_t levels = compressed && desc.mip_levels ? desc.mip_levels : 1u;
+    const uint32_t levels = !linear_bgra && desc.mip_levels ? desc.mip_levels : 1u;
     if (compressed) {
         const uint32_t span = recomp_d3d_texture_compressed_mip_span(&desc);
         if (span == 0u || span > draw.texture_byte_count ||
@@ -1977,6 +2414,7 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     if (draw.texture_is_backbuffer) return lookupBackBufferTexture(presenter, desc);
+    if (draw.texture_is_frontbuffer) return presenter->front_buffer_sample;
 
     if (palettized && (draw.palette_bytes == nullptr ||
         draw.palette_byte_count != kPaletteBytes)) {
@@ -1995,6 +2433,9 @@ ID3D11ShaderResourceView *lookupTexture(
             draw.texture_byte_count)) {
         return nullptr;
     }
+    const bool replaceable = presenter->replacements.enabled() && !desc.linear &&
+        !desc.depth && draw.texture_bytes &&
+        draw.texture_byte_count == recomp_d3d_texture_mip_span(&desc);
     const auto cached = presenter->texture_index.equal_range(desc.data);
     const bool fingerprinted = !linear_bgra && draw.texture_bytes != nullptr;
     const uint64_t fingerprint = fingerprinted
@@ -2005,7 +2446,8 @@ ID3D11ShaderResourceView *lookupTexture(
         if (entry.format_byte == desc.format_byte &&
             entry.width == desc.width && entry.height == desc.height && entry.mip_levels == levels &&
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
-            if (fingerprinted && entry.fingerprint != fingerprint) {
+            if (fingerprinted && (entry.fingerprint != fingerprint ||
+                (replaceable && !entry.identity.key.empty() && !entry.identity.matches(draw)))) {
                 static unsigned reported;
                 if (reported < 32u) {
                     ++reported;
@@ -2024,7 +2466,7 @@ ID3D11ShaderResourceView *lookupTexture(
                     resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
                 releaseCom(resource);
             }
-            return entry.view;
+            return replaceable ? presenter->replacements.lookup(entry.identity.key, entry.view) : entry.view;
         }
     }
     const DXGI_FORMAT format = linear_bgra
@@ -2046,48 +2488,37 @@ ID3D11ShaderResourceView *lookupTexture(
 
     std::vector<D3D11_SUBRESOURCE_DATA> subresources(levels);
     D3D11_SUBRESOURCE_DATA &initial = subresources[0];
-    std::vector<uint8_t> unswizzled;
+    std::vector<std::vector<uint8_t>> mip_pixels(levels);
 
     if (linear_bgra) {
         initial.pSysMem = draw.texture_bytes;
         initial.SysMemPitch = desc.pitch;
-    } else if (palettized) {
-        const size_t texels = static_cast<size_t>(desc.width) * desc.height;
-        if (desc.width == 0u || desc.height == 0u ||
+    } else if (palettized || isSwizzledTextureFormat(desc.format_byte)) {
+        const uint32_t texel_bytes = palettized ? 1u : desc.bits_per_pixel / 8u;
+        const uint32_t span = recomp_d3d_texture_mip_span(&desc);
+        if (span == 0u || span > draw.texture_byte_count ||
             desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            texels > draw.texture_byte_count) {
-            return nullptr;
+            desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
+        uint32_t width = desc.width, height = desc.height, offset = 0u;
+        for (uint32_t level = 0u; level < levels; ++level) {
+            const size_t texels = size_t(width) * height;
+            auto &pixels = mip_pixels[level];
+            pixels.resize(texels * (palettized ? 4u : texel_bytes));
+            const auto *source = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            if (palettized) {
+                std::vector<uint8_t> indices(texels);
+                if (!recomp_d3d_texture_unswizzle(source, indices.data(), width, height, 1u)) return nullptr;
+                const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
+                for (size_t i = 0u; i < texels; ++i)
+                    std::memcpy(pixels.data() + i * 4u, palette + indices[i] * 4u, 4u);
+            } else if (!recomp_d3d_texture_unswizzle(source, pixels.data(), width, height, texel_bytes)) {
+                return nullptr;
+            }
+            subresources[level].pSysMem = pixels.data();
+            subresources[level].SysMemPitch = width * (palettized ? 4u : texel_bytes);
+            offset += static_cast<uint32_t>(texels * texel_bytes);
+            width = (std::max)(1u, width / 2u); height = (std::max)(1u, height / 2u);
         }
-        std::vector<uint8_t> indices(texels);
-        if (!recomp_d3d_texture_unswizzle(
-                static_cast<const uint8_t *>(draw.texture_bytes),
-                indices.data(), desc.width, desc.height, 1u)) {
-            return nullptr;
-        }
-        unswizzled.resize(texels * 4u);
-        const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
-        for (size_t i = 0u; i < texels; ++i) {
-            /* Little-endian ARGB palette words are already BGRA bytes. */
-            std::memcpy(unswizzled.data() + i * 4u, palette + indices[i] * 4u, 4u);
-        }
-        initial.pSysMem = unswizzled.data();
-        initial.SysMemPitch = desc.width * 4u;
-    } else if (isSwizzledTextureFormat(desc.format_byte)) {
-        const uint32_t texel_bytes = desc.bits_per_pixel / 8u;
-
-        unswizzled.resize(
-            static_cast<size_t>(desc.width) * desc.height * texel_bytes);
-        if (!recomp_d3d_texture_unswizzle(
-                static_cast<const uint8_t *>(draw.texture_bytes),
-                unswizzled.data(),
-                desc.width,
-                desc.height,
-                texel_bytes)) {
-            return nullptr;
-        }
-        initial.pSysMem = unswizzled.data();
-        initial.SysMemPitch = desc.width * texel_bytes;
     } else {
         const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
         uint32_t width = desc.width, height = desc.height, offset = 0u;
@@ -2132,6 +2563,14 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.fingerprint = fingerprint;
+    presenter->texture_identity_bytes -= entry.identity.bytes.size();
+    entry.identity = {};
+    if (replaceable && presenter->texture_identity_bytes + draw.texture_byte_count +
+        kPaletteBytes <= 128u * 1024u * 1024u) {
+        try { entry.identity.assign(draw); }
+        catch (const std::exception &) { entry.identity = {}; }
+    }
+    presenter->texture_identity_bytes += entry.identity.bytes.size();
     entry.view = view;
     try {
         presenter->texture_index.emplace(desc.data, slot);
@@ -2140,17 +2579,19 @@ ID3D11ShaderResourceView *lookupTexture(
         entry.used = false;
         return nullptr;
     }
-    return view;
+    return replaceable ? presenter->replacements.lookup(entry.identity.key, view) : view;
 }
 
 ID3D11BlendState *lookupBlendState(
     RecompD3dPresenter *presenter,
-    const RecompD3dBlendState &blend)
+    const RecompD3dBlendState &blend,
+    bool alpha_to_coverage = false)
 {
     for (uint32_t i = 0u; i < presenter->blend_state_count; ++i) {
         BlendStateEntry &entry = presenter->blend_states[i];
 
         if (entry.used && entry.enable == blend.blend_enable &&
+            entry.alpha_to_coverage == alpha_to_coverage &&
             entry.src == blend.src_factor && entry.dst == blend.dst_factor &&
             entry.op == blend.op &&
             entry.color_write_mask == blend.color_write_mask) {
@@ -2159,6 +2600,7 @@ ID3D11BlendState *lookupBlendState(
     }
 
     D3D11_BLEND_DESC desc{};
+    desc.AlphaToCoverageEnable = alpha_to_coverage;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2185,6 +2627,7 @@ ID3D11BlendState *lookupBlendState(
     }
     entry.used = true;
     entry.enable = blend.blend_enable;
+    entry.alpha_to_coverage = alpha_to_coverage;
     entry.src = blend.src_factor;
     entry.dst = blend.dst_factor;
     entry.op = blend.op;
@@ -2252,11 +2695,13 @@ RecompD3dPresenterError submitDraw(
     ID3D11RenderTargetView *color_view;
     ID3D11DepthStencilView *depth_view;
     const RecompD3dPresenterError target_result =
-        bindTarget(presenter, draw.target, color_view, depth_view);
+        bindTarget(presenter, draw.target, color_view, depth_view,
+            draw.texture_is_frontbuffer);
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
         return target_result;
     }
-    if (draw.has_texture) {
+    const bool needs_texture = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[0]);
+    if (draw.has_texture && needs_texture) {
         const RenderTargetEntry *sampled = findRenderTarget(presenter, draw.texture);
         if (sampled != nullptr && sampled->render_view == color_view) {
             std::fprintf(stderr,
@@ -2298,10 +2743,14 @@ RecompD3dPresenterError submitDraw(
 
     const UINT index_size = draw_index_count * 2u;
     ID3D11ShaderResourceView *texture_view =
-        draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
+        draw.has_texture && needs_texture ? lookupTexture(presenter, draw) : nullptr;
+    if (needs_texture && (draw.texture_is_frontbuffer || draw.texture_is_backbuffer) &&
+        texture_view == nullptr)
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
-    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask;
+    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection ||
+        draw.program_alpha_mask || draw.has_combiner;
     if (has_second_texture && texture_view != nullptr) texture_view->AddRef();
     const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
     std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(
@@ -2318,7 +2767,7 @@ RecompD3dPresenterError submitDraw(
         mask_view = lookupTexture(presenter, mask);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
-    if (draw.has_reflection || draw.program_alpha_mask) {
+    if (draw.has_reflection || draw.program_alpha_mask || draw.has_combiner) {
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
             (draw.program_alpha_mask && layout.normal_offset == RECOMP_D3D_FVF_ABSENT) ||
             layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2326,8 +2775,18 @@ RecompD3dPresenterError submitDraw(
         reflection.texture = draw.reflection_texture;
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
-        mask_view = lookupTexture(presenter, reflection);
-        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        reflection.texture_is_backbuffer = draw.has_combiner && draw.combiner_is_backbuffer;
+        reflection.texture_is_frontbuffer = draw.has_combiner && draw.combiner_is_frontbuffer;
+        const bool needs_mask = !draw.has_combiner || recomp_d3d_combiner_uses_texture(draw.combiner[1]);
+        if (draw.has_combiner && needs_mask) {
+            const RenderTargetEntry *sampled = findRenderTarget(presenter, reflection.texture);
+            if (sampled != nullptr && sampled->render_view == color_view)
+                return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
+        mask_view = needs_mask ? lookupTexture(presenter, reflection) : nullptr;
+        if ((needs_mask && mask_view == nullptr) ||
+            (texture_view == nullptr && needs_texture))
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (draw.four_tap_filter && texture_view == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2336,7 +2795,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 140]{};
+    float draw_constants[140 + 192 * 4 + 300 + 76 + 16]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -2391,9 +2850,41 @@ RecompD3dPresenterError submitDraw(
         constants[136]=1;
         constants[137]=light.normalize ? 1.0f:0.0f;
         constants[138]=static_cast<float>(light.count);
+        std::memcpy(constants+140, light.world_transforms, sizeof light.world_transforms);
+        std::memcpy(constants+204, light.positions, sizeof light.positions);
+        std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
+        std::memcpy(constants+268, light.ambient, sizeof light.ambient);
+    }
+    {
+        static const bool fog_enabled = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        static const bool fog_visualize = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG_FACTOR");
+            return value && std::strcmp(value, "1") == 0;
+        }();
+        float *fog = draw_constants + 140 + 192 * 4 + 300;
+        for (unsigned c = 0; c < 3; ++c)
+            fog[c] = ((draw.fog.color >> (16 - 8*c)) & 255u) / 255.0f;
+        fog[4] = draw.fog.start;
+        fog[5] = draw.fog.end;
+        fog[6] = draw.fog.density;
+        fog[7] = static_cast<float>(draw.fog.mode);
+        fog[8] = draw.fog.enabled && fog_enabled && !draw.program_count ? 1.0f : 0.0f;
+        fog[9] = draw.fog_z ? 1.0f : 0.0f;
+        fog[10] = draw.fog.range && !layout.pretransformed ? 1.0f : 0.0f;
+        fog[11] = fog_visualize ? 1.0f : 0.0f;
+        std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
-    draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
+    const bool alpha_to_coverage = draw.depth.alpha_test_enable &&
+        (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER ||
+         draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL) &&
+        !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u &&
+        presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
+    /* draw_flags.y: 0 disabled, 1 hard alpha test, otherwise sample count. */
+    draw_constants[65] = alpha_to_coverage ? static_cast<float>(presenter->msaa) : draw.depth.alpha_test_enable ? 1.0f : 0.0f;
     draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
@@ -2429,6 +2920,20 @@ RecompD3dPresenterError submitDraw(
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
         draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
     }
+    if (draw.has_combiner) {
+        std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
+        draw_constants[136] = 3.0f;
+        draw_constants[137] = draw.reflection_texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8
+            ? 1.0f : 0.0f;
+        draw_constants[78] = draw.reflection_texture.linear && draw.reflection_texture.width
+            ? 1.0f / draw.reflection_texture.width : 1.0f;
+        draw_constants[79] = draw.reflection_texture.linear && draw.reflection_texture.height
+            ? 1.0f / draw.reflection_texture.height : 1.0f;
+        for (unsigned i = 0u; i < 16u; ++i) {
+            draw_constants[140 + 192 * 4 + 300 + 76 + i] =
+                static_cast<float>(draw.combiner[i / 8u][i % 8u]);
+        }
+    }
 
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
@@ -2457,12 +2962,33 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
+    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
+        draw.texture.mip_levels > 1u &&
+        !layout.pretransformed && !draw.texture.linear &&
+        !draw.texture.render_target && !draw.texture_is_backbuffer &&
+        draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
+        !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v),
-        draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
+        draw.program_alpha_mask ? presenter->program_mask_sampler
+            : draw.has_combiner
+            ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v, false)
+            : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
+    if (draw.has_combiner && draw.combiner_lod_bias != 0.0f && samplers[1] != nullptr) {
+        /* The title sea biases its tiled shimmer two mips sharper; D3D11
+           returns the existing object for a repeated description. */
+        D3D11_SAMPLER_DESC desc{};
+        samplers[1]->GetDesc(&desc);
+        desc.MipLODBias = draw.combiner_lod_bias;
+        ID3D11SamplerState *biased = nullptr;
+        if (SUCCEEDED(presenter->device->CreateSamplerState(&desc, &biased))) {
+            presenter->context->PSSetSamplers(1u, 1u, &biased);
+            biased->Release();
+        }
+    }
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {
@@ -2476,7 +3002,7 @@ RecompD3dPresenterError submitDraw(
             ((color >> 8u) & 255u) / 255.0f,
             (color & 255u) / 255.0f,
             ((color >> 24u) & 255u) / 255.0f};
-        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend);
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
@@ -2625,81 +3151,26 @@ bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
     return true;
 }
 
-/* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
-   INTERVAL_MS optionally spaces captures in host time. Capture stays inside
-   the renderer, without cross-process window painting or missed-frame bursts. */
-void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
+void writeFrameDump(RecompD3dPresenter *presenter, ID3D11Texture2D *staging,
+    const char *path, unsigned present_count, ULONGLONG captured_ms)
 {
-    const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
-    if (path == nullptr) {
-        return;
-    }
-    /* A single dump cannot answer whether content moves between frames, only
-       whether one frame is correct. RECOMP_D3D_FRAME_DUMP_COUNT captures a
-       burst of consecutive presents so successive back buffers can be
-       compared against each other. Default 1 keeps existing gates identical. */
-    const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
-    const unsigned count = count_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
-        : 1u;
-    if (presenter->frame_dump_count >= (count == 0u ? 1u : count)) {
-        return;
-    }
-    const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
-    const unsigned at = at_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(at_text, nullptr, 10))
-        : 1u;
-    if (present_count < at) {
-        return;
-    }
-    const char *interval_text =
-        std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
-    const unsigned interval_ms = interval_text != nullptr
-        ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
-        : 0u;
-    if (!frameDumpDue(GetTickCount64(), interval_ms,
-            presenter->next_frame_dump_ms)) {
-        return;
-    }
-    const unsigned dump_index = presenter->frame_dump_count++;
-
-    /* One name per frame in a burst; the single-dump case keeps the exact
-       path it always used so existing gates and receipts still match. */
-    char burst_path[1024];
-    if (count > 1u) {
-        std::snprintf(
-            burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
-        path = burst_path;
-    }
-
-    ID3D11Texture2D *back_buffer = nullptr;
-    if (FAILED(presenter->swap_chain->GetBuffer(
-            0u, __uuidof(ID3D11Texture2D),
-            reinterpret_cast<void **>(&back_buffer)))) {
-        return;
-    }
     D3D11_TEXTURE2D_DESC desc{};
-    back_buffer->GetDesc(&desc);
-    desc.Usage = D3D11_USAGE_STAGING;
-    desc.BindFlags = 0u;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    desc.MiscFlags = 0u;
-
-    ID3D11Texture2D *staging = nullptr;
-    if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
-        back_buffer->Release();
+    staging->GetDesc(&desc);
+    const unsigned width = desc.Width;
+    const unsigned height = desc.Height;
+    const unsigned row_bytes = width * 3u;
+    const unsigned padded = (row_bytes + 3u) & ~3u;
+    const unsigned image_bytes = padded * height;
+    /* Allocate before mapping or opening the file, so failure leaves no partial BMP. */
+    // A Debug vector also allocates an iterator proxy in its noexcept constructor.
+    std::unique_ptr<unsigned char[]> bmp_row(new (std::nothrow) unsigned char[padded]{});
+    if (!bmp_row) {
+        std::fprintf(stderr, "recomp frame dump: row allocation failed path=%s\n", path);
         return;
     }
-    presenter->context->CopyResource(staging, back_buffer);
-
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(presenter->context->Map(
             staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
-        const unsigned width = desc.Width;
-        const unsigned height = desc.Height;
-        const unsigned row_bytes = width * 3u;
-        const unsigned padded = (row_bytes + 3u) & ~3u;
-        const unsigned image_bytes = padded * height;
 
         if (FILE *file = std::fopen(path, "wb")) {
             unsigned char header[54] = {0};
@@ -2720,34 +3191,184 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
             std::memcpy(header + 34, &image_bytes, 4);
             std::fwrite(header, 1, sizeof header, file);
 
-            /* BMP rows run bottom-up. */
+            /* Write a whole row: per-pixel stdio locking stalls capture replay. */
             for (unsigned y = 0u; y < height; ++y) {
                 const unsigned char *row =
                     static_cast<const unsigned char *>(mapped.pData) +
                     static_cast<size_t>(height - 1u - y) * mapped.RowPitch;
-                unsigned written = 0u;
-
                 for (unsigned x = 0u; x < width; ++x) {
                     /* Back buffer is B8G8R8A8, which already matches BMP order. */
-                    std::fwrite(row + x * 4u, 1, 3, file);
-                    written += 3u;
+                    std::memcpy(bmp_row.get()+x*3u, row+x*4u, 3u);
                 }
-                const unsigned char pad[3] = {0, 0, 0};
-                if (padded > written) {
-                    std::fwrite(pad, 1, padded - written, file);
-                }
+                std::fwrite(bmp_row.get(), 1, padded, file);
             }
             std::fclose(file);
             std::fprintf(
                 stderr,
-                "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u\n",
+                "recomp d3d presenter: frame dump path=%s size=%ux%u present=%u captured_ms=%llu\n",
                 path, width, height,
-                static_cast<unsigned>(present_count));
+                static_cast<unsigned>(present_count), static_cast<unsigned long long>(captured_ms));
         }
         presenter->context->Unmap(staging, 0u);
     }
-    staging->Release();
+}
+
+void flushFrameDumps(RecompD3dPresenter *presenter)
+{
+    for (const auto &dump : presenter->deferred_dumps)
+        writeFrameDump(presenter, dump.texture.get(), dump.path.c_str(), dump.present, dump.captured_ms);
+    presenter->deferred_dumps.clear();
+}
+
+bool frameDumpFits(const D3D11_TEXTURE2D_DESC &desc, unsigned count)
+{
+    return count <= 300 && uint64_t(desc.Width)*desc.Height*4*count <= 12ull*1024*1024*1024;
+}
+
+/* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
+   INTERVAL_MS optionally spaces captures in host time. TRIGGER names a file
+   whose appearance starts each burst of the length it contains; the file is
+   deleted once the burst is written, so scripted navigation can capture
+   several scenes in one run.
+   Capture stays inside the renderer, without cross-process window painting
+   or missed-frame bursts. */
+void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
+{
+    const char *path = std::getenv("RECOMP_D3D_FRAME_DUMP");
+    if (path == nullptr) {
+        return;
+    }
+    /* A single dump cannot answer whether content moves between frames, only
+       whether one frame is correct. RECOMP_D3D_FRAME_DUMP_COUNT captures a
+       burst of consecutive presents so successive back buffers can be
+       compared against each other. Default 1 keeps existing gates identical. */
+    const char *count_text = std::getenv("RECOMP_D3D_FRAME_DUMP_COUNT");
+    unsigned count = count_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(count_text, nullptr, 10))
+        : 1u;
+    const char *trigger = std::getenv("RECOMP_D3D_FRAME_DUMP_TRIGGER");
+    if (trigger != nullptr) {
+        count = presenter->frame_dump_burst_count;
+    } else if (count > 300) {
+        const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+        if (defer && std::strcmp(defer, "1") == 0) return;
+    }
+    if (presenter->frame_dump_count - presenter->frame_dump_burst_base >=
+            (count == 0u ? 1u : count)) {
+        // Flush on the following frame so every captured frame was presented first.
+        flushFrameDumps(presenter);
+        if (trigger != nullptr) {
+            DeleteFileA(trigger);
+            presenter->frame_dump_burst_base = presenter->frame_dump_count;
+            presenter->frame_dump_burst_count = 0u;
+        }
+        return;
+    }
+    if (trigger != nullptr && count == 0u) {
+        FILE *file = std::fopen(trigger, "rb");
+        if (file == nullptr) {
+            return;
+        }
+        unsigned requested = 0u;
+        if (std::fscanf(file, "%u", &requested) != 1 || requested == 0u) {
+            requested = 1u;
+        }
+        std::fclose(file);
+        count = presenter->frame_dump_burst_count = requested;
+        const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+        ID3D11Texture2D *back_buffer = nullptr;
+        if (defer && std::strcmp(defer, "1") == 0 && SUCCEEDED(
+                presenter->swap_chain->GetBuffer(0u, __uuidof(ID3D11Texture2D),
+                    reinterpret_cast<void **>(&back_buffer)))) {
+            D3D11_TEXTURE2D_DESC desc{};
+            back_buffer->GetDesc(&desc);
+            back_buffer->Release();
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0u;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            desc.MiscFlags = 0u;
+            if (!frameDumpFits(desc, requested)) {
+                std::fprintf(stderr, "recomp frame dump: deferred capture exceeds frame dump bound\n");
+                DeleteFileA(trigger);
+                presenter->frame_dump_burst_base = presenter->frame_dump_count;
+                presenter->frame_dump_burst_count = 0u;
+                return;
+            }
+            for (unsigned i = 0u; i < requested; ++i) {
+                ID3D11Texture2D *staging = nullptr;
+                if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) break;
+                presenter->dump_pool.emplace_back(staging);
+            }
+            return; // Start the burst on the next present, after the allocation hitch.
+        }
+    }
+    const char *at_text = std::getenv("RECOMP_D3D_FRAME_DUMP_AT");
+    // A comma list ("1800,3600,5400") takes dump k at the k-th listed present.
+    char *at_next = nullptr;
+    unsigned at = at_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(at_text, &at_next, 10))
+        : 1u;
+    for (unsigned i = 0u; at_next != nullptr && *at_next == ',' &&
+            i < presenter->frame_dump_count - presenter->frame_dump_burst_base; ++i) {
+        at = static_cast<unsigned>(std::strtoul(at_next + 1, &at_next, 10));
+    }
+    if (present_count < at) {
+        return;
+    }
+    const char *interval_text =
+        std::getenv("RECOMP_D3D_FRAME_DUMP_INTERVAL_MS");
+    const unsigned interval_ms = interval_text != nullptr
+        ? static_cast<unsigned>(std::strtoul(interval_text, nullptr, 10))
+        : 0u;
+    if (!frameDumpDue(GetTickCount64(), interval_ms,
+            presenter->next_frame_dump_ms)) {
+        return;
+    }
+    const unsigned dump_index = presenter->frame_dump_count++;
+
+    /* One name per frame in a burst; the single-dump case keeps the exact
+       path it always used so existing gates and receipts still match. */
+    char burst_path[1024];
+    if (count > 1u || trigger != nullptr) {
+        std::snprintf(
+            burst_path, sizeof burst_path, "%s.%03u.bmp", path, dump_index);
+        path = burst_path;
+    }
+
+    ID3D11Texture2D *back_buffer = nullptr;
+    if (FAILED(presenter->swap_chain->GetBuffer(
+            0u, __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void **>(&back_buffer)))) {
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    back_buffer->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0u;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0u;
+
+    ID3D11Texture2D *staging = nullptr;
+    if (!presenter->dump_pool.empty()) {
+        staging = presenter->dump_pool.back().release();
+        presenter->dump_pool.pop_back();
+    } else if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
+        back_buffer->Release();
+        return;
+    }
+    presenter->context->CopyResource(staging, back_buffer);
+
     back_buffer->Release();
+    std::unique_ptr<ID3D11Texture2D, DumpTextureRelease> owned(staging);
+    const char *defer = std::getenv("RECOMP_D3D_FRAME_DUMP_DEFER");
+    if (defer && std::strcmp(defer, "1") == 0) {
+        // Bound this diagnostic to 300 4K frames (about 10 GiB of readback memory).
+        if (!frameDumpFits(desc, count)) {
+            std::fprintf(stderr, "recomp frame dump: deferred capture exceeds frame dump bound\n");
+            return;
+        }
+        presenter->deferred_dumps.push_back({std::move(owned), path, present_count, GetTickCount64()});
+    } else writeFrameDump(presenter, owned.get(), path, present_count, GetTickCount64());
     presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
 }
 
@@ -3006,6 +3627,106 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     return true;
 }
 
+bool compareReplay(RecompD3dPresenter *presenter)
+{
+    if (!presenter->replay_verify_frame) return true;
+    ID3D11Texture2D *back = nullptr, *staging = nullptr;
+    if (FAILED(presenter->swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void **>(&back)))) return false;
+    D3D11_TEXTURE2D_DESC desc{};
+    back->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
+    HRESULT result = presenter->device->CreateTexture2D(&desc, nullptr, &staging);
+    if (FAILED(result)) { back->Release(); return false; }
+    presenter->context->CopyResource(staging, back);
+    back->Release();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    result = presenter->context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(result)) { staging->Release(); return false; }
+    const size_t row_bytes = size_t(desc.Width)*4;
+    auto &reference = presenter->replay_reference;
+    try {
+        if (!presenter->replay_verify_second) reference.resize(row_bytes*desc.Height);
+    } catch (...) {
+        presenter->context->Unmap(staging, 0);
+        staging->Release();
+        throw;
+    }
+    bool valid = reference.size() == row_bytes*desc.Height;
+    uint64_t changed = 0;
+    unsigned maximum = 0;
+    if (valid) for (unsigned y = 0; y < desc.Height; ++y) {
+        const auto *row = static_cast<const uint8_t *>(mapped.pData)+size_t(y)*mapped.RowPitch;
+        auto *old = reference.data()+size_t(y)*row_bytes;
+        if (!presenter->replay_verify_second) std::memcpy(old, row, row_bytes);
+        else for (unsigned x = 0; x < desc.Width; ++x) {
+            bool different = false;
+            for (unsigned c = 0; c < 3; ++c) {
+                unsigned delta = static_cast<unsigned>(std::abs(int(row[x*4+c])-int(old[x*4+c])));
+                maximum = (std::max)(maximum, delta);
+                different |= delta != 0;
+            }
+            changed += different;
+        }
+    }
+    presenter->context->Unmap(staging, 0);
+    staging->Release();
+    if (presenter->replay_verify_second) std::fprintf(stderr,
+        "recomp replay identity: frame=%u pixels=%llu changed=%llu max_channel=%u valid=%u\n",
+        presenter->replay_verify_frame, static_cast<unsigned long long>(desc.Width)*desc.Height,
+        static_cast<unsigned long long>(changed), maximum, valid);
+    presenter->replay_verify_frame = 0;
+    return valid && changed == 0;
+}
+
+/* The guest runs at 60 Hz. On a 120 or 240 Hz display, interval 1 shows its
+   frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
+   refresh/60. Rechecked each second, as the window can change monitors.
+   ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
+UINT fixedRefreshInterval(UINT hz)
+{
+    // Rates below the multiple cannot retire sixty frames per second.
+    const UINT k = (hz + 30u) / 60u;
+    return (k == 2u || k == 4u) && hz >= 60u * k && hz <= 60u * k + 1u ? k : 1u;
+}
+
+UINT syncInterval(RecompD3dPresenter *presenter)
+{
+    if (split_presentation) return 1u;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= presenter->next_refresh_check) {
+        presenter->next_refresh_check = now + std::chrono::seconds(1);
+        MONITORINFOEXW monitor{};
+        monitor.cbSize = sizeof monitor;
+        DEVMODEW mode{};
+        mode.dmSize = sizeof mode;
+        UINT interval = 1u;
+        if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+            interval = fixedRefreshInterval(mode.dmDisplayFrequency);
+        }
+        presenter->sync_interval = interval;
+    }
+    return presenter->sync_interval;
+}
+
+void recordFrameStatistics(RecompD3dPresenter *presenter,
+    HRESULT result, const DXGI_FRAME_STATISTICS &stats)
+{
+    if (FAILED(result)) {
+        presenter->last_stat_present = presenter->last_stat_refresh = 0u;
+        return;
+    }
+    if (presenter->last_stat_present != 0u &&
+        stats.PresentCount == presenter->last_stat_present + 1u) {
+        const UINT hold = stats.PresentRefreshCount - presenter->last_stat_refresh;
+        ++presenter->refresh_holds[(std::min)(hold, 8u)];
+    }
+    presenter->last_stat_present = stats.PresentCount;
+    presenter->last_stat_refresh = stats.PresentRefreshCount;
+}
+
 RecompD3dPresenterError submitPresent(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterPresentCommand &present)
@@ -3039,10 +3760,34 @@ RecompD3dPresenterError submitPresent(
        unconditionally meant the throttled path was never actually throttled:
        every frame was retired immediately and only the blocking behaviour
        changed. Pace to one refresh unless immediate presenting is asked for. */
-    if (!renderOutput(presenter, presenter->present_target_view)) {
+    if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
+            ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
+    copyFrontBuffer(presenter);
+    if (presenter->vrr_target_view != nullptr) {
+        auto *context = presenter->context;
+        D3D11_TEXTURE2D_DESC window{};
+        ID3D11Texture2D *back_buffer = nullptr;
+        presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+        if (back_buffer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        back_buffer->GetDesc(&window);
+        releaseCom(back_buffer);
+        const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
+            static_cast<float>(window.Width), static_cast<float>(window.Height), 0.0f, 1.0f};
+        context->ClearState();
+        context->RSSetViewports(1u, &viewport);
+        context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
+        context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
+        context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
+        context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
+        context->Draw(3u, 0u);
+        context->ClearState();
+    }
     // Capture the rendered buffer before flip presentation releases it.
+    if (!compareReplay(presenter)) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
 
     const auto clock_ms = [] {
@@ -3050,9 +3795,25 @@ RecompD3dPresenterError submitPresent(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
-    const HRESULT present_result = presenter->swap_chain->Present(
-        immediate_present ? 0u : 1u,
-        immediate_present ? DXGI_PRESENT_DO_NOT_WAIT : 0u);
+    const bool immediate = immediatePresent(presenter);
+    const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
+    const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
+        : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    if (presenter->vrr && !split_presentation) {
+        /* VRR shows a frame the moment it is presented, so render-time jitter
+           became 12-23 ms frames. Present on the guest's exact 1/60 s grid; a
+           late frame presents now and moves the grid, as the guest timer does. */
+        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        presenter->vrr_slot_ns = (std::max)(presenter->vrr_slot_ns + 1000000000 / 60, now);
+        // Submit the frame's last commands now, so the GPU finishes them before the flip.
+        presenter->context->Flush();
+        recomp_d3d_sleep_until(presenter->vrr_slot_ns);
+    }
+    LARGE_INTEGER qpc_before{}, qpc_after{};
+    QueryPerformanceCounter(&qpc_before);
+    const HRESULT present_result = presenter->swap_chain->Present(sync_interval, present_flags);
+    QueryPerformanceCounter(&qpc_after);
     if (FAILED(present_result)) {
         std::fprintf(
             stderr,
@@ -3066,6 +3827,21 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    presenter->replacements.finishFrame(presenter->device, presenter->context, presenter->present_count);
+    DXGI_FRAME_STATISTICS stats{};
+    const HRESULT stats_result = presenter->present_log != nullptr || presenter->performance_counter
+        ? presenter->swap_chain->GetFrameStatistics(&stats) : E_FAIL;
+    if (presenter->present_log != nullptr) {
+        UINT last_present = 0u;
+        presenter->swap_chain->GetLastPresentCount(&last_present);
+        std::fprintf(presenter->present_log,
+            "%u,%lld,%lld,%u,0x%X,0x%08lX,%u,0x%08lX,%u,%u,%u,%lld\n",
+            presenter->present_count, qpc_before.QuadPart, qpc_after.QuadPart,
+            sync_interval, present_flags, static_cast<unsigned long>(present_result),
+            last_present, static_cast<unsigned long>(stats_result), stats.PresentCount,
+            stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+        std::fflush(presenter->present_log);
+    }
     if (presenter->performance_counter) {
         const double present_end_ms = clock_ms();
         // The first Present lands before the sampled window opens.
@@ -3077,6 +3853,7 @@ RecompD3dPresenterError submitPresent(
             presenter->present_gaps.push_back(present_end_ms - presenter->last_present_ms);
         }
         presenter->last_present_ms = present_end_ms;
+        recordFrameStatistics(presenter, stats_result, stats);
         double fps, frame_ms;
         const ULONGLONG now = GetTickCount64();
         if (sampleFrameRate(presenter->frame_rate, now, fps, frame_ms)) {
@@ -3091,9 +3868,13 @@ RecompD3dPresenterError submitPresent(
                 late += gap > frame_ms * 1.5;
             }
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
-                max_ms, late, presenter->present_call_max_ms);
+                max_ms, late, presenter->present_call_max_ms,
+                presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
+                presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+            std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
         }
@@ -3172,6 +3953,30 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
+    /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
+       evenly. DXGI cannot tell whether VRR is active; without it this tears. */
+    const char *vrr = std::getenv("RECOMP_D3D_VRR");
+    if (vrr != nullptr && std::strcmp(vrr, "1") == 0) {
+        IDXGIFactory5 *factory = nullptr;
+        BOOL tearing = FALSE;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+            factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing);
+            factory->Release();
+        }
+        created->vrr = tearing != FALSE;
+        std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+    }
+    if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
+        created->present_log = std::fopen(log, "w");
+        if (created->present_log != nullptr) {
+            LARGE_INTEGER frequency{};
+            QueryPerformanceFrequency(&frequency);
+            std::fprintf(created->present_log, "# qpc_frequency=%lld\n"
+                "present,qpc_before,qpc_after,sync_interval,flags,present_hr,last_present_count,"
+                "stats_hr,stats_present_count,present_refresh_count,sync_refresh_count,sync_qpc\n",
+                frequency.QuadPart);
+        }
+    }
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);
@@ -3185,7 +3990,8 @@ RecompD3dPresenterError d3d11_backend_create(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     try {
-        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop);
+        created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop,
+            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1);
     } catch (const std::system_error &) {
         // Shaders then compile on first use, as before.
     }
@@ -3193,6 +3999,68 @@ RecompD3dPresenterError d3d11_backend_create(
     active_presenter = created;
     *presenter = created;
     return RECOMP_D3D_PRESENTER_OK;
+}
+
+/* Creates a cache-miss texture before its draw needs it. Addresses already
+   cached, render targets and dynamic linear textures are skipped, so entries
+   the packet on screen still uses are not replaced. */
+bool textureMissing(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    const RecompD3dTextureDesc &desc = draw.texture;
+    return !draw.texture_is_backbuffer && !desc.linear && draw.texture_bytes != nullptr &&
+        presenter->texture_index.count(desc.data) == 0u &&
+        findRenderTarget(presenter, desc) == nullptr;
+}
+
+void prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    if (textureMissing(presenter, draw)) lookupTexture(presenter, draw);
+}
+
+/* The draw's main texture plus its alpha mask or reflection texture, as drawn. */
+template <typename Visit>
+void visitPrepareTextures(const RecompD3dPresenterDrawCommand &draw, Visit visit)
+{
+    if (draw.has_texture) visit(draw);
+    RecompD3dPresenterDrawCommand extra{};
+    if (draw.has_alpha_mask) {
+        extra.texture = draw.alpha_mask;
+        extra.texture_bytes = draw.alpha_mask_bytes;
+        extra.texture_byte_count = draw.alpha_mask_byte_count;
+        extra.palette_bytes = draw.alpha_mask_palette;
+        extra.palette_byte_count = draw.alpha_mask_palette_byte_count;
+        visit(extra);
+    } else if (draw.has_reflection || draw.program_alpha_mask) {
+        extra.texture = draw.reflection_texture;
+        extra.texture_bytes = draw.reflection_bytes;
+        extra.texture_byte_count = draw.reflection_byte_count;
+        visit(extra);
+    }
+}
+
+bool prepareAllowed(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    return presenter != nullptr && presenter == active_presenter && command != nullptr &&
+        GetCurrentThreadId() == presenter->owner_thread &&
+        command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+}
+
+void d3d11_backend_prepare(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    if (!prepareAllowed(presenter, command)) return;
+    visitPrepareTextures(command->data.draw, [presenter](const RecompD3dPresenterDrawCommand &draw) {
+        prepareTexture(presenter, draw);
+    });
+}
+
+uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
+{
+    uint64_t bytes = 0;
+    if (!prepareAllowed(presenter, command)) return 0;
+    visitPrepareTextures(command->data.draw, [presenter, &bytes](const RecompD3dPresenterDrawCommand &draw) {
+        if (textureMissing(presenter, draw)) bytes += draw.texture_byte_count;
+    });
+    return bytes;
 }
 
 RecompD3dPresenterError d3d11_backend_submit(
@@ -3248,7 +4116,7 @@ RecompD3dPresenterError d3d11_backend_release_memory(
         if (!released(entry.desc.data)) { ++i; continue; }
         releaseCom(entry.sample_view);
         releaseCom(entry.render_view);
-        presenter->target_bytes -= static_cast<uint64_t>(entry.desc.width) * entry.desc.height * 4u;
+        presenter->target_bytes -= entry.bytes;
         entry = presenter->render_targets.back();
         presenter->render_targets.pop_back();
         changed = true;
@@ -3313,6 +4181,19 @@ RecompD3dPresenterError d3d11_backend_destroy(
 void d3d11_backend_set_immediate_present(bool enabled)
 {
     immediate_present = enabled;
+}
+
+/* Split presentation paces itself: a third buffer absorbs a late compositor
+   frame instead of blocking the next Present. */
+void d3d11_backend_set_split_presentation(bool enabled)
+{
+    split_presentation = enabled;
+}
+
+void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay)
+{
+    presenter->replay_verify_frame = frame;
+    presenter->replay_verify_second = replay;
 }
 
 

@@ -4,8 +4,118 @@
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include "win32_compat.h"
+#include <stdlib.h>
+#include <sys/mman.h>
+
+void recomp_fiber_switch(void **from_sp, void *to_sp);
+void recomp_fiber_trampoline(void);
+
+typedef struct RecompNativeFiber {
+    void *sp;
+    void *stack_memory;
+    size_t stack_size;
+} RecompNativeFiber;
+
+static RecompNativeFiber *g_active_native_fiber = NULL;
+
+#define FIBER_FLAG_FLOAT_SWITCH 0x1
+
+static LPVOID ConvertThreadToFiberEx(LPVOID lpParameter, DWORD dwFlags)
+{
+    (void)lpParameter;
+    (void)dwFlags;
+    RecompNativeFiber *fiber = (RecompNativeFiber *)calloc(1, sizeof(RecompNativeFiber));
+    g_active_native_fiber = fiber;
+    return (LPVOID)fiber;
+}
+
+static BOOL ConvertFiberToThread(void)
+{
+    if (g_active_native_fiber) {
+        free(g_active_native_fiber);
+        g_active_native_fiber = NULL;
+    }
+    return TRUE;
+}
+
+static LPVOID CreateFiberEx(
+    SIZE_T dwStackCommit,
+    SIZE_T dwStackReserve,
+    DWORD dwFlags,
+    void (*lpStartAddress)(void *),
+    LPVOID lpParameter)
+{
+    (void)dwStackCommit;
+    (void)dwFlags;
+    size_t stack_size = dwStackReserve ? dwStackReserve : 1024 * 1024;
+    stack_size = (stack_size + 0xfffu) & ~0xfffu;
+    void *stack_mem = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (stack_mem == MAP_FAILED) {
+        return NULL;
+    }
+
+    RecompNativeFiber *fiber = (RecompNativeFiber *)calloc(1, sizeof(RecompNativeFiber));
+    if (!fiber) {
+        munmap(stack_mem, stack_size);
+        return NULL;
+    }
+    fiber->stack_memory = stack_mem;
+    fiber->stack_size = stack_size;
+
+    uintptr_t top = ((uintptr_t)stack_mem + stack_size) & ~15ULL;
+#if defined(__arm64__) || defined(__aarch64__)
+    top -= 160;
+    uint64_t *frame = (uint64_t *)top;
+    frame[8] = 0; // fp
+    frame[9] = (uint64_t)(uintptr_t)recomp_fiber_trampoline; // lr
+    frame[18] = (uint64_t)(uintptr_t)lpParameter; // x19
+    frame[19] = (uint64_t)(uintptr_t)lpStartAddress; // x20
+    fiber->sp = (void *)top;
+#elif defined(__x86_64__) || defined(_M_X64)
+    top -= 64;
+    uint64_t *frame = (uint64_t *)top;
+    frame[0] = 0; // r15
+    frame[1] = 0; // r14
+    frame[2] = (uint64_t)(uintptr_t)lpStartAddress; // r13
+    frame[3] = (uint64_t)(uintptr_t)lpParameter; // r12
+    frame[4] = 0; // rbx
+    frame[5] = 0; // rbp
+    frame[6] = (uint64_t)(uintptr_t)recomp_fiber_trampoline; // ret rip
+    frame[7] = 0; // 16-byte alignment padding
+    fiber->sp = (void *)top;
+#else
+#error "Unsupported architecture for native POSIX fiber switching"
+#endif
+
+    return (LPVOID)fiber;
+}
+
+static void SwitchToFiber(LPVOID lpFiber)
+{
+    RecompNativeFiber *target = (RecompNativeFiber *)lpFiber;
+    RecompNativeFiber *from = g_active_native_fiber;
+    g_active_native_fiber = target;
+    recomp_fiber_switch(&from->sp, target->sp);
+}
+
+static void DeleteFiber(LPVOID lpFiber)
+{
+    if (!lpFiber) return;
+    RecompNativeFiber *fiber = (RecompNativeFiber *)lpFiber;
+    if (fiber->stack_memory) {
+        munmap(fiber->stack_memory, fiber->stack_size);
+    }
+    if (g_active_native_fiber == fiber) {
+        g_active_native_fiber = NULL;
+    }
+    free(fiber);
+}
+#endif
 
 #include <inttypes.h>
 #include <stdio.h>

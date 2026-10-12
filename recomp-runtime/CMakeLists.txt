@@ -26,6 +26,68 @@ if(WIN32)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
+else()
+    # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
+    # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
+    # 24.04 has no package). Hosts with neither only configure, which the
+    # tools tests do without it.
+    option(RECOMP_FETCH_SDL3 "Build SDL3 when the system has none" OFF)
+    find_package(SDL3 QUIET)
+    if(APPLE AND NOT SDL3_FOUND)
+        message(FATAL_ERROR "SDL3 is required: brew install sdl3")
+    endif()
+    if(NOT SDL3_FOUND AND RECOMP_FETCH_SDL3)
+        if(POLICY CMP0135)
+            cmake_policy(SET CMP0135 NEW)
+        endif()
+        include(FetchContent)
+        # The release the Steam Deck build was tested with, pinned like the Windows zip.
+        FetchContent_Declare(SDL3
+            URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-3.4.12.tar.gz
+            URL_HASH SHA256=f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_SHARED ON CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(SDL3)
+        set(SDL3_FOUND TRUE)
+    endif()
+    function(recomp_use_sdl3 target)
+        if(SDL3_FOUND)
+            target_link_libraries(${target} PRIVATE SDL3::SDL3)
+        endif()
+    endfunction()
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
+    add_compile_definitions(_GNU_SOURCE)
+    link_libraries(Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
+# Clang contracts a*b+c into FMA by default on AArch64. Keep IEEE operation
+# order so guest float results match the x86 hosts and the Windows build.
+if(NOT MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-ffp-contract=off>)
+endif()
+
+if(NOT WIN32)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        set(RECOMP_FIBER_ASM fiber_switch_x86_64.S)
+    endif()
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        set(RECOMP_FIBER_ASM fiber_switch_arm64.S)
+    elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+        set(RECOMP_FIBER_ASM fiber_switch_x86_64.S)
+    endif()
+endif()
+
+if(MINGW)
+    # Match the Windows SDK default so Windows 10 media and audio declarations exist.
+    add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00)
+    # Link libc++ and libunwind in so the runner needs no toolchain DLLs.
+    add_link_options(-static)
 endif()
 
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
@@ -34,7 +96,8 @@ set(_smaa_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/smaa")
 if(EXISTS "${_smaa_dir}/SMAA.hlsl")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_smaa_dir}/SMAA.hlsl")
     file(READ "${_smaa_dir}/SMAA.hlsl" _smaa_hex HEX)
-    string(REGEX REPLACE "(..)" "0x\\1," _smaa_hex "${_smaa_hex}")
+    # Character literals keep bytes above 0x7f valid in a char array under clang.
+    string(REGEX REPLACE "(..)" "'\\\\x\\1'," _smaa_hex "${_smaa_hex}")
     file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/smaa_hlsl.inc" CONTENT "${_smaa_hex}")
     # Only the presenter uses SMAA; scoping it keeps generated chunks untouched.
     set_source_files_properties(d3d_presenter_d3d11.cpp d3d_presenter_d3d11_test.cpp
@@ -116,6 +179,7 @@ add_executable(recomp_runtime_test
     runtime.c
     stop_report.c
     runtime_test.c
+    animation_track_adapter_test.c
     xapi_time_adapter_test.cpp
     device_model.c
     device_model_test.c
@@ -123,7 +187,7 @@ add_executable(recomp_runtime_test
     d3d_creation_adapter.c
     d3d_creation_model_test.c
     d3d_draw_model.c
-    d3d_draw_adapter.c
+    d3d_draw_adapter_test.c
     d3d_draw_model_test.c
     d3d_frame_model.c
     d3d_frame_model_test.c
@@ -178,6 +242,18 @@ add_executable(recomp_runtime_test
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
     program_manual.c
+    animation_track.c
+    animation_track_adapter.c
+    animation_probe.c
+    d3d_pose_replay.c
+    animation_palette.c
+    animation_skeleton.c
+    animation_pose.c
+    animation_seam.c
+    animation_visual.c
+    animation_camera.c
+    animation_split_adapter.c
+    d3d_split_pose.c
     save_adapter.c
     ohci_model.c
     ohci_model_test.c
@@ -199,14 +275,30 @@ add_executable(recomp_runtime_test
     kernel_video_test.c
     kernel_ordinals.c
     "${_recomp_test_leaf_source}")
+if(NOT MSVC)
+    target_link_libraries(recomp_runtime_test PRIVATE m)
+endif()
 target_include_directories(recomp_runtime_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
-# Media Foundation is delay-loaded: Windows N editions and Server without the
-# Media Foundation feature lack it, and custom music then stays disabled.
-set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
-set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
-target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
-target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+if(WIN32)
+    # Media Foundation is delay-loaded: Windows N editions and Server without the
+    # Media Foundation feature lack it, and custom music then stays disabled.
+    set(RECOMP_MEDIA_FOUNDATION mfplat mfreadwrite mfuuid ole32 delayimp)
+    if(MSVC)
+        set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+    else()
+        set(RECOMP_MEDIA_FOUNDATION_DELAYLOAD
+            -Wl,-Xlink=-delayload:mfplat.dll -Wl,-Xlink=-delayload:mfreadwrite.dll)
+    endif()
+    target_link_libraries(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION})
+    target_link_options(recomp_runtime_test PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
+else()
+    target_sources(recomp_runtime_test PRIVATE win32_compat.c)
+    if(RECOMP_FIBER_ASM)
+        enable_language(ASM)
+        target_sources(recomp_runtime_test PRIVATE ${RECOMP_FIBER_ASM})
+    endif()
+endif()
 target_compile_definitions(recomp_runtime_test PRIVATE
     RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
 
@@ -291,7 +383,16 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    if(WIN32)
+        target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
+    else()
+        target_sources(recomp_runner PRIVATE win32_compat.c)
+        if(RECOMP_FIBER_ASM)
+            enable_language(ASM)
+            target_sources(recomp_runner PRIVATE ${RECOMP_FIBER_ASM})
+        endif()
+        recomp_use_sdl3(recomp_runner)
+    endif()
 endif()
 
 if(RECOMP_PROGRAM_DIR)
@@ -440,6 +541,17 @@ if(RECOMP_PROGRAM_DIR)
         program_adapters.c
         xapi_time_adapter.cpp
         program_manual.c
+        animation_track.c
+        animation_track_adapter.c
+        animation_probe.c
+        animation_palette.c
+        animation_skeleton.c
+        animation_pose.c
+        animation_seam.c
+        animation_visual.c
+        animation_camera.c
+        animation_split_adapter.c
+        d3d_split_pose.c
         save_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
@@ -448,9 +560,14 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_model.c
         d3d_frame_adapter.c
         d3d_vblank.cpp
-        d3d_presenter_d3d11.cpp
+        $<$<PLATFORM_ID:Windows>:d3d_presenter_d3d11.cpp>
+        $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
+        $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:audio_output_sdl.cpp>
         d3d_presenter_capture.cpp
-        d3d_presenter_thread.cpp
+        d3d_pose_replay.c
         d3d_vertex_program.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
@@ -463,7 +580,6 @@ if(RECOMP_PROGRAM_DIR)
         xbox_adpcm.c
         dsound_service_model.c
         dsound_service_adapter.c
-        audio_output_xaudio2.cpp
         custom_music.cpp
         soundtrack_adapter.c
         movie_color_model.c
@@ -508,11 +624,22 @@ if(RECOMP_PROGRAM_DIR)
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
-    target_link_libraries(recomp_program_runner PRIVATE
-        bcrypt dbghelp d3d11 d3dcompiler dxgi user32 xaudio2 ${RECOMP_MEDIA_FOUNDATION})
-    target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
     if(WIN32)
+        target_link_libraries(recomp_program_runner PRIVATE
+            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32
+            $<IF:$<BOOL:${MINGW}>,xaudio2_9,xaudio2> ${RECOMP_MEDIA_FOUNDATION})
+        target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
         recomp_use_sdl3(recomp_program_runner)
+    else()
+        target_sources(recomp_program_runner PRIVATE win32_compat.c)
+        if(RECOMP_FIBER_ASM)
+            enable_language(ASM)
+            target_sources(recomp_program_runner PRIVATE ${RECOMP_FIBER_ASM})
+        endif()
+        recomp_use_sdl3(recomp_program_runner)
+    endif()
+    if(NOT MSVC)
+        target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
 
     # The binary .ico stays out of git; see docs/building.md.
@@ -523,31 +650,94 @@ if(RECOMP_PROGRAM_DIR)
             CONTENT "1 ICON \"${app_icon}\"\n")
         target_sources(recomp_program_runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
     endif()
+
+    # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
+    # beside the runner rather than on first use like the macOS launcher.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(recomp_launcher ../tools/launcher_sdl.cpp)
+        recomp_use_sdl3(recomp_launcher)
+    endif()
 endif()
 
 if(WIN32)
+    add_executable(recomp_texture_replacement_test
+        texture_replacement_test.cpp d3d_presenter_capture.cpp
+        d3d_texture_model.c ../xbe/sha.cpp)
+    target_link_libraries(recomp_texture_replacement_test PRIVATE
+        d3d11 d3dcompiler windowscodecs ole32 bcrypt)
+    add_test(NAME recomp-runtime-texture-replacement COMMAND recomp_texture_replacement_test)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        texture_replacement.cpp
+        ../xbe/sha.cpp
+        d3d_vblank.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
+        d3d_render_state_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
-        d3d11 d3dcompiler dxgi user32)
+        d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
+        ../xbe/sha.cpp
         d3d_presenter_thread.cpp
+        d3d_pose_replay.c
+        d3d_split_pose.c
+        animation_visual.c
+        animation_camera.c
+        animation_pose.c
+        animation_skeleton.c
+        animation_palette.c
+        animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
+        texture_replacement.cpp
+        d3d_vblank.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c
+        d3d_render_state_model.c
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
-        d3d11 d3dcompiler dxgi user32)
+        d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
+    add_executable(recomp_d3d_presenter_replay_test
+        d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
+        d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
+        animation_skeleton.c animation_palette.c animation_seam.c d3d_draw_model.c)
+    target_link_libraries(recomp_d3d_presenter_replay_test PRIVATE dwmapi user32)
+    add_executable(recomp_animation_adapter_test animation_adapter_test.c
+        animation_track.c d3d_split_pose.c animation_visual.c animation_camera.c
+        animation_pose.c animation_skeleton.c animation_palette.c animation_seam.c
+        d3d_pose_replay.c d3d_draw_model.c)
+    if(NOT MSVC)
+        target_link_libraries(recomp_animation_adapter_test PRIVATE m)
+        target_link_libraries(recomp_d3d_presenter_replay_test PRIVATE m)
+    endif()
     add_executable(recomp_audio_output_xaudio2_test audio_output_xaudio2_test.cpp)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     target_link_libraries(recomp_input_host_test PRIVATE user32)
     recomp_use_sdl3(recomp_input_host_test)
+else()
+    add_executable(recomp_d3d_presenter_sdl_gpu_test
+        d3d_presenter_sdl_gpu.cpp
+        d3d_presenter_sdl_gpu_test.cpp
+        d3d_vertex_program.cpp
+        d3d_draw_model.c
+        d3d_texture_model.c)
+    recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
+    add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
+    recomp_use_sdl3(recomp_audio_output_sdl_test)
+    add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
+    recomp_use_sdl3(recomp_input_host_test)
+    add_executable(recomp_win32_compat_test win32_compat.c win32_compat_test.c)
+    add_test(NAME recomp-runtime-win32-compat COMMAND recomp_win32_compat_test)
 endif()
+
+add_executable(recomp_sha_test sha_test.cpp ../xbe/sha.cpp)
+target_include_directories(recomp_sha_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+if(WIN32)
+    target_link_libraries(recomp_sha_test PRIVATE bcrypt)
+endif()
+add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
@@ -559,20 +749,57 @@ add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 
 add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
 
+add_executable(recomp_animation_track_test animation_track.c animation_track_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_track_test PRIVATE m)
+endif()
+
+add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
+add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
+add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
+add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_skeleton_test PRIVATE m)
+    target_link_libraries(recomp_animation_pose_test PRIVATE m)
+    target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
+endif()
+
 include(CTest)
+add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test)
+add_test(NAME recomp-runtime-animation-palette COMMAND recomp_animation_palette_test)
+add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
+add_test(NAME recomp-runtime-animation-pose COMMAND recomp_animation_pose_test)
+add_test(NAME recomp-runtime-pose-replay COMMAND recomp_d3d_pose_replay_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)
+elseif(TARGET recomp_audio_output_sdl_test)
+    add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_sdl_test)
 endif()
 if(TARGET recomp_input_host_test)
     add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
 endif()
+if(TARGET recomp_d3d_presenter_thread_test)
+    add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_thread_test)
+elseif(TARGET recomp_d3d_presenter_sdl_gpu_test)
+    add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_sdl_gpu_test)
+endif()
 add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_test)
 add_test(NAME recomp-runtime-d3d-presenter-capture COMMAND recomp_d3d_presenter_capture_test)
 add_test(NAME recomp-runtime-four-cases COMMAND recomp_runtime_test)
+foreach(draw_case IN ITEMS draw up)
+    add_test(NAME recomp-runtime-presenter-close-${draw_case}
+        COMMAND recomp_runtime_test --presenter-close-${draw_case})
+    set_tests_properties(recomp-runtime-presenter-close-${draw_case} PROPERTIES
+        PASS_REGULAR_EXPRESSION "host-window-close.*kind=normal-exit.*exit_code=0")
+endforeach()
+add_test(NAME recomp-runtime-presenter-close-release
+    COMMAND recomp_runtime_test --presenter-close-release)
+set_tests_properties(recomp-runtime-presenter-close-release PROPERTIES
+    PASS_REGULAR_EXPRESSION "host-window-close.*kind=normal-exit.*exit_code=0")
 add_test(
     NAME recomp-runtime-fiber-stack-recycling
     COMMAND recomp_runtime_test --fiber-stack-recycling)
@@ -616,6 +843,10 @@ endif()
 if(TARGET recomp_d3d_presenter_d3d11_test)
     add_test(NAME recomp-runtime-d3d11-texture-cache
         COMMAND recomp_d3d_presenter_d3d11_test)
+    add_test(NAME recomp-runtime-d3d-presenter-replay COMMAND recomp_d3d_presenter_replay_test)
+    foreach(mode IN ITEMS normal strict verify off)
+        add_test(NAME recomp-runtime-animation-adapter-${mode} COMMAND recomp_animation_adapter_test ${mode})
+    endforeach()
     add_test(NAME recomp-runtime-d3d-presenter-thread
         COMMAND recomp_d3d_presenter_thread_test)
 endif()
@@ -681,3 +912,17 @@ endif()
 
 add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp)
 add_test(NAME recomp-runtime-controller-settings COMMAND recomp_controller_settings_test)
+
+add_executable(recomp_animation_seam_test animation_seam.c animation_seam_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_animation_seam_test PRIVATE m)
+endif()
+add_test(NAME recomp-runtime-animation-seam COMMAND recomp_animation_seam_test)
+
+add_executable(recomp_d3d_split_pose_test d3d_split_pose_test.c d3d_split_pose.c
+    d3d_pose_replay.c d3d_draw_model.c animation_visual.c animation_camera.c
+    animation_pose.c animation_skeleton.c animation_palette.c animation_seam.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_d3d_split_pose_test PRIVATE m)
+endif()
+add_test(NAME recomp-runtime-split-pose COMMAND recomp_d3d_split_pose_test)

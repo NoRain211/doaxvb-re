@@ -1,8 +1,10 @@
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
 #include <SDL3/SDL.h>
 
 #include <string.h>
@@ -24,10 +26,45 @@ enum {
 
 static SDL_Gamepad *pads[RECOMP_INPUT_PORT_COUNT];
 
+#ifdef _WIN32
+#define KEY(virtual_key, scancode) (virtual_key)
+
 static bool pressed(int key)
 {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
+
+static bool focused(void)
+{
+    DWORD foreground_process = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
+    return foreground_process == GetCurrentProcessId();
+}
+
+static unsigned long long tick_ms(void)
+{
+    return GetTickCount64();
+}
+#else
+#define KEY(virtual_key, scancode) (scancode)
+
+/* SDL tracks the keyboard from the events the presenter pumps each frame. */
+static bool pressed(int key)
+{
+    const bool *keyboard = SDL_GetKeyboardState(NULL);
+    return keyboard != NULL && keyboard[key];
+}
+
+static bool focused(void)
+{
+    return SDL_GetKeyboardFocus() != NULL;
+}
+
+static unsigned long long tick_ms(void)
+{
+    return SDL_GetTicks();
+}
+#endif
 
 static bool trace_enabled(void)
 {
@@ -111,31 +148,31 @@ void recomp_input_host_stop_vibration(void)
 }
 
 static void trace_sample(
-    const RecompInputGamepad *pad, SDL_Gamepad *host, DWORD foreground_process)
+    const RecompInputGamepad *pad, SDL_Gamepad *host, bool is_focused)
 {
     static bool seen;
     static unsigned lines;
     static RecompInputGamepad previous;
     static SDL_JoystickID previous_id;
-    static DWORD previous_foreground;
+    static bool previous_focused;
     if (!trace_enabled() || lines >= 4096u) return;
     SDL_JoystickID id = host != NULL ? SDL_GetGamepadID(host) : 0;
     if (seen && memcmp(&previous, pad, sizeof previous) == 0 &&
-        previous_id == id && previous_foreground == foreground_process) return;
+        previous_id == id && previous_focused == is_focused) return;
     const char *host_name = host != NULL ? SDL_GetGamepadName(host) : NULL;
     fprintf(stderr,
         "[DEBUG-r501-input] tick_ms=%llu pad='%s' focused=%u"
         " digital=%04x analog=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x"
         " axes=%d,%d,%d,%d\n",
-        (unsigned long long)GetTickCount64(), host_name != NULL ? host_name : "none",
-        foreground_process == GetCurrentProcessId(),
+        tick_ms(), host_name != NULL ? host_name : "none",
+        is_focused ? 1u : 0u,
         (unsigned)pad->buttons, pad->analog_buttons[0], pad->analog_buttons[1],
         pad->analog_buttons[2], pad->analog_buttons[3], pad->analog_buttons[4],
         pad->analog_buttons[5], pad->analog_buttons[6], pad->analog_buttons[7],
         pad->thumb_lx, pad->thumb_ly, pad->thumb_rx, pad->thumb_ry);
     previous = *pad;
     previous_id = id;
-    previous_foreground = foreground_process;
+    previous_focused = is_focused;
     seen = true;
     ++lines;
 }
@@ -205,28 +242,26 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
         /* The keyboard drives port 0 only. */
         return host != NULL;
     }
-    DWORD foreground_process = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
-    if (foreground_process != GetCurrentProcessId()) {
-        trace_sample(gamepad, host, foreground_process);
+    if (!focused()) {
+        trace_sample(gamepad, host, false);
         return true;
     }
 
-    if (pressed(VK_UP)) gamepad->buttons |= XBOX_DPAD_UP;
-    if (pressed(VK_DOWN)) gamepad->buttons |= XBOX_DPAD_DOWN;
-    if (pressed(VK_LEFT)) gamepad->buttons |= XBOX_DPAD_LEFT;
-    if (pressed(VK_RIGHT)) gamepad->buttons |= XBOX_DPAD_RIGHT;
-    if (pressed(VK_RETURN)) gamepad->buttons |= XBOX_START;
-    if (pressed(VK_BACK)) gamepad->buttons |= XBOX_BACK;
+    if (pressed(KEY(VK_UP, SDL_SCANCODE_UP))) gamepad->buttons |= XBOX_DPAD_UP;
+    if (pressed(KEY(VK_DOWN, SDL_SCANCODE_DOWN))) gamepad->buttons |= XBOX_DPAD_DOWN;
+    if (pressed(KEY(VK_LEFT, SDL_SCANCODE_LEFT))) gamepad->buttons |= XBOX_DPAD_LEFT;
+    if (pressed(KEY(VK_RIGHT, SDL_SCANCODE_RIGHT))) gamepad->buttons |= XBOX_DPAD_RIGHT;
+    if (pressed(KEY(VK_RETURN, SDL_SCANCODE_RETURN))) gamepad->buttons |= XBOX_START;
+    if (pressed(KEY(VK_BACK, SDL_SCANCODE_BACKSPACE))) gamepad->buttons |= XBOX_BACK;
 
-    if (pressed('A')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_X] = 0xffu;
-    if (pressed('S')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_Y] = 0xffu;
-    if (pressed('Z')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_A] = 0xffu;
-    if (pressed('X')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_B] = 0xffu;
-    if (pressed('Q')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_WHITE] = 0xffu;
-    if (pressed('W')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_BLACK] = 0xffu;
-    if (pressed('E')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] = 0xffu;
-    if (pressed('R')) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_RTRIG] = 0xffu;
-    trace_sample(gamepad, host, foreground_process);
+    if (pressed(KEY('A', SDL_SCANCODE_A))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_X] = 0xffu;
+    if (pressed(KEY('S', SDL_SCANCODE_S))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_Y] = 0xffu;
+    if (pressed(KEY('Z', SDL_SCANCODE_Z))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_A] = 0xffu;
+    if (pressed(KEY('X', SDL_SCANCODE_X))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_B] = 0xffu;
+    if (pressed(KEY('Q', SDL_SCANCODE_Q))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_WHITE] = 0xffu;
+    if (pressed(KEY('W', SDL_SCANCODE_W))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_BLACK] = 0xffu;
+    if (pressed(KEY('E', SDL_SCANCODE_E))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_LTRIG] = 0xffu;
+    if (pressed(KEY('R', SDL_SCANCODE_R))) gamepad->analog_buttons[RECOMP_INPUT_ANALOG_RTRIG] = 0xffu;
+    trace_sample(gamepad, host, true);
     return true;
 }

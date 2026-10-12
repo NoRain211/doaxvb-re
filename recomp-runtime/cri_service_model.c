@@ -1,4 +1,5 @@
 #include "cri_service_model.h"
+#include <stddef.h>
 
 void recomp_cri_service_reset(RecompCriServiceModel *model)
 {

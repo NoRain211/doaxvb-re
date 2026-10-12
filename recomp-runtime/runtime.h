@@ -196,6 +196,7 @@ extern uint32_t recomp_last_dispatch_address;
     (*(int16_t *)(void *)recomp_memory_u16((uint32_t)(address)))
 #define SMEM8(address) (*recomp_memory_i8((uint32_t)(address)))
 #define XBOX_PTR(address) ((void *)(uintptr_t)(uint32_t)(address))
+#undef memcpy
 #define memcpy(destination, source, size) \
     recomp_guest_memcpy( \
         (uint32_t)(uintptr_t)(destination), \

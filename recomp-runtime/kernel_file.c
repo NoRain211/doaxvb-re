@@ -4,6 +4,7 @@
 #include "device_model.h"
 #include "symbolic_link_model.h"
 #include "save_transaction.h"
+#include "stop_report.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "fiber_adapter.h"
 #endif
@@ -14,7 +15,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "win32_compat.h"
+#endif
 
 static const uint32_t RECOMP_STATUS_SUCCESS = 0x00000000u;
 static const uint32_t RECOMP_STATUS_INVALID_HANDLE = 0xc0000008u;
@@ -350,11 +355,15 @@ static int append_segment(char *path, size_t path_size, const char *segment)
         return 0;
     }
     size_t len = strlen(path);
-    if (len > 0 && path[len - 1] != '\\') {
+    if (len > 0 && path[len - 1] != '\\' && path[len - 1] != '/') {
         if (len + 1 >= path_size) {
             return 0;
         }
+#ifdef _WIN32
         path[len++] = '\\';
+#else
+        path[len++] = '/';
+#endif
         path[len] = '\0';
     }
     if (len + seg_len + 1 > path_size) {
@@ -399,7 +408,7 @@ static void copy_root(char *host_path, size_t host_path_size)
     strncpy(host_path, recomp_disc_root_path, host_path_size - 1u);
     host_path[host_path_size - 1u] = '\0';
     size_t len = strlen(host_path);
-    if (len > 0 && host_path[len - 1] == '\\') {
+    if (len > 1 && (host_path[len - 1] == '\\' || host_path[len - 1] == '/')) {
         host_path[len - 1] = '\0';
     }
 }
@@ -530,13 +539,21 @@ static int create_directory_tree(const char *path)
         return 1;
     }
 
-    for (char *p = current + 3; *p != '\0'; ++p) {
+    char *p = current;
+    while (*p == '/' || *p == '\\') ++p;
+#ifdef _WIN32
+    if (p == current && current[0] != '\0' && current[1] == ':') {
+        p = current + 2;
+        while (*p == '/' || *p == '\\') ++p;
+    }
+#endif
+    for (; *p != '\0'; ++p) {
         if (*p != '\\' && *p != '/') {
             continue;
         }
         char separator = *p;
         *p = '\0';
-        if (!CreateDirectoryA(current, NULL) &&
+        if (strlen(current) > 0 && !CreateDirectoryA(current, NULL) &&
             GetLastError() != ERROR_ALREADY_EXISTS) {
             return 0;
         }
@@ -560,6 +577,10 @@ static int create_parent_directories(const char *path)
     }
     memcpy(parent, path, length + 1u);
     char *last_separator = strrchr(parent, '\\');
+    char *last_slash = strrchr(parent, '/');
+    if (last_slash && (!last_separator || last_slash > last_separator)) {
+        last_separator = last_slash;
+    }
     if (last_separator == NULL) {
         return 0;
     }
@@ -749,16 +770,24 @@ static int try_open_host_file(
     }
 
     char nested[MAX_PATH_LEN];
+#ifdef _WIN32
     snprintf(nested, sizeof(nested), "%s\\%s", root, child);
+#else
+    snprintf(nested, sizeof(nested), "%s/%s", root, child);
+#endif
     size_t nested_len = strlen(nested);
     size_t rel_offset = strlen(root);
-    if (host_path[rel_offset] == '\\') {
+    if (host_path[rel_offset] == '\\' || host_path[rel_offset] == '/') {
         ++rel_offset;
     }
     if (nested_len + 1 + strlen(host_path + rel_offset) >= sizeof(nested)) {
         return 0;
     }
+#ifdef _WIN32
     nested[nested_len++] = '\\';
+#else
+    nested[nested_len++] = '/';
+#endif
     strcpy(nested + nested_len, host_path + rel_offset);
 
     attributes = GetFileAttributesA(nested);
@@ -798,16 +827,24 @@ static int try_open_host_directory(char *host_path, size_t host_path_size)
     }
 
     char nested[MAX_PATH_LEN];
+#ifdef _WIN32
     snprintf(nested, sizeof(nested), "%s\\%s", root, child);
+#else
+    snprintf(nested, sizeof(nested), "%s/%s", root, child);
+#endif
     size_t nested_len = strlen(nested);
     size_t rel_offset = strlen(root);
-    if (host_path[rel_offset] == '\\') {
+    if (host_path[rel_offset] == '\\' || host_path[rel_offset] == '/') {
         ++rel_offset;
     }
     if (nested_len + 1 + strlen(host_path + rel_offset) >= sizeof(nested)) {
         return 0;
     }
+#ifdef _WIN32
     nested[nested_len++] = '\\';
+#else
+    nested[nested_len++] = '/';
+#endif
     strcpy(nested + nested_len, host_path + rel_offset);
 
     attributes = GetFileAttributesA(nested);
@@ -847,7 +884,8 @@ static bool path_is_delete_pending(const char *path)
         size_t length = strlen(entry->host_path);
         if (_strnicmp(path, entry->host_path, length) == 0 &&
             (path[length] == '\0' ||
-             (entry->kind == FILE_HANDLE_DIRECTORY && path[length] == '\\'))) {
+             (entry->kind == FILE_HANDLE_DIRECTORY &&
+              (path[length] == '\\' || path[length] == '/')))) {
             return true;
         }
     }

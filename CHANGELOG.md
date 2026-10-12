@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Windows setup compiles the game with llvm-mingw clang instead of Visual
+  Studio (#115). `BuildGame.cmd` downloads the pinned llvm-mingw release
+  (190 MB) into `tools/llvm-mingw` on first run and checks its SHA-256. It no
+  longer needs Visual Studio Build Tools, a Windows SDK or administrator
+  approval. The runner needs only Windows system DLLs and `SDL3.dll`. The
+  generation recipe is unchanged, so existing builds keep working and saves
+  are unaffected.
+
+### Fixed
+
+- **Widescreen window fit** (#119). Above 480p, the borderless window now
+  fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
+  cut off the right side, and ultrawide screens show the picture in the
+  middle. It uses real screen pixels when Windows display scaling is above
+  100%, so the picture is no longer blurred. The 480p window can no longer be
+  resized, which stretched the picture. The game now sees the dashboard's
+  Widescreen setting without the Letterbox flag, as on a real Xbox.
+
+## 0.6.0 Beta RC1 — 2026-10-09
+
+This release candidate improves rendering and adds opt-in high refresh
+presentation and texture replacement. It updates the generation recipe, so
+download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
+
+### Added
+
+- **High refresh presentation** (#98). On a display above 60 Hz,
+  `RECOMP_SPLIT_RATE=auto` shows extra frames between the game's 60 Hz ticks
+  by interpolating the camera, characters, the ball and singly drawn props.
+  `auto` reads the primary display's refresh rate; on another display, set
+  its exact rate. On a fixed refresh display, a lower rate paces unevenly.
+  Gameplay keeps its original timing. Use it with `--vsync`. The picture
+  runs one tick behind, and water, repeated props and the shop preview still
+  move at 60 Hz. Leave it unset on 60 Hz displays; unset, nothing changes.
+- **Texture replacement** (#95). With `RECOMP_TEXTURES` set, F12 dumps the
+  current frame's textures as PNG and Ctrl+F12 reloads edited PNGs while the
+  game runs. See `docs/texture-replacement.md`.
+- **Experimental VRR** (#82). `RECOMP_D3D_VRR=1` uses a tearing-capable
+  presentation path for G-Sync and FreeSync. VRR must already be active for
+  the game window, or the picture tears. Its effect on displayed pacing is
+  not yet verified.
+- **macOS build** (#99). Apple Silicon and Intel Macs can build the game from
+  source with `build_game.sh` and play it with `launcher.sh`; see
+  `docs/building.md`. It presents through SDL_GPU on Metal and uses SDL for
+  audio and the keyboard. SMAA and custom soundtracks are not available on
+  macOS yet. A contributor's smoke run on an Apple Silicon Mac reached the
+  save-select and options menus; it has not been play-tested.
+- **Linux and Steam Deck build** (#103). x86-64 Linux, including SteamOS
+  through a container build, can build the game with `build_game.sh` and play
+  it with `launcher.sh`, which opens a gamepad settings screen; see
+  `docs/building.md`. It presents through SDL_GPU on Vulkan and compiles
+  shaders at runtime with the system's shaderc. SMAA and custom soundtracks are
+  not available on Linux yet. Smoke runs on a Steam Deck reached the
+  save-select and settings menus at 60 fps; it has not been play-tested.
+
+### Fixed
+
+- Scene transitions, such as between match rounds and entering the Hopping
+  Game, showed a black screen for about two seconds instead of the held frame
+  (#97).
+- Even 60 Hz pacing with V-Sync on 120 and 240 Hz displays (#82).
+- Depth-of-field backgrounds shimmered and characters showed a stair-stepped
+  halo at upscaled resolutions (#79).
+- Distant geometry had no fog (#94).
+- Fixed-function point lights were dropped or lit as directional (#92).
+- Textures at steep angles blurred and shimmered, and foliage and hair edges
+  stair-stepped under MSAA (#93). The edge fix needs a GPU with Direct3D
+  feature level 10.1 or newer.
+- The title screen sea had no shimmer (#96).
+- Closing the window mid-frame could exit with an error code (#80).
+
+### Changed
+
+- The recipe routes selected pose calls through hand-written adapters for
+  high refresh presentation (#98). The lifter is unchanged.
+- Guest DirectSound buffer calls now copy streamed audio up to the cursor the
+  game is about to read, so the streaming decoder cannot overwrite audio that
+  has not played (#99). This also runs on Windows, where it has not yet been
+  play-tested.
+- On macOS and Linux, mipmapped textures now sample their smaller levels
+  (#103). There, a save now flushes its undo journal to disk when it starts,
+  and its save folders when it commits (#104); Windows is unchanged. Saves
+  still carry no power-loss guarantee; see `docs/recomp-save-contract.md`.
+
+### Known issues
+
+- macOS and Linux do not yet render fog, point lights or the title sea
+  shimmer (#105).
+
 ## 0.5.3 Beta "Mixtape" — 2026-09-30
 
 This release adds Radio Station shuffle. It updates the generation recipe, so

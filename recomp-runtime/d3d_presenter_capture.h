@@ -5,7 +5,6 @@
 
 #include <cstddef>
 #include <new>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -23,15 +22,18 @@ public:
     RecompD3dPresenterError add(const RecompD3dPresenterCommand &command);
     RecompD3dPresenterError addRelease(uint32_t base, uint32_t size);
     RecompD3dPresenterError addReport();
-    void seal();
+    void seal(bool own_textures = false);
     size_t count() const;
     const Record &record(size_t index) const;
     const RecompD3dPresenterCommand &command(size_t index) const;
     void clear();
     // Copied commands, records and aligned payload bytes, excluding capacity.
     uint64_t bytes() const;
+    double published_ms = 0;
+    bool hasPoseReplay() const { return pose_replay_; }
 
 private:
+    friend struct D3dCapturePacketTest;
     // Default-initializes instead of zeroing; Debug builds rebind to proxy types.
     template <typename T>
     struct NoInitAllocator : std::allocator<T> {
@@ -56,19 +58,29 @@ private:
     struct CapturedCommand {
         CapturedCommand() {} // Skip zeroing: add() writes every field it uses.
         alignas(8) RecompD3dPresenterCommand value;
-        size_t offsets[7];
+        size_t offsets[10];
     };
     struct Span { size_t size; size_t offset; };
+    // Open-addressed span index reused by every packet that occupies this slot.
+    // A slot is live only in the current generation, so clear() and add()
+    // allocate nothing once the table has grown to a frame's span count.
+    struct SpanSlot { const void *source; Span span; uint32_t generation; };
 
     RecompD3dPresenterError addRecord(Kind kind, uint32_t base, uint32_t size);
+    size_t findSpan(const void *source, size_t size) const;
+    void insertSpan(const void *source, Span span);
+    size_t copySpan(const void *source, size_t size);
 
     std::vector<Entry> entries_;
     std::vector<CapturedCommand> commands_;
     // Word storage keeps indices and vertex data aligned after relocation.
     // resize() appends uninitialized words; add() overwrites the used bytes.
     std::vector<uint64_t, NoInitAllocator<uint64_t>> payload_;
-    std::unordered_multimap<const void *, Span> spans_;
+    std::vector<SpanSlot> span_slots_;
+    size_t span_count_ = 0;
+    uint32_t span_generation_ = 1;
     bool sealed_ = false;
+    bool pose_replay_ = false;
 };
 
 #endif

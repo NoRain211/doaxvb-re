@@ -20,7 +20,7 @@ For a source checkout or GitHub's automatic source archive, install:
 - Capstone 5.0.9 distribution for that Python installation
 - Git with network access
 - CMake 3.20 or newer
-- Visual Studio 2022 or Build Tools with the C++ desktop workload and a Windows SDK
+- On Windows, nothing else: setup downloads the llvm-mingw compiler (see below)
 - XboxDev `extract-xiso`
 
 The repository does not include an all-in-one build executable. Place
@@ -38,17 +38,19 @@ with a short path before setup
 (for example, a folder directly under Downloads). Use the scripts
 from that folder.
 The bundled Capstone distribution is 5.0.9; its Python binding reports 5.0.7.
-`BuildGame.cmd` checks for the Visual Studio 2022 C++ tools and a Windows SDK.
-If missing, it offers to download Microsoft's official Build Tools installer
-and install the needed components. The download is signature-checked before
-execution. This step needs internet access, several GB of disk space and
-Windows administrator approval. The build itself runs without elevation.
-If installation requires a restart, restart Windows and run `BuildGame.cmd`
-again. A complete Visual Studio IDE is not required.
 
-Direct `tools/build_game.py` invocations only check prerequisites by default.
-Add `--install-prerequisites` to enable the same interactive installation
-offer as `BuildGame.cmd`. `--generate-only` does not need the compiler or SDK.
+Windows builds compile with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+clang; Visual Studio and the Windows SDK are not used. When
+`tools/llvm-mingw/bin/clang.exe` is missing, `BuildGame.cmd` downloads the
+pinned 20261006 `ucrt-x86_64` release (190 MB, about 715 MB extracted), checks
+its SHA-256 and extracts it to `tools/llvm-mingw`. This needs no administrator
+approval and happens once per folder. A release ZIP may already include it. The
+build receipt records the clang version. The runner links the C++ runtime
+statically and needs only Windows system DLLs and `SDL3.dll`.
+
+Direct `tools/build_game.py` invocations only check for the compiler by
+default. Add `--install-prerequisites` to download it as `BuildGame.cmd` does.
+`--generate-only` does not need the compiler.
 
 If the extractor reports a missing `VCRUNTIME140.dll`, install the included
 `Prerequisites/vc_redist.x86.exe` and retry. The extractor remains 32-bit;
@@ -80,6 +82,61 @@ To reuse a completed extraction, run:
 ```powershell
 python tools/build_game.py --imported private/imported-disc
 ```
+
+### macOS build
+
+On macOS (Apple Silicon or Intel), install CMake, Ninja, SDL3 and Capstone:
+
+```bash
+brew install cmake ninja sdl3
+python3 -m pip install capstone==5.0.9
+```
+
+Homebrew has no `extract-xiso`; build it from
+[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) and put it on
+`PATH`, or pass its location with `--extractor`:
+
+```bash
+git clone https://github.com/XboxDev/extract-xiso.git
+cmake -S extract-xiso -B extract-xiso/build && cmake --build extract-xiso/build
+```
+
+Then build the runner:
+
+```bash
+./build_game.sh /path/to/game.iso
+```
+
+`./launcher.sh` opens the launcher to pick resolution, anti-aliasing, volume
+and soundtrack options, then starts the game. `./run_game.sh` starts the game
+with the saved choices.
+
+### Linux and SteamOS build
+
+Linux builds use Vulkan through SDL3 and compile shaders at runtime with
+shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it) or,
+on Debian and Ubuntu, `libshaderc.so.1` from the `libshaderc1` package.
+Build in an x86-64 distribution with CMake, Ninja, a C++17 compiler,
+Python 3 with `capstone==5.0.9`, `extract-xiso` built as above, and SDL3's
+build dependencies; `build_game.sh` builds SDL3 when the distribution has none.
+Ubuntu's system Python refuses `pip install`, so put Capstone in the virtual
+environment the scripts look for (Ubuntu needs the `python3-venv` package):
+
+```bash
+python3 -m venv private/venv
+private/venv/bin/pip install capstone==5.0.9
+```
+
+SteamOS has a read-only system and no compiler, so build inside a container
+such as an Ubuntu 24.04 `distrobox` that shares your home folder; the
+finished checkout then runs on SteamOS itself. Run `./build_game.sh` as on
+macOS. `./launcher.sh` opens a gamepad-friendly settings screen, then starts
+the game; `./run_game.sh` starts the game with the saved choices.
+
+For Steam Game Mode, add `launcher.sh` (or `run_game.sh`) with **Add a
+Non-Steam Game** in Desktop Mode. Under Steam the game and launcher open full
+screen. If one controller drives two player ports, turn Steam Input off for
+that shortcut, as for any game launched through Steam.
 
 Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
@@ -115,6 +172,26 @@ cd doaxbv-re
 cmake -S recomp-runtime -B build/recomp-runtime -G "Visual Studio 17 2022"
 cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
+```
+
+To test with the compiler setup uses, place llvm-mingw in `tools/llvm-mingw`
+(or let `BuildGame.cmd` download it) and run:
+
+```powershell
+$env:PATH = "$PWD\tools\llvm-mingw\bin;$env:PATH"
+cmake -S recomp-runtime -B build/clang -G "MinGW Makefiles" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build/clang --parallel 4
+ctest --test-dir build/clang --output-on-failure
+```
+
+On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run:
+
+```bash
+git clone --recurse-submodules https://github.com/NoRain211/doaxvb-re.git
+cd doaxvb-re
+cmake -S recomp-runtime -B build/recomp-runtime -G Ninja
+cmake --build build/recomp-runtime
+ctest --test-dir build/recomp-runtime --output-on-failure
 ```
 
 These commands build public tests in `build/recomp-runtime/Release`. They do
@@ -227,7 +304,13 @@ Set `RECOMP_MUSIC_SHUFFLE=1` to shuffle Radio Station playlists; see
 The game renders 16:9 in an 854x480 window. Set `RECOMP_D3D_WIDESCREEN=0` for
 its 4:3 view in a 640x480 window.
 Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
-3 for 1440p; above 1 the window is borderless and capped at the screen height.
+3 for 1440p; above 1 the window is borderless, centered, and shrinks to fit the
+screen.
 Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
 supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.
+Set `RECOMP_SPLIT_RATE=auto`, or to your display's refresh rate such as 120 or
+144, to present smoother motion than the game's 60 Hz while gameplay keeps its
+original timing. Use it with `--vsync`. The picture runs one 60 Hz tick
+behind, and some objects such as water still move at 60 Hz. See
+[the split-rate notes](wayfinder/research/high-frame-rate-split.md#current-state).

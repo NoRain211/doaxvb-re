@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -17,12 +18,23 @@ ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
 LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
 LIFTER_REVISION = "7adaf210a89814c5ca4444e4876fccb51b938878"
-RECIPE_SHA256 = "50b4d69ac34bb2266a216e33423f47f97481a448bf7ddec8d372e376c9085f96"
+RECIPE_SHA256 = "46c5de9cea1dcf319c6dfbe79bbd22acfcc81e42c89192ab0654d4f6a8aa70ba"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
 def command(args, cwd, log):
     run_logged(args, log, cwd)
+
+
+def use_windows_newlines(generated):
+    """The recipe authenticates the lifter's Windows output, which Python writes
+    with CRLF line endings; other hosts write LF, so match the proven bytes."""
+    if sys.platform == "win32":
+        return
+    for path in generated.iterdir():
+        if path.is_file():
+            data = path.read_bytes()
+            path.write_bytes(data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
 
 
 def program_manifest(generated):
@@ -47,6 +59,8 @@ def verify_files(root, expected):
 def prepare_lifter(work, revision=None):
     """Generate from tools/xboxrecomp, fetching it at the recipe revision when absent."""
     revision = revision or LIFTER_REVISION
+    # Drives such as exFAT record no owner, so git rejects the clone as dubious (issue #110).
+    lifter_git = ["git", "-c", f"safe.directory={LIFTER.as_posix()}"]
     if (ROOT / ".git").exists():
         # Older checkouts may still point the submodule at the upstream URL.
         command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "sync.log")
@@ -56,9 +70,10 @@ def prepare_lifter(work, revision=None):
         else:  # A release ZIP carries no repository metadata.
             command(["git", "clone", "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
                     ROOT, work / "lifter.log")
-            command(["git", "checkout", "--detach", revision], LIFTER, work / "checkout.log")
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
-    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=LIFTER, text=True).strip()
+    if not (ROOT / ".git").exists():  # Also completes a clone whose checkout failed earlier.
+        command(lifter_git + ["checkout", "--detach", revision], LIFTER, work / "checkout.log")
+    head = subprocess.check_output(lifter_git + ["rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
+    dirty = subprocess.check_output(lifter_git + ["status", "--porcelain"], cwd=LIFTER, text=True).strip()
     if head != revision or dirty:
         raise ValueError(f"tools/xboxrecomp must be a clean checkout of {revision}; "
                          "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
@@ -66,6 +81,7 @@ def prepare_lifter(work, revision=None):
 
 def build(args, verify_parity=True, lifter_revision=None):
     prefer_bundled_tools(ROOT)
+    windows = sys.platform == "win32"
     if verify_parity:
         verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
     recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
@@ -80,7 +96,8 @@ def build(args, verify_parity=True, lifter_revision=None):
     except ImportError as error:
         raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
     if not args.generate_only:
-        instance = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
+        compiler = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
+        prefer_bundled_tools(ROOT)  # puts a freshly downloaded llvm-mingw, with mingw32-make, on PATH
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
     receipt = {"status": "in-progress", "work": str(work),
@@ -135,6 +152,7 @@ def build(args, verify_parity=True, lifter_revision=None):
         receipt["unresolved_targets"] = unresolved
         print(f"Generated {summary['translated']} bodies; {unresolved} unresolved targets. "
               "The runner will stop if it reaches an unresolved target.", flush=True)
+        use_windows_newlines(generated)
         manifest, ebp = program_manifest(generated)
         receipt.update(program_manifest_sha256=manifest, ebp_overrides=ebp)
         if verify_parity:
@@ -148,20 +166,33 @@ def build(args, verify_parity=True, lifter_revision=None):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
-        receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
-                       configuration="Release", build_parallelism=2)
-        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
-                     "-G", "Visual Studio 17 2022", "-A", "x64",
-                     f"-DCMAKE_GENERATOR_INSTANCE={instance}",
+        if windows:
+            generator = "MinGW Makefiles"
+        else:
+            generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+        # Generated chunks are large; more jobs than this can exhaust memory.
+        receipt.update(cmake_generator=generator, platform=arch,
+                       configuration="Release", build_parallelism=4)
+        configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output, "-G", generator,
+                     "-DCMAKE_BUILD_TYPE=Release",
                      f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
-        icon = ROOT / "private/doaxbv.ico"
-        if icon.is_file():
-            configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
+        if sys.platform.startswith("linux"):
+            configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
+        if windows:
+            receipt["compiler"] = subprocess.check_output(
+                [compiler, "--version"], text=True).splitlines()[0]
+            configure += [f"-DCMAKE_C_COMPILER={compiler.as_posix()}",
+                          f"-DCMAKE_CXX_COMPILER={compiler.with_name('clang++.exe').as_posix()}"]
+            icon = ROOT / "private/doaxbv.ico"
+            if icon.is_file():
+                configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
-        command(["cmake", "--build", output, "--config", "Release", "--parallel", "2",
-                 "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
-        runner = output / "Release/recomp_program_runner.exe"
+        targets = ["recomp_program_runner"] + (["recomp_launcher"] if sys.platform.startswith("linux") else [])
+        command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
+                ROOT, work / "build.log")
+        runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
@@ -174,7 +205,8 @@ def build(args, verify_parity=True, lifter_revision=None):
             selected = ROOT / "private" / ("active-build-" + uuid.uuid4().hex + ".tmp")
             selected.write_text(json.dumps({"receipt": str(receipt_path.relative_to(ROOT))}) + "\n", encoding="utf-8")
             selected.replace(ROOT / "private/active-build.json")
-            print("Setup complete. Open Launcher.cmd to play this build.", flush=True)
+            launcher = "Launcher.cmd" if sys.platform == "win32" else "launcher.sh"
+            print(f"Setup complete. Open {launcher} to play this build.", flush=True)
         print(f"Build receipt: {receipt_path}", flush=True)
 
 
@@ -187,7 +219,7 @@ if __name__ == "__main__":
     parser.add_argument("--extractor", default=str(bundled) if bundled.is_file() else "extract-xiso")
     parser.add_argument("--generate-only", action="store_true", help="Stop before compilation for diagnosis")
     parser.add_argument("--install-prerequisites", action="store_true",
-                        help="Offer to install missing Microsoft C++ tools and Windows SDK (asks first)")
+                        help="Download the pinned llvm-mingw compiler into tools/llvm-mingw when missing (Windows)")
     try:
         build(parser.parse_args())
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

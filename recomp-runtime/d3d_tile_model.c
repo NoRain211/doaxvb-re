@@ -1,4 +1,5 @@
 #include "d3d_tile_model.h"
+#include <stddef.h>
 
 bool recomp_d3d_tile_entry_address(
     uint32_t device_address,

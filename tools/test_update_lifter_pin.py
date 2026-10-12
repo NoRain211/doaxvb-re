@@ -4,13 +4,100 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import call, patch
+
+import update_lifter_pin
 
 from build_game import program_manifest
 from extract_iso import sha256
-from update_lifter_pin import compare, function_hashes, pin_metadata
+from update_lifter_pin import add_manual_targets, compare, function_hashes, pin_metadata
 
 
 class LifterPinTests(unittest.TestCase):
+    def test_interrupt_restores_selection_and_metadata(self):
+        self.check_generation_failure(KeyboardInterrupt())
+
+    def test_generation_failure_restores_selection_and_metadata(self):
+        self.check_generation_failure(ValueError("failed"))
+
+    def test_revision_failure_restores_selection_and_metadata(self):
+        self.check_generation_failure(ValueError("failed"), revision="b" * 40)
+
+    def check_generation_failure(self, failure, revision=None):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "tools/game-recipe").mkdir(parents=True)
+            name = "tools/game-recipe/manual-call-targets.json"
+            (root / name).write_text('["0x00001000"]\n', encoding="utf-8")
+            (root / "tools/game-recipe/recipe.json").write_text(json.dumps({
+                "manual_call_targets": name, "files": {name: sha256(root / name)}}), encoding="utf-8")
+            (root / "tools/build_game.py").write_text("builder\n", encoding="utf-8")
+            (root / "public-export.json").write_text("{}\n", encoding="utf-8")
+            before = {name: (root / name).read_bytes() for name in update_lifter_pin.PINNED}
+            def fake_git(*args):
+                if revision and args == ("rev-parse", "--verify", f"{revision}^{{commit}}"):
+                    return revision
+                return "a" * 40 if args == ("rev-parse", "HEAD") else ""
+            def fake_generate(imported, verify_parity, revision=None):
+                if verify_parity:
+                    return root / "old"
+                for name in update_lifter_pin.PINNED:
+                    (root / name).write_bytes(b"changed before failure\n")
+                raise failure
+            with patch.object(update_lifter_pin, "ROOT", root), \
+                    patch.object(update_lifter_pin, "git", side_effect=fake_git) as git_calls, \
+                    patch.object(update_lifter_pin.subprocess, "check_output", return_value=""), \
+                    patch.object(update_lifter_pin.subprocess, "run") as run, \
+                    patch.object(update_lifter_pin, "generate", side_effect=fake_generate) as generate, \
+                    patch("sys.argv", ["update_lifter_pin.py", "--imported", "private/import",
+                                       "--manual-call-target", "0x2000"] +
+                                      (["--revision", revision] if revision else [])):
+                with self.assertRaises(type(failure)):
+                    update_lifter_pin.main()
+                self.assertEqual(run.call_count, 1)  # submodule sync, never staging
+                generate.assert_called_with(Path("private/import"), verify_parity=False,
+                                            revision=revision or "a" * 40)
+                self.assertEqual(git_calls.call_args_list[-2:], [
+                    call("checkout", "--detach", revision or "a" * 40),
+                    call("checkout", "--detach", "a" * 40)])
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
+
+    def test_invalid_cli_targets_do_not_touch_git(self):
+        from contextlib import redirect_stderr
+        import io
+        for value in ("0", "-1", "0x100000000", "junk"):
+            with self.subTest(value=value), patch.object(update_lifter_pin, "git") as git, \
+                    patch.object(update_lifter_pin.subprocess, "run") as run, \
+                    patch("sys.argv", ["update_lifter_pin.py", "--imported", "private/import",
+                                       "--manual-call-target", value]), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    update_lifter_pin.main()
+                self.assertEqual(failure.exception.code, 2)
+                git.assert_not_called()
+                run.assert_not_called()
+
+    def test_manual_selection_preserves_existing_entries_and_authentication(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "tools/game-recipe").mkdir(parents=True)
+            name = "tools/game-recipe/manual-call-targets.json"
+            targets = root / name
+            targets.write_text('["0x00001000"]\n', encoding="utf-8")
+            recipe_path = root / "tools/game-recipe/recipe.json"
+            recipe_path.write_text(json.dumps({"manual_call_targets": name,
+                "files": {name: sha256(targets)}, "lifter_revision": "a" * 40}), encoding="utf-8")
+            add_manual_targets(root, [0x2000, 0x1000, 0x2000])
+            self.assertEqual(json.loads(targets.read_text()), ["0x00001000", "0x00002000"])
+            recipe = json.loads(recipe_path.read_text())
+            self.assertEqual(recipe["files"][name], sha256(targets))
+            self.assertEqual(recipe["lifter_revision"], "a" * 40)
+            before = (targets.read_bytes(), recipe_path.read_bytes())
+            for value in (0, -1, 0x100000000):
+                with self.assertRaisesRegex(ValueError, "32-bit"):
+                    add_manual_targets(root, [value])
+                self.assertEqual(before, (targets.read_bytes(), recipe_path.read_bytes()))
+            self.assertNotIn(b"\r", targets.read_bytes())
+
     def test_metadata_and_function_comparison(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

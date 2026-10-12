@@ -16,8 +16,18 @@ which earlier builds then reject. 0.5.0 Beta "Mixtape" adds custom
 soundtracks from `UserMusic` with a new generation recipe (#73); 0.5.1 moves
 that folder to `private/UserMusic` and adds a launcher button for it (#75);
 0.5.2 adds a launcher volume choice that defaults to 100% (#76); 0.5.3 adds
-Radio Station shuffle with a new generation recipe (#78). None of
-these releases expands the play-test coverage below.
+Radio Station shuffle with a new generation recipe (#78). 0.6.0 Beta RC1, a
+prerelease, adds the rendering fixes, texture replacement and opt-in high
+refresh presentation in #79–#98 with a new generation recipe. The user
+accepted #79, #92–#96 and #98 in play tests of each PR's branch before merge;
+those builds were not tagged. RC1 itself (tag `v0.6.0-rc1`) has not had a
+full play session. RC1 was re-uploaded on 2026-10-09 with the macOS build
+from #99 and the same generation recipe; on macOS only a contributor's smoke
+run to the save-select and options menus has been done. It was re-uploaded
+again on 2026-10-10 with the Linux build from #103 and the save journal fix
+from #104, still with the same recipe; on Linux only Steam Deck smoke runs to
+the save-select and settings menus have been done. None of these releases
+expands the play-test coverage below.
 
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
