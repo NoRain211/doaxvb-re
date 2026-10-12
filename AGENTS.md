@@ -65,7 +65,9 @@ receipt, refactor, or crash-free run alone is not gameplay progress.
 
 Public-only changes must configure without private inputs. Before pushing a
 public change, run the `public-ci` checks. The `tools` tests need the
-`tools/xboxrecomp` submodule and Capstone 5.0.9.
+`tools/xboxrecomp` submodule and Capstone 5.0.9. Players build with llvm-mingw
+clang, so run the runtime tests with both MSVC and the clang in
+`tools/llvm-mingw` (setup downloads it).
 
 ```powershell
 python -m unittest discover -s tools -p "test_*.py"
@@ -73,6 +75,10 @@ python tools/public_export.py verify --require-public-tree
 cmake -S recomp-runtime -B build/recomp-runtime
 cmake --build build/recomp-runtime --config Debug
 ctest --test-dir build/recomp-runtime -C Debug --output-on-failure
+$env:PATH = "$PWD\tools\llvm-mingw\bin;$env:PATH"
+cmake -S recomp-runtime -B build/clang -G "MinGW Makefiles" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build/clang --parallel 4
+ctest --test-dir build/clang --output-on-failure
 ```
 
 Changes tested with local generated code must also preserve the authenticated
