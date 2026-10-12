@@ -148,6 +148,15 @@ class PrerequisiteTests(unittest.TestCase):
                 build_game.build(args, verify_parity=False)
             ensure.assert_not_called()
             extract.assert_called_once()
+            args.generate_only = False
+            clang = self.root / "tools/llvm-mingw/bin/clang.exe"
+            clang.parent.mkdir(parents=True)
+            clang.touch()
+            with mock.patch.object(build_game.sys, "platform", "win32"), \
+                    mock.patch.dict(prerequisites.os.environ), \
+                    self.assertRaisesRegex(ValueError, "extraction reached"):
+                build_game.build(args, verify_parity=False)
+            ensure.assert_not_called()
 
     @unittest.skipUnless(prerequisites.POWERSHELL.is_file(), "Windows PowerShell required")
     def test_real_signature_check_rejects_unsigned_download(self):

@@ -60,7 +60,7 @@ endif()
 
 def prefer_bundled_tools(root):
     bundled = [str((root / name).parent) for name in
-               ("tools/git/cmd/git.exe", "tools/cmake/bin/cmake.exe")
+               ("tools/git/cmd/git.exe", "tools/cmake/bin/cmake.exe", "tools/llvm-mingw/bin/clang.exe")
                if (root / name).is_file()]
     if bundled:
         existing = os.environ.get("PATH", "").split(os.pathsep)

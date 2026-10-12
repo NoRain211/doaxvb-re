@@ -20,7 +20,8 @@ For a source checkout or GitHub's automatic source archive, install:
 - Capstone 5.0.9 distribution for that Python installation
 - Git with network access
 - CMake 3.20 or newer
-- Visual Studio 2022 or Build Tools with the C++ desktop workload and a Windows SDK
+- Visual Studio 2022 or Build Tools with the C++ desktop workload and a Windows SDK,
+  or llvm-mingw (see below)
 - XboxDev `extract-xiso`
 
 The repository does not include an all-in-one build executable. Place
@@ -45,6 +46,14 @@ execution. This step needs internet access, several GB of disk space and
 Windows administrator approval. The build itself runs without elevation.
 If installation requires a restart, restart Windows and run `BuildGame.cmd`
 again. A complete Visual Studio IDE is not required.
+
+Setup can use [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in place
+of Visual Studio. Extract its `ucrt-x86_64` release so that
+`tools/llvm-mingw/bin/clang.exe` exists. Setup then compiles with clang and
+`mingw32-make`, skips the Visual Studio check and installer, and records the
+clang version in the build receipt. The runner links the C++ runtime
+statically and needs only Windows system DLLs and `SDL3.dll`. Release 20261006
+(clang 23.1.3) builds the current recipe with exact generation parity.
 
 Direct `tools/build_game.py` invocations only check prerequisites by default.
 Add `--install-prerequisites` to enable the same interactive installation

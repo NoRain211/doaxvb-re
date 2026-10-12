@@ -78,6 +78,9 @@ def prepare_lifter(work, revision=None):
 
 def build(args, verify_parity=True, lifter_revision=None):
     prefer_bundled_tools(ROOT)
+    # A release ZIP may bundle llvm-mingw so Windows setup needs no Visual Studio.
+    clang = ROOT / "tools/llvm-mingw/bin/clang.exe"
+    use_clang = sys.platform == "win32" and clang.is_file()
     if verify_parity:
         verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
     recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))
@@ -91,7 +94,7 @@ def build(args, verify_parity=True, lifter_revision=None):
         import capstone
     except ImportError as error:
         raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
-    if not args.generate_only:
+    if not args.generate_only and not use_clang:
         instance = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
     work = ROOT / "private" / ("setup-" + uuid.uuid4().hex[:12])
     work.mkdir(parents=True)
@@ -161,7 +164,8 @@ def build(args, verify_parity=True, lifter_revision=None):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
-        if sys.platform == "win32":
+        icon = ROOT / "private/doaxbv.ico"
+        if sys.platform == "win32" and not use_clang:
             receipt.update(cmake_generator="Visual Studio 17 2022", platform="x64",
                            configuration="Release", build_parallelism=2)
             configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output,
@@ -169,7 +173,6 @@ def build(args, verify_parity=True, lifter_revision=None):
                          f"-DCMAKE_GENERATOR_INSTANCE={instance}",
                          f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
                          f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
-            icon = ROOT / "private/doaxbv.ico"
             if icon.is_file():
                 configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
             command(configure, ROOT, work / "configure.log")
@@ -177,7 +180,10 @@ def build(args, verify_parity=True, lifter_revision=None):
                      "--target", "recomp_program_runner", "--", "/nodeReuse:false"], ROOT, work / "build.log")
             runner = output / "Release/recomp_program_runner.exe"
         else:
-            generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+            if use_clang:
+                generator = "MinGW Makefiles"
+            else:
+                generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
             arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
             # Generated chunks are large; more jobs than this can exhaust memory.
             receipt.update(cmake_generator=generator, platform=arch,
@@ -188,11 +194,18 @@ def build(args, verify_parity=True, lifter_revision=None):
                          f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
             if sys.platform.startswith("linux"):
                 configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
+            if use_clang:
+                receipt["compiler"] = subprocess.check_output(
+                    [clang, "--version"], text=True).splitlines()[0]
+                configure += [f"-DCMAKE_C_COMPILER={clang.as_posix()}",
+                              f"-DCMAKE_CXX_COMPILER={clang.with_name('clang++.exe').as_posix()}"]
+                if icon.is_file():
+                    configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
             command(configure, ROOT, work / "configure.log")
             targets = ["recomp_program_runner"] + (["recomp_launcher"] if sys.platform.startswith("linux") else [])
             command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                     ROOT, work / "build.log")
-            runner = output / "recomp_program_runner"
+            runner = output / ("recomp_program_runner.exe" if use_clang else "recomp_program_runner")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
