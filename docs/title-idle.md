@@ -191,3 +191,30 @@ movie end) leading to CPU Exhibition, START ending the matches in a run of
 the game, sound, sessions longer than thirteen minutes, and Windows and
 Linux builds. The launcher choice has not been seen on screen in any of the
 three launchers.
+
+## Demo cut hold
+
+Each of the real-time demo's six scenes ends by freezing its last picture for
+60 frames, one second, while the next scene starts beneath it. Set
+`RECOMP_DEMO_CUT_HOLD` to a frame count from 1 to 59 before the runner starts
+to shorten that freeze; unset, or any other value, leaves the game's own 60.
+No launcher has the option.
+
+The demo is a script, and the freeze is its instruction `0x31` with the frame
+count as its operand. Seam: `demo_cut_hold` in `recomp-runtime/title_idle.c`
+is the manual lookup for the generated handler at `0x000696D0`. It lowers the
+operand, calls the generated handler, which still owns the freeze, and puts
+the operand back. Only the demo's script block is touched. A shorter freeze
+ends each scene, and so the whole demo, that much sooner; the scenes
+themselves are not cut.
+
+The freeze covers the next scene's loading. In scripted runs on an M-series
+Mac at 1080p with one scene's operand changed by hand, a 1-frame hold cut at
+once but showed frames of 50 to 80 ms just after the cut, and holds of 8 and
+20 frames showed one frame of about 30 ms; the game's own 60 stayed under
+22 ms. `title_idle_test.c --cut-hold` checks on synthetic memory that the
+handler sees the chosen count, that the script keeps its 60, and that
+another script's hold is left alone.
+
+Not checked: slower machines such as the Steam Deck, Windows and Linux
+builds, and how the shorter demo sits against its music.

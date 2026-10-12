@@ -14,6 +14,9 @@
   random girls in random swimsuits on a random court, one match after
   another until START is pressed. With Default nothing changes. See
   `docs/title-idle.md`.
+- **Demo cut hold**. `RECOMP_DEMO_CUT_HOLD` (1 to 59 frames) shortens the
+  one-second freeze between the scenes of the real-time demo. Unset, the
+  game keeps its own 60 frames. See `docs/title-idle.md`.
 
 ### Changed
 

@@ -32,7 +32,15 @@
    in the step state (offset 8 of the block the update is handed) is moved
    to the fade once the title has been up for TITLE_HOLD_FRAMES. For
    "cpu-exhibition" the matches are started once the title has been up for
-   the same TITLE_HOLD_FRAMES. */
+   the same TITLE_HOLD_FRAMES.
+
+   The demo is a script of 16-bit words run from the block at 0x4D9688, whose
+   offset 0x14 is the script position. Every scene ends with instruction
+   0x31, handled at 0x000696D0: it freezes the picture for the frames in its
+   operand, 60 in all six scenes, while the next scene starts beneath it.
+   RECOMP_DEMO_CUT_HOLD (1 to 60) shortens that freeze. Measured on an M-series
+   Mac, a 1-frame hold shows the next scene's loading as 50 to 80 ms frames;
+   holds of 8 and 20 frames stayed under 32 ms. */
 enum {
     STEP_TABLE = 0x00328C14u,
     STEP_SIZE = 4,
@@ -52,7 +60,11 @@ enum {
     STATE_LEAVING = 6u,
     STATE_FRAME = 8u,
     TITLE_FADE_FRAME = 1740,
-    TITLE_HOLD_FRAMES = 540
+    TITLE_HOLD_FRAMES = 540,
+    DEMO_SCRIPT = 0x004D9688u,
+    SCRIPT_POSITION = 0x14u,
+    DEMO_CUT_HOLD = 0x000696D0u,
+    DEMO_CUT_HOLD_FRAMES = 60
 };
 
 typedef enum {
@@ -62,6 +74,7 @@ typedef enum {
 } IdleBehavior;
 
 void sub_0006B290(void); /* generated title step update */
+void sub_000696D0(void); /* generated demo cut hold */
 
 static IdleBehavior behavior(void)
 {
@@ -134,10 +147,48 @@ static void title_update(void)
     sub_0006B290();
 }
 
-/* Seam: title_update acts on the step's frame counter and then calls the
-   generated update, which still owns the title's music and fade. */
+/* Frames a demo cut holds the last picture; 60 leaves the game's own. */
+static int cut_hold_setting;
+
+static int cut_hold_frames(void)
+{
+    int frames = cut_hold_setting;
+
+    if (frames == 0) {
+        const char *value = getenv("RECOMP_DEMO_CUT_HOLD");
+        const long parsed = value != NULL ? strtol(value, NULL, 10) : 0;
+
+        frames = parsed >= 1 && parsed < DEMO_CUT_HOLD_FRAMES ? (int)parsed : DEMO_CUT_HOLD_FRAMES;
+        cut_hold_setting = frames;
+    }
+    return frames;
+}
+
+static void demo_cut_hold(void)
+{
+    const uint32_t state = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+    uint8_t *operand = recomp_memory(*recomp_memory_u32(state + SCRIPT_POSITION) + 2u, 2u);
+    int16_t original;
+
+    memcpy(&original, operand, sizeof original);
+    if (state == DEMO_SCRIPT && original > cut_hold_frames()) {
+        const int16_t shortened = (int16_t)cut_hold_frames();
+
+        memcpy(operand, &shortened, sizeof shortened);
+    }
+    sub_000696D0();
+    memcpy(operand, &original, sizeof original);
+}
+
+/* Seams: title_update acts on the step's frame counter and then calls the
+   generated update, which still owns the title's music and fade.
+   demo_cut_hold lowers the script operand around the generated handler,
+   which still owns the freeze. */
 RecompFunction recomp_title_idle_lookup_manual(uint32_t guest_address)
 {
+    if (guest_address == DEMO_CUT_HOLD) {
+        return cut_hold_frames() < DEMO_CUT_HOLD_FRAMES ? demo_cut_hold : NULL;
+    }
     return guest_address == TITLE_UPDATE ? title_update : NULL;
 }
 #endif
