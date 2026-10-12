@@ -14,7 +14,7 @@
 
 ### Fixed
 
-- **Widescreen window fit** (#PRNUM). Above 480p, the borderless window now
+- **Widescreen window fit** (#119). Above 480p, the borderless window now
   fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
   cut off the right side, and ultrawide screens show the picture in the
   middle. It uses real screen pixels when Windows display scaling is above
