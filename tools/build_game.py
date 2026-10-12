@@ -59,6 +59,8 @@ def verify_files(root, expected):
 def prepare_lifter(work, revision=None):
     """Generate from tools/xboxrecomp, fetching it at the recipe revision when absent."""
     revision = revision or LIFTER_REVISION
+    # Drives such as exFAT record no owner, so git rejects the clone as dubious (issue #110).
+    lifter_git = ["git", "-c", f"safe.directory={LIFTER.as_posix()}"]
     if (ROOT / ".git").exists():
         # Older checkouts may still point the submodule at the upstream URL.
         command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "sync.log")
@@ -68,9 +70,10 @@ def prepare_lifter(work, revision=None):
         else:  # A release ZIP carries no repository metadata.
             command(["git", "clone", "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
                     ROOT, work / "lifter.log")
-            command(["git", "checkout", "--detach", revision], LIFTER, work / "checkout.log")
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
-    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=LIFTER, text=True).strip()
+    if not (ROOT / ".git").exists():  # Also completes a clone whose checkout failed earlier.
+        command(lifter_git + ["checkout", "--detach", revision], LIFTER, work / "checkout.log")
+    head = subprocess.check_output(lifter_git + ["rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
+    dirty = subprocess.check_output(lifter_git + ["status", "--porcelain"], cwd=LIFTER, text=True).strip()
     if head != revision or dirty:
         raise ValueError(f"tools/xboxrecomp must be a clean checkout of {revision}; "
                          "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
