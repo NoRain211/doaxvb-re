@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **Title screen idle behavior** (#117). A launcher choice, or
+  `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
+  idle. **Default** is the game's own attract sequence. **No cutscene**
+  (`no-cutscene`) keeps the movies out of it: the game alternates between
+  the title screen and the real-time volleyball demo, and the title screen
+  stays for 10 seconds instead of 30. **CPU Exhibition** (`cpu-exhibition`)
+  starts Exhibition matches played by the CPU on every side, each with four
+  random girls in random swimsuits on a random court, one match after
+  another until START is pressed. With Default nothing changes. See
+  `docs/title-idle.md`.
+
 ### Changed
 
 - Windows setup compiles the game with llvm-mingw clang instead of Visual

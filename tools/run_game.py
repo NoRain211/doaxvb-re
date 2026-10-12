@@ -71,15 +71,21 @@ def launch(root, receipt_path=None, settings=False):
     return run(runner, images[0], root, release_path if release_path.is_file() else None, settings)
 
 
+# What the game does when its title screen is left idle; see docs/title-idle.md.
+TITLE_IDLE = ("default", "no-cutscene", "cpu-exhibition")
+
+
 def saved_launcher_settings(root):
     path = root / "private" / "launcher.json"
     try:
         settings = json.loads(path.read_text(encoding="utf-8"))
+        idle = settings.get("title_idle")
         return {"RECOMP_D3D_SCALE": f"{int(settings.get('height', 480)) / 480:.4f}",
                 "RECOMP_D3D_MSAA": str(int(settings.get("msaa", 1))),
                 "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
                 "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
-                "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0"}
+                "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0",
+                "RECOMP_TITLE_IDLE": idle if idle in TITLE_IDLE else "default"}
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         return {}
 

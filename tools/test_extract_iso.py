@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from extract_iso import extract, listing_files, run_logged, sha256
-from run_game import build_inputs, launch
+from run_game import build_inputs, launch, saved_launcher_settings
 
 
 def listing(entries, count=1):
@@ -97,6 +97,16 @@ class ExtractionTests(unittest.TestCase):
             outside.write_text(json.dumps(data))
             with self.assertRaisesRegex(ValueError, "inside this checkout"):
                 build_inputs(root, outside)
+
+    def test_saved_title_idle_setting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            for saved, expected in (({}, "default"), ({"title_idle": "no-cutscene"}, "no-cutscene"),
+                                    ({"title_idle": "cpu-exhibition"}, "cpu-exhibition"),
+                                    ({"title_idle": "other"}, "default"), ({"title_idle": 3}, "default")):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                self.assertEqual(saved_launcher_settings(root)["RECOMP_TITLE_IDLE"], expected)
 
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:
