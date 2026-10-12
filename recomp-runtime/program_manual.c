@@ -1,5 +1,6 @@
 #include "program_manual.h"
 #include "animation_track_adapter.h"
+#include "title_idle.h"
 #include "controller_settings.h"
 #include "kernel_abi.h"
 #include <string.h>
@@ -340,6 +341,9 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
         function = recomp_xapi_time_lookup_manual(guest_address);
     }
 #ifdef RECOMP_FULL_PROGRAM
+    if (function == NULL) {
+        function = recomp_title_idle_lookup_manual(guest_address);
+    }
     if (function == NULL && guest_address == 0x0001b340u) {
         function = restore_controller_settings;
     }
