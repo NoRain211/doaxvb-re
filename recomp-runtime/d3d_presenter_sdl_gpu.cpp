@@ -89,6 +89,7 @@ struct TextureEntry {
 struct RenderTargetEntry {
     RecompD3dTextureDesc desc{};
     SDL_GPUTexture *texture = nullptr;
+    // Host size; a held-frame target is larger than its guest size.
     uint32_t width = 0;
     uint32_t height = 0;
 };
@@ -642,7 +643,8 @@ bool ensureDynamicBuffers(RecompD3dPresenter *presenter, uint32_t req_vbytes, ui
     return true;
 }
 
-SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw,
+                               bool minify_backbuffer = false)
 {
     const RecompD3dTextureDesc &desc = draw.texture;
     if (!draw.has_texture || desc.data == 0u || desc.width == 0u || desc.height == 0u) {
@@ -654,7 +656,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
            guest downsample (the 256x256 depth-of-field source) average its
            footprint in the upscaled frame like the Xbox did; 1:1 reads keep
            the plain copy. */
-        const bool minify = draw.target.offscreen && presenter->backbuffer_minify != nullptr;
+        const bool minify = minify_backbuffer && presenter->backbuffer_minify != nullptr;
         SDL_GPUTexture *copy = minify ? presenter->backbuffer_minify : presenter->backbuffer_copy;
         ensureBackbufferResolved(presenter);
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
@@ -2015,6 +2017,81 @@ void flushSegment(RecompD3dPresenter *presenter)
     seg.uniform_data.clear();
 }
 
+/* Returns the host texture behind a guest offscreen color target, creating it
+   on first use. A depthless target of 512x512 or more that takes a copy of
+   the frame (the held picture of a scene change) is sized like the main
+   target, so an upscaled frame survives the round trip. Guest coordinates and
+   normalised UVs address either size alike.
+   ponytail: size heuristic; key on the consumer if a smaller target blurs. */
+RenderTargetEntry *acquireRenderTarget(
+    RecompD3dPresenter *presenter,
+    const RecompD3dPresenterTarget &target,
+    bool frame_copy)
+{
+    const RecompD3dTextureDesc &desc = target.color;
+    RenderTargetEntry *entry = findRenderTarget(presenter, desc);
+    uint32_t width = entry ? entry->width : desc.width;
+    uint32_t height = entry ? entry->height : desc.height;
+    if (!target.no_depth) {
+        // Depth belongs to guest-sized storage.
+        width = desc.width;
+        height = desc.height;
+    } else if (frame_copy && presenter->scale != 1.0f &&
+               desc.width >= 512u && desc.height >= 512u) {
+        width = std::max(width, mainWidth(presenter));
+        height = std::max(height, mainHeight(presenter));
+    }
+    if (entry && entry->width == width && entry->height == height) {
+        return entry;
+    }
+
+    const uint64_t held = entry ? static_cast<uint64_t>(entry->width) * entry->height * 4u : 0u;
+    uint64_t bytes = static_cast<uint64_t>(width) * height * 4u;
+    if (bytes > kTargetByteLimit - (presenter->target_bytes - held)) {
+        if (entry) return entry;
+        width = desc.width;
+        height = desc.height;
+        bytes = static_cast<uint64_t>(width) * height * 4u;
+        if (bytes > kTargetByteLimit - presenter->target_bytes) return nullptr;
+    }
+
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(presenter->device, &info);
+    if (!texture) return entry;
+
+    if (!entry) {
+        presenter->render_targets.push_back({desc, texture, width, height});
+        presenter->target_bytes += bytes;
+        return &presenter->render_targets.back();
+    }
+
+    // Queued draws still name the old texture, and its pixels carry over.
+    flushSegment(presenter);
+    SDL_GPUBlitInfo blit{};
+    blit.source.texture = entry->texture;
+    blit.source.w = entry->width;
+    blit.source.h = entry->height;
+    blit.destination.texture = texture;
+    blit.destination.w = width;
+    blit.destination.h = height;
+    blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    blit.filter = SDL_GPU_FILTER_LINEAR;
+    SDL_BlitGPUTexture(getCommandBuffer(presenter), &blit);
+    SDL_ReleaseGPUTexture(presenter->device, entry->texture);
+    presenter->target_bytes += bytes - held;
+    entry->texture = texture;
+    entry->width = width;
+    entry->height = height;
+    return entry;
+}
+
 } // namespace
 
 extern "C" {
@@ -2396,26 +2473,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         if (clear.target.offscreen) {
             color_w = clear.target.color.width;
             color_h = clear.target.color.height;
-            RenderTargetEntry *rt = findRenderTarget(presenter, clear.target.color);
-            if (!rt) {
-                const uint64_t bytes = static_cast<uint64_t>(color_w) * color_h * 4u;
-                if (bytes > kTargetByteLimit - presenter->target_bytes) {
-                    return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
-                }
-                SDL_GPUTextureCreateInfo rt_info{};
-                rt_info.type = SDL_GPU_TEXTURETYPE_2D;
-                rt_info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-                rt_info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-                rt_info.width = color_w;
-                rt_info.height = color_h;
-                rt_info.layer_count_or_depth = 1;
-                rt_info.num_levels = 1;
-                SDL_GPUTexture *new_rt = SDL_CreateGPUTexture(presenter->device, &rt_info);
-                if (!new_rt) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
-                presenter->render_targets.push_back({clear.target.color, new_rt, color_w, color_h});
-                presenter->target_bytes += bytes;
-                rt = &presenter->render_targets.back();
-            }
+            RenderTargetEntry *rt = acquireRenderTarget(presenter, clear.target, false);
+            if (!rt) return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             target_color = rt->texture;
         }
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, clear.target, color_w, color_h);
@@ -2545,38 +2604,25 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         uint32_t color_w = mainWidth(presenter);
         uint32_t color_h = mainHeight(presenter);
 
+        float target_w = static_cast<float>(color_w);
+        float target_h = static_cast<float>(color_h);
         if (draw.target.offscreen) {
             target_color_data = draw.target.color.data;
             color_w = draw.target.color.width;
             color_h = draw.target.color.height;
-            RenderTargetEntry *rt = findRenderTarget(presenter, draw.target.color);
-            if (!rt) {
-                const uint64_t bytes = static_cast<uint64_t>(color_w) * color_h * 4u;
-                if (bytes <= kTargetByteLimit - presenter->target_bytes) {
-                    SDL_GPUTextureCreateInfo rt_info{};
-                    rt_info.type = SDL_GPU_TEXTURETYPE_2D;
-                    rt_info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
-                    rt_info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-                    rt_info.width = color_w;
-                    rt_info.height = color_h;
-                    rt_info.layer_count_or_depth = 1;
-                    rt_info.num_levels = 1;
-                    SDL_GPUTexture *new_rt = SDL_CreateGPUTexture(presenter->device, &rt_info);
-                    if (new_rt) {
-                        presenter->render_targets.push_back({draw.target.color, new_rt, color_w, color_h});
-                        presenter->target_bytes += bytes;
-                        rt = &presenter->render_targets.back();
-                    }
-                }
-            }
+            target_w = static_cast<float>(color_w);
+            target_h = static_cast<float>(color_h);
+            const bool frame_copy = draw.has_texture && layout.pretransformed && !draw.four_tap_filter &&
+                (draw.texture_is_backbuffer || draw.texture_is_frontbuffer);
+            RenderTargetEntry *rt = acquireRenderTarget(presenter, draw.target, frame_copy);
             if (rt && rt->texture) {
                 target_color = rt->texture;
+                target_w = static_cast<float>(rt->width);
+                target_h = static_cast<float>(rt->height);
             }
         }
 
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, color_w, color_h);
-        float target_w = static_cast<float>(color_w);
-        float target_h = static_cast<float>(color_h);
 
         // Target switch or sampling current render target requires flushing active segment
         if (presenter->segment.target_color != target_color ||
@@ -2592,7 +2638,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         presenter->segment.target_h = target_h;
 
         // Prepare textures
-        SDL_GPUTexture *texture = draw.has_texture ? prepareTexture(presenter, draw) : nullptr;
+        const bool minify_backbuffer = draw.target.offscreen &&
+            (target_w < mainWidth(presenter) || target_h < mainHeight(presenter));
+        SDL_GPUTexture *texture = draw.has_texture ? prepareTexture(presenter, draw, minify_backbuffer) : nullptr;
         SDL_GPUTexture *mask_texture = nullptr;
 
         if (draw.has_alpha_mask) {
@@ -2679,8 +2727,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         if (layout.pretransformed || draw.program_count) {
             std::memset(constants, 0, sizeof(draw.transform));
-            const float guest_w = draw.target.offscreen ? target_w : static_cast<float>(presenter->config.width);
-            const float guest_h = draw.target.offscreen ? target_h : static_cast<float>(presenter->config.height);
+            const float guest_w = static_cast<float>(draw.target.offscreen ? color_w : presenter->config.width);
+            const float guest_h = static_cast<float>(draw.target.offscreen ? color_h : presenter->config.height);
             constants[0] = 2.0f / guest_w;
             constants[5] = -2.0f / guest_h;
             constants[10] = 1.0f;
