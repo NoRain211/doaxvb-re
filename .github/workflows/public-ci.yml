@@ -65,6 +65,26 @@ jobs:
           }
           exit 0
 
+  runtime-tests-clang:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the pinned llvm-mingw the way setup does
+        working-directory: tools
+        run: python -c "from pathlib import Path; import build_prerequisites as p; p.ensure_prerequisites(Path('..').resolve(), True)"
+      - name: Build and run public runtime tests with clang
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\tools\llvm-mingw\bin;$env:PATH"
+          cmake -S recomp-runtime -B build/clang -G "MinGW Makefiles" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build build/clang --parallel 4
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ctest --test-dir build/clang --output-on-failure
+
   runtime-tests-macos:
     runs-on: macos-latest
     steps:
