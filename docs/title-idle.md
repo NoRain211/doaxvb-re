@@ -208,13 +208,17 @@ the operand back. Only the demo's script block is touched. A shorter freeze
 ends each scene, and so the whole demo, that much sooner; the scenes
 themselves are not cut.
 
-The freeze covers the next scene's loading. In scripted runs on an M-series
-Mac at 1080p with one scene's operand changed by hand, a 1-frame hold cut at
-once but showed frames of 50 to 80 ms just after the cut, and holds of 8 and
-20 frames showed one frame of about 30 ms; the game's own 60 stayed under
-22 ms. `title_idle_test.c --cut-hold` checks on synthetic memory that the
+The next scene is already drawn beneath the frozen picture, so the freeze
+hides whatever its first frames cost. Scripted runs on an M-series Mac at
+1080p, one demo pass each with frame times logged and no screenshots: the
+game's own 60 had no frame over 20 ms; a 4-frame hold had two, of 21 and
+24 ms; a 1-frame hold had none in one run and six of 20 to 41 ms in another,
+one of them before the first cut. That is within run-to-run noise on that
+machine. With a 12-frame hold and screenshots, the first cut came about 12
+frames after the freeze began instead of 60.
+`title_idle_test.c --cut-hold` checks on synthetic memory that the
 handler sees the chosen count, that the script keeps its 60, and that
 another script's hold is left alone.
 
-Not checked: slower machines such as the Steam Deck, Windows and Linux
+Not checked: frame times on slower machines such as the Steam Deck, Windows
 builds, and how the shorter demo sits against its music.

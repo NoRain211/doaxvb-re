@@ -38,9 +38,8 @@
    offset 0x14 is the script position. Every scene ends with instruction
    0x31, handled at 0x000696D0: it freezes the picture for the frames in its
    operand, 60 in all six scenes, while the next scene starts beneath it.
-   RECOMP_DEMO_CUT_HOLD (1 to 60) shortens that freeze. Measured on an M-series
-   Mac, a 1-frame hold shows the next scene's loading as 50 to 80 ms frames;
-   holds of 8 and 20 frames stayed under 32 ms. */
+   The next scene is already drawn beneath the frozen picture.
+   RECOMP_DEMO_CUT_HOLD (1 to 59) shortens that freeze. */
 enum {
     STEP_TABLE = 0x00328C14u,
     STEP_SIZE = 4,
