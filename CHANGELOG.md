@@ -12,6 +12,16 @@
   generation recipe is unchanged, so existing builds keep working and saves
   are unaffected.
 
+### Fixed
+
+- **Widescreen window fit** (#119). Above 480p, the borderless window now
+  fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
+  cut off the right side, and ultrawide screens show the picture in the
+  middle. It uses real screen pixels when Windows display scaling is above
+  100%, so the picture is no longer blurred. The 480p window can no longer be
+  resized, which stretched the picture. The game now sees the dashboard's
+  Widescreen setting without the Letterbox flag, as on a real Xbox.
+
 ## 0.6.0 Beta RC1 — 2026-10-09
 
 This release candidate improves rendering and adds opt-in high refresh

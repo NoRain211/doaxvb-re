@@ -1771,7 +1771,20 @@ static bool testWidescreenClientWidth()
     presenter.widescreen = true;
     if (presentClientWidth(&presenter, 480u) != 854u) return false;
     presenter.widescreen = false;
-    return presentClientWidth(&presenter, 480u) == 640u;
+    if (presentClientWidth(&presenter, 480u) != 640u) return false;
+    /* Scale 3 asks for 1440; the window must fit the screen on both axes. */
+    presenter.scale = 3.0f;
+    presenter.widescreen = true;
+    if (fitWindowHeight(&presenter, 1920u, 1080u) != 1080u ||
+        fitWindowHeight(&presenter, 1920u, 1200u) != 1080u ||
+        fitWindowHeight(&presenter, 2560u, 1080u) != 1080u ||
+        fitWindowHeight(&presenter, 3840u, 2160u) != 1440u ||
+        presentClientWidth(&presenter, fitWindowHeight(&presenter, 1366u, 768u)) > 1366u) {
+        return false;
+    }
+    presenter.widescreen = false;
+    return fitWindowHeight(&presenter, 1920u, 1200u) == 1200u &&
+        fitWindowHeight(&presenter, 1280u, 1024u) == 960u;
 }
 
 static bool testTargetLifetimes(

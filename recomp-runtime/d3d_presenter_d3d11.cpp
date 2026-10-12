@@ -659,11 +659,21 @@ uint32_t mainWidth(const RecompD3dPresenter *presenter)
         ? presenter->config.width : presentClientWidth(presenter, mainHeight(presenter));
 }
 
-/* Beyond the screen the swap chain downsamples into a screen-sized window. */
+/* Beyond the screen the swap chain downsamples into the largest window at the
+   presentation aspect that fits inside it on both axes. */
+uint32_t fitWindowHeight(
+    const RecompD3dPresenter *presenter, uint64_t screen_width, uint32_t screen_height)
+{
+    const uint32_t width_fit = static_cast<uint32_t>(presenter->widescreen
+        ? screen_width * 9u / 16u : screen_width * 3u / 4u);
+    return (std::min)((std::min)(mainHeight(presenter), screen_height), width_fit);
+}
+
 uint32_t windowHeight(const RecompD3dPresenter *presenter)
 {
-    return presenter->scale == 1.0f ? presenter->config.height : (std::min)(
-        mainHeight(presenter), static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
+    return presenter->scale == 1.0f ? presenter->config.height : fitWindowHeight(presenter,
+        static_cast<uint32_t>(GetSystemMetrics(SM_CXSCREEN)),
+        static_cast<uint32_t>(GetSystemMetrics(SM_CYSCREEN)));
 }
 
 /* VRR needs direct flip, which a DWM-scaled swap chain loses; with VRR the
@@ -846,6 +856,9 @@ void releasePresenter(RecompD3dPresenter *presenter)
 
 bool createWindow(RecompD3dPresenter *presenter)
 {
+    /* Screen metrics and the borderless window must be physical pixels; a
+       DPI-virtualized window is downsampled and then stretched by DWM. */
+    if (presenter->scale > 1.0f) SetProcessDPIAware();
     WNDCLASSEXW window_class{};
     const uint32_t client_width = presentClientWidth(presenter, windowHeight(presenter));
     RECT window_rect = {
@@ -854,8 +867,11 @@ bool createWindow(RecompD3dPresenter *presenter)
         static_cast<LONG>(client_width),
         static_cast<LONG>(windowHeight(presenter)),
     };
-    /* A scaled window fills the screen; decorations would not fit. */
-    const DWORD style = presenter->scale > 1.0f ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    /* A scaled window fills the screen; decorations would not fit. The 1x
+       window keeps a fixed size because a resized client stretches the image. */
+    const bool borderless = presenter->scale > 1.0f;
+    const DWORD style = borderless
+        ? WS_POPUP : WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
 
     presenter->instance = GetModuleHandleW(nullptr);
     window_class.cbSize = sizeof window_class;
@@ -880,14 +896,20 @@ bool createWindow(RecompD3dPresenter *presenter)
     if (!AdjustWindowRectEx(&window_rect, style, FALSE, 0u)) {
         return false;
     }
+    /* shortcut: a screen wider or taller than the image shows the desktop
+       around it; draw black bars from a screen-sized window if that bothers. */
+    const int x = borderless
+        ? (GetSystemMetrics(SM_CXSCREEN) - static_cast<int>(client_width)) / 2 : CW_USEDEFAULT;
+    const int y = borderless
+        ? (GetSystemMetrics(SM_CYSCREEN) - static_cast<int>(windowHeight(presenter))) / 2 : CW_USEDEFAULT;
 
     presenter->window = CreateWindowExW(
         0u,
         kWindowClassName,
         kWindowTitle,
         style,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        x,
+        y,
         window_rect.right - window_rect.left,
         window_rect.bottom - window_rect.top,
         nullptr,
