@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Title screen idle behavior** (#PRNUM). A launcher choice, or
+- **Title screen idle behavior** (#117). A launcher choice, or
   `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
   idle. **Default** is the game's own attract sequence. **No cutscene**
   (`no-cutscene`) keeps the movies out of it: the game alternates between
