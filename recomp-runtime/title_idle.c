@@ -48,6 +48,8 @@ enum {
     FIRST_TITLE_STEP = 2,
     SECOND_TITLE_STEP = 4,
     TITLE_UPDATE = 0x0006B290u,
+    /* Frames left before the step is left; START sets it. */
+    STATE_LEAVING = 6u,
     STATE_FRAME = 8u,
     TITLE_FADE_FRAME = 1740,
     TITLE_HOLD_FRAMES = 540,
@@ -118,14 +120,16 @@ void recomp_title_idle_frame(void)
 
 static void title_update(void)
 {
-    uint32_t *frame = recomp_memory_u32(
-        *recomp_memory_u32(recomp_runtime.registers.esp + 4u) + STATE_FRAME);
+    const uint32_t state = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+    uint32_t *frame = recomp_memory_u32(state + STATE_FRAME);
 
     if (behavior() == IDLE_NO_CUTSCENE && prepare()) {
         if (*frame >= TITLE_HOLD_FRAMES && *frame < TITLE_FADE_FRAME) {
             *frame = TITLE_FADE_FRAME;
         }
-    } else if (behavior() == IDLE_CPU_EXHIBITION && *frame >= EXHIBITION_FRAME) {
+    } else if (behavior() == IDLE_CPU_EXHIBITION && *frame >= EXHIBITION_FRAME &&
+        *recomp_memory(state + STATE_LEAVING, 1u) == 0u) {
+        /* A title already leaving was not left idle: START was pressed. */
         recomp_cpu_exhibition_start();
     }
     sub_0006B290();

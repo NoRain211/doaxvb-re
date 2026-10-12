@@ -61,7 +61,7 @@ Addresses are for the verified USA executable.
 
 | `0x328C14` | Attract step table: 7 steps of 4 bytes (kind, pad, 16-bit parameter) |
 | `0x328C30` | Handlers for each kind, 16 bytes a kind: prepare, enter, update, exit |
-| `0x4D9944` | Step state: active at `+0`, finished at `+1`, kind at `+4`, step index at `+5`, frame counter at `+8` |
+| `0x4D9944` | Step state: active at `+0`, finished at `+1`, kind at `+4`, step index at `+5`, frames left before leaving at `+6`, frame counter at `+8` |
 | `0x000A4920` | Starts the sequence at boot, at the first step of kind 5 |
 | `0x0006B290` | Update of the title step (kind 2) |
 
@@ -124,7 +124,7 @@ The players are ordered so that a team is `slot & 1`: players 0 and 2 against
 1 and 3.
 
 `title_idle.c` starts the matches from the title step's update when its frame
-counter reaches 1738. `cpu_exhibition.c` then runs once per presented frame
+counter reaches 1738 and the step is not already leaving after START. `cpu_exhibition.c` then runs once per presented frame
 until START:
 
 - **START.** If START is held, it puts back the bytes that say which
