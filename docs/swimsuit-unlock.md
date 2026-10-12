@@ -4,7 +4,8 @@ An opt-in cheat. With **Unlock swimsuits** ticked in the launcher (or
 `RECOMP_UNLOCK_SWIMSUITS=1` set before the runner starts), the Collection of
 the girl being played holds every swimsuit she can wear: 307 of the game's
 328, the rest being the other girls' three gift-only suits each. It is off by
-default, and with it off the runtime changes nothing.
+default, and with it off the runtime changes nothing. A suit taken out while
+it is on stays in the save for good, also after the option is turned off.
 
 ## Behavior
 
