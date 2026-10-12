@@ -818,12 +818,14 @@ if(NOT error MATCHES
         "^recomp runtime: undeclared 4-byte guest memory access at 0xffffffff")
     message(FATAL_ERROR "unexpected invalid-access diagnostic: ${error}")
 endif()
-foreach(mode IN ITEMS --ram-overrun --ram-pending-ohci)
+foreach(mode IN ITEMS --ram-overrun --ram-pending-ohci --kernel-span-overrun)
     execute_process(
         COMMAND "$<TARGET_FILE:recomp_runtime_test>" "${mode}"
         RESULT_VARIABLE result ERROR_VARIABLE error)
     if(mode STREQUAL "--ram-overrun")
         set(expected "^recomp runtime: undeclared 4-byte guest memory access at 0x83ffffff")
+    elseif(mode STREQUAL "--kernel-span-overrun")
+        set(expected "^recomp runtime: undeclared 16-byte guest memory access at 0x2a000ffc")
     else()
         set(expected "^recomp runtime: unsupported OHCI write 0xffffffff at 0xfed00004")
     endif()
