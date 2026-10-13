@@ -3029,20 +3029,17 @@ RecompD3dPresenterError submitDraw(
     if (sun.enabled && sun.constants) {
         float constants[20]{};
         std::memcpy(constants, sun.projection, sizeof sun.projection);
-        float direction[3];
-        const int light = sunDirection(draw, direction);
-        // Ground darkens like the game's own shadow (its per-scene opacity): many stages light the
-        // sand with a separate rig or mostly baked light, so removing the sun's direct term shows little.
-        float extent;
-        const bool ground = !draw.blend_weight_count && sun.game_alpha > 0 &&
-            !(sunSceneDraw(draw, extent) && extent <= 4);
+        // Ground darkens only where the game draws its own shadow, by that shadow's opacity, so scenes
+        // without one (hotel, menus) stay untouched. Models keep the game's shading; self-shadowing blotched them.
+        // shortcut: models never receive; add a dedicated character map if self-shadowing is wanted.
+        const size_t index = sun.draw_index - 1;
+        const bool model = draw.blend_weight_count || (index < sun.compact.size() && sun.compact[index]);
         constants[16] = !sun.casting && sun.valid && sun.epoch == sun.camera_epoch &&
             !draw.target.offscreen && !draw.target.no_depth && !draw.program_count &&
             !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
-            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled &&
-            (light >= 0 || ground) && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
-        constants[17] = static_cast<float>(light);
-        constants[18] = ground ? sun.game_alpha : 0.0f;
+            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled && !model &&
+            sun.game_alpha > 0 && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
+        constants[17] = sun.game_alpha;
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4126,6 +4123,7 @@ bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
     }
     sun.valid = sun.triangles && sunFit(sun);
     if (!sun.valid) { sun.casting = false; return false; }
+    sun.compact.clear();
     ID3D11ShaderResourceView *empty = nullptr;
     presenter->context->PSSetShaderResources(2, 1, &empty);
     presenter->context->ClearDepthStencilView(sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
@@ -4145,8 +4143,10 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
     const auto &draw = command->data.draw;
     if (!sun.casting) { sunSelectCamera(sun, draw); return; }
     float extent;
-    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, extent) ||
-        !draw.directional.enabled || draw.blend.blend_enable ||
+    sun.compact.push_back(0);
+    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, extent)) return;
+    sun.compact.back() = !draw.blend_weight_count && extent <= 4;
+    if (!draw.directional.enabled || draw.blend.blend_enable ||
         (!draw.blend_weight_count && extent > 4)) return;
     // shortcut: compact rigid normal-bearing draws include the ball and small props; add identity if needed.
     RecompD3dPresenterDrawCommand caster = draw;
@@ -4177,6 +4177,7 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
     sun.game_shadows = 0;
     sun.game_alpha = sun.seen_alpha;
     sun.seen_alpha = 0;
+    sun.draw_index = 0;
 }
 
 RecompD3dPresenterError d3d11_backend_submit(
@@ -4192,6 +4193,7 @@ RecompD3dPresenterError d3d11_backend_submit(
     if (command == nullptr) {
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) ++presenter->sun.draw_index;
 
     switch (command->type) {
     case RECOMP_D3D_PRESENTER_COMMAND_GAMMA:

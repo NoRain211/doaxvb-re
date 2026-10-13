@@ -13,6 +13,10 @@ struct SunShadow {
     unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
     // Game shadow opacity (texture-factor alpha) seen last frame; 0 when the game drew none.
     float game_alpha = 0, seen_alpha = 0;
+    // Caster pass marks compact rigid draws (ball, props) in draw order; the visible pass
+    // replays the same packet, so draw_index finds the flag without rescanning vertices.
+    std::vector<uint8_t> compact;
+    size_t draw_index = 0;
     float camera[16]{}, inverse[16]{}, projection[16]{}, direction[3]{};
     ID3D11Texture2D *texture = nullptr;
     ID3D11DepthStencilView *depth = nullptr;
@@ -283,22 +287,15 @@ float sunVisibility(float3 p) {
 }
 )");
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),
-        "\n    float3 sun_world : TEXCOORD8;\n    float3 sun_direct : TEXCOORD9;\n    float3 sun_total : TEXCOORD10;\n");
+        "\n    float3 sun_world : TEXCOORD8;\n");
     source.insert(source.find("    VSOut output;")+std::strlen("    VSOut output;"),
-        "\n    output.sun_world=0; output.sun_direct=0; output.sun_total=0;\n");
-    const auto contribution = source.find("            rgb += (directional_material.rgb");
-    if (contribution != std::string::npos) {
-        source.insert(contribution,
-            "            if (sun_flags.x > 0 && i == (uint)sun_flags.y)\n"
-            "                output.sun_direct = directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l));\n");
-        // Normal offset (~2.5 texels) keeps grazing skin from shadowing itself at a low sun.
-        source.insert(source.find("        output.color.rgb=saturate(rgb);"),
-            "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04; output.sun_total=rgb;\n");
-    }
+        "\n    output.sun_world=0;\n");
+    const auto lit = source.find("        output.color.rgb=saturate(rgb);");
+    // Normal offset (~2.5 texels) keeps grazing surfaces from shadowing themselves at a low sun.
+    if (lit != std::string::npos)
+        source.insert(lit, "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04;\n");
     source.insert(source.find("    float4 shaded = input.color;"),
-        "    if (sun_flags.x > 0) { float sun_v = sunVisibility(input.sun_world);\n"
-        "        input.color.rgb = sun_flags.z > 0 ? input.color.rgb * (1 - sun_flags.z*(1-sun_v))\n"
-        "            : saturate(input.sun_total - input.sun_direct * (1-sun_v)); }\n");
+        "    if (sun_flags.x > 0) input.color.rgb *= 1 - sun_flags.y*(1-sunVisibility(input.sun_world));\n");
 }
 
 } // namespace

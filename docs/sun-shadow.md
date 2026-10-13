@@ -20,10 +20,13 @@ along the camera's near ray, with 120 units of light-space depth. The XY fit
 snaps to shadow texels and shadows fade over the outer tenth of the box.
 Receivers offset their lookup 0.04 units along the vertex normal, and the
 compare bias is 0.0002 of light depth, so grazing skin under the low key light
-does not shadow itself. Skinned and compact receivers lose only the sun's
-direct term. Other (ground) receivers darken by the game's own shadow opacity,
-taken from last frame's hidden darkening pass, because many stages light the
-sand with a separate rig or mostly baked light. Casters are opaque (including alpha-tested), host-lit
+does not shadow itself. Skinned draws and compact rigid casters (the ball) do
+not receive, so models keep the game's shading. Other receivers darken by the
+game's own shadow opacity, taken from last frame's hidden darkening pass,
+because many stages light the sand with a separate rig or mostly baked light.
+When the game drew no shadow last frame (hotel, menus), nothing receives.
+The caster pass records which draws are compact, in draw order, and the visible
+pass reads that flag by its own draw count. Casters are opaque (including alpha-tested), host-lit
 normal-bearing skinned draws and rigid draws no larger than four world units.
 The rigid rule includes the ball but can include small scenery; transparent
 hair and distant objects are outside this initial test. Vertex blending uses
@@ -38,15 +41,14 @@ when slot 0 is directional. When it is not, no shadow map is built and the
 game's own shadows stay. Slot 0 is a key-light proxy: on the sunset court it
 sits about 14 degrees from the sun sprite, which the game places separately.
 
-`sunDirection()` picks the receiver's directional light nearest that key light,
-within 25 degrees, and attenuates only that light. Matching by direction stands
-in for slot provenance. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
+`sunDirection()` requires the camera-defining draw to carry a directional light
+within 25 degrees of that key light, and a key light above the horizon. Matching
+by direction stands in for slot provenance. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
 travel** direction, normalized on input; invalid, zero and nonfinite values are
 ignored. It does not move the sky sun or change the game's light rig.
 
-Nine comparison-filtered samples provide shadow visibility. Only the selected
-direct diffuse term is reduced before material/texture processing and fog;
-ambient, point lights and other directional terms remain. While the shadow map is valid, the game's projected shadow for characters and
+Nine comparison-filtered samples provide shadow visibility, which scales the
+receiver's lit vertex color before material/texture processing and fog. While the shadow map is valid, the game's projected shadow for characters and
 the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
 lighting off, black texture factor with any alpha, stencil EQUAL 1 then ZERO,
 depth writes off and SRC_ALPHA blending. It still draws with color writes off,

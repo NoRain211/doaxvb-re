@@ -3191,22 +3191,27 @@ static bool testSunShadow(unsigned samples)
         presenter.context->ClearDepthStencilView(presenter.sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
         d3d11_backend_shadow_command(&presenter, &command);
         d3d11_backend_shadow_end(&presenter);
+        presenter.sun.game_alpha = 0.75f; // the game drew its own shadow last frame
         presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
-        const uint32_t left[] = {0xff808080,0xff808080,0xffffffff,0xffffffff};
-        const uint32_t right[] = {0xffffffff,0xffffffff,0xff808080,0xff808080};
+        const uint32_t left[] = {0xff404040,0xff404040,0xffffffff,0xffffffff};
+        const uint32_t right[] = {0xffffffff,0xffffffff,0xff404040,0xff404040};
         passed = presenter.sun.valid && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
-            pixels("sun visibility keeps ambient and fill", weights ? right : left);
+            pixels("ground darkens by game shadow opacity", weights ? right : left);
     }
     {
-        // Ground (not a compact caster) darkens by the game's shadow opacity instead.
-        presenter.sun.game_alpha = 0.75f;
-        auto ground = receiver;
-        ground.depth.depth_write_enable = false;
+        // A draw the caster pass marked compact (ball, props) keeps the game's shading.
+        presenter.sun.compact.assign(1, 1); presenter.sun.draw_index = 1;
         presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
-        const uint32_t expected[] = {white,white,0xff404040,0xff404040};
-        passed = passed && submitDraw(&presenter, ground) == RECOMP_D3D_PRESENTER_OK &&
-            pixels("ground uses game shadow opacity", expected);
+        const uint32_t unshadowed[] = {white,white,white,white};
+        passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("compact caster does not receive", unshadowed);
+        presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+        // No game shadow last frame (hotel, menus): nothing receives.
         presenter.sun.game_alpha = 0;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("no game shadow, no receiver", unshadowed);
+        presenter.sun.game_alpha = 0.75f;
     }
     // Non-host-lit draws and a different scene-depth epoch must bypass the map.
     draw = receiver;
