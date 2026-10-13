@@ -3036,6 +3036,203 @@ static bool testPacingPolicies()
     return passed;
 }
 
+
+static bool testSunShadow(unsigned samples)
+{
+    _putenv_s("RECOMP_D3D_SUN_SHADOW", "");
+    _putenv_s("RECOMP_D3D_SUN_DIR", "");
+    RecompD3dPresenter presenter;
+    if (sunShadowRequested() || d3d11_backend_shadow_begin(&presenter, false) ||
+        presenter.sun.texture || presenter.sun.constants || presenter.sun.view) return false;
+    _putenv_s("RECOMP_D3D_SUN_SHADOW", "0");
+    if (sunShadowRequested()) return false;
+    _putenv_s("RECOMP_D3D_SUN_SHADOW", "1");
+    presenter.sun.enabled = sunShadowRequested();
+    _putenv_s("RECOMP_D3D_SUN_SHADOW", "");
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+            nullptr, 0, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    ID3D11Texture2D *color = nullptr, *readback = nullptr;
+    presenter.msaa = samples;
+    bool passed = createTestTargets(&presenter, &color, &readback);
+    ID3D11Texture2D *resolved = nullptr;
+    if (samples > 1 && passed) {
+        D3D11_TEXTURE2D_DESC desc{};
+        color->GetDesc(&desc); desc.SampleDesc.Count = 1;
+        passed = SUCCEEDED(presenter.device->CreateTexture2D(&desc, nullptr, &resolved));
+    }
+    auto pixels = [&](const char *label, const uint32_t expected[4]) {
+        if (resolved) presenter.context->ResolveSubresource(resolved, 0, color, 0, DXGI_FORMAT_B8G8R8A8_UNORM);
+        return checkPixels(&presenter, resolved ? resolved : color, readback, label, expected);
+    };
+    if (!passed) { releaseCom(readback); releaseCom(color); releaseCom(resolved); releaseGraphics(&presenter); return false; }
+    D3D11_TEXTURE2D_DESC main_depth{};
+    presenter.depth_texture->GetDesc(&main_depth);
+    passed = passed && main_depth.Format == DXGI_FORMAT_D24_UNORM_S8_UINT &&
+        main_depth.BindFlags == D3D11_BIND_DEPTH_STENCIL;
+    float vertices[4][8]{};
+    for (unsigned i = 0; i < 4; ++i) {
+        vertices[i][0] = i&1 ? 1.0f : -1.0f;
+        vertices[i][1] = i&2 ? -1.0f : 1.0f;
+        vertices[i][2] = 0.75f;
+        vertices[i][4] = 0.6f; vertices[i][5] = -0.8f;
+    }
+    const uint16_t indices[] = {0,1,2,3};
+    const uint32_t white = 0xffffffff;
+    RecompD3dPresenterCommand command{};
+    command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    auto &draw = command.data.draw;
+    draw.fvf = 0x112; draw.vertex_stride = 32; draw.vertex_count = draw.index_count = 4;
+    draw.triangle_count = 2; draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes = vertices; draw.index_bytes = indices; draw.blend.color_write_mask = 15;
+    draw.has_transform = draw.has_texture = true;
+    draw.depth.depth_test_enable = draw.depth.depth_write_enable = true;
+    draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    draw.texture.data = 0x006f0300;
+    draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.texture.width = draw.texture.height = 1; draw.texture.bits_per_pixel = 32;
+    draw.texture_bytes = &white; draw.texture_byte_count = 4;
+    auto &light = draw.directional;
+    light.enabled = light.normalize = true; light.count = 3;
+    light.directions[0][1] = light.directions[1][1] = 0.6f;
+    light.directions[0][2] = light.directions[1][2] = -0.8f;
+    draw.sun[1] = 0.6f; draw.sun[2] = -0.8f; draw.sun[3] = 1; // game shadow direction
+    light.positions[2][3] = 1; light.positions[2][2] = -5; light.attenuation[2][0] = 1;
+    for (unsigned i = 0; i < 4; ++i) {
+        draw.transform[i*5] = draw.view_projection[i*5] = draw.world[0][i*5] = 1;
+        light.world_transforms[0][i*5] = light.normal_transforms[0][i*5] = 1;
+    }
+    for (unsigned c = 0; c < 3; ++c) {
+        light.ambient_emissive[c] = 0.25f; light.material_diffuse[c] = 1;
+        light.colors[0][c] = 0.5f; light.colors[1][c] = 0.25f;
+        light.colors[2][c] = 10; // Bright point light must not become the sun.
+    }
+    float direction[3];
+    passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 0.8f;
+    {
+        auto other = draw;
+        other.sun[3] = 0;
+        passed = passed && sunDirection(other, direction) < 0; // no game shadow direction
+        other = draw; other.directional.enabled = false;
+        passed = passed && sunDirection(other, direction) < 0; // not host-lit
+        other = draw; other.sun[1] = other.directional.directions[0][1] = -0.6f;
+        passed = passed && sunDirection(other, direction) < 0; // light below the horizon
+    }
+    _putenv_s("RECOMP_D3D_SUN_DIR", "1,-2,3");
+    passed = passed && sunDirection(draw, direction) == 0 && direction[0] > 0 && direction[1] < 0;
+    for (const char *invalid : {"0,0,0", "nan,1,0", "1,2,3junk"}) {
+        _putenv_s("RECOMP_D3D_SUN_DIR", invalid);
+        passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 0.8f;
+    }
+    _putenv_s("RECOMP_D3D_SUN_DIR", "");
+    {
+        RecompD3dPresenterDrawCommand game_shadow{};
+        game_shadow.fvf = 0x112; game_shadow.use_texture_factor = true;
+        game_shadow.depth.depth_test_enable = true;
+        game_shadow.depth.stencil_enable = true;
+        game_shadow.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+        game_shadow.depth.stencil_ref = 1; game_shadow.depth.stencil_read_mask = 3;
+        game_shadow.depth.stencil_pass = RECOMP_D3D_STENCIL_ZERO;
+        game_shadow.blend.blend_enable = true;
+        game_shadow.blend.color_write_mask = 15;
+        game_shadow.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        game_shadow.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        game_shadow.texture_factor = 0x82000000u;
+        passed = passed && sunGameShadow(game_shadow);
+        auto marking = game_shadow; // stencil-only first pass keeps drawing
+        marking.blend.color_write_mask = 0;
+        passed = passed && !sunGameShadow(marking);
+        marking = game_shadow; marking.depth.stencil_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+        passed = passed && !sunGameShadow(marking);
+        game_shadow.texture_factor = 0x5f000000u; // per-scene alpha
+        passed = passed && sunGameShadow(game_shadow);
+        game_shadow.texture_factor = 0x82ffffffu;
+        passed = passed && !sunGameShadow(game_shadow);
+        game_shadow.texture_factor = 0x82000000u; game_shadow.has_texture = true;
+        passed = passed && !sunGameShadow(game_shadow);
+    }
+    passed = passed && d3d11_backend_shadow_begin(&presenter, false);
+    auto invalid = draw;
+    invalid.target.offscreen = true;
+    sunSelectCamera(presenter.sun, invalid);
+    invalid = draw; invalid.view_projection[15] = 0;
+    sunSelectCamera(presenter.sun, invalid);
+    invalid.view_projection[0] = NAN;
+    sunSelectCamera(presenter.sun, invalid);
+    invalid = draw; invalid.fvf = 0x142;
+    sunSelectCamera(presenter.sun, invalid);
+    invalid = draw; invalid.world[0][0] = 2000;
+    sunSelectCamera(presenter.sun, invalid);
+    passed = passed && presenter.sun.triangles == 0;
+    d3d11_backend_shadow_command(&presenter, &command);
+    passed = passed && presenter.sun.triangles == 2 && d3d11_backend_shadow_begin(&presenter, true);
+    // An identity light projection makes the synthetic occluder's coverage exact.
+    std::memcpy(presenter.sun.projection, draw.view_projection, sizeof draw.view_projection);
+    auto receiver = draw;
+    for (unsigned weights = 0; passed && weights <= 3; ++weights) {
+        draw = receiver;
+        draw.blend_weight_count = weights;
+        draw.fvf = weights ? 0x114+weights*2 : 0x112;
+        draw.vertex_stride = (8+weights)*4;
+        std::vector<float> packed(4*(8+weights));
+        for (unsigned i = 0; i < 4; ++i) {
+            float *v = packed.data()+i*(8+weights);
+            v[0] = i&1 ? 0.0f : -1.0f; v[1] = vertices[i][1]; v[2] = 0.25f;
+            for (unsigned w = 0; w < weights; ++w) v[3+w] = 0.25f/weights;
+            v[4+weights] = 0.6f; v[5+weights] = -0.8f;
+        }
+        draw.vertex_bytes = packed.data();
+        for (unsigned b = 1; b <= weights; ++b) std::memcpy(draw.world[b], draw.world[0], 64);
+        // Only the remainder matrix moves the caster; stale WVP matrices still point left.
+        if (weights) draw.world[weights][12] = 4.0f/3;
+        presenter.sun.casting = true;
+        presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11ShaderResourceView *empty = nullptr;
+        presenter.context->PSSetShaderResources(2, 1, &empty);
+        presenter.context->ClearDepthStencilView(presenter.sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
+        d3d11_backend_shadow_command(&presenter, &command);
+        d3d11_backend_shadow_end(&presenter);
+        presenter.sun.game_alpha = 0.75f; // the game drew its own shadow last frame
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t left[] = {0xff404040,0xff404040,0xffffffff,0xffffffff};
+        const uint32_t right[] = {0xffffffff,0xffffffff,0xff404040,0xff404040};
+        passed = presenter.sun.valid && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("ground darkens by game shadow opacity", weights ? right : left);
+    }
+    {
+        // A draw the caster pass marked compact (ball, props) keeps the game's shading.
+        presenter.sun.compact.assign(1, 1); presenter.sun.draw_index = 1;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t unshadowed[] = {white,white,white,white};
+        passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("compact caster does not receive", unshadowed);
+        presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+        // No game shadow last frame (hotel, menus): nothing receives.
+        presenter.sun.game_alpha = 0;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("no game shadow, no receiver", unshadowed);
+        presenter.sun.game_alpha = 0.75f;
+    }
+    // Non-host-lit draws and a different scene-depth epoch must bypass the map.
+    draw = receiver;
+    for (unsigned mode = 0; passed && mode < 3; ++mode) {
+        if (mode == 0) draw.directional.enabled = false;
+        if (mode == 1) { draw = receiver; ++presenter.sun.epoch; }
+        if (mode == 2) { presenter.sun.epoch = 0; draw.view_projection[12] = 1; }
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t expected[] = {white,white,white,white};
+        passed = submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("sun bypass", expected);
+    }
+    passed = passed && d3d11_backend_shadow_begin(&presenter, false) &&
+        !presenter.sun.valid && !presenter.sun.triangles && !d3d11_backend_shadow_begin(&presenter, true);
+    releaseCom(readback); releaseCom(color); releaseCom(resolved); releaseGraphics(&presenter);
+    passed = passed && !presenter.sun.texture && !presenter.sun.depth && !presenter.sun.view &&
+        !presenter.sun.constants && !presenter.sun.sampler && !presenter.sun.rasterizer;
+    if (!passed) std::fprintf(stderr, "FAIL sun shadow selection, visibility or lifecycle\n");
+    return passed;
+}
+
 int main()
 {
 #ifdef _MSC_VER
@@ -3047,6 +3244,7 @@ int main()
 #endif
     _putenv_s("RECOMP_D3D_FOG", "");
     _putenv_s("RECOMP_D3D_FOG_FACTOR", "");
+    if (!testSunShadow(1) || !testSunShadow(8)) return 1;
     if (!testReplacementFormats()) return 1;
     if (!testTextureAntialiasing()) return 82;
     if (!testHeldFrameTargets()) return 1;
