@@ -3074,7 +3074,7 @@ static bool testSunShadow(unsigned samples)
         vertices[i][0] = i&1 ? 1.0f : -1.0f;
         vertices[i][1] = i&2 ? -1.0f : 1.0f;
         vertices[i][2] = 0.75f;
-        vertices[i][5] = -1;
+        vertices[i][4] = 0.6f; vertices[i][5] = -0.8f;
     }
     const uint16_t indices[] = {0,1,2,3};
     const uint32_t white = 0xffffffff;
@@ -3093,8 +3093,9 @@ static bool testSunShadow(unsigned samples)
     draw.texture_bytes = &white; draw.texture_byte_count = 4;
     auto &light = draw.directional;
     light.enabled = light.normalize = true; light.count = 3;
-    light.directions[0][2] = light.directions[1][2] = -1;
-    draw.sun[2] = -1; draw.sun[3] = 1; // background key light matches lights 0 and 1
+    light.directions[0][1] = light.directions[1][1] = 0.6f;
+    light.directions[0][2] = light.directions[1][2] = -0.8f;
+    draw.sun[1] = 0.6f; draw.sun[2] = -0.8f; draw.sun[3] = 1; // key light matches lights 0 and 1
     light.positions[2][3] = 1; light.positions[2][2] = -5; light.attenuation[2][0] = 1;
     for (unsigned i = 0; i < 4; ++i) {
         draw.transform[i*5] = draw.view_projection[i*5] = draw.world[0][i*5] = 1;
@@ -3106,19 +3107,21 @@ static bool testSunShadow(unsigned samples)
         light.colors[2][c] = 10; // Bright point light must not become the sun.
     }
     float direction[3];
-    passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 1;
+    passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 0.8f;
     {
         auto other = draw;
         other.sun[3] = 0;
         passed = passed && sunDirection(other, direction) < 0; // no background key light
         other = draw; other.sun[2] = 1;
         passed = passed && sunDirection(other, direction) < 0; // no matching rig light
+        other = draw; other.sun[1] = other.directional.directions[0][1] = -0.6f;
+        passed = passed && sunDirection(other, direction) < 0; // key light below the horizon
     }
     _putenv_s("RECOMP_D3D_SUN_DIR", "1,-2,3");
     passed = passed && sunDirection(draw, direction) == 0 && direction[0] > 0 && direction[1] < 0;
     for (const char *invalid : {"0,0,0", "nan,1,0", "1,2,3junk"}) {
         _putenv_s("RECOMP_D3D_SUN_DIR", invalid);
-        passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 1;
+        passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 0.8f;
     }
     _putenv_s("RECOMP_D3D_SUN_DIR", "");
     {
@@ -3175,7 +3178,7 @@ static bool testSunShadow(unsigned samples)
             float *v = packed.data()+i*(8+weights);
             v[0] = i&1 ? 0.0f : -1.0f; v[1] = vertices[i][1]; v[2] = 0.25f;
             for (unsigned w = 0; w < weights; ++w) v[3+w] = 0.25f/weights;
-            v[5+weights] = -1;
+            v[4+weights] = 0.6f; v[5+weights] = -0.8f;
         }
         draw.vertex_bytes = packed.data();
         for (unsigned b = 1; b <= weights; ++b) std::memcpy(draw.world[b], draw.world[0], 64);

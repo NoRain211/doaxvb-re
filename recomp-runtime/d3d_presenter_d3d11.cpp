@@ -2665,6 +2665,7 @@ RecompD3dPresenterError submitDraw(
     }
     if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
         // The shadow map replaces its darkening; keep its stencil writes.
+        ++presenter->sun.game_shadows;
         auto stencil_only = draw;
         stencil_only.blend.color_write_mask = 0;
         return submitDraw(presenter, stencil_only);
@@ -3045,7 +3046,7 @@ RecompD3dPresenterError submitDraw(
         presenter->context->PSSetSamplers(2, 1, &sun.sampler);
         if (sun.casting) {
             presenter->context->OMSetRenderTargets(0, nullptr, sun.depth);
-            const D3D11_VIEWPORT viewport = {0, 0, 2048, 2048, 0, 1};
+            const D3D11_VIEWPORT viewport = {0, 0, float(kSunMapSize), float(kSunMapSize), 0, 1};
             presenter->context->RSSetViewports(1, &viewport);
             presenter->context->RSSetState(sun.rasterizer);
         }
@@ -4161,9 +4162,11 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
     sun.epoch = 0;
     sun.valid = sun.valid && sun.casters != 0;
     presenter->context->OMSetRenderTargets(0, nullptr, nullptr);
+    // game_shadows counts the previous frame's hidden darkening passes (false-match audit).
     if (presenter->performance_counter && presenter->present_count % 120 == 0 && sun.valid)
-        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u direction=%.4f,%.4f,%.4f\n",
-            presenter->present_count, sun.casters, sun.direction[0], sun.direction[1], sun.direction[2]);
+        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u direction=%.4f,%.4f,%.4f\n",
+            presenter->present_count, sun.casters, sun.game_shadows, sun.direction[0], sun.direction[1], sun.direction[2]);
+    sun.game_shadows = 0;
 }
 
 RecompD3dPresenterError d3d11_backend_submit(

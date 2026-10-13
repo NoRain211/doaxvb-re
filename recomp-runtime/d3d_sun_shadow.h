@@ -4,9 +4,13 @@
 // Internal D3D11 experiment; all GPU objects are created only on explicit opt-in.
 namespace {
 
+// 4096 texels over 64 units: ~0.016-unit texels, finer than the old 2048/48.
+constexpr unsigned kSunMapSize = 4096;
+constexpr float kSunBox = 64, kSunAhead = 20, kSunDepth = 120;
+
 struct SunShadow {
     bool enabled = false, valid = false, casting = false;
-    unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0;
+    unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
     float camera[16]{}, inverse[16]{}, projection[16]{}, direction[3]{};
     ID3D11Texture2D *texture = nullptr;
     ID3D11DepthStencilView *depth = nullptr;
@@ -56,6 +60,8 @@ int sunDirection(const RecompD3dPresenterDrawCommand &draw, float direction[3])
             sunNormalize(override_direction))
             std::memcpy(direction, override_direction, sizeof override_direction);
     }
+    // A key light at or below the horizon (one demo rig) casts nothing useful; keep the game's shadow.
+    if (direction[1] > -0.05f) return -1;
     return selected;
 }
 
@@ -174,18 +180,19 @@ bool sunFit(SunShadow &sun)
         sun.direction[2]*right[0]-sun.direction[0]*right[2],
         sun.direction[0]*right[1]-sun.direction[1]*right[0]};
     float center[3];
-    for (unsigned i = 0; i < 3; ++i) center[i] = near_point[i]+10*forward[i];
-    // shortcut: one 48-unit near-region box; extend to cascades for distant receivers.
+    for (unsigned i = 0; i < 3; ++i) center[i] = near_point[i]+kSunAhead*forward[i];
+    // shortcut: one 64-unit box 20 units down the view ray; extend to cascades for distant receivers.
     const float *axes[3] = {right, up, sun.direction};
     std::memset(sun.projection, 0, sizeof sun.projection);
+    const float texel = kSunBox/kSunMapSize;
     for (unsigned c = 0; c < 3; ++c) {
         float offset = 0;
-        const float scale = c == 2 ? 1.0f/120 : 1.0f/24;
+        const float scale = c == 2 ? 1.0f/kSunDepth : 2.0f/kSunBox;
         for (unsigned r = 0; r < 3; ++r) {
             sun.projection[r*4+c] = axes[c][r]*scale;
             offset += center[r]*axes[c][r];
         }
-        if (c < 2) offset = std::round(offset/(48.0f/2048))*(48.0f/2048);
+        if (c < 2) offset = std::round(offset/texel)*texel;
         sun.projection[12+c] = -offset*scale + (c == 2 ? 0.5f : 0);
     }
     sun.projection[15] = 1;
@@ -209,7 +216,7 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
     if (!sun.enabled) return false;
     if (sun.texture) return true;
     D3D11_TEXTURE2D_DESC texture{};
-    texture.Width = texture.Height = 2048;
+    texture.Width = texture.Height = kSunMapSize;
     texture.MipLevels = texture.ArraySize = texture.SampleDesc.Count = 1;
     texture.Format = DXGI_FORMAT_R32_TYPELESS;
     texture.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
@@ -236,7 +243,7 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
     rasterizer.CullMode = D3D11_CULL_NONE;
     rasterizer.DepthClipEnable = TRUE;
     rasterizer.DepthBias = 100;
-    rasterizer.SlopeScaledDepthBias = 1;
+    rasterizer.SlopeScaledDepthBias = 2;
     if (FAILED(device->CreateTexture2D(&texture, nullptr, &sun.texture)) ||
         FAILED(device->CreateDepthStencilView(sun.texture, &depth, &sun.depth)) ||
         FAILED(device->CreateShaderResourceView(sun.texture, &view, &sun.view)) ||
@@ -247,19 +254,20 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
         std::fprintf(stderr, "recomp sun shadow: resource creation failed; disabled\n");
         return false;
     }
-    std::fprintf(stderr, "recomp sun shadow: 2048x2048 D32 comparison map\n");
+    std::fprintf(stderr, "recomp sun shadow: %ux%u D32 comparison map\n", kSunMapSize, kSunMapSize);
     return true;
 }
 
 void sunShaderSource(std::string &source)
 {
-    source.insert(0, R"(
+    source.insert(0, std::string(R"(
 cbuffer SunShadow : register(b1) {
     row_major float4x4 sun_projection;
     float4 sun_flags;
 };
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
+static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
 float sunVisibility(float3 p) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
     if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
@@ -267,8 +275,9 @@ float sunVisibility(float3 p) {
     float visibility = 0;
     [unroll] for (int y=-1; y<=1; ++y)
         [unroll] for (int x=-1; x<=1; ++x)
-            visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)/2048,q.z-0.0001);
-    return visibility/9;
+            visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)*sun_texel,q.z-0.0002);
+    // Fade over the outer tenth of the box so shadows do not cut off at its edge.
+    return lerp(1, visibility/9, saturate((1-max(abs(q.x),abs(q.y)))*10));
 }
 )");
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),
@@ -280,8 +289,9 @@ float sunVisibility(float3 p) {
         source.insert(contribution,
             "            if (sun_flags.x > 0 && i == (uint)sun_flags.y)\n"
             "                output.sun_direct = directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l));\n");
+        // Normal offset (~2.5 texels) keeps grazing skin from shadowing itself at a low sun.
         source.insert(source.find("        output.color.rgb=saturate(rgb);"),
-            "        output.sun_world=world_pos; output.sun_total=rgb;\n");
+            "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04; output.sun_total=rgb;\n");
     }
     source.insert(source.find("    float4 shaded = input.color;"),
         "    if (sun_flags.x > 0) input.color.rgb = saturate(input.sun_total - input.sun_direct * (1-sunVisibility(input.sun_world)));\n");

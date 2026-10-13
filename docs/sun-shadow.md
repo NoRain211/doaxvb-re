@@ -15,9 +15,12 @@ and cloud sheets without relying on draw order or private texture identities.
 Selection resets each frame and at main-target depth clears. Only the selected
 depth interval and matching camera receive shadows.
 
-A single 2048-square D32 shadow map covers a 48-unit box centered ten units
+A single 4096-square D32 shadow map covers a 64-unit box centered 20 units
 along the camera's near ray, with 120 units of light-space depth. The XY fit
-snaps to shadow texels. Casters are opaque (including alpha-tested), host-lit
+snaps to shadow texels and shadows fade over the outer tenth of the box.
+Receivers offset their lookup 0.04 units along the vertex normal, and the
+compare bias is 0.0002 of light depth, so grazing skin under the low key light
+does not shadow itself. Casters are opaque (including alpha-tested), host-lit
 normal-bearing skinned draws and rigid draws no larger than four world units.
 The rigid rule includes the ball but can include small scenery; transparent
 hair and distant objects are outside this initial test. Vertex blending uses
