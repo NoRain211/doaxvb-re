@@ -1220,30 +1220,40 @@ static int benchmark(ID3D11Device *device, ID3D11DeviceContext *context, UINT w,
     check(device->CreateQuery(&desc, &begin), "create start timestamp");
     check(device->CreateQuery(&desc, &end), "create end timestamp");
     constexpr unsigned warmup = 16, frames = 64;
-    double whole = 0;
+    double whole = 0, collect = 0, applyCpu = 0;
+    LARGE_INTEGER frequency, t0, t1, t2;
+    QueryPerformanceFrequency(&frequency);
     for (unsigned frame = 0; frame < warmup + frames; ++frame) {
         if (frame == warmup) d3d_rtgi_take_stats(gi.get());
         moveBench(meshes, frame);
         r.render(meshes);
+        QueryPerformanceCounter(&t0);
         for (auto &mesh : meshes) d3d_rtgi_add_draw(gi.get(), mesh.draw, nullptr, nullptr);
         context->Begin(disjoint.Get());
         context->End(begin.Get());
+        QueryPerformanceCounter(&t1);
         apply(gi.get(), r);
+        QueryPerformanceCounter(&t2);
         context->End(end.Get());
         context->End(disjoint.Get());
         waitReadback(r);
-        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT frequency{};
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT gpu{};
         UINT64 start = 0, finish = 0;
-        require(context->GetData(disjoint.Get(), &frequency, sizeof frequency, 0) == S_OK &&
+        require(context->GetData(disjoint.Get(), &gpu, sizeof gpu, 0) == S_OK &&
             context->GetData(begin.Get(), &start, sizeof start, 0) == S_OK &&
             context->GetData(end.Get(), &finish, sizeof finish, 0) == S_OK, "timestamps unavailable");
-        if (frame >= warmup) whole += 1000.0 * (finish - start) / frequency.Frequency;
+        if (frame < warmup) continue;
+        whole += 1000.0 * (finish - start) / gpu.Frequency;
+        collect += 1000.0 * (t1.QuadPart - t0.QuadPart) / frequency.QuadPart;
+        applyCpu += 1000.0 * (t2.QuadPart - t1.QuadPart) / frequency.QuadPart;
     }
     const auto s = d3d_rtgi_take_stats(gi.get());
     const double traced = std::max(1u, s.traced), d12 = std::max(1u, s.d3d12Passes), d11 = std::max(1u, s.d3d11Passes);
-    std::printf("RTGI bench %ux%u %ux MSAA scale=%s hz=%s, %u frames: GPU apply=%.3f ms | traced=%u refitted=%u reused=%u tris=%.0f "
+    std::printf("RTGI bench %ux%u %ux MSAA scale=%s hz=%s, %u frames: GPU apply=%.3f ms, CPU add_draw=%.3f apply=%.3f ms "
+        "| traced=%u refitted=%u reused=%u tris=%.0f "
         "| CPU collect=%.3f apply=%.3f wait=%.3f ms | GPU build=%.3f trace=%.3f temporal=%.3f spatial=%.3f "
         "composite=%.3f sync=%.3f ms (%u/%u timed)\n", w, h, samples, scale, hz, frames, whole / frames,
+        collect / frames, applyCpu / frames,
         s.traced, s.refitted, s.reused, s.triangles / traced, s.collectMs / frames, s.applyMs / frames, s.waitMs / frames,
         s.buildMs / d12, s.traceMs / d12, s.temporalMs / d12, s.spatialMs / d12, s.compositeMs / d11,
         s.syncMs / d11, s.d3d12Passes, s.d3d11Passes);
