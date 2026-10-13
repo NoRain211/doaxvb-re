@@ -29,6 +29,7 @@
     "docs/building.md",
     "docs/texture-replacement.md",
     "docs/fog.md",
+    "docs/sun-shadow.md",
     "docs/title-idle.md",
     "docs/custom-soundtracks.md",
     "docs/native-audio.md",
