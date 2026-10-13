@@ -3972,11 +3972,24 @@ bool compareReplay(RecompD3dPresenter *presenter)
    frames for an uneven 1-3 or 3-5 refreshes (judder); hold each for exactly
    refresh/60. Rechecked each second, as the window can change monitors.
    ponytail: other rates keep interval 1; only VRR can pace 60 Hz evenly there. */
-UINT fixedRefreshInterval(UINT hz)
+UINT fixedRefreshInterval(UINT hz, UINT rate = 60u)
 {
-    // Rates below the multiple cannot retire sixty frames per second.
-    const UINT k = (hz + 30u) / 60u;
-    return (k == 2u || k == 4u) && hz >= 60u * k && hz <= 60u * k + 1u ? k : 1u;
+    // Rates below the multiple cannot retire the guest's frames per second.
+    const UINT k = (hz + rate / 2u) / rate;
+    return (k == 2u || k == 4u) && hz >= rate * k && hz <= rate * k + 1u ? k : 1u;
+}
+
+// Whole-game high frame rate presents RECOMP_GAME_HZ frames per second.
+UINT presentationRate()
+{
+    static const UINT rate = [] {
+        const char *text = std::getenv("RECOMP_GAME_HZ");
+        char *end = nullptr;
+        const unsigned long hz = text != nullptr ? std::strtoul(text, &end, 10) : 0ul;
+        return end != text && end != nullptr && *end == '\0' && hz >= 60ul && hz <= 360ul
+            ? static_cast<UINT>(hz) : 60u;
+    }();
+    return rate;
 }
 
 UINT syncInterval(RecompD3dPresenter *presenter)
@@ -3992,7 +4005,7 @@ UINT syncInterval(RecompD3dPresenter *presenter)
         UINT interval = 1u;
         if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
             EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
-            interval = fixedRefreshInterval(mode.dmDisplayFrequency);
+            interval = fixedRefreshInterval(mode.dmDisplayFrequency, presentationRate());
         }
         presenter->sync_interval = interval;
     }
