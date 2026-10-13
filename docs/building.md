@@ -382,5 +382,14 @@ retaining the screen-space color and contact fallback.
 Set `RECOMP_D3D_RTGI_SPLIT=1` to leave the left half of the screen unlit for
 comparison. Eligible static textured draws also supply off-screen bounce color;
 supported alpha-tested textures leave holes in the traced geometry.
+`RECOMP_D3D_RTGI_SCALE` (1 to 4, default 2) traces one ray per that many
+pixels across and down; the composite upsamples by depth, so 3 or 4 trades
+softer contact shading for less GPU time at 4K. `RECOMP_D3D_RTGI_HZ` (default
+60) limits traces per second: a frame that starts within three quarters of a
+period of the last traced frame, such as a `RECOMP_GAME_HZ=120` display pass,
+reprojects that frame's light onto its own depth instead of tracing. Set it to
+0 to trace every frame. `RECOMP_PERF_COUNTER=1` appends RTGI costs to the
+per-second `recomp performance:` line: traced, refitted and reused frames,
+triangles per trace, CPU milliseconds per frame, and GPU milliseconds per stage.
 Without DXR support, or in a build without DXC, the runner logs a
 `recomp rtgi:` line and renders with D3D11 alone.
