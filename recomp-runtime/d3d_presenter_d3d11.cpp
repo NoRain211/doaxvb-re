@@ -2666,6 +2666,7 @@ RecompD3dPresenterError submitDraw(
     if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
         // The shadow map replaces its darkening; keep its stencil writes.
         ++presenter->sun.game_shadows;
+        presenter->sun.seen_alpha = (std::max)(presenter->sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
         auto stencil_only = draw;
         stencil_only.blend.color_write_mask = 0;
         return submitDraw(presenter, stencil_only);
@@ -3030,11 +3031,18 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(constants, sun.projection, sizeof sun.projection);
         float direction[3];
         const int light = sunDirection(draw, direction);
+        // Ground darkens like the game's own shadow (its per-scene opacity): many stages light the
+        // sand with a separate rig or mostly baked light, so removing the sun's direct term shows little.
+        float extent;
+        const bool ground = !draw.blend_weight_count && sun.game_alpha > 0 &&
+            !(sunSceneDraw(draw, extent) && extent <= 4);
         constants[16] = !sun.casting && sun.valid && sun.epoch == sun.camera_epoch &&
             !draw.target.offscreen && !draw.target.no_depth && !draw.program_count &&
             !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
-            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && light >= 0 && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
+            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled &&
+            (light >= 0 || ground) && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
         constants[17] = static_cast<float>(light);
+        constants[18] = ground ? sun.game_alpha : 0.0f;
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4167,6 +4175,8 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
         std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u direction=%.4f,%.4f,%.4f\n",
             presenter->present_count, sun.casters, sun.game_shadows, sun.direction[0], sun.direction[1], sun.direction[2]);
     sun.game_shadows = 0;
+    sun.game_alpha = sun.seen_alpha;
+    sun.seen_alpha = 0;
 }
 
 RecompD3dPresenterError d3d11_backend_submit(

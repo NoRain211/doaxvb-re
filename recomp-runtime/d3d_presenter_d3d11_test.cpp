@@ -3197,6 +3197,17 @@ static bool testSunShadow(unsigned samples)
         passed = presenter.sun.valid && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
             pixels("sun visibility keeps ambient and fill", weights ? right : left);
     }
+    {
+        // Ground (not a compact caster) darkens by the game's shadow opacity instead.
+        presenter.sun.game_alpha = 0.75f;
+        auto ground = receiver;
+        ground.depth.depth_write_enable = false;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t expected[] = {white,white,0xff404040,0xff404040};
+        passed = passed && submitDraw(&presenter, ground) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("ground uses game shadow opacity", expected);
+        presenter.sun.game_alpha = 0;
+    }
     // Non-host-lit draws and a different scene-depth epoch must bypass the map.
     draw = receiver;
     for (unsigned mode = 0; passed && mode < 3; ++mode) {

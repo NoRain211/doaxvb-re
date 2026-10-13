@@ -20,7 +20,10 @@ along the camera's near ray, with 120 units of light-space depth. The XY fit
 snaps to shadow texels and shadows fade over the outer tenth of the box.
 Receivers offset their lookup 0.04 units along the vertex normal, and the
 compare bias is 0.0002 of light depth, so grazing skin under the low key light
-does not shadow itself. Casters are opaque (including alpha-tested), host-lit
+does not shadow itself. Skinned and compact receivers lose only the sun's
+direct term. Other (ground) receivers darken by the game's own shadow opacity,
+taken from last frame's hidden darkening pass, because many stages light the
+sand with a separate rig or mostly baked light. Casters are opaque (including alpha-tested), host-lit
 normal-bearing skinned draws and rigid draws no larger than four world units.
 The rigid rule includes the ball but can include small scenery; transparent
 hair and distant objects are outside this initial test. Vertex blending uses

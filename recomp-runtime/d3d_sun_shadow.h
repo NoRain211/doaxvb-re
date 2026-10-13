@@ -11,6 +11,8 @@ constexpr float kSunBox = 64, kSunAhead = 20, kSunDepth = 120;
 struct SunShadow {
     bool enabled = false, valid = false, casting = false;
     unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
+    // Game shadow opacity (texture-factor alpha) seen last frame; 0 when the game drew none.
+    float game_alpha = 0, seen_alpha = 0;
     float camera[16]{}, inverse[16]{}, projection[16]{}, direction[3]{};
     ID3D11Texture2D *texture = nullptr;
     ID3D11DepthStencilView *depth = nullptr;
@@ -294,7 +296,9 @@ float sunVisibility(float3 p) {
             "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04; output.sun_total=rgb;\n");
     }
     source.insert(source.find("    float4 shaded = input.color;"),
-        "    if (sun_flags.x > 0) input.color.rgb = saturate(input.sun_total - input.sun_direct * (1-sunVisibility(input.sun_world)));\n");
+        "    if (sun_flags.x > 0) { float sun_v = sunVisibility(input.sun_world);\n"
+        "        input.color.rgb = sun_flags.z > 0 ? input.color.rgb * (1 - sun_flags.z*(1-sun_v))\n"
+        "            : saturate(input.sun_total - input.sun_direct * (1-sun_v)); }\n");
 }
 
 } // namespace
