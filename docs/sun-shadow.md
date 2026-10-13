@@ -33,17 +33,15 @@ hair and distant objects are outside this initial test. Vertex blending uses
 the command's replayed `world[]` palette and the same explicit/remainder
 weights as the visible pass.
 
-The sun is the stage's key light: slot 0 of the background light rig, which
-the game saves each frame (four 0x58-byte rows at guest 0x009D4F58; kind at +0,
-elevation and azimuth at +0x24 and +0x28 in 1/65536 turns). The draw adapter
-reads it into each draw's `sun` as a world-space toward-light vector, valid only
-when slot 0 is directional. When it is not, no shadow map is built and the
-game's own shadows stay. Slot 0 is a key-light proxy: on the sunset court it
-sits about 14 degrees from the sun sprite, which the game places separately.
+The light direction is the one the game projects its own character and ball
+shadows along: three floats at guest 0x00333870, a toward-light vector that the
+scene setters normalize. The draw adapter copies it into each draw's `sun`. The
+stage key light (background rig slot 0 at 0x009D4F58) differs by up to about 20
+degrees and points upward on some daytime stages, so it is not used.
 
-`sunDirection()` requires the camera-defining draw to carry a directional light
-within 25 degrees of that key light, and a key light above the horizon. Matching
-by direction stands in for slot provenance. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
+`sunDirection()` accepts a host-lit camera-defining draw when that direction
+is above the horizon; otherwise no shadow map is built and the game's own
+shadows stay. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
 travel** direction, normalized on input; invalid, zero and nonfinite values are
 ignored. It does not move the sky sun or change the game's light rig.
 

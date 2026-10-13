@@ -40,23 +40,11 @@ bool sunNormalize(float v[3])
     return true;
 }
 
-// Picks the draw's directional light nearest the background key light (adapter's sun);
-// direction receives light travel for the map. Captured XYZ is world-space toward-light.
-// shortcut: matches by direction (within 25 deg), not slot tag; add slot provenance if rigs collide.
+// direction receives light travel for the map from the adapter's sun (the game's own
+// projected-shadow direction, world-space toward-light) on host-lit draws.
 int sunDirection(const RecompD3dPresenterDrawCommand &draw, float direction[3])
 {
-    const RecompD3dDirectionalLighting &light = draw.directional;
-    if (draw.sun[3] != 1 || !light.enabled || light.count > 8) return -1;
-    int selected = -1;
-    float best = 0.906f; // cos 25 degrees
-    for (unsigned i = 0; i < light.count; ++i) {
-        if (light.positions[i][3] != 0) continue;
-        float toward[3] = {light.directions[i][0], light.directions[i][1], light.directions[i][2]};
-        if (!sunNormalize(toward)) continue;
-        const float match = toward[0]*draw.sun[0] + toward[1]*draw.sun[1] + toward[2]*draw.sun[2];
-        if (match > best) { best = match; selected = static_cast<int>(i); }
-    }
-    if (selected < 0) return -1;
+    if (draw.sun[3] != 1 || !draw.directional.enabled) return -1;
     for (unsigned c = 0; c < 3; ++c) direction[c] = -draw.sun[c];
     if (const char *value = std::getenv("RECOMP_D3D_SUN_DIR")) {
         float override_direction[3];
@@ -66,9 +54,9 @@ int sunDirection(const RecompD3dPresenterDrawCommand &draw, float direction[3])
             sunNormalize(override_direction))
             std::memcpy(direction, override_direction, sizeof override_direction);
     }
-    // A key light at or below the horizon (one demo rig) casts nothing useful; keep the game's shadow.
+    // A light at or below the horizon casts nothing useful; keep the game's shadow.
     if (direction[1] > -0.05f) return -1;
-    return selected;
+    return 0;
 }
 
 // The game's projected shadow (actors and ball), darkening pass only. That pass also

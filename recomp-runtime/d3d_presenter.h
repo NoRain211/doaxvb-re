@@ -115,7 +115,7 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Scene camera inputs: WORLD0..WORLD[blend_weight_count] and VIEW * PROJECTION. */
     float world[4][16];
     float view_projection[16];
-    /* Background key light (rig slot 0), world-space toward-light; w is 1 when valid. */
+    /* Game's projected-shadow direction, world-space toward-light; w is 1 when valid. */
     float sun[4];
     bool has_transform;
     /* Depth, stencil, and alpha-test state for this draw, already decoded by

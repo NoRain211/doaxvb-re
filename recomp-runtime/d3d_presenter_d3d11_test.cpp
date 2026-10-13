@@ -3095,7 +3095,7 @@ static bool testSunShadow(unsigned samples)
     light.enabled = light.normalize = true; light.count = 3;
     light.directions[0][1] = light.directions[1][1] = 0.6f;
     light.directions[0][2] = light.directions[1][2] = -0.8f;
-    draw.sun[1] = 0.6f; draw.sun[2] = -0.8f; draw.sun[3] = 1; // key light matches lights 0 and 1
+    draw.sun[1] = 0.6f; draw.sun[2] = -0.8f; draw.sun[3] = 1; // game shadow direction
     light.positions[2][3] = 1; light.positions[2][2] = -5; light.attenuation[2][0] = 1;
     for (unsigned i = 0; i < 4; ++i) {
         draw.transform[i*5] = draw.view_projection[i*5] = draw.world[0][i*5] = 1;
@@ -3111,11 +3111,11 @@ static bool testSunShadow(unsigned samples)
     {
         auto other = draw;
         other.sun[3] = 0;
-        passed = passed && sunDirection(other, direction) < 0; // no background key light
-        other = draw; other.sun[2] = 1;
-        passed = passed && sunDirection(other, direction) < 0; // no matching rig light
+        passed = passed && sunDirection(other, direction) < 0; // no game shadow direction
+        other = draw; other.directional.enabled = false;
+        passed = passed && sunDirection(other, direction) < 0; // not host-lit
         other = draw; other.sun[1] = other.directional.directions[0][1] = -0.6f;
-        passed = passed && sunDirection(other, direction) < 0; // key light below the horizon
+        passed = passed && sunDirection(other, direction) < 0; // light below the horizon
     }
     _putenv_s("RECOMP_D3D_SUN_DIR", "1,-2,3");
     passed = passed && sunDirection(draw, direction) == 0 && direction[0] > 0 && direction[1] < 0;

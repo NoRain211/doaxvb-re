@@ -341,18 +341,17 @@ static bool attach_camera(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     float view[16], projection[16];
 
-    /* Game seam: the effective background light rig the game saves each frame
-       (four 0x58-byte rows; +0 kind, 1 = directional; +0x24/+0x28 elevation/azimuth
-       in 1/65536 turns). Slot 0 is the stage key light used for sun shadows. */
+    /* Game seam: the normalized toward-light direction the game projects its own
+       character and ball shadows along (three floats; scene setters normalize it).
+       Stage key lights differ by up to ~20 degrees and point upward on some stages. */
     memset(draw->sun, 0, sizeof draw->sun);
-    const uint8_t *rig = guest_span(0x009d4f58u, 0x2cu);
-    if (rig) {
-        uint32_t kind, elevation, azimuth;
-        memcpy(&kind, rig, 4); memcpy(&elevation, rig + 0x24, 4); memcpy(&azimuth, rig + 0x28, 4);
-        const float turn = 6.28318530718f / 65536.0f;
-        const float e = (float)(uint16_t)elevation * turn, b = (float)(uint16_t)azimuth * turn;
-        if (kind == 1u) {
-            draw->sun[0] = sinf(b) * cosf(e); draw->sun[1] = sinf(e); draw->sun[2] = cosf(b) * cosf(e);
+    const uint8_t *shadow = guest_span(0x00333870u, 12u);
+    if (shadow) {
+        float v[3];
+        memcpy(v, shadow, sizeof v);
+        const float length = sqrtf(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+        if (isfinite(length) && length > 1e-6f) {
+            for (int c = 0; c < 3; ++c) draw->sun[c] = v[c] / length;
             draw->sun[3] = 1.0f;
         }
     }
