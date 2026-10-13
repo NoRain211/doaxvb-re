@@ -31,7 +31,20 @@ directional contribution. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides **light travel*
 direction for the map, normalized on input. Invalid, zero and nonfinite values
 retain the rig direction. This does not move the sky sun or change the game's
 light rig. Character and environment rigs can differ, and the brightest light
-has not been established as the true sun writer.
+is only a shortcut, not the verified environment key-light selection rule.
+
+The adapter already supplies a normalized **world-space toward-light** vector.
+No inverse object matrix should be applied; the shadow map negates it only to
+obtain light travel. Active-list order is enable order, not D3D slot order, so
+the first captured record cannot stand in for slot 0. Slot identity can be
+recovered from the device's light table, but a correct replacement also needs
+the effective background-rig provenance for the current view, including script
+mode changes. The present adapter does not retain that provenance; an unskinned
+draw alone does not establish it. Keep the strongest-light/override shortcut
+until both are carried to the presenter. Then prefer enabled directional slot 0
+from the background rig, treating disabled, non-directional or unattributed
+slot 0 as unavailable. That remains a key-light proxy, not proof of alignment
+with the sky's visible sun.
 
 Nine comparison-filtered samples provide shadow visibility. Only the selected
 direct diffuse term is reduced before material/texture processing and fog;

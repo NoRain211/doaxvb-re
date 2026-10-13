@@ -30,7 +30,8 @@ bool sunNormalize(float v[3])
     return true;
 }
 
-// Returns the strongest direct term and its light-travel direction.
+// shortcut: slot/background provenance is absent; prefer enabled environment slot 0 once both are captured.
+// Captured XYZ is already world-space toward-light; negate it only to get light travel.
 int sunDirection(const RecompD3dDirectionalLighting &light, float direction[3])
 {
     int selected = -1;
