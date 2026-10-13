@@ -191,3 +191,38 @@ movie end) leading to CPU Exhibition, START ending the matches in a run of
 the game, sound, sessions longer than thirteen minutes, and Windows and
 Linux builds. The launcher choice has not been seen on screen in any of the
 three launchers.
+
+## Demo cut hold
+
+Each of the real-time demo's six scenes ends by freezing its last picture for
+60 frames, one second, while the next scene starts beneath it. Set
+`RECOMP_DEMO_CUT_HOLD` to a frame count from 1 to 59 before the runner starts
+to shorten that freeze; unset, or any other value, leaves the game's own 60.
+Each launcher has a **Shorter demo cuts** option, which sets it to 12 frames
+and is off by default. The Windows launcher sets the variable itself; Linux
+and macOS save the choice in `private/launcher.json` as `demo_cut_hold`, and
+`run_game.py` turns it into the variable.
+
+The demo is a script, and the freeze is its instruction `0x31` with the frame
+count as its operand. Seam: `demo_cut_hold` in `recomp-runtime/title_idle.c`
+is the manual lookup for the generated handler at `0x000696D0`. It lowers the
+operand, calls the generated handler, which still owns the freeze, and puts
+the operand back. Only the demo's script block is touched. A shorter freeze
+ends each scene, and so the whole demo, that much sooner; the scenes
+themselves are not cut.
+
+The next scene is already drawn beneath the frozen picture, so the freeze
+hides whatever its first frames cost. Scripted runs on an M-series Mac at
+1080p, one demo pass each with frame times logged and no screenshots: the
+game's own 60 had no frame over 20 ms; a 4-frame hold had two, of 21 and
+24 ms; a 1-frame hold had none in one run and six of 20 to 41 ms in another,
+one of them before the first cut. That is within run-to-run noise on that
+machine. With a 12-frame hold and screenshots, the first cut came about 12
+frames after the freeze began instead of 60.
+`title_idle_test.c --cut-hold` checks on synthetic memory that the
+handler sees the chosen count, that the script keeps its 60, and that
+another script's hold is left alone.
+
+Not checked: frame times on slower machines such as the Steam Deck, Windows
+builds, how the shorter demo sits against its music, and the launcher option
+itself on screen in each launcher.

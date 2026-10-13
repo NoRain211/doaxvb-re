@@ -22,12 +22,20 @@ uint8_t *recomp_memory(uint32_t address, size_t size)
 }
 uint32_t *recomp_memory_u32_checked(uint32_t address) { return (uint32_t *)recomp_memory(address, 4); }
 void sub_0006B290(void) { ++title_updates; }
+static int16_t held_frames;
+void sub_000696D0(void)
+{
+    const uint32_t state = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+
+    memcpy(&held_frames, recomp_memory(*recomp_memory_u32(state + SCRIPT_POSITION) + 2u, 2u), 2u);
+}
 void recomp_cpu_exhibition_start(void) { ++exhibition_starts; }
 void recomp_cpu_exhibition_frame(void) { ++exhibition_frames; }
 
 enum {
     TEST_STACK = 0x00400000u,
-    TEST_STATE = 0x004D9944u
+    TEST_STATE = 0x004D9944u,
+    TEST_SCRIPT = 0x0032AF7Au
 };
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "Title idle line %d: %s\n", __LINE__, #c); return 1; } } while (0)
@@ -62,6 +70,33 @@ int main(int argc, char **argv)
     setenv("RECOMP_TITLE_IDLE", idle, 1);
 #endif
     recomp_runtime.registers.esp = TEST_STACK;
+
+    /* A demo cut holds for the chosen frames, the script keeps its own 60,
+       and another script's hold is left alone. */
+    if (argc > 1 && strcmp(argv[1], "--cut-hold") == 0) {
+        const int16_t script_hold = DEMO_CUT_HOLD_FRAMES;
+        int16_t after;
+
+        CHECK(recomp_title_idle_lookup_manual(DEMO_CUT_HOLD) == NULL);
+#ifdef _WIN32
+        _putenv_s("RECOMP_DEMO_CUT_HOLD", "12");
+#else
+        setenv("RECOMP_DEMO_CUT_HOLD", "12", 1);
+#endif
+        cut_hold_setting = 0;
+        memcpy(recomp_memory(TEST_SCRIPT + 2u, 2u), &script_hold, 2u);
+        *recomp_memory_u32(DEMO_SCRIPT + SCRIPT_POSITION) = TEST_SCRIPT;
+        *recomp_memory_u32(TEST_STACK + 4u) = DEMO_SCRIPT;
+        recomp_title_idle_lookup_manual(DEMO_CUT_HOLD)();
+        CHECK(held_frames == 12);
+        memcpy(&after, recomp_memory(TEST_SCRIPT + 2u, 2u), 2u);
+        CHECK(after == DEMO_CUT_HOLD_FRAMES);
+        *recomp_memory_u32(TEST_STATE + SCRIPT_POSITION) = TEST_SCRIPT;
+        *recomp_memory_u32(TEST_STACK + 4u) = TEST_STATE;
+        recomp_title_idle_lookup_manual(DEMO_CUT_HOLD)();
+        CHECK(held_frames == DEMO_CUT_HOLD_FRAMES);
+        return 0;
+    }
     *recomp_memory_u32(TEST_STACK + 4u) = TEST_STATE;
     memcpy(recomp_memory(STEP_TABLE, sizeof table), table, sizeof table);
     CHECK(recomp_title_idle_lookup_manual(TITLE_UPDATE + 1u) == NULL);
