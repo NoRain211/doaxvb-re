@@ -4202,9 +4202,10 @@ RecompD3dPresenterError submitPresent(
                 const double passes = (std::max)(1u, s.traced + s.reused);
                 const double d12 = (std::max)(1u, s.d3d12Passes), d11 = (std::max)(1u, s.d3d11Passes);
                 std::snprintf(rtgi_costs, sizeof rtgi_costs,
-                    " rtgi_traced=%u rtgi_reused=%u rtgi_tris=%.0f rtgi_cpu_ms=collect:%.2f,apply:%.2f,wait:%.2f"
+                    " rtgi_traced=%u rtgi_refitted=%u rtgi_reused=%u rtgi_tris=%.0f"
+                    " rtgi_cpu_ms=collect:%.2f,apply:%.2f,wait:%.2f"
                     " rtgi_gpu_ms=build:%.2f,trace:%.2f,temporal:%.2f,spatial:%.2f,composite:%.2f,sync:%.2f",
-                    s.traced, s.reused, double(s.triangles) / (std::max)(1u, s.traced),
+                    s.traced, s.refitted, s.reused, double(s.triangles) / (std::max)(1u, s.traced),
                     s.collectMs / passes, s.applyMs / passes, s.waitMs / passes,
                     s.buildMs / d12, s.traceMs / d12, s.temporalMs / d12, s.spatialMs / d12,
                     s.compositeMs / d11, s.syncMs / d11);
