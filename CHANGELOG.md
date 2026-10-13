@@ -27,6 +27,16 @@
 
 ### Fixed
 
+- **Depth of field above 480p on macOS and Linux**. The blurred background
+  in the real-time demo and close-ups looked blocky and streaky next to the
+  sharp model on an upscaled frame. The game blurs a 256x256 copy of the
+  frame; the Metal and Vulkan presenter now averages the upscaled frame into
+  that copy and stretches the result back with a smooth filter. The D3D11
+  presenter already averaged the copy.
+- **Scene changes above 480p on macOS and Linux**. The picture the game
+  holds for a moment when it cuts from one scene to the next was a 512x512
+  copy stretched over the screen. The Metal and Vulkan presenter now keeps
+  that copy at the render resolution.
 - **Widescreen window fit** (#119). Above 480p, the borderless window now
   fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
   cut off the right side, and ultrawide screens show the picture in the
