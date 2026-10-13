@@ -337,6 +337,18 @@ static bool compose_blend_transforms(uint32_t device, RecompD3dPresenterDrawComm
     return true;
 }
 
+static bool attach_camera(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    float view[16], projection[16];
+
+    if (!read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
+    multiply_transform(view, projection, draw->view_projection);
+    for (uint32_t i = 0u; i <= draw->blend_weight_count; ++i)
+        if (!read_transform(device, D3D_TRANSFORM_WORLD + i, draw->world[i])) return false;
+    return true;
+}
+
 static uint32_t largest_index(const uint8_t *indices, uint32_t count)
 {
     uint32_t largest = 0u;
@@ -2032,6 +2044,10 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     memcpy(command.data.draw.transform, transform, sizeof transform);
     if (!compose_blend_transforms(device, &command.data.draw)) {
         decline = "vertex-blend";
+        goto finished;
+    }
+    if (!attach_camera(device, &command.data.draw)) {
+        decline = "transform";
         goto finished;
     }
     if (!attach_draw_state(device, &command.data.draw)) {
