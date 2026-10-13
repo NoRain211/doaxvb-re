@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <unordered_map>
 
 namespace {
 struct Vec3 {
@@ -33,6 +32,11 @@ struct CellHash {
         return uint32_t(c.x)*73856093u ^ uint32_t(c.y)*19349663u ^ uint32_t(c.z)*83492791u;
     }
 };
+// Open-addressed weld grid; each slot heads a chain of representatives in that cell.
+struct CellSlot {
+    Cell cell;
+    uint32_t head;
+};
 }
 
 std::vector<uint8_t> recomp_d3d_smooth_normals(
@@ -61,8 +65,18 @@ std::vector<uint8_t> recomp_d3d_smooth_normals(
             (!layout.blend_weight_count || !std::memcmp(bytes+size_t(i)*stride+12u,
                 bytes+size_t(j)*stride+12u, 4u*layout.blend_weight_count));
     };
-    std::unordered_multimap<Cell, uint32_t, CellHash> grid;
-    grid.reserve(count);
+    unsigned bits = 4u;
+    while ((size_t(1) << bits) < 2u*size_t(count)) ++bits;
+    const size_t capacity = size_t(1) << bits;
+    std::vector<CellSlot> grid(capacity, CellSlot{{0, 0, 0}, UINT32_MAX});
+    std::vector<uint32_t> same_cell(count, UINT32_MAX);
+    // At most count cells are occupied, so a probe always reaches a free slot.
+    const auto slot = [&](Cell c) -> CellSlot & {
+        // Regular grids leave CellHash's low bits clustered; take the high product bits.
+        size_t i = size_t(uint64_t(CellHash{}(c)) * 0x9E3779B97F4A7C15ull >> (64u-bits));
+        while (grid[i].head != UINT32_MAX && !(grid[i].cell == c)) i = (i+1u) & (capacity-1u);
+        return grid[i];
+    };
     for (uint32_t i=0; i<count; ++i) {
         if (!used[i]) continue;
         std::memcpy(&positions[i], bytes+size_t(i)*stride+layout.position_offset, 12u);
@@ -75,19 +89,26 @@ std::vector<uint8_t> recomp_d3d_smooth_normals(
         normals[i] = unit(normals[i]);
         const auto cell = [](Vec3 v) {
             constexpr double width = 2.0*double(kWeldTolerance);
-            return Cell{int(std::floor(v.x/width)), int(std::floor(v.y/width)), int(std::floor(v.z/width))};
+            // floor() without a libm call; the bound above keeps quotients inside int.
+            const auto floor_int = [](double d) { const int t = int(d); return t - (double(t) > d); };
+            return Cell{floor_int(v.x/width), floor_int(v.y/width), floor_int(v.z/width)};
         };
         const Vec3 tolerance{kWeldTolerance, kWeldTolerance, kWeldTolerance};
         const Cell low = cell(p-tolerance), high = cell(p+tolerance);
         welded[i] = i;
         // Double-width cells need at most eight buckets for the tolerance box.
         for (int x=low.x; x<=high.x; ++x) for (int y=low.y; y<=high.y; ++y) for (int z=low.z; z<=high.z; ++z) {
-            const auto range = grid.equal_range({x,y,z});
-            for (auto it=range.first; it!=range.second; ++it)
-                if (same_position(i, it->second) && it->second<welded[i])
-                    welded[i] = it->second;
+            for (uint32_t j=slot({x,y,z}).head; j!=UINT32_MAX; j=same_cell[j])
+                if (same_position(i, j) && j<welded[i])
+                    welded[i] = j;
         }
-        if (welded[i]==i) grid.emplace(cell(p), i);
+        if (welded[i]==i) {
+            const Cell own = cell(p);
+            CellSlot &home = slot(own);
+            home.cell = own;
+            same_cell[i] = home.head;
+            home.head = i;
+        }
         next[i] = heads[welded[i]];
         heads[welded[i]] = i;
     }
@@ -116,7 +137,15 @@ std::vector<uint8_t> recomp_d3d_smooth_normals(
     // Draws can contain only a patch of a smooth surface. Keep the authored
     // normals where the missing neighboring faces would bias the reconstruction.
     std::vector<bool> boundary(count);
-    std::sort(edges.begin(), edges.end());
+    // Two stable counting passes, low vertex then high, sort the packed edges.
+    std::vector<uint32_t> sorted(edges.size()), offsets(size_t(count)+1u);
+    for (const unsigned shift : {0u, 16u}) {
+        std::fill(offsets.begin(), offsets.end(), 0u);
+        for (const uint32_t e : edges) ++offsets[((e>>shift)&65535u)+1u];
+        for (uint32_t v=0; v<count; ++v) offsets[v+1u] += offsets[v];
+        for (const uint32_t e : edges) sorted[offsets[(e>>shift)&65535u]++] = e;
+        edges.swap(sorted);
+    }
     for (size_t begin=0, end; begin<edges.size(); begin=end) {
         for (end=begin+1; end<edges.size() && edges[end]==edges[begin]; ++end) {}
         if (end-begin!=2u) {
