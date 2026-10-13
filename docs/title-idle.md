@@ -198,7 +198,10 @@ Each of the real-time demo's six scenes ends by freezing its last picture for
 60 frames, one second, while the next scene starts beneath it. Set
 `RECOMP_DEMO_CUT_HOLD` to a frame count from 1 to 59 before the runner starts
 to shorten that freeze; unset, or any other value, leaves the game's own 60.
-No launcher has the option.
+Each launcher has a **Shorter demo cuts** option, which sets it to 12 frames
+and is off by default. The Windows launcher sets the variable itself; Linux
+and macOS save the choice in `private/launcher.json` as `demo_cut_hold`, and
+`run_game.py` turns it into the variable.
 
 The demo is a script, and the freeze is its instruction `0x31` with the frame
 count as its operand. Seam: `demo_cut_hold` in `recomp-runtime/title_idle.c`
@@ -221,4 +224,5 @@ handler sees the chosen count, that the script keeps its 60, and that
 another script's hold is left alone.
 
 Not checked: frame times on slower machines such as the Steam Deck, Windows
-builds, and how the shorter demo sits against its music.
+builds, how the shorter demo sits against its music, and the launcher option
+itself on screen in each launcher.
