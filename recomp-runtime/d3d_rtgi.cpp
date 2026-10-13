@@ -41,6 +41,30 @@ static void check(HRESULT result, const char *operation)
     if (FAILED(result)) throw RtgiError{result, operation};
 }
 
+// MSVC's std::isfinite is an out-of-line CRT call; this one runs per vertex.
+static bool finite(float value)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return (bits & 0x7f800000u) != 0x7f800000u;
+}
+
+static double elapsedMs(const LARGE_INTEGER &start)
+{
+    LARGE_INTEGER now, frequency;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    return 1000.0 * double(now.QuadPart - start.QuadPart) / double(frequency.QuadPart);
+}
+
+// Adds the scope's CPU time to total; a null total times nothing.
+struct CpuClock {
+    double *total;
+    LARGE_INTEGER start{};
+    explicit CpuClock(double *sum) : total(sum) { if (total) QueryPerformanceCounter(&start); }
+    ~CpuClock() { if (total) *total += elapsedMs(start); }
+};
+
 struct RtgiTexture {
     ComPtr<ID3D12Resource> resource;
     ComPtr<ID3D11Texture2D> imported;
@@ -56,6 +80,7 @@ struct RtgiSlot {
     ComPtr<ID3D12Resource> uvs, triangles, materials, normals, motions, tints;
     ComPtr<ID3D12Resource> bottom, top, scratch;
     UINT64 completion = 0;
+    bool timed = false;  // its D3D12 timestamps await reading
 };
 
 struct RtgiCacheSlice {
@@ -72,6 +97,20 @@ struct RtgiMaterial {
 };
 static_assert(sizeof(RtgiMaterial) == 20, "HLSL material layout");
 
+struct CompositeConstants {
+    float fullSize[2], strength, split, traceSize[2], texelPixels;
+    uint32_t reproject;
+    XMFLOAT4X4 reprojection;
+};
+static_assert(sizeof(CompositeConstants) == 96, "HLSL composite layout");
+
+// D3D11 timestamps around reduction, D3D12 wait and composite; read when reused.
+struct RtgiTimer11 {
+    ComPtr<ID3D11Query> disjoint, stamps[4];
+    bool pending = false;
+};
+constexpr UINT stampsPerSlot = 5, timers11 = 6;
+
 struct D3dRtgi {
     ComPtr<ID3D11Device5> device11;
     ComPtr<ID3D11DeviceContext4> context11;
@@ -82,8 +121,9 @@ struct D3dRtgi {
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> trace, temporal, spatial;
     ComPtr<ID3D11VertexShader> fullscreen;
-    ComPtr<ID3D11PixelShader> reduce[2], composite[2];
-    ComPtr<ID3D11PixelShader> copyAlpha, copyColor;
+    // composite: single-sample, then the two per-pixel MSAA passes.
+    ComPtr<ID3D11PixelShader> reduce[2], composite[3];
+    ComPtr<ID3D11PixelShader> copyAlpha, copyColor, reduceColor;
     ComPtr<ID3D11SamplerState> linear;
     ComPtr<ID3D11BlendState> blend;
     ComPtr<ID3D11Buffer> constants11;
@@ -99,18 +139,35 @@ struct D3dRtgi {
     std::vector<XMFLOAT3> motions, previousPositions;
     std::map<MeshKey, size_t> meshes, previousMeshes;
     std::vector<uint32_t> indices;
+    // A frame whose triangles match the last traced frame's refits that BLAS.
+    std::vector<uint32_t> previousIndices;
+    RtgiSlot *lastBuilt = nullptr;
+    UINT refits = 0;
     std::vector<XMFLOAT2> uvs;
     std::vector<XMFLOAT3> tints;
     std::vector<uint32_t> triangles;
     std::vector<RtgiMaterial> materials;
     XMFLOAT4X4 camera{}, previousCamera{};
     size_t cameraTriangles = 0;
-    UINT width = 0, height = 0, halfWidth = 0, halfHeight = 0;
+    UINT width = 0, height = 0, scale = 2, traceWidth = 0, traceHeight = 0;
     UINT64 frame = 0, readyValue = 0, doneValue = 0;
     UINT64 capture = 0;
     float strength = 1;
     bool hitColor = true;
     bool failed = false, historyValid = false, alphaFullLogged = false, colorFullLogged = false;
+    bool timing = false;
+    // RECOMP_D3D_RTGI_HZ: a capture starting sooner than reuseMs after the last
+    // traced one, such as a display pass between 60 Hz ticks, reprojects its GI.
+    double reuseMs = 0;
+    LARGE_INTEGER lastTrace{}, captureStart{};
+    bool captureOpen = false, reuse = false;
+    size_t reuseDraws = 0;
+    ComPtr<ID3D12QueryHeap> stamps12;
+    ComPtr<ID3D12Resource> stampReadback;
+    double tickMs12 = 0;
+    RtgiTimer11 timer11[timers11];
+    UINT64 passes = 0;
+    D3dRtgiStats stats;
 };
 
 static void fail(D3dRtgi &r, const char *operation, HRESULT result = E_FAIL)
@@ -176,8 +233,8 @@ static void texture(D3dRtgi &r, RtgiTexture &t, DXGI_FORMAT format, bool shared,
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = width ? width : r.halfWidth;
-    desc.Height = height ? height : r.halfHeight;
+    desc.Width = width ? width : r.traceWidth;
+    desc.Height = height ? height : r.traceHeight;
     desc.DepthOrArraySize = UINT16(layers);
     desc.MipLevels = desc.SampleDesc.Count = 1;
     desc.Format = format;
@@ -212,7 +269,11 @@ float readDepth(int2 p) { return depthImage.Load(int3(p, 0)); }
 Texture2D<float4> giImage : register(t2);
 Texture2D<float> halfDepth : register(t3);
 SamplerState linearClamp : register(s0);
-cbuffer Frame : register(b0) { float2 fullSize; float strength; float split; };
+cbuffer Frame : register(b0) {
+    float2 fullSize; float strength; float split;
+    float2 traceSize; float texelPixels; uint reproject;
+    row_major float4x4 reprojection; // this frame's clip space to the traced frame's
+};
 struct Vertex { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 Vertex vs(uint id : SV_VertexID) {
     Vertex v;
@@ -230,38 +291,43 @@ Reduced reducePS(Vertex v) {
     output.color = colorImage.Load(int3(p, 0));
     return output;
 }
+float4 reduceColorPS(Vertex v) : SV_Target {
+    return colorImage.Load(int3(min(int2(v.uv * fullSize), int2(fullSize) - 1), 0));
+}
 // Dual-source blend: target *= scale + add. Unchanged is exactly scale 1, add 0.
 struct Gain { float4 add : SV_Target0; float4 scale : SV_Target1; };
-Gain compositePS(Vertex v, uint sampleIndex : SV_SampleIndex) {
-    int2 p = int2(v.position.xy);
-#if MULTISAMPLED
-    float depth = depthImage.Load(p, sampleIndex);
-#else
-    float depth = readDepth(p);
-#endif
+Gain shade(Vertex v, int2 p, float depth, float slope) {
     Gain gain = {float4(0, 0, 0, 0), float4(1, 1, 1, 1)};
     if (depth >= 1 || v.uv.x < split) return gain;
     // The 8-bit target cannot exceed white: fade brightening as the brightest
     // channel nears 1 so bright walls keep their texture and hue.
     float3 base = colorImage.SampleLevel(linearClamp, v.uv, 0).rgb;
     float headroom = saturate(1 - max(base.r, max(base.g, base.b)));
-    // Bilinear upsampling that skips half-resolution texels from another surface,
+    // A frame between traces reads the last traced GI where this surface was then.
+    float2 uv = v.uv;
+    float traced = depth;
+    if (reproject) {
+        float4 clip = mul(float4(v.uv * float2(2, -2) + float2(-1, 1), depth, 1), reprojection);
+        if (clip.w <= 0) return gain;
+        uv = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
+        traced = clip.z / clip.w;
+    }
+    // Bilinear upsampling that skips traced texels from another surface,
     // so light behind a silhouette does not bleed across it.
-    float2 halfSize = ceil(fullSize * 0.5);
-    float2 at = v.uv * halfSize - 0.5;
+    float2 at = uv * traceSize - 0.5;
     int2 corner = int2(floor(at));
     float2 f = at - corner;
     float3 sum = 0;
     float total = 0;
     bool agrees = false;
-    // A half-resolution texel sits up to two pixels away, so allow the local
+    // A traced texel sits up to two of its widths away, so allow the local
     // depth slope over that distance on steep or grazing surfaces.
-    float tolerance = max(max(2e-5, 0.025 * (1 - depth)), 4 * (abs(ddx(depth)) + abs(ddy(depth))));
+    float tolerance = max(max(2e-5, 0.025 * (1 - traced)), 2 * texelPixels * slope);
     [unroll] for (int i = 0; i < 4; ++i) {
         int2 offset = int2(i & 1, i >> 1);
-        int2 q = clamp(corner + offset, int2(0, 0), int2(halfSize) - 1);
+        int2 q = clamp(corner + offset, int2(0, 0), int2(traceSize) - 1);
         float other = halfDepth.Load(int3(q, 0));
-        bool same = abs(other - depth) <= tolerance;
+        bool same = abs(other - traced) <= tolerance;
         agrees = agrees || same;
         float w = (offset.x ? f.x : 1 - f.x) * (offset.y ? f.y : 1 - f.y) * (same ? 1 : 1e-3);
         sum += w * giImage.Load(int3(q, 0)).rgb;
@@ -287,11 +353,42 @@ Gain compositePS(Vertex v, uint sampleIndex : SV_SampleIndex) {
     }
     return gain;
 }
+#if MULTISAMPLED
+// Shading per sample costs the sample count in invocations. Shade per pixel
+// instead: pass 0 lights the samples on sample 0's surface, and pass 1 lights
+// the rest, such as the far side of a silhouette, with the first such depth.
+Gain compositePS(Vertex v, out uint coverage : SV_Coverage) {
+    int2 p = int2(v.position.xy);
+    uint width, height, samples;
+    depthImage.GetDimensions(width, height, samples);
+    float first = depthImage.Load(p, 0), depth = first;
+    uint near = 0;
+    bool found = PASS == 0;
+    for (uint s = 0; s < samples; ++s) {
+        float other = depthImage.Load(p, s);
+        bool same = abs(other - first) <= max(2e-5, 0.025 * (1 - first));
+        near |= same ? 1u << s : 0;
+        if (!found && !same) { depth = other; found = true; }
+    }
+    // Quad neighbours shade other surfaces in pass 1, so its slope is meaningless there.
+    float slope = PASS == 0 ? abs(ddx(depth)) + abs(ddy(depth)) : 0;
+    coverage = !found ? 0 : PASS == 0 ? near : ~near;
+    if (!coverage) return (Gain)0;
+    return shade(v, p, depth, slope);
+}
+#else
+Gain compositePS(Vertex v) {
+    int2 p = int2(v.position.xy);
+    float depth = readDepth(p);
+    return shade(v, p, depth, abs(ddx(depth)) + abs(ddy(depth)));
+}
+#endif
 )";
 
-static ComPtr<ID3DBlob> compile11(const char *entry, const char *target, bool msaa)
+static ComPtr<ID3DBlob> compile11(const char *entry, const char *target, bool msaa, int pass = 0)
 {
-    const D3D_SHADER_MACRO macros[] = {{"MULTISAMPLED", msaa ? "1" : "0"}, {nullptr, nullptr}};
+    const D3D_SHADER_MACRO macros[] = {{"MULTISAMPLED", msaa ? "1" : "0"},
+        {"PASS", pass ? "1" : "0"}, {nullptr, nullptr}};
     ComPtr<ID3DBlob> blob, errors;
     check(D3DCompile(fullscreenSource, sizeof fullscreenSource - 1, nullptr, macros,
         nullptr, entry, target, D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS,
@@ -424,11 +521,16 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     auto color = compile11("colorPS", "ps_5_0", false);
     check(device->CreatePixelShader(color->GetBufferPointer(), color->GetBufferSize(), nullptr,
         &r.copyColor), "create color copy shader");
+    auto reduceColor = compile11("reduceColorPS", "ps_5_0", false);
+    check(device->CreatePixelShader(reduceColor->GetBufferPointer(), reduceColor->GetBufferSize(), nullptr,
+        &r.reduceColor), "create color reduction shader");
     for (unsigned i = 0; i < 2; ++i) {
         auto reduce = compile11("reducePS", "ps_5_0", i != 0);
-        auto composite = compile11("compositePS", "ps_5_0", i != 0);
         check(device->CreatePixelShader(reduce->GetBufferPointer(), reduce->GetBufferSize(), nullptr,
             &r.reduce[i]), "create reduction shader");
+    }
+    for (unsigned i = 0; i < 3; ++i) {
+        auto composite = compile11("compositePS", "ps_5_0", i != 0, i == 2);
         check(device->CreatePixelShader(composite->GetBufferPointer(), composite->GetBufferSize(), nullptr,
             &r.composite[i]), "create composite shader");
     }
@@ -438,7 +540,7 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     sampler.MaxLOD = D3D11_FLOAT32_MAX;
     check(device->CreateSamplerState(&sampler, &r.linear), "create bilinear sampler");
     D3D11_BUFFER_DESC constants{};
-    constants.ByteWidth = 16;
+    constants.ByteWidth = sizeof(CompositeConstants);
     constants.Usage = D3D11_USAGE_DEFAULT;
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     // RECOMP_D3D_RTGI_SPLIT=1 leaves the left half unlit for side-by-side comparison.
@@ -458,24 +560,58 @@ static void initialize(D3dRtgi &r, ID3D11Device *device)
     target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN |
         D3D11_COLOR_WRITE_ENABLE_BLUE;
     check(device->CreateBlendState(&blend, &r.blend), "create GI blend state");
+    if (!r.timing) return;
+    D3D12_QUERY_HEAP_DESC heapDesc{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 3 * stampsPerSlot, 0};
+    check(r.device12->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&r.stamps12)), "create timestamp heap");
+    D3D12_HEAP_PROPERTIES readback{};
+    readback.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = 3 * stampsPerSlot * sizeof(UINT64);
+    desc.Height = desc.DepthOrArraySize = desc.MipLevels = desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    check(r.device12->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&r.stampReadback)), "create timestamp readback");
+    UINT64 frequency = 0;
+    check(r.queue->GetTimestampFrequency(&frequency), "query D3D12 timestamp frequency");
+    r.tickMs12 = 1000.0 / double(frequency);
+    for (auto &timer : r.timer11) {
+        D3D11_QUERY_DESC query{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+        check(device->CreateQuery(&query, &timer.disjoint), "create disjoint query");
+        query.Query = D3D11_QUERY_TIMESTAMP;
+        for (auto &stamp : timer.stamps) check(device->CreateQuery(&query, &stamp), "create timestamp query");
+    }
 }
 
-D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height)
+D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height, bool timing)
 {
     try {
         auto r = std::make_unique<D3dRtgi>();
         r->width = width;
         r->height = height;
-        r->halfWidth = width / 2 + width % 2;
-        r->halfHeight = height / 2 + height % 2;
-        if (const char *text = std::getenv("RECOMP_D3D_RTGI_STRENGTH")) {
+        r->timing = timing;
+        auto setting = [](const char *name, float fallback, float low, float high) {
+            const char *text = std::getenv(name);
             char *end = nullptr;
-            const float value = std::strtof(text, &end);
-            if (end != text && *end == '\0' && std::isfinite(value)) r->strength = std::clamp(value, 0.0f, 4.0f);
-        }
+            const float value = text ? std::strtof(text, &end) : fallback;
+            return text && (end == text || *end != '\0' || !std::isfinite(value))
+                ? fallback : std::clamp(value, low, high);
+        };
+        r->strength = setting("RECOMP_D3D_RTGI_STRENGTH", 1, 0, 4);
+        // Trace one ray per scale x scale pixels; the composite upsamples by depth.
+        r->scale = UINT(setting("RECOMP_D3D_RTGI_SCALE", 2, 1, 4));
+        r->traceWidth = (width + r->scale - 1) / r->scale;
+        r->traceHeight = (height + r->scale - 1) / r->scale;
+        // 0.75 of the period, so steady 60 Hz frames always trace despite jitter.
+        const float hz = setting("RECOMP_D3D_RTGI_HZ", 60, 0, 1000);
+        r->reuseMs = hz > 0 ? 750.0 / hz : 0;
         const char *hitColor = std::getenv("RECOMP_D3D_RTGI_HITCOLOR");
         r->hitColor = !hitColor || std::strcmp(hitColor, "0") != 0;
         initialize(*r, device);
+        char rate[32] = "every frame";
+        if (hz > 0) std::snprintf(rate, sizeof rate, "up to %g Hz", hz);
+        std::fprintf(stderr, "recomp rtgi: tracing %ux%u (1/%u scale) %s\n",
+            r->traceWidth, r->traceHeight, r->scale, rate);
         return r.release();
     } catch (const RtgiError &error) {
         std::fprintf(stderr, "recomp rtgi: %s (0x%08lX)\n", error.operation,
@@ -499,6 +635,59 @@ void d3d_rtgi_destroy(D3dRtgi *r)
         return;
     }
     delete r;
+}
+
+D3dRtgiStats d3d_rtgi_take_stats(D3dRtgi *r)
+{
+    if (!r) return {};
+    const D3dRtgiStats stats = r->stats;
+    r->stats = {};
+    return stats;
+}
+
+static void stamp12(D3dRtgi &r, ID3D12GraphicsCommandList *commands, UINT index)
+{
+    if (r.stamps12) commands->EndQuery(r.stamps12.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+        UINT(r.frame % 3) * stampsPerSlot + index);
+}
+
+// The slot's GPU work has completed, so its timestamps can be read without waiting.
+static void readStamps12(D3dRtgi &r, RtgiSlot &slot)
+{
+    if (!slot.timed) return;
+    slot.timed = false;
+    const size_t first = size_t(&slot - r.slots) * stampsPerSlot * sizeof(UINT64);
+    const D3D12_RANGE range{first, first + stampsPerSlot * sizeof(UINT64)}, none{0, 0};
+    void *mapped = nullptr;
+    if (FAILED(r.stampReadback->Map(0, &range, &mapped))) return;
+    UINT64 t[stampsPerSlot];
+    std::memcpy(t, static_cast<const char *>(mapped) + first, sizeof t);
+    r.stampReadback->Unmap(0, &none);
+    for (UINT i = 1; i < stampsPerSlot; ++i) if (t[i] < t[i - 1]) return;
+    r.stats.buildMs += (t[1] - t[0]) * r.tickMs12;
+    r.stats.traceMs += (t[2] - t[1]) * r.tickMs12;
+    r.stats.temporalMs += (t[3] - t[2]) * r.tickMs12;
+    r.stats.spatialMs += (t[4] - t[3]) * r.tickMs12;
+    ++r.stats.d3d12Passes;
+}
+
+// Drops, without waiting, a timer whose results are not ready yet.
+static void readTimer11(D3dRtgi &r, RtgiTimer11 &timer)
+{
+    if (!timer.pending) return;
+    timer.pending = false;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT frequency{};
+    UINT64 t[4];
+    constexpr UINT flags = D3D11_ASYNC_GETDATA_DONOTFLUSH;
+    if (r.context11->GetData(timer.disjoint.Get(), &frequency, sizeof frequency, flags) != S_OK ||
+        frequency.Disjoint || !frequency.Frequency) return;
+    for (UINT i = 0; i < 4; ++i)
+        if (r.context11->GetData(timer.stamps[i].Get(), &t[i], sizeof t[i], flags) != S_OK ||
+            (i && t[i] < t[i - 1])) return;
+    const double tick = 1000.0 / double(frequency.Frequency);
+    r.stats.compositeMs += double(t[1] - t[0] + t[3] - t[2]) * tick;
+    r.stats.syncMs += double(t[2] - t[1]) * tick;
+    ++r.stats.d3d11Passes;
 }
 
 static uint32_t textureSlice(D3dRtgi &r, ID3D11ShaderResourceView *source, bool color)
@@ -548,6 +737,7 @@ static uint32_t textureSlice(D3dRtgi &r, ID3D11ShaderResourceView *source, bool 
 bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask, bool colorMaterial)
 {
+    const CpuClock clock(r && r->timing ? &r->stats.collectMs : nullptr);
     // Vertex-program draws (water) move vertices in their program; WORLD alone would misplace them.
     if (!r || r->failed || !draw.has_transform || draw.target.offscreen || draw.program_count ||
         !draw.depth.depth_write_enable || !draw.triangle_count || !draw.vertex_count ||
@@ -558,6 +748,22 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         draw.vertex_stride < 12 + 4 * layout.blend_weight_count ||
         uint64_t(r->positions.size()) + draw.vertex_count > UINT32_MAX) return false;
     for (float value : draw.view_projection) if (!std::isfinite(value)) return false;
+    if (!r->captureOpen) {
+        r->captureOpen = true;
+        QueryPerformanceCounter(&r->captureStart);
+        r->reuse = r->reuseMs > 0 && r->historyValid && elapsedMs(r->lastTrace) < r->reuseMs;
+    }
+    if (r->reuse) {
+        // Only the camera is needed. Approximate the traced choice, the draw adding
+        // most triangles, without skinning: double-sided draws add both windings.
+        const size_t weight = size_t(draw.triangle_count) * (draw.cull_mode == RECOMP_D3D_CULL_NONE ? 2 : 1);
+        if (weight > r->cameraTriangles) {
+            r->cameraTriangles = weight;
+            std::memcpy(&r->camera, draw.view_projection, sizeof r->camera);
+        }
+        ++r->reuseDraws;
+        return true;
+    }
     // Indexed draws often use a small range near the end of a shared vertex buffer.
     // Do not skin or upload the unrelated prefix for every draw using that buffer.
     auto indexAt = [&](uint32_t i) {
@@ -603,21 +809,35 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         const XMFLOAT2 scale{source.linear && source.width ? 1.0f / source.width : 1.0f,
             source.linear && source.height ? 1.0f / source.height : 1.0f};
         // ponytail: CPU skinning is sufficient here; move to compute above roughly 1M vertices/frame.
+        // Presized outputs and local copies of the draw's inputs: per-vertex push_back and
+        // reloading draw fields after every aliasing store cost more than the skinning.
+        r->positions.resize(base + vertexCount);
+        r->normals.resize(base + vertexCount);
+        r->uvs.resize(base + vertexCount);
+        r->tints.resize(base + vertexCount, XMFLOAT3{1, 1, 1});
+        XMFLOAT3 *const positions = r->positions.data() + base, *const normals = r->normals.data() + base;
+        XMFLOAT2 *const uvs = r->uvs.data() + base;
+        XMFLOAT3 *const tints = r->tints.data() + base;
+        const uint32_t weightCount = draw.blend_weight_count, stride = draw.vertex_stride;
+        const uint32_t normalOffset = layout.normal_offset, texcoordOffset = layout.texcoord_offset;
+        const bool hasNormal = normalOffset != RECOMP_D3D_FVF_ABSENT && uint64_t(normalOffset) + 12 <= stride;
+        float world[4][16];
+        std::memcpy(world, draw.world, (weightCount + 1) * sizeof world[0]);
+        const auto *vertexBytes = static_cast<const unsigned char *>(draw.vertex_bytes) + size_t(firstVertex) * stride;
         for (uint32_t v = 0; v < vertexCount; ++v) {
-            const auto *bytes = static_cast<const unsigned char *>(draw.vertex_bytes) + size_t(v + firstVertex) * draw.vertex_stride;
+            const auto *bytes = vertexBytes + size_t(v) * stride;
             float p[3], weights[3]{};
             std::memcpy(p, bytes, sizeof p);
-            std::memcpy(weights, bytes + 12, draw.blend_weight_count * sizeof(float));
-            const bool hasNormal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
-                uint64_t(layout.normal_offset) + 12 <= draw.vertex_stride;
+            // Fixed-size copies inline; a variable-length memcpy is a CRT call per vertex.
+            for (uint32_t i = 0; i < weightCount; ++i) std::memcpy(&weights[i], bytes + 12 + 4 * i, sizeof(float));
             float n[3]{};
-            if (hasNormal) std::memcpy(n, bytes + layout.normal_offset, sizeof n);
+            if (hasNormal) std::memcpy(n, bytes + normalOffset, sizeof n);
             XMFLOAT3 transformed{}, normal{};
             float remainder = 1;
-            for (uint32_t i = 0; i <= draw.blend_weight_count; ++i) {
-                const float weight = i == draw.blend_weight_count ? remainder : weights[i];
-                if (i < draw.blend_weight_count) remainder -= weight;
-                const float *m = draw.world[i];
+            for (uint32_t i = 0; i <= weightCount; ++i) {
+                const float weight = i == weightCount ? remainder : weights[i];
+                if (i < weightCount) remainder -= weight;
+                const float *m = world[i];
                 transformed.x += weight * (p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12]);
                 transformed.y += weight * (p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13]);
                 transformed.z += weight * (p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14]);
@@ -626,28 +846,28 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                 normal.y += weight * (n[0] * m[1] + n[1] * m[5] + n[2] * m[9]);
                 normal.z += weight * (n[0] * m[2] + n[1] * m[6] + n[2] * m[10]);
             }
-            if (!std::isfinite(transformed.x) || !std::isfinite(transformed.y) || !std::isfinite(transformed.z)) {
+            if (!finite(transformed.x) || !finite(transformed.y) || !finite(transformed.z)) {
                 r->positions.resize(base);
                 r->normals.resize(base);
                 r->uvs.resize(base);
                 r->tints.resize(base);
                 return false;
             }
-            r->positions.push_back(transformed);
-            if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) normal = {};
-            r->normals.push_back(normal);
-            XMFLOAT2 uv{};
+            positions[v] = transformed;
+            if (!finite(normal.x) || !finite(normal.y) || !finite(normal.z)) normal = {};
+            normals[v] = normal;
             if (alphaTest || colorMaterial) {
-                std::memcpy(&uv, bytes + layout.texcoord_offset, sizeof uv);
+                XMFLOAT2 uv;
+                std::memcpy(&uv, bytes + texcoordOffset, sizeof uv);
                 uv.x *= scale.x;
                 uv.y *= scale.y;
-                const bool finite = std::isfinite(uv.x) && std::isfinite(uv.y);
-                alphaTest &= finite;
-                colorMaterial &= finite;
+                const bool usable = finite(uv.x) && finite(uv.y);
+                alphaTest &= usable;
+                colorMaterial &= usable;
+                uvs[v] = uv;
             }
-            r->uvs.push_back(uv);
-            XMFLOAT3 tint{1, 1, 1};
             if (colorMaterial) {
+                XMFLOAT3 tint{1, 1, 1};
                 if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
                     uint32_t diffuse;
                     std::memcpy(&diffuse, bytes + layout.diffuse_offset, sizeof diffuse);
@@ -679,8 +899,8 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                     tint.y *= ((draw.texture_factor >> 8) & 255) / 255.0f;
                     tint.z *= (draw.texture_factor & 255) / 255.0f;
                 }
+                tints[v] = tint;
             }
-            r->tints.push_back(tint);
         }
         uint32_t material = opaqueMaterial;
         RtgiMaterial value{opaqueMaterial, 0, 1, 1};
@@ -712,6 +932,13 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         }
         const uint32_t triangles = std::min(draw.triangle_count,
             recomp_d3d_draw_triangle_count(draw.primitive_type, draw.index_count));
+        const bool doubleSided = draw.cull_mode == RECOMP_D3D_CULL_NONE;
+        const size_t firstTriangle = r->triangles.size(), most = size_t(triangles) * (doubleSided ? 2 : 1);
+        if (firstIndex + most * 3 > UINT32_MAX) throw RtgiError{E_OUTOFMEMORY, "too many scene indices"};
+        r->indices.resize(firstIndex + most * 3);
+        r->triangles.resize(firstTriangle + most);
+        uint32_t *outIndex = r->indices.data() + firstIndex, *outTriangle = r->triangles.data() + firstTriangle;
+        const uint32_t vertexBase = uint32_t(base);
         for (uint32_t t = 0; t < triangles; ++t) {
             uint32_t a, b, c;
             if (draw.primitive_type == 5) { a = indexAt(t * 3); b = indexAt(t * 3 + 1); c = indexAt(t * 3 + 2); }
@@ -722,22 +949,27 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             if (a >= draw.vertex_count || b >= draw.vertex_count || c >= draw.vertex_count ||
                 a == b || b == c || a == c) continue;
             a -= firstVertex; b -= firstVertex; c -= firstVertex;
-            const auto pa = DirectX::XMLoadFloat3(&r->positions[base + a]);
-            const auto pb = DirectX::XMLoadFloat3(&r->positions[base + b]);
-            const auto pc = DirectX::XMLoadFloat3(&r->positions[base + c]);
-            const auto area = DirectX::XMVector3Cross(DirectX::XMVectorSubtract(pb, pa), DirectX::XMVectorSubtract(pc, pa));
-            if (!(DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(area)) > 0)) continue;
-            if (r->indices.size() > UINT32_MAX - 6) throw RtgiError{E_OUTOFMEMORY, "too many scene indices"};
+            /* Keep zero-area triangles: DXR never intersects them, and dropping them
+               would change the triangle list whenever skinning flattens one, which
+               prevents refitting the last BLAS. */
             // Rays skip back faces, as DXR sees clockwise triangles from the front. Match
             // the raster: CCW-front draws flip, and double-sided draws get both windings.
             if (draw.cull_mode == RECOMP_D3D_CULL_CLOCKWISE) std::swap(b, c);
-            r->indices.insert(r->indices.end(), {uint32_t(base + a), uint32_t(base + b), uint32_t(base + c)});
-            r->triangles.push_back(material);
-            if (draw.cull_mode == RECOMP_D3D_CULL_NONE) {
-                r->indices.insert(r->indices.end(), {uint32_t(base + a), uint32_t(base + c), uint32_t(base + b)});
-                r->triangles.push_back(material);
+            outIndex[0] = vertexBase + a;
+            outIndex[1] = vertexBase + b;
+            outIndex[2] = vertexBase + c;
+            outIndex += 3;
+            *outTriangle++ = material;
+            if (doubleSided) {
+                outIndex[0] = vertexBase + a;
+                outIndex[1] = vertexBase + c;
+                outIndex[2] = vertexBase + b;
+                outIndex += 3;
+                *outTriangle++ = material;
             }
         }
+        r->indices.resize(size_t(outIndex - r->indices.data()));
+        r->triangles.resize(size_t(outTriangle - r->triangles.data()));
         const size_t contributed = (r->indices.size() - firstIndex) / 3;
         if (!contributed) {
             r->positions.resize(base);
@@ -818,7 +1050,8 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
     geometry.Triangles.IndexBuffer = slot.indices->GetGPUVirtualAddress();
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottom{};
     bottom.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+    bottom.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
     bottom.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     bottom.NumDescs = 1;
     bottom.pGeometryDescs = &geometry;
@@ -840,10 +1073,21 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
     r.device12->GetRaytracingAccelerationStructurePrebuildInfo(&top, &topSize);
     if (!topSize.ResultDataMaxSizeInBytes) throw RtgiError{E_FAIL, "invalid TLAS prebuild size"};
     ensureBuffer(r, slot.top, topSize.ResultDataMaxSizeInBytes, false, true);
-    ensureBuffer(r, slot.scratch, std::max(bottomSize.ScratchDataSizeInBytes, topSize.ScratchDataSizeInBytes), false);
+    ensureBuffer(r, slot.scratch, std::max({bottomSize.ScratchDataSizeInBytes,
+        bottomSize.UpdateScratchDataSizeInBytes, topSize.ScratchDataSizeInBytes}), false);
+    /* Moving skinned meshes keep their triangles, so refit the last BLAS: much
+       cheaper than a build. Rebuild periodically, as refits loosen the BVH. */
+    const bool refit = r.lastBuilt && r.refits < 30 && r.indices == r.previousIndices &&
+        r.positions.size() == r.previousPositions.size();
+    r.refits = refit ? r.refits + 1 : 0;
+    if (refit) {
+        bottom.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+        if (r.timing) ++r.stats.refitted;
+    }
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
     build.Inputs = bottom;
     build.DestAccelerationStructureData = slot.bottom->GetGPUVirtualAddress();
+    if (refit) build.SourceAccelerationStructureData = r.lastBuilt->bottom->GetGPUVirtualAddress();
     build.ScratchAccelerationStructureData = slot.scratch->GetGPUVirtualAddress();
     auto *commands = slot.commands.Get();
     // Reused result and scratch buffers were read/written by an earlier frame.
@@ -853,6 +1097,7 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
     uavBarrier(commands, slot.scratch.Get());
     build.Inputs = top;
     build.DestAccelerationStructureData = slot.top->GetGPUVirtualAddress();
+    build.SourceAccelerationStructureData = 0;
     commands->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
     uavBarrier(commands, slot.top.Get());
 }
@@ -867,7 +1112,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         DirectX::XMFLOAT4 eye;
     };
     static_assert(sizeof(Constants) == 304, "HLSL frame layout");
-    Constants constants{inverse, r.camera, r.previousCamera, r.halfWidth, r.halfHeight,
+    Constants constants{inverse, r.camera, r.previousCamera, r.traceWidth, r.traceHeight,
         r.width, r.height, UINT(r.frame), UINT(r.historyValid), {0, 0}};
     auto eye = DirectX::XMVector4Transform(DirectX::XMVectorSet(0, 0, 1, 0), DirectX::XMLoadFloat4x4(&inverse));
     const bool perspective = std::abs(DirectX::XMVectorGetW(eye)) > 1e-8f;
@@ -959,16 +1204,18 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
     commands->SetComputeRootShaderResourceView(0, slot.top->GetGPUVirtualAddress());
     commands->SetComputeRootConstantBufferView(1, slot.constants->GetGPUVirtualAddress());
     commands->SetComputeRootDescriptorTable(2, slot.descriptors->GetGPUDescriptorHandleForHeapStart());
-    const UINT x = (r.halfWidth + 7) / 8, y = (r.halfHeight + 7) / 8;
+    const UINT x = (r.traceWidth + 7) / 8, y = (r.traceHeight + 7) / 8;
     commands->SetPipelineState(r.trace.Get());
     commands->Dispatch(x, y, 1);
     transition(commands, writes[0], uav, srv);
     transition(commands, writes[3], uav, srv);
     transition(commands, writes[4], uav, srv);
     transition(commands, writes[5], uav, srv);
+    stamp12(r, commands, 2);
     commands->SetPipelineState(r.temporal.Get());
     commands->Dispatch(x, y, 1);
     transition(commands, writes[1], uav, srv);
+    stamp12(r, commands, 3);
     commands->SetPipelineState(r.spatial.Get());
     auto table = slot.descriptors->GetGPUDescriptorHandleForHeapStart();
     for (unsigned pass = 0; pass < 4; ++pass) {
@@ -980,6 +1227,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         transition(commands, filterOutputs[pass], uav, pass == 3 ? common : srv);
         table.ptr += frameDescriptors * stride;
     }
+    stamp12(r, commands, 4);
     for (auto *resource : reads) transition(commands, resource, srv, common);
     transition(commands, r.filtered.resource.Get(), srv, common);
     transition(commands, r.alpha.resource.Get(), srv, common);
@@ -1005,76 +1253,163 @@ static void fullscreen(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11PixelShad
     context->ClearState();
 }
 
+// reprojection: null for a traced frame, else this frame's clip space to the traced one's.
+static void setConstants(D3dRtgi &r, ID3D11DeviceContext *context, const XMFLOAT4X4 *reprojection)
+{
+    // Hotkeys can change strength and split between frames.
+    const CompositeConstants values{{float(r.width), float(r.height)}, recomp_tuning.rtgi_strength.load(),
+        recomp_tuning.rtgi_split ? 0.5f : 0.0f, {float(r.traceWidth), float(r.traceHeight)}, float(r.scale),
+        reprojection != nullptr, reprojection ? *reprojection : XMFLOAT4X4{}};
+    context->UpdateSubresource(r.constants11.Get(), 0, nullptr, &values, 0, 0);
+}
+
+static void composite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
+    ID3D11ShaderResourceView *depth, uint32_t depthSamples)
+{
+    // The reduced color stands in for the target, which cannot be read while bound.
+    ID3D11ShaderResourceView *inputs[] = {r.color.srv.Get(), depth, r.gi.srv.Get(), r.depth.srv.Get()};
+    for (UINT pass = depthSamples > 1 ? 1 : 0; pass < (depthSamples > 1 ? 3u : 1u); ++pass)
+        fullscreen(r, context, r.composite[pass].Get(), r.width, r.height, inputs, 4, &target, 1, r.blend.Get());
+}
+
+static bool invert(const XMFLOAT4X4 &matrix, XMFLOAT4X4 &inverse)
+{
+    DirectX::XMVECTOR determinant;
+    DirectX::XMStoreFloat4x4(&inverse, DirectX::XMMatrixInverse(&determinant, DirectX::XMLoadFloat4x4(&matrix)));
+    bool invertible = DirectX::XMVectorGetX(determinant) != 0;
+    for (const auto &row : inverse.m) for (float value : row) invertible &= std::isfinite(value);
+    return invertible;
+}
+
+static void traceAndComposite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
+    ID3D11ShaderResourceView *color, ID3D11ShaderResourceView *depth, uint32_t depthSamples,
+    const XMFLOAT4X4 &inverse, RtgiTimer11 *timer)
+{
+    setConstants(r, context, nullptr);
+    auto &slot = r.slots[r.frame % 3];
+    {
+        const CpuClock wait(r.timing ? &r.stats.waitMs : nullptr);
+        waitFence(r, r.done12.Get(), slot.completion);
+    }
+    readStamps12(r, slot);
+    check(slot.allocator->Reset(), "reset frame allocator");
+    check(slot.commands->Reset(slot.allocator.Get(), nullptr), "reset frame commands");
+    stamp12(r, slot.commands.Get(), 0);
+    buildScene(r, slot);
+    stamp12(r, slot.commands.Get(), 1);
+    traceFrame(r, slot, inverse);
+    if (r.stamps12) {
+        const UINT first = UINT(r.frame % 3) * stampsPerSlot;
+        slot.commands->ResolveQueryData(r.stamps12.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first,
+            stampsPerSlot, r.stampReadback.Get(), first * sizeof(UINT64));
+        slot.timed = true;
+    }
+    check(slot.commands->Close(), "close frame commands");
+
+    if (timer) {
+        context->Begin(timer->disjoint.Get());
+        context->End(timer->stamps[0].Get());
+    }
+    for (bool color : {false, true}) for (UINT i = 0; i < alphaSlices; ++i) {
+        auto &slice = color ? r.colorCache[i] : r.alphaCache[i];
+        if (slice.used != r.capture || !slice.dirty) continue;
+        fullscreen(r, context, color ? r.copyColor.Get() : r.copyAlpha.Get(), alphaSize, alphaSize,
+            slice.source.GetAddressOf(), 1, slice.target.GetAddressOf(), 1);
+        slice.dirty = false;
+    }
+    ID3D11ShaderResourceView *inputs[] = {color, depth};
+    ID3D11RenderTargetView *targets[] = {r.depth.rtv.Get(), r.color.rtv.Get()};
+    fullscreen(r, context, r.reduce[depthSamples > 1].Get(), r.traceWidth, r.traceHeight, inputs, 2, targets, 2);
+    if (timer) context->End(timer->stamps[1].Get());
+    const UINT64 inputValue = r.frame * 2 + 1, doneValue = r.frame + 1;
+    check(r.context11->Signal(r.ready11.Get(), inputValue), "signal D3D11 input ready");
+    r.readyValue = inputValue;
+    context->Flush();
+    check(r.queue->Wait(r.ready12.Get(), inputValue), "D3D12 wait for input");
+    ID3D12CommandList *lists[] = {slot.commands.Get()};
+    r.queue->ExecuteCommandLists(1, lists);
+    check(r.queue->Signal(r.done12.Get(), doneValue), "signal GI ready");
+    r.doneValue = slot.completion = doneValue;
+    r.lastBuilt = &slot;
+    check(r.context11->Wait(r.done11.Get(), doneValue), "D3D11 wait for GI");
+    if (timer) context->End(timer->stamps[2].Get());
+    composite(r, context, target, depth, depthSamples);
+    if (timer) context->End(timer->stamps[3].Get());
+    check(r.context11->Signal(r.ready11.Get(), inputValue + 1), "signal GI consumed");
+    r.readyValue = inputValue + 1;
+    context->Flush();
+    check(r.device12->GetDeviceRemovedReason(), "D3D12 frame execution");
+    check(r.device11->GetDeviceRemovedReason(), "D3D11 frame execution");
+    r.previousCamera = r.camera;
+    r.historyValid = true;
+    r.lastTrace = r.captureStart;
+    if (r.timing) {
+        ++r.stats.traced;
+        r.stats.triangles += r.indices.size() / 3;
+    }
+    ++r.frame;
+}
+
+// A frame between traces lights itself with the last traced GI, reprojected
+// from that frame's camera. D3D12 is idle: its last work finished before the
+// last composite, and the next trace waits for this frame's D3D11 work.
+static void reuseAndComposite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
+    ID3D11ShaderResourceView *color, ID3D11ShaderResourceView *depth, uint32_t depthSamples,
+    const XMFLOAT4X4 &inverse, RtgiTimer11 *timer)
+{
+    XMFLOAT4X4 reprojection;
+    DirectX::XMStoreFloat4x4(&reprojection,
+        DirectX::XMLoadFloat4x4(&inverse) * DirectX::XMLoadFloat4x4(&r.previousCamera));
+    setConstants(r, context, &reprojection);
+    if (timer) {
+        context->Begin(timer->disjoint.Get());
+        context->End(timer->stamps[0].Get());
+    }
+    // Refresh only the reduced color for headroom; the traced depth must match the GI.
+    fullscreen(r, context, r.reduceColor.Get(), r.traceWidth, r.traceHeight, &color, 1, r.color.rtv.GetAddressOf(), 1);
+    if (timer) {
+        context->End(timer->stamps[1].Get());
+        context->End(timer->stamps[2].Get());
+    }
+    composite(r, context, target, depth, depthSamples);
+    if (timer) context->End(timer->stamps[3].Get());
+    if (r.timing) ++r.stats.reused;
+}
+
 void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
     ID3D11ShaderResourceView *color, ID3D11ShaderResourceView *depth, uint32_t depthSamples)
 {
+    const CpuClock clock(r && r->timing ? &r->stats.applyMs : nullptr);
     bool applied = false;
-    if (r && !r->failed && !r->indices.empty() && context && target && color && depth) {
+    const bool recorded = r && (r->reuse ? r->reuseDraws != 0 : !r->indices.empty());
+    if (recorded && !r->failed && context && target && color && depth) {
         try {
             if (context != r->context11.Get()) throw RtgiError{E_INVALIDARG, "unexpected D3D11 context"};
             check(r->device12->GetDeviceRemovedReason(), "D3D12 device removed");
             check(r->device11->GetDeviceRemovedReason(), "D3D11 device removed");
-            DirectX::XMVECTOR determinant;
-            const auto inverseMatrix = DirectX::XMMatrixInverse(&determinant, DirectX::XMLoadFloat4x4(&r->camera));
             XMFLOAT4X4 inverse;
-            DirectX::XMStoreFloat4x4(&inverse, inverseMatrix);
-            bool invertible = DirectX::XMVectorGetX(determinant) != 0;
-            for (const auto &row : inverse.m) for (float value : row) invertible &= std::isfinite(value);
-            if (invertible) {
-                // Hotkeys can change these between frames.
-                const float values[] = {float(r->width), float(r->height),
-                    recomp_tuning.rtgi_strength.load(), recomp_tuning.rtgi_split ? 0.5f : 0.0f};
-                context->UpdateSubresource(r->constants11.Get(), 0, nullptr, values, 0, 0);
-                auto &slot = r->slots[r->frame % 3];
-                waitFence(*r, r->done12.Get(), slot.completion);
-                check(slot.allocator->Reset(), "reset frame allocator");
-                check(slot.commands->Reset(slot.allocator.Get(), nullptr), "reset frame commands");
-                buildScene(*r, slot);
-                traceFrame(*r, slot, inverse);
-                check(slot.commands->Close(), "close frame commands");
-
-                for (bool color : {false, true}) for (UINT i = 0; i < alphaSlices; ++i) {
-                    auto &slice = color ? r->colorCache[i] : r->alphaCache[i];
-                    if (slice.used != r->capture || !slice.dirty) continue;
-                    fullscreen(*r, context, color ? r->copyColor.Get() : r->copyAlpha.Get(), alphaSize, alphaSize,
-                        slice.source.GetAddressOf(), 1, slice.target.GetAddressOf(), 1);
-                    slice.dirty = false;
+            if (invert(r->camera, inverse)) {
+                RtgiTimer11 *timer = r->timing ? &r->timer11[r->passes++ % timers11] : nullptr;
+                if (timer) readTimer11(*r, *timer);
+                if (r->reuse) reuseAndComposite(*r, context, target, color, depth, depthSamples, inverse, timer);
+                else traceAndComposite(*r, context, target, color, depth, depthSamples, inverse, timer);
+                if (timer) {
+                    context->End(timer->disjoint.Get());
+                    timer->pending = true;
                 }
-                ID3D11ShaderResourceView *inputs[] = {color, depth, r->gi.srv.Get()};
-                ID3D11RenderTargetView *targets[] = {r->depth.rtv.Get(), r->color.rtv.Get()};
-                fullscreen(*r, context, r->reduce[depthSamples > 1].Get(), r->halfWidth, r->halfHeight,
-                    inputs, 2, targets, 2);
-                const UINT64 inputValue = r->frame * 2 + 1, doneValue = r->frame + 1;
-                check(r->context11->Signal(r->ready11.Get(), inputValue), "signal D3D11 input ready");
-                r->readyValue = inputValue;
-                context->Flush();
-                check(r->queue->Wait(r->ready12.Get(), inputValue), "D3D12 wait for input");
-                ID3D12CommandList *lists[] = {slot.commands.Get()};
-                r->queue->ExecuteCommandLists(1, lists);
-                check(r->queue->Signal(r->done12.Get(), doneValue), "signal GI ready");
-                r->doneValue = slot.completion = doneValue;
-                check(r->context11->Wait(r->done11.Get(), doneValue), "D3D11 wait for GI");
-                // The reduced color stands in for the target, which cannot be read while bound.
-                inputs[0] = r->color.srv.Get();
-                ID3D11ShaderResourceView *compositeInputs[] = {inputs[0], inputs[1], inputs[2], r->depth.srv.Get()};
-                fullscreen(*r, context, r->composite[depthSamples > 1].Get(), r->width, r->height,
-                    compositeInputs, 4, &target, 1, r->blend.Get());
-                check(r->context11->Signal(r->ready11.Get(), inputValue + 1), "signal GI consumed");
-                r->readyValue = inputValue + 1;
-                context->Flush();
-                check(r->device12->GetDeviceRemovedReason(), "D3D12 frame execution");
-                check(r->device11->GetDeviceRemovedReason(), "D3D11 frame execution");
-                r->previousCamera = r->camera;
-                r->historyValid = true;
-                ++r->frame;
                 applied = true;
             }
         } catch (const RtgiError &error) { fail(*r, error.operation, error.result); }
         catch (const std::exception &error) { fail(*r, error.what()); }
     }
     if (r) {
-        r->previousPositions.swap(r->positions);
-        r->previousMeshes.swap(r->meshes);
+        // Motion and history stay relative to the last traced frame.
+        if (!r->reuse) {
+            r->previousPositions.swap(r->positions);
+            r->previousMeshes.swap(r->meshes);
+            r->previousIndices.swap(r->indices);
+            if (!applied) r->lastBuilt = nullptr;
+        }
         r->meshes.clear();
         r->motions.clear();
         r->positions.clear();
@@ -1086,6 +1421,8 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
         r->materials.clear();
         ++r->capture;
         r->cameraTriangles = 0;
+        r->captureOpen = r->reuse = false;
+        r->reuseDraws = 0;
         if (!applied) r->historyValid = false;
     }
     if (context) context->ClearState();

@@ -189,7 +189,7 @@ struct Renderer {
         else context->CopyResource(resolved.Get(), color.Get());
     }
 
-    void render(std::array<Mesh, 3> &meshes)
+    template <class Meshes> void render(Meshes &meshes)
     {
         context->ClearState();
         const float sky[] = {0.07f, 0.12f, 0.2f, 1};
@@ -497,6 +497,66 @@ static bool verifySamples(Renderer &renderer)
     require(readSamples(renderer) == before, "empty scene changed MSAA samples");
     std::printf("%s RTGI 4x MSAA per-sample zero strength: %zu samples, %u edge differences\n",
         passed ? "PASS" : "FAIL", before.size(), edges);
+    return passed;
+}
+
+// Quarter-resolution tracing keeps the bounce, sky and saturated wall intact.
+static bool verifyScale(Renderer &renderer)
+{
+    require(_putenv_s("RECOMP_D3D_RTGI_SCALE", "4") == 0, "set trace scale");
+    auto meshes = scene(false);
+    renderer.render(meshes);
+    const auto input = readback(renderer, renderer.colorSRV.Get());
+    const auto output = runFrames(renderer, meshes, false);
+    require(_putenv_s("RECOMP_D3D_RTGI_SCALE", "2") == 0, "restore trace scale");
+    std::printf("RTGI %ux MSAA quarter-resolution trace:\n", renderer.samples);
+    return verifyImage(input, output, renderer.samples, camera());
+}
+
+// Average 8-bit change on lit floor points near the red wall, seen by matrix.
+static double floorGain(const Pixels &input, const Pixels &output, const XMFLOAT4X4 &matrix)
+{
+    double sum = 0;
+    for (unsigned z = 0; z < 12; ++z) for (unsigned x = 0; x < 8; ++x) {
+        const size_t p = pixelAt(0.6f + 0.12f * x, 0, -2.5f + z * 0.45f, matrix);
+        for (unsigned c = 0; c < 3; ++c) sum += std::abs(int(output[p][c]) - input[p][c]);
+    }
+    return sum / (12 * 8 * 3);
+}
+
+// Frames between traces reproject the last traced GI instead of tracing.
+static bool verifyReuse(Renderer &renderer)
+{
+    require(_putenv_s("RECOMP_D3D_RTGI_HZ", "1") == 0, "set reuse rate");
+    Rtgi gi(d3d_rtgi_create(renderer.device, width, height, true), d3d_rtgi_destroy);
+    require(_putenv_s("RECOMP_D3D_RTGI_HZ", "0") == 0, "restore trace rate");
+    require(bool(gi), "create reuse module");
+    auto meshes = scene(false);
+    Pixels inputs[3], outputs[3];
+    const float shifts[] = {0, 0, 0.6f};
+    for (unsigned frame = 0; frame < 3; ++frame) {
+        const auto matrix = camera(shifts[frame]);
+        for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &matrix, sizeof matrix);
+        renderer.render(meshes);
+        inputs[frame] = readback(renderer, renderer.colorSRV.Get());
+        addScene(gi.get(), meshes, false);
+        apply(gi.get(), renderer);
+        outputs[frame] = readTarget(renderer);
+    }
+    const auto stats = d3d_rtgi_take_stats(gi.get());
+    unsigned same = 0, skyChanged = 0;
+    for (size_t p = 0; p < outputs[0].size(); ++p) {
+        for (unsigned c = 0; c < 4; ++c) same = std::max(same, unsigned(std::abs(int(outputs[1][p][c]) - outputs[0][p][c])));
+        if (inputs[2][p] == inputs[2][0]) skyChanged += inputs[2][p] != outputs[2][p];
+    }
+    // The shifted frame must light the same world points as the traced one did.
+    const double traced = floorGain(inputs[0], outputs[0], camera(0));
+    const double moved = floorGain(inputs[2], outputs[2], camera(0.6f));
+    const bool passed = stats.traced == 1 && stats.reused == 2 && same <= 1 && skyChanged == 0 &&
+        traced > 4 && std::abs(moved - traced) < 0.15 * traced;
+    std::printf("%s RTGI %ux MSAA reused GI: traced=%u reused=%u same-camera error=%u floor gain traced=%.2f "
+        "moved=%.2f sky changed=%u (limits 1/15%%/0)\n", passed ? "PASS" : "FAIL", renderer.samples,
+        stats.traced, stats.reused, same, traced, moved, skyChanged);
     return passed;
 }
 
@@ -1075,8 +1135,149 @@ static bool debugMessages(ID3D11InfoQueue *q11, ID3D12InfoQueue *q12)
     return passed;
 }
 
-int main()
+// A game-sized frame: a dense floor, a wall and 12 spheres, half of them skinned.
+static std::vector<Mesh> benchScene(UINT w, UINT h)
 {
+    std::vector<Mesh> meshes(14);
+    auto &floor = meshes[0];
+    constexpr unsigned cells = 200;
+    for (unsigned z = 0; z <= cells; ++z) for (unsigned x = 0; x <= cells; ++x)
+        floor.vertices.push_back({-20 + 40.0f * x / cells, 0, -20 + 40.0f * z / cells, 0, 0, 1, 0});
+    for (unsigned z = 0; z < cells; ++z) for (unsigned x = 0; x < cells; ++x) {
+        const uint16_t a = uint16_t(z * (cells + 1) + x), b = uint16_t(a + cells + 1);
+        floor.indices.insert(floor.indices.end(), {a, b, uint16_t(a + 1), uint16_t(a + 1), b, uint16_t(b + 1)});
+    }
+    floor.color[0] = floor.color[1] = floor.color[2] = 0.7f;
+    auto &wall = meshes[1];
+    wall.vertices = {{-20, 0, 12, 0, 0, 0, -1}, {-20, 8, 12, 0, 0, 0, -1}, {20, 0, 12, 0, 0, 0, -1}, {20, 8, 12, 0, 0, 0, -1}};
+    wall.indices = {0, 1, 2, 2, 1, 3};
+    wall.color[0] = 0.8f; wall.color[1] = 0.2f; wall.color[2] = 0.1f;
+    constexpr unsigned rings = 48, segments = 96;
+    for (unsigned s = 2; s < meshes.size(); ++s) {
+        auto &sphere = meshes[s];
+        for (unsigned y = 0; y <= rings; ++y) for (unsigned x = 0; x <= segments; ++x) {
+            const float latitude = XM_PI * y / rings, longitude = XM_2PI * x / segments;
+            const float nx = std::sin(latitude) * std::cos(longitude), ny = std::cos(latitude),
+                nz = std::sin(latitude) * std::sin(longitude);
+            sphere.vertices.push_back({1.2f * nx, 1.2f * ny, 1.2f * nz, 0.5f + 0.4f * ny, nx, ny, nz});
+        }
+        for (unsigned y = 0; y < rings; ++y) for (unsigned x = 0; x < segments; ++x) {
+            const uint16_t a = uint16_t(y * (segments + 1) + x), b = uint16_t(a + segments + 1);
+            sphere.indices.insert(sphere.indices.end(), {a, b, uint16_t(a + 1), uint16_t(a + 1), b, uint16_t(b + 1)});
+        }
+        sphere.draw.blend_weight_count = s % 2;
+        sphere.color[0] = 0.6f; sphere.color[1] = 0.45f; sphere.color[2] = 0.35f;
+    }
+    XMFLOAT4X4 matrix;
+    XMStoreFloat4x4(&matrix, XMMatrixLookAtLH(XMVectorSet(0, 5, -14, 1), XMVectorSet(0, 1, 2, 1),
+        XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(0.9f, float(w) / h, 0.1f, 400));
+    for (auto &mesh : meshes) {
+        mesh.color[3] = 1;
+        auto &draw = mesh.draw;
+        draw.has_transform = true;
+        draw.depth.depth_write_enable = true;
+        draw.primitive_type = 5;
+        // Mostly one-sided like the game's meshes; the wall is double-sided.
+        draw.cull_mode = &mesh == &meshes[1] ? RECOMP_D3D_CULL_NONE : RECOMP_D3D_CULL_CLOCKWISE;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x016; // XYZB1 | NORMAL: the normal sits in u, v, extraU.
+        draw.vertex_count = UINT(mesh.vertices.size());
+        draw.triangle_count = draw.index_count = UINT(mesh.indices.size());
+        draw.triangle_count /= 3;
+        draw.vertex_bytes = mesh.vertices.data();
+        draw.index_bytes = mesh.indices.data();
+        for (auto &world : draw.world) world[0] = world[5] = world[10] = world[15] = 1;
+        std::memcpy(draw.view_projection, &matrix, sizeof matrix);
+    }
+    return meshes;
+}
+
+static void moveBench(std::vector<Mesh> &meshes, unsigned frame)
+{
+    for (unsigned s = 2; s < meshes.size(); ++s) for (unsigned bone = 0; bone < 2; ++bone) {
+        const float x = -10 + 4.0f * ((s - 2) % 6), z = (s - 2) < 6 ? 0.0f : 5.0f;
+        XMFLOAT4X4 world;
+        XMStoreFloat4x4(&world, XMMatrixRotationY(0.05f * frame + 0.1f * bone) *
+            XMMatrixTranslation(x + 0.3f * std::sin(0.2f * frame + s), 1.2f, z));
+        std::memcpy(meshes[s].draw.world[bone], &world, sizeof world);
+    }
+}
+
+// Prints per-stage cost at the player's 4K/8x MSAA settings. Not a pass/fail gate.
+// hz 1 makes every frame after the first reuse the traced GI.
+static int benchmark(ID3D11Device *device, ID3D11DeviceContext *context, UINT w, UINT h, UINT samples,
+    const char *scale, const char *hz)
+{
+    require(_putenv_s("RECOMP_D3D_RTGI_SCALE", scale) == 0 && _putenv_s("RECOMP_D3D_RTGI_HZ", hz) == 0, "set bench options");
+    Renderer r(device, context, samples, w, h);
+    auto meshes = benchScene(w, h);
+    Rtgi gi(d3d_rtgi_create(device, w, h, true), d3d_rtgi_destroy);
+    require(bool(gi), "create benchmark module");
+    ComPtr<ID3D11Query> disjoint, begin, end;
+    D3D11_QUERY_DESC desc{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+    check(device->CreateQuery(&desc, &disjoint), "create disjoint query");
+    desc.Query = D3D11_QUERY_TIMESTAMP;
+    check(device->CreateQuery(&desc, &begin), "create start timestamp");
+    check(device->CreateQuery(&desc, &end), "create end timestamp");
+    constexpr unsigned warmup = 16, frames = 64;
+    double whole = 0, collect = 0, applyCpu = 0;
+    LARGE_INTEGER frequency, t0, t1, t2;
+    QueryPerformanceFrequency(&frequency);
+    for (unsigned frame = 0; frame < warmup + frames; ++frame) {
+        if (frame == warmup) d3d_rtgi_take_stats(gi.get());
+        moveBench(meshes, frame);
+        r.render(meshes);
+        QueryPerformanceCounter(&t0);
+        for (auto &mesh : meshes) d3d_rtgi_add_draw(gi.get(), mesh.draw, nullptr, nullptr);
+        context->Begin(disjoint.Get());
+        context->End(begin.Get());
+        QueryPerformanceCounter(&t1);
+        apply(gi.get(), r);
+        QueryPerformanceCounter(&t2);
+        context->End(end.Get());
+        context->End(disjoint.Get());
+        waitReadback(r);
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT gpu{};
+        UINT64 start = 0, finish = 0;
+        require(context->GetData(disjoint.Get(), &gpu, sizeof gpu, 0) == S_OK &&
+            context->GetData(begin.Get(), &start, sizeof start, 0) == S_OK &&
+            context->GetData(end.Get(), &finish, sizeof finish, 0) == S_OK, "timestamps unavailable");
+        if (frame < warmup) continue;
+        whole += 1000.0 * (finish - start) / gpu.Frequency;
+        collect += 1000.0 * (t1.QuadPart - t0.QuadPart) / frequency.QuadPart;
+        applyCpu += 1000.0 * (t2.QuadPart - t1.QuadPart) / frequency.QuadPart;
+    }
+    const auto s = d3d_rtgi_take_stats(gi.get());
+    const double traced = std::max(1u, s.traced), d12 = std::max(1u, s.d3d12Passes), d11 = std::max(1u, s.d3d11Passes);
+    std::printf("RTGI bench %ux%u %ux MSAA scale=%s hz=%s, %u frames: GPU apply=%.3f ms, CPU add_draw=%.3f apply=%.3f ms "
+        "| traced=%u refitted=%u reused=%u tris=%.0f "
+        "| CPU collect=%.3f apply=%.3f wait=%.3f ms | GPU build=%.3f trace=%.3f temporal=%.3f spatial=%.3f "
+        "composite=%.3f sync=%.3f ms (%u/%u timed)\n", w, h, samples, scale, hz, frames, whole / frames,
+        collect / frames, applyCpu / frames,
+        s.traced, s.refitted, s.reused, s.triangles / traced, s.collectMs / frames, s.applyMs / frames, s.waitMs / frames,
+        s.buildMs / d12, s.traceMs / d12, s.temporalMs / d12, s.spatialMs / d12, s.compositeMs / d11,
+        s.syncMs / d11, s.d3d12Passes, s.d3d11Passes);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
+        ComPtr<ID3D11Device> device;
+        ComPtr<ID3D11DeviceContext> context;
+        if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
+            D3D11_SDK_VERSION, &device, nullptr, &context))) return 77;
+        try {
+            benchmark(device.Get(), context.Get(), 3840, 2160, 8, "2", "0");
+            benchmark(device.Get(), context.Get(), 3840, 2160, 8, "2", "1");
+            benchmark(device.Get(), context.Get(), 3840, 2160, 8, "4", "0");
+            benchmark(device.Get(), context.Get(), 3840, 2160, 1, "2", "0");
+            return 0;
+        } catch (...) {
+            std::fputs("FAIL RTGI benchmark\n", stderr);
+            return 1;
+        }
+    }
     ComPtr<ID3D11InfoQueue> messages11;
     ComPtr<ID3D12InfoQueue> messages12;
     try {
@@ -1126,6 +1327,8 @@ int main()
         // 1.5 offsets the composite's highlight fade on these mid-grey
         // receivers, keeping each bounce several 8-bit levels above rounding.
         require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "1.5") == 0, "set strength");
+        // Trace every frame: the default reuses GI on frames under 12.5 ms apart.
+        require(_putenv_s("RECOMP_D3D_RTGI_HZ", "0") == 0, "set trace rate");
         bool passed = true;
         for (UINT samples : {1u, 4u}) {
             Renderer renderer(device.Get(), context.Get(), samples);
@@ -1158,6 +1361,8 @@ int main()
             passed = zero && passed;
             if (samples == 4) passed = verifySamples(renderer) && passed;
             require(_putenv_s("RECOMP_D3D_RTGI_STRENGTH", "1.5") == 0, "restore strength");
+            passed = verifyScale(renderer) && passed;
+            passed = verifyReuse(renderer) && passed;
             passed = verifyHistory(renderer) && passed;
             passed = verifyWeakLighting(renderer) && passed;
             passed = verifyBanding(renderer) && passed;
