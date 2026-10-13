@@ -341,6 +341,21 @@ static bool attach_camera(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     float view[16], projection[16];
 
+    /* Game seam: the effective background light rig the game saves each frame
+       (four 0x58-byte rows; +0 kind, 1 = directional; +0x24/+0x28 elevation/azimuth
+       in 1/65536 turns). Slot 0 is the stage key light used for sun shadows. */
+    memset(draw->sun, 0, sizeof draw->sun);
+    const uint8_t *rig = guest_span(0x009d4f58u, 0x2cu);
+    if (rig) {
+        uint32_t kind, elevation, azimuth;
+        memcpy(&kind, rig, 4); memcpy(&elevation, rig + 0x24, 4); memcpy(&azimuth, rig + 0x28, 4);
+        const float turn = 6.28318530718f / 65536.0f;
+        const float e = (float)(uint16_t)elevation * turn, b = (float)(uint16_t)azimuth * turn;
+        if (kind == 1u) {
+            draw->sun[0] = sinf(b) * cosf(e); draw->sun[1] = sinf(e); draw->sun[2] = cosf(b) * cosf(e);
+            draw->sun[3] = 1.0f;
+        }
+    }
     if (!read_transform(device, D3D_TRANSFORM_VIEW, view) ||
         !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
     multiply_transform(view, projection, draw->view_projection);

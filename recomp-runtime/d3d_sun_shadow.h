@@ -30,42 +30,47 @@ bool sunNormalize(float v[3])
     return true;
 }
 
-// shortcut: slot/background provenance is absent; prefer enabled environment slot 0 once both are captured.
-// Captured XYZ is already world-space toward-light; negate it only to get light travel.
-int sunDirection(const RecompD3dDirectionalLighting &light, float direction[3])
+// Picks the draw's directional light nearest the background key light (adapter's sun);
+// direction receives light travel for the map. Captured XYZ is world-space toward-light.
+// shortcut: matches by direction (within 25 deg), not slot tag; add slot provenance if rigs collide.
+int sunDirection(const RecompD3dPresenterDrawCommand &draw, float direction[3])
 {
+    const RecompD3dDirectionalLighting &light = draw.directional;
+    if (draw.sun[3] != 1 || !light.enabled || light.count > 8) return -1;
     int selected = -1;
-    float strongest = 0;
-    if (!light.enabled || light.count > 8) return -1;
+    float best = 0.906f; // cos 25 degrees
     for (unsigned i = 0; i < light.count; ++i) {
         if (light.positions[i][3] != 0) continue;
-        const float strength = light.colors[i][0]*0.2126f +
-            light.colors[i][1]*0.7152f + light.colors[i][2]*0.0722f;
-        float candidate[3] = {-light.directions[i][0], -light.directions[i][1], -light.directions[i][2]};
-        if (std::isfinite(strength) && strength > strongest && sunNormalize(candidate)) {
-            strongest = strength;
-            selected = static_cast<int>(i);
-            std::memcpy(direction, candidate, sizeof candidate);
-        }
+        float toward[3] = {light.directions[i][0], light.directions[i][1], light.directions[i][2]};
+        if (!sunNormalize(toward)) continue;
+        const float match = toward[0]*draw.sun[0] + toward[1]*draw.sun[1] + toward[2]*draw.sun[2];
+        if (match > best) { best = match; selected = static_cast<int>(i); }
     }
-    if (selected >= 0) {
-        if (const char *value = std::getenv("RECOMP_D3D_SUN_DIR")) {
-            float override_direction[3];
-            char trailing;
-            if (std::sscanf(value, " %f , %f , %f %c", &override_direction[0],
-                    &override_direction[1], &override_direction[2], &trailing) == 3 &&
-                sunNormalize(override_direction))
-                std::memcpy(direction, override_direction, sizeof override_direction);
-        }
+    if (selected < 0) return -1;
+    for (unsigned c = 0; c < 3; ++c) direction[c] = -draw.sun[c];
+    if (const char *value = std::getenv("RECOMP_D3D_SUN_DIR")) {
+        float override_direction[3];
+        char trailing;
+        if (std::sscanf(value, " %f , %f , %f %c", &override_direction[0],
+                &override_direction[1], &override_direction[2], &trailing) == 3 &&
+            sunNormalize(override_direction))
+            std::memcpy(direction, override_direction, sizeof override_direction);
     }
     return selected;
 }
 
-// The game's character shadow: untextured, stencil-tested pieces darkened by a black texture factor.
+// The game's projected shadow (actors and ball), darkening pass only: the stencil-marking
+// pass still draws, so stencil state matches the original frame.
 bool sunGameShadow(const RecompD3dPresenterDrawCommand &draw)
 {
-    return !draw.has_texture && !draw.target.offscreen && draw.depth.stencil_enable &&
-        !draw.depth.depth_write_enable && draw.blend.blend_enable && (draw.texture_factor & 0xffffffu) == 0;
+    const auto &d = draw.depth;
+    return draw.fvf == 0x112u && !draw.has_texture && draw.use_texture_factor && !draw.target.offscreen &&
+        !draw.directional.enabled && (draw.texture_factor & 0xffffffu) == 0 && (draw.texture_factor >> 24) != 0 &&
+        d.stencil_enable && d.stencil_func == RECOMP_D3D_COMPARE_EQUAL && d.stencil_ref == 1 &&
+        (d.stencil_read_mask & 3u) == 3u && d.stencil_pass == RECOMP_D3D_STENCIL_KEEP &&
+        d.stencil_fail == RECOMP_D3D_STENCIL_KEEP && d.stencil_zfail == RECOMP_D3D_STENCIL_KEEP &&
+        d.depth_test_enable && !d.depth_write_enable && draw.blend.blend_enable && draw.blend.color_write_mask &&
+        draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA && draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA;
 }
 
 bool sunInverse(const float matrix[16], float inverse[16])
@@ -144,7 +149,7 @@ void sunSelectCamera(SunShadow &sun, const RecompD3dPresenterDrawCommand &draw)
 {
     float extent, inverse[16], direction[3];
     if (draw.triangle_count <= sun.triangles || !sunSceneDraw(draw, extent) ||
-        sunDirection(draw.directional, direction) < 0 || !sunInverse(draw.view_projection, inverse)) return;
+        sunDirection(draw, direction) < 0 || !sunInverse(draw.view_projection, inverse)) return;
     sun.triangles = draw.triangle_count;
     sun.camera_epoch = sun.epoch;
     std::memcpy(sun.camera, draw.view_projection, sizeof sun.camera);

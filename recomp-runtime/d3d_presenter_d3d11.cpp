@@ -3024,7 +3024,7 @@ RecompD3dPresenterError submitDraw(
         float constants[20]{};
         std::memcpy(constants, sun.projection, sizeof sun.projection);
         float direction[3];
-        const int light = sunDirection(draw.directional, direction);
+        const int light = sunDirection(draw, direction);
         constants[16] = !sun.casting && sun.valid && sun.epoch == sun.camera_epoch &&
             !draw.target.offscreen && !draw.target.no_depth && !draw.program_count &&
             !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&

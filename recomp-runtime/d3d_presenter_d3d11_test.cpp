@@ -3094,6 +3094,7 @@ static bool testSunShadow(unsigned samples)
     auto &light = draw.directional;
     light.enabled = light.normalize = true; light.count = 3;
     light.directions[0][2] = light.directions[1][2] = -1;
+    draw.sun[2] = -1; draw.sun[3] = 1; // background key light matches lights 0 and 1
     light.positions[2][3] = 1; light.positions[2][2] = -5; light.attenuation[2][0] = 1;
     for (unsigned i = 0; i < 4; ++i) {
         draw.transform[i*5] = draw.view_projection[i*5] = draw.world[0][i*5] = 1;
@@ -3105,19 +3106,40 @@ static bool testSunShadow(unsigned samples)
         light.colors[2][c] = 10; // Bright point light must not become the sun.
     }
     float direction[3];
-    passed = passed && sunDirection(light, direction) == 0 && direction[2] == 1;
+    passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 1;
+    {
+        auto other = draw;
+        other.sun[3] = 0;
+        passed = passed && sunDirection(other, direction) < 0; // no background key light
+        other = draw; other.sun[2] = 1;
+        passed = passed && sunDirection(other, direction) < 0; // no matching rig light
+    }
     _putenv_s("RECOMP_D3D_SUN_DIR", "1,-2,3");
-    passed = passed && sunDirection(light, direction) == 0 && direction[0] > 0 && direction[1] < 0;
+    passed = passed && sunDirection(draw, direction) == 0 && direction[0] > 0 && direction[1] < 0;
     for (const char *invalid : {"0,0,0", "nan,1,0", "1,2,3junk"}) {
         _putenv_s("RECOMP_D3D_SUN_DIR", invalid);
-        passed = passed && sunDirection(light, direction) == 0 && direction[2] == 1;
+        passed = passed && sunDirection(draw, direction) == 0 && direction[2] == 1;
     }
     _putenv_s("RECOMP_D3D_SUN_DIR", "");
     {
         RecompD3dPresenterDrawCommand game_shadow{};
+        game_shadow.fvf = 0x112; game_shadow.use_texture_factor = true;
+        game_shadow.depth.depth_test_enable = true;
         game_shadow.depth.stencil_enable = true;
+        game_shadow.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+        game_shadow.depth.stencil_ref = 1; game_shadow.depth.stencil_read_mask = 3;
         game_shadow.blend.blend_enable = true;
+        game_shadow.blend.color_write_mask = 15;
+        game_shadow.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        game_shadow.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
         game_shadow.texture_factor = 0x82000000u;
+        passed = passed && sunGameShadow(game_shadow);
+        auto marking = game_shadow; // stencil-only first pass keeps drawing
+        marking.blend.color_write_mask = 0;
+        passed = passed && !sunGameShadow(marking);
+        marking = game_shadow; marking.depth.stencil_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+        passed = passed && !sunGameShadow(marking);
+        game_shadow.texture_factor = 0x5f000000u; // per-scene alpha
         passed = passed && sunGameShadow(game_shadow);
         game_shadow.texture_factor = 0x82ffffffu;
         passed = passed && !sunGameShadow(game_shadow);

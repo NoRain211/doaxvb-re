@@ -24,34 +24,28 @@ hair and distant objects are outside this initial test. Vertex blending uses
 the command's replayed `world[]` palette and the same explicit/remainder
 weights as the visible pass.
 
-`sunDirection()` is the temporary sun-selection seam. It chooses the strongest
-directional light by luminance, ignoring point lights. The camera candidate's
-rig supplies the map direction; each receiver attenuates its own strongest
-directional contribution. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides **light travel**
-direction for the map, normalized on input. Invalid, zero and nonfinite values
-retain the rig direction. This does not move the sky sun or change the game's
-light rig. Character and environment rigs can differ, and the brightest light
-is only a shortcut, not the verified environment key-light selection rule.
+The sun is the stage's key light: slot 0 of the background light rig, which
+the game saves each frame (four 0x58-byte rows at guest 0x009D4F58; kind at +0,
+elevation and azimuth at +0x24 and +0x28 in 1/65536 turns). The draw adapter
+reads it into each draw's `sun` as a world-space toward-light vector, valid only
+when slot 0 is directional. When it is not, no shadow map is built and the
+game's own shadows stay. Slot 0 is a key-light proxy: on the sunset court it
+sits about 14 degrees from the sun sprite, which the game places separately.
 
-The adapter already supplies a normalized **world-space toward-light** vector.
-No inverse object matrix should be applied; the shadow map negates it only to
-obtain light travel. Active-list order is enable order, not D3D slot order, so
-the first captured record cannot stand in for slot 0. Slot identity can be
-recovered from the device's light table, but a correct replacement also needs
-the effective background-rig provenance for the current view, including script
-mode changes. The present adapter does not retain that provenance; an unskinned
-draw alone does not establish it. Keep the strongest-light/override shortcut
-until both are carried to the presenter. Then prefer enabled directional slot 0
-from the background rig, treating disabled, non-directional or unattributed
-slot 0 as unavailable. That remains a key-light proxy, not proof of alignment
-with the sky's visible sun.
+`sunDirection()` picks the receiver's directional light nearest that key light,
+within 25 degrees, and attenuates only that light. Matching by direction stands
+in for slot provenance. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
+travel** direction, normalized on input; invalid, zero and nonfinite values are
+ignored. It does not move the sky sun or change the game's light rig.
 
 Nine comparison-filtered samples provide shadow visibility. Only the selected
 direct diffuse term is reduced before material/texture processing and fog;
-ambient, point lights and other directional terms remain. While the shadow map is valid, the game's own character shadow is skipped: its
-untextured, stencil-tested pieces darkened by a black texture factor. Other
-non-host-lit passes,
-including the existing projected palm/net shadow receivers, bypass the effect.
+ambient, point lights and other directional terms remain. While the shadow map is valid, the game's projected shadow for characters and
+the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
+lighting off, black texture factor with any alpha, stencil EQUAL 1 with KEEP
+operations, depth writes off and SRC_ALPHA blending. The stencil-marking pass
+still draws, so stencil state matches the original frame. Other non-host-lit
+passes, including the existing projected palm/net shadow receivers, bypass the effect.
 The implementation uses ordinary D3D11 depth comparisons and slope bias;
 see Microsoft's [comparison sampling documentation](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/samplecmplevelzero-s-float-float-int-uint-)
 and [depth bias documentation](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias).
