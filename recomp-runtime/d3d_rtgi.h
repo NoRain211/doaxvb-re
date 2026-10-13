@@ -13,9 +13,22 @@
 struct D3dRtgi;
 
 /* Returns null, after logging why, when D3D12, DXR 1.1 or cross-API sharing is
-   unavailable. width x height is the presenter's main render target. */
-D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height);
+   unavailable. width x height is the presenter's main render target. timing
+   records CPU times and GPU timestamps for d3d_rtgi_take_stats. */
+D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height, bool timing = false);
 void d3d_rtgi_destroy(D3dRtgi *rtgi);
+
+/* Totals since the previous call, for the RECOMP_PERF_COUNTER line; all zero
+   without timing. GPU times cover only passes whose timestamps had resolved:
+   d3d12Passes for the D3D12 stages and d3d11Passes for composite and sync.
+   sync is D3D11 GPU time spent waiting for D3D12 between reduction and composite. */
+struct D3dRtgiStats {
+    uint32_t traced = 0, reused = 0, d3d12Passes = 0, d3d11Passes = 0;
+    uint64_t triangles = 0;
+    double collectMs = 0, applyMs = 0, waitMs = 0;
+    double buildMs = 0, traceMs = 0, temporalMs = 0, spatialMs = 0, compositeMs = 0, syncMs = 0;
+};
+D3dRtgiStats d3d_rtgi_take_stats(D3dRtgi *rtgi);
 
 /* Adds one draw to this frame's scene. Keeps only main-target, depth-writing,
    transformed triangle draws and copies what it needs before returning.
