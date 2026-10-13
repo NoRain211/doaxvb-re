@@ -1,6 +1,7 @@
 #include "game_rollback.h"
 #include "fiber_adapter.h"
 #include "runtime.h"
+#include "stop_report.h"
 
 #include <stdint.h>
 #include <stdio.h>
