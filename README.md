@@ -7,11 +7,13 @@
 **A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows, macOS & Linux), built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=beta)](https://github.com/NoRain211/doaxbv-re/releases/latest)
+[![Latest prerelease](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?include_prereleases&label=prerelease)](https://github.com/NoRain211/doaxbv-re/releases)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 ![Platform: Windows, macOS & Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)
 
 [Download](https://github.com/NoRain211/doaxbv-re/releases/latest) ·
+[Prerelease](https://github.com/NoRain211/doaxbv-re/releases) ·
 [Changelog](CHANGELOG.md) ·
 [Status](docs/public-status.md) ·
 [Controls](docs/recomp-controls.md) ·
@@ -96,7 +98,8 @@ installer, which needs administrator approval and several GB of disk space.
 
 1. Download the ZIP from the
    [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest)
-   and extract it into a new folder with a short path.
+   (or the newest [prerelease](https://github.com/NoRain211/doaxbv-re/releases)
+   to try upcoming fixes early) and extract it into a new folder with a short path.
 2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**. With a
    release ZIP up to 0.6.0 RC1, first follow any Microsoft installer prompts.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
