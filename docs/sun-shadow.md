@@ -20,8 +20,8 @@ A single 4096-square D32 shadow map covers a 64-unit box centered 20 units
 along the camera's near ray, with 120 units of light-space depth. The XY fit
 snaps to shadow texels and shadows fade over the outer tenth of the box.
 Receivers offset their lookup 0.04 units along the vertex normal, and the
-compare bias is 0.0002 of light depth, so grazing skin under the low key light
-does not shadow itself. Skinned draws and compact rigid casters (the ball) do
+compare bias is 0.0002 of light depth, so grazing ground under a low sun does
+not shadow itself. Skinned draws and compact rigid casters (the ball) do
 not receive, so models keep the game's shading. Other receivers darken by the
 game's own shadow opacity, taken from last frame's hidden darkening pass,
 because many stages light the sand with a separate rig or mostly baked light.
@@ -65,8 +65,11 @@ backend and no vendor-specific capability is required.
 
 The presenter tests cover opt-out resource parity, invalid cameras and sky
 extent rejection, sun selection/override validation, GPU shadow visibility,
-ambient/fill preservation, rigid and one-to-three-weight casters, bypasses and
-resource release. Private smoke captures establish startup and frame delivery
-only. Visual acceptance, bias tuning and alignment with the visible sun require
-the user's play test. `RECOMP_PERF_COUNTER=1` reports caster counts and the map's
-direction alongside the existing FPS/late-frame observations.
+ground darkening by the game's shadow opacity, compact and no-game-shadow
+bypasses, rigid and one-to-three-weight casters and resource release. Private
+attract-demo captures matched only whole actor and ball shadow sets (19 passes
+per actor) across seven scenes. A user play test accepted the look on the
+morning, dusk, sunset, Niki Beach and private beach courts and measured 59.9 fps
+after startup at 2160p with 8x MSAA and SMAA; the hotel is not verified.
+`RECOMP_PERF_COUNTER=1` reports caster counts, hidden game-shadow passes and the
+map's direction alongside the existing FPS/late-frame observations.
