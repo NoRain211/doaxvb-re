@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <cstdio>
@@ -31,6 +32,9 @@ bool probe_enabled;
 bool keep_debt;
 std::chrono::nanoseconds waited{0};
 constexpr auto spin_window = std::chrono::microseconds(500);
+std::atomic<unsigned> pass_counts[3];
+std::atomic<uint32_t> frame_cost_ns{0};
+std::atomic<unsigned> display_rate{60};
 
 void sleepUntil(Clock::time_point deadline)
 {
@@ -147,6 +151,23 @@ uint64_t recomp_d3d_vblank_waited_ns(void)
 {
     return static_cast<uint64_t>(waited.count());
 }
+
+void recomp_d3d_count_passes(unsigned ticks, unsigned displays, unsigned dropped)
+{
+    pass_counts[0] += ticks;
+    pass_counts[1] += displays;
+    pass_counts[2] += dropped;
+}
+
+void recomp_d3d_take_passes(unsigned counts[3])
+{
+    for (unsigned i = 0; i < 3; ++i) counts[i] = pass_counts[i].exchange(0);
+}
+
+void recomp_d3d_set_frame_cost_ns(uint32_t ns) { frame_cost_ns = ns; }
+uint32_t recomp_d3d_frame_cost_ns(void) { return frame_cost_ns; }
+void recomp_d3d_set_display_rate(unsigned hz) { display_rate = hz; }
+unsigned recomp_d3d_display_rate(void) { return display_rate; }
 
 void recomp_d3d_wait_vblank(void)
 {

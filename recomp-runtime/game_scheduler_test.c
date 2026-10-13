@@ -91,6 +91,48 @@ static void check_pacing(unsigned hz)
     expect(now == interval * hz, "game clock did not recover a transient late frame");
 }
 
+static void check_display_passes(void)
+{
+    const int64_t ms = 1000000;
+    RecompGamePacing pacing;
+    recomp_game_pacing_init(&pacing, 2);
+    expect(recomp_game_pacing_display_passes(&pacing, 2, 0, 3 * ms, 2 * ms, 9 * ms) == 1,
+           "kept a display pass whose render cost does not fit");
+    unsigned passes = 1;
+    for (unsigned i = 0; i < 600; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, 0, 3 * ms, 2 * ms, 15 * ms / 2);
+    expect(passes == 1, "a pass returned inside the hysteresis band");
+    recomp_game_pacing_init(&pacing, 2);
+    for (unsigned i = 0; i < 1800; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, i % 20 == 0, 3 * ms, 2 * ms, 15 * ms / 2);
+    expect(passes == 2, "a pass dropped inside the hysteresis band or on a rare miss");
+    for (unsigned i = 0; i < 20; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, 1, 3 * ms, 2 * ms, 2 * ms);
+    expect(passes == 2, "a short burst of misses dropped a pass");
+    for (unsigned i = 0; i < 40; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, 1, 3 * ms, 2 * ms, 2 * ms);
+    expect(passes == 1, "kept a pass that keeps missing its slot");
+    /* The pass held over 5 s, so it returns after the two-second dwell. */
+    for (unsigned i = 0; i < 119; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, 0, 3 * ms, 2 * ms, 2 * ms);
+    expect(passes == 1, "a pass returned before two seconds of fitting");
+    passes = recomp_game_pacing_display_passes(&pacing, 2, 0, 3 * ms, 2 * ms, 2 * ms);
+    expect(passes == 2, "a fitting pass did not return");
+    /* It drops again at once, so the next return waits twice as long. */
+    for (unsigned i = 0; i < 60; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, 1, 3 * ms, 2 * ms, 2 * ms);
+    for (unsigned i = 0; i < 239; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 2, 0, 3 * ms, 2 * ms, 2 * ms);
+    expect(passes == 1, "a pass that failed again returned without a longer dwell");
+    expect(recomp_game_pacing_display_passes(&pacing, 2, 0, 3 * ms, 2 * ms, 2 * ms) == 2,
+           "a fitting pass did not return after the longer dwell");
+    expect(recomp_game_pacing_display_passes(&pacing, 2, 0, 6 * ms, 6 * ms, 2 * ms) == 2,
+           "game work alone dropped a pass that was not missing its slot");
+    recomp_game_pacing_init(&pacing, 1);
+    expect(recomp_game_pacing_display_passes(&pacing, 1, 1, 3 * ms, 2 * ms, 30 * ms) == 1,
+           "dropped below one pass per tick");
+}
+
 int recomp_game_scheduler_test(void)
 {
     passed = 1;
@@ -129,6 +171,7 @@ int recomp_game_scheduler_test(void)
     check_pacing(60);
     check_pacing(120);
     check_pacing(240);
+    check_display_passes();
     check_durations(60);
     check_durations(120);
     check_durations(240);
