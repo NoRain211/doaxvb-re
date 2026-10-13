@@ -1,4 +1,5 @@
 #include "kernel_abi.h"
+#include "unlock_swimsuits.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -236,6 +237,11 @@ static void bridge_xc_sha_update(void)
         RecompShaContext context;
 
         sha_context_load(context_address, &context);
+#ifdef RECOMP_FULL_PROGRAM
+        /* The hash is the one place a save image passes through the
+           runtime, before it is written and after it is read. */
+        recomp_unlock_swimsuits_hash(length);
+#endif
         if (length != 0u) {
             recomp_kernel_sha_update(
                 &context, recomp_memory(input, length), length);
