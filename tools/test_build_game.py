@@ -6,12 +6,30 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
+import build_game
 from build_game import LIFTER_REVISION, RECIPE_SHA256, ROOT, program_manifest, verify_files
 from extract_iso import sha256
 
 
 class ProgramManifestTests(unittest.TestCase):
+    def test_release_lifter_checkout_tolerates_foreign_owner(self):
+        """A release ZIP on a drive without ownership, after a failed checkout (issue #110)."""
+        source = ROOT / "tools/xboxrecomp"
+        self.assertTrue((source / ".git").exists(), "Run git submodule update --init tools/xboxrecomp first")
+        private = ROOT / "private"
+        private.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="lifter-owner-test-", dir=private) as folder:
+            release = Path(folder)
+            lifter = release / "tools/xboxrecomp"
+            subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(source), str(lifter)],
+                           check=True, timeout=60)
+            with mock.patch.object(build_game, "ROOT", release), \
+                    mock.patch.object(build_game, "LIFTER", lifter), \
+                    mock.patch.dict("os.environ", {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}):
+                build_game.prepare_lifter(release)
+
     def test_recipe_recovery_generation(self):
         verify_files(ROOT, {"tools/game-recipe/recipe.json": RECIPE_SHA256})
         recipe = json.loads((ROOT / "tools/game-recipe/recipe.json").read_text(encoding="utf-8"))

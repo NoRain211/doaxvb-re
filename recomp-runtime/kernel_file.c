@@ -318,7 +318,7 @@ static int read_guest_ansi_string(uint32_t ansi_string_address, char *out, size_
     if (buffer == 0u || length == 0u || length >= out_size) {
         return 0;
     }
-    memcpy(out, (const void *)recomp_memory_u32(buffer), length);
+    memcpy(out, recomp_memory(buffer, length), length);
     out[length] = '\0';
     return 1;
 }
@@ -1381,7 +1381,7 @@ static void bridge_nt_query_information_file(void)
     const char *policy = "zero-filled-pseudo-file-information";
 
     if (file_information != 0u && length != 0u) {
-        memset((void *)recomp_memory_i8(file_information), 0, length);
+        memset(recomp_memory(file_information, length), 0, length);
     }
 
     for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
@@ -1762,7 +1762,7 @@ static void bridge_nt_query_directory_file(void)
     char pattern[RECOMP_DIRECTORY_NAME_SIZE] = {0};
 
     if (file_information != 0u && length != 0u) {
-        memset(recomp_memory_i8(file_information), 0, length);
+        memset(recomp_memory(file_information, length), 0, length);
     }
     if (file_name != 0u) {
         uint16_t pattern_length = *recomp_memory_u16(file_name);
@@ -1775,7 +1775,7 @@ static void bridge_nt_query_directory_file(void)
             goto finish;
         }
         if (pattern_length != 0u) {
-            memcpy(pattern, recomp_memory_i8(pattern_buffer), pattern_length);
+            memcpy(pattern, recomp_memory(pattern_buffer, pattern_length), pattern_length);
             pattern[pattern_length] = '\0';
         }
     }
@@ -1820,7 +1820,7 @@ static void bridge_nt_query_directory_file(void)
 
             if (!recomp_directory_serialize(
                     &entry,
-                    recomp_memory_i8(file_information),
+                    recomp_memory(file_information, length),
                     length,
                     &serialized_size)) {
                 status = RECOMP_STATUS_INVALID_PARAMETER;
@@ -1914,7 +1914,7 @@ static void bridge_nt_write_file(void)
 
         const void *host_buffer = length == 0u
             ? NULL
-            : (const void *)recomp_memory_i8(buffer);
+            : (const void *)recomp_memory(buffer, length);
         bool owned_write = length != 0u && file_handles[i].save_write &&
             recomp_save_active(current_save_owner());
         DWORD host_length = length;
@@ -2033,7 +2033,7 @@ static void bridge_nt_read_file(void)
 
         void *host_buffer = length == 0u
             ? NULL
-            : (void *)recomp_memory_i8(buffer);
+            : (void *)recomp_memory(buffer, length);
         DWORD host_bytes_read = 0u;
         if (!ReadFile(
                 file_handles[i].host_handle,
@@ -2295,7 +2295,7 @@ static void bridge_nt_query_symbolic_link_object(void)
                 length >= maximum_length) {
                 status = RECOMP_STATUS_INVALID_PARAMETER;
             } else {
-                memcpy(recomp_memory_i8(buffer), target, length + 1u);
+                memcpy(recomp_memory(buffer, length + 1u), target, length + 1u);
                 *recomp_memory_u16(target_string) = (uint16_t)length;
                 if (returned_length != 0u) {
                     *recomp_memory_u32(returned_length) = (uint32_t)length;

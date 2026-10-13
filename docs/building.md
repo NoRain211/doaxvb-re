@@ -20,7 +20,7 @@ For a source checkout or GitHub's automatic source archive, install:
 - Capstone 5.0.9 distribution for that Python installation
 - Git with network access
 - CMake 3.20 or newer
-- Visual Studio 2022 or Build Tools with the C++ desktop workload and a Windows SDK
+- On Windows, nothing else: setup downloads the llvm-mingw compiler (see below)
 - XboxDev `extract-xiso`
 
 The repository does not include an all-in-one build executable. Place
@@ -38,17 +38,19 @@ with a short path before setup
 (for example, a folder directly under Downloads). Use the scripts
 from that folder.
 The bundled Capstone distribution is 5.0.9; its Python binding reports 5.0.7.
-`BuildGame.cmd` checks for the Visual Studio 2022 C++ tools and a Windows SDK.
-If missing, it offers to download Microsoft's official Build Tools installer
-and install the needed components. The download is signature-checked before
-execution. This step needs internet access, several GB of disk space and
-Windows administrator approval. The build itself runs without elevation.
-If installation requires a restart, restart Windows and run `BuildGame.cmd`
-again. A complete Visual Studio IDE is not required.
 
-Direct `tools/build_game.py` invocations only check prerequisites by default.
-Add `--install-prerequisites` to enable the same interactive installation
-offer as `BuildGame.cmd`. `--generate-only` does not need the compiler or SDK.
+Windows builds compile with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+clang; Visual Studio and the Windows SDK are not used. When
+`tools/llvm-mingw/bin/clang.exe` is missing, `BuildGame.cmd` downloads the
+pinned 20261006 `ucrt-x86_64` release (190 MB, about 715 MB extracted), checks
+its SHA-256 and extracts it to `tools/llvm-mingw`. This needs no administrator
+approval and happens once per folder. A release ZIP may already include it. The
+build receipt records the clang version. The runner links the C++ runtime
+statically and needs only Windows system DLLs and `SDL3.dll`.
+
+Direct `tools/build_game.py` invocations only check for the compiler by
+default. Add `--install-prerequisites` to download it as `BuildGame.cmd` does.
+`--generate-only` does not need the compiler.
 
 If the extractor reports a missing `VCRUNTIME140.dll`, install the included
 `Prerequisites/vc_redist.x86.exe` and retry. The extractor remains 32-bit;
@@ -172,6 +174,16 @@ cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
 
+To test with the compiler setup uses, place llvm-mingw in `tools/llvm-mingw`
+(or let `BuildGame.cmd` download it) and run:
+
+```powershell
+$env:PATH = "$PWD\tools\llvm-mingw\bin;$env:PATH"
+cmake -S recomp-runtime -B build/clang -G "MinGW Makefiles" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build/clang --parallel 4
+ctest --test-dir build/clang --output-on-failure
+```
+
 On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run:
 
 ```bash
@@ -289,10 +301,13 @@ Pass `--vsync` for paced presentation. Set `RECOMP_AUDIO_GAIN` from 0 to 1 for
 sound. Audio is muted by default when you start the runner directly.
 Set `RECOMP_MUSIC_SHUFFLE=1` to shuffle Radio Station playlists; see
 [`docs/native-audio.md`](native-audio.md#radio-shuffle).
+Set `RECOMP_TITLE_IDLE` to `no-cutscene` or `cpu-exhibition` to change what
+the idle title screen leads to; see [`docs/title-idle.md`](title-idle.md).
 The game renders 16:9 in an 854x480 window. Set `RECOMP_D3D_WIDESCREEN=0` for
 its 4:3 view in a 640x480 window.
 Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
-3 for 1440p; above 1 the window is borderless and capped at the screen height.
+3 for 1440p; above 1 the window is borderless, centered, and shrinks to fit the
+screen.
 Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
 supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.

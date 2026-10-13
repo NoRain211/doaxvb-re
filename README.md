@@ -7,11 +7,13 @@
 **A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows, macOS & Linux), built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=beta)](https://github.com/NoRain211/doaxbv-re/releases/latest)
+[![Latest prerelease](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?include_prereleases&label=prerelease)](https://github.com/NoRain211/doaxbv-re/releases)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 ![Platform: Windows, macOS & Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)
 
 [Download](https://github.com/NoRain211/doaxbv-re/releases/latest) ·
+[Prerelease](https://github.com/NoRain211/doaxbv-re/releases) ·
 [Changelog](CHANGELOG.md) ·
 [Status](docs/public-status.md) ·
 [Controls](docs/recomp-controls.md) ·
@@ -72,6 +74,7 @@ running; so far only the startup thread entry has been rewritten.
 | Deleting saves | Fixed in 0.4.9 |
 | Custom soundtracks (MP3, WAV, FLAC from `UserMusic`) | Added in 0.5.0 |
 | Radio Station shuffle (launcher checkbox) | Added in 0.5.3 |
+| Title screen idle behavior: attract sequence without the movies, or CPU Exhibition matches (launcher choice) | Opt-in; see [`docs/title-idle.md`](docs/title-idle.md) |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
@@ -86,16 +89,19 @@ Development results do not guarantee every route works in the packaged beta.
 
 **Requirements:** Windows 10/11 x64, a supported USA game ISO and internet
 access. The 0.5.3 Beta ZIP bundles Python, Capstone, Git, CMake and the ISO
-extractor. If the Microsoft C++ compiler or Windows SDK is missing, setup
-offers to download and run Microsoft's installer. That installation needs
-administrator approval and several GB of disk space; the full Visual Studio
-IDE is not required.
+extractor. Setup compiles the game with the free
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang compiler. On first
+run it downloads it into the setup folder (190 MB, about 715 MB extracted). This
+needs no administrator approval, Visual Studio or Windows SDK (#115).
+Release ZIPs up to 0.6.0 RC1 instead offer to run Microsoft's C++ Build Tools
+installer, which needs administrator approval and several GB of disk space.
 
 1. Download the ZIP from the
    [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest)
-   and extract it into a new folder with a short path.
-2. Drag your ISO onto `BuildGame.cmd`, follow any prerequisite installation
-   prompts and wait for **Setup complete**.
+   (or the newest [prerelease](https://github.com/NoRain211/doaxbv-re/releases)
+   to try upcoming fixes early) and extract it into a new folder with a short path.
+2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**. With a
+   release ZIP up to 0.6.0 RC1, first follow any Microsoft installer prompts.
 3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA and SMAA,
    then press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
@@ -134,6 +140,8 @@ cmake --build build/recomp-runtime --config Release --parallel 2
 ctest --test-dir build/recomp-runtime -C Release --output-on-failure
 ```
 
+To run the same tests with the llvm-mingw clang that setup uses, see the
+[source build guide](docs/building.md#public-test-route).
 This produces test executables, not the game runner. For ISO setup from source,
 follow the [source build guide](docs/building.md). Passing tests does not
 establish full game accuracy.

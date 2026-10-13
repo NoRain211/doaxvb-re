@@ -244,7 +244,7 @@ static void bridge_xc_sha_update(void)
 #endif
         if (length != 0u) {
             recomp_kernel_sha_update(
-                &context, (const uint8_t *)(const void *)recomp_memory_i8(input), length);
+                &context, recomp_memory(input, length), length);
         }
         sha_context_store(context_address, &context);
     }

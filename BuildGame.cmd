@@ -30,6 +30,6 @@ pause
 exit /b %result%
 :usage
 echo Drag one Xbox ISO onto BuildGame.cmd.
-echo Setup checks the build tools and offers to install missing Microsoft prerequisites.
+echo Setup downloads the llvm-mingw compiler into tools\llvm-mingw on first use.
 pause
 exit /b 1

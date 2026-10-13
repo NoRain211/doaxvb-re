@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Title screen idle behavior** (#117). A launcher choice, or
+  `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
+  idle. **Default** is the game's own attract sequence. **No cutscene**
+  (`no-cutscene`) keeps the movies out of it: the game alternates between
+  the title screen and the real-time volleyball demo, and the title screen
+  stays for 10 seconds instead of 30. **CPU Exhibition** (`cpu-exhibition`)
+  starts Exhibition matches played by the CPU on every side, each with four
+  random girls in random swimsuits on a random court, one match after
+  another until START is pressed. With Default nothing changes. See
+  `docs/title-idle.md`.
+
+### Changed
+
+- Windows setup compiles the game with llvm-mingw clang instead of Visual
+  Studio (#115). `BuildGame.cmd` downloads the pinned llvm-mingw release
+  (190 MB) into `tools/llvm-mingw` on first run and checks its SHA-256. It no
+  longer needs Visual Studio Build Tools, a Windows SDK or administrator
+  approval. The runner needs only Windows system DLLs and `SDL3.dll`. The
+  generation recipe is unchanged, so existing builds keep working and saves
+  are unaffected.
+
+### Fixed
+
+- **Widescreen window fit** (#119). Above 480p, the borderless window now
+  fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
+  cut off the right side, and ultrawide screens show the picture in the
+  middle. It uses real screen pixels when Windows display scaling is above
+  100%, so the picture is no longer blurred. The 480p window can no longer be
+  resized, which stretched the picture. The game now sees the dashboard's
+  Widescreen setting without the Letterbox flag, as on a real Xbox.
+
 ## 0.6.0 Beta RC1 — 2026-10-09
 
 This release candidate improves rendering and adds opt-in high refresh

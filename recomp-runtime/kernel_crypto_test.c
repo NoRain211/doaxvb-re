@@ -97,6 +97,30 @@ static int check_byte_at_a_time(const ShaVector *vector)
 }
 
 int recomp_kernel_crypto_test(void);
+int recomp_kernel_crypto_overrun_test(void);
+
+/* An input span that starts in guest memory but runs past its end must stop
+   the runtime on the whole span, not just its first byte. Returning means the
+   host read past the buffer. */
+int recomp_kernel_crypto_overrun_test(void)
+{
+    static uint8_t memory[TEST_MEMORY_SIZE];
+    const RecompMemoryRegion region = {
+        .address = TEST_MEMORY_BASE,
+        .size = sizeof memory,
+        .data = memory,
+    };
+    uint32_t *stack = (uint32_t *)(memory + TEST_ENTRY_ESP - TEST_MEMORY_BASE);
+
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    stack[0] = 0x0010abcdu;
+    stack[1] = TEST_CONTEXT;
+    stack[2] = TEST_MEMORY_BASE + TEST_MEMORY_SIZE - 4u;
+    stack[3] = 16u;
+    recomp_runtime.registers.esp = TEST_ENTRY_ESP;
+    recomp_kernel_crypto(336u)();
+    return 0;
+}
 
 int recomp_kernel_crypto_test(void)
 {

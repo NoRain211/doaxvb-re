@@ -11,6 +11,7 @@
 #endif
 #include "stop_report.h"
 #include "save_transaction.h"
+#include "title_idle.h"
 #include "unlock_swimsuits.h"
 
 #include <stdio.h>
@@ -394,6 +395,7 @@ void recomp_d3d_swap_adapter(void)
     *recomp_memory_u32(frame_device_address + 0x2c10u) =
         result.command.data.present.swap_counter;
 #ifdef RECOMP_FULL_PROGRAM
+    recomp_title_idle_frame();
     recomp_unlock_swimsuits_frame();
     /* Scene state machine at 0x000A3820: 0x5DECE0 is the scene currently
        running and 0x5DED55 is the scene requested for the next iteration.

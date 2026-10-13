@@ -46,6 +46,7 @@ int recomp_kernel_thread_test(void);
 int recomp_kernel_video_test(void);
 int recomp_kernel_rtl_test(void);
 int recomp_kernel_crypto_test(void);
+int recomp_kernel_crypto_overrun_test(void);
 
 typedef struct LeafFixture {
     const char *name;
@@ -882,12 +883,15 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--ram-pending-ohci") == 0) {
         return run_ram_pending_ohci();
     }
+    if (argc == 2 && strcmp(argv[1], "--kernel-span-overrun") == 0) {
+        return recomp_kernel_crypto_overrun_test();
+    }
     if (argc != 1) {
         fprintf(
             stderr,
             "usage: recomp_runtime_test "
             "[--invalid-access|--fiber-stack-recycling|"
-            "--ram-overrun|--ram-pending-ohci|--custom-music|"
+            "--ram-overrun|--ram-pending-ohci|--kernel-span-overrun|--custom-music|"
             "--presenter-close-release|--presenter-close-draw|--presenter-close-up]\n");
         return 64;
     }
