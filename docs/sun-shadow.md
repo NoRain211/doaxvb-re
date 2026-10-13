@@ -1,6 +1,7 @@
 # Experimental directional sun shadows
 
-Set `RECOMP_D3D_SUN_SHADOW=1` before launching the D3D11 runner. Unset, `0`,
+Set `RECOMP_D3D_SUN_SHADOW=1` before launching the D3D11 runner, or tick **Sun
+shadows** in `Launcher.cmd`; leave it off on lower-powered PCs. Unset, `0`,
 and other values retain the existing shaders, depth allocation and draw path;
 no shadow GPU resources or prepasses are created. This is a visual experiment,
 not a calibrated replacement for the game's lighting.
