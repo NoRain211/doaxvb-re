@@ -10,6 +10,7 @@
 #include "d3d_draw_adapter.h"
 #include "d3d_frame_adapter.h"
 #include "d3d_vblank.h"
+#include "game_pacing.h"
 #include "stop_report.h"
 
 #include <stdio.h>
@@ -360,9 +361,12 @@ bool recomp_game_tick_hidden(void)
     return display_ready && authored_pass &&
         *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
 }
-static int64_t next_tick_ns, pass_start_ns, tick_pass_ns, display_pass_ns;
+static int64_t next_tick_ns, pass_start_ns, tick_pass_ns, display_pass_ns, render_ns;
 static uint64_t pass_start_waited_ns;
+/* Display passes per tick: all the rate asks for and those run since the
+   last tick. pacing.passes is how many currently fit. */
 static unsigned display_steps = 1, display_done;
+static RecompGamePacing pacing = {1};
 static bool timing_tick_pass;
 
 static int64_t now_ns(void) { return (int64_t)recomp_xapi_performance_counter(); }
@@ -383,8 +387,12 @@ static bool next_pass_is_tick(void)
     if (next_tick_ns == 0) next_tick_ns = now;
     const bool display = display_ready && game_hz > 60u &&
         *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
-    if (display && (timing_tick_pass || now < next_tick_ns - interval / 2)) {
+    /* A display pass only fills time before the next tick is due, so a slow
+       pass never delays ticks; the passes that miss are dropped. */
+    if (display && display_done < pacing.passes && now < next_tick_ns &&
+        (timing_tick_pass || now < next_tick_ns - interval / 2)) {
         ++display_done;
+        recomp_d3d_count_passes(0, 1, 0);
         pass_start_ns = now;
         pass_start_waited_ns = recomp_d3d_vblank_waited_ns();
         timing_tick_pass = false;
@@ -401,16 +409,24 @@ static bool next_pass_is_tick(void)
     /* ponytail: a stall longer than four ticks (a load) is not caught up. */
     if (now - next_tick_ns > 4 * (int64_t)TICK_NS) next_tick_ns = now;
     next_tick_ns += TICK_NS;
-    display_steps = (game_hz + 59u) / 60u;
+    if (display) {
+        const int64_t frame = (int64_t)recomp_d3d_frame_cost_ns();
+        render_ns = render_ns ? (render_ns * 7 + frame) / 8 : frame;
+        recomp_game_pacing_display_passes(&pacing, display_steps,
+            display_done < pacing.passes ? pacing.passes - display_done : 0,
+            tick_pass_ns, display_pass_ns, render_ns);
+    }
+    recomp_d3d_count_passes(1, 0, display ? display_steps - display_done : 0);
+    recomp_d3d_set_display_rate(display && pacing.passes < display_steps ? 60u * pacing.passes : game_hz);
     display_done = 0;
     static int64_t report_ns;
     static uint32_t report_tick, report_pass;
     if (trace_timing && game_tick % 300u == 0) {
         if (report_ns != 0)
-            fprintf(stderr, "recomp game ticks: tick=%u ticks_per_s=%.3f passes_per_s=%.1f steps=%u tick_ms=%.2f display_ms=%.2f\n",
+            fprintf(stderr, "recomp game ticks: tick=%u ticks_per_s=%.3f passes_per_s=%.1f steps=%u tick_ms=%.2f display_ms=%.2f render_ms=%.2f\n",
                 game_tick, (game_tick - report_tick) * 1e9 / (double)(now - report_ns),
-                (game_pass - report_pass) * 1e9 / (double)(now - report_ns), display_steps,
-                tick_pass_ns / 1e6, display_pass_ns / 1e6);
+                (game_pass - report_pass) * 1e9 / (double)(now - report_ns), pacing.passes,
+                tick_pass_ns / 1e6, display_pass_ns / 1e6, render_ns / 1e6);
         report_ns = now; report_tick = game_tick; report_pass = game_pass;
     }
     return true;
@@ -534,6 +550,9 @@ static void game_entry(void)
     const unsigned hz = recomp_game_requested_hz();
     recomp_game_scheduler_reset(hz != 0 ? hz : 60);
     display_ready = game_hz > 60u && recomp_game_rollback_begin();
+    display_steps = (game_hz + 59u) / 60u;
+    recomp_game_pacing_init(&pacing, display_steps);
+    recomp_d3d_set_display_rate(game_hz);
     fprintf(stderr, "recomp game scheduler: hand source, hz=%u display_passes=%d\n", game_hz, display_ready);
     call(0x000bb2a0u);
     call(0x000bb310u);

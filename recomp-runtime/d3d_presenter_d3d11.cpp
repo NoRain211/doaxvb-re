@@ -653,7 +653,16 @@ struct RecompD3dPresenter {
        in QPC ticks, to line up with a PresentMon --qpc_time capture. */
     FILE *present_log = nullptr;
     UINT sync_interval = 1u;
+    UINT sync_rate = 60u;
     std::chrono::steady_clock::time_point next_refresh_check{};
+    /* Render cost per frame, from its first command to the output pass:
+       worker CPU time and GPU timestamps, read three frames late without
+       stalling. */
+    struct GpuTimer { ID3D11Query *disjoint = nullptr, *begin = nullptr, *end = nullptr; } gpu_timers[4];
+    unsigned gpu_timer_next = 0u;
+    bool frame_timing = false;
+    double frame_start_ms = 0.0, gpu_frame_ms = 0.0, cost_cpu_ms = 0.0, cost_gpu_ms = 0.0;
+    unsigned cost_frames = 0u, cost_gpu_frames = 0u;
     bool vrr = false;           // RECOMP_D3D_VRR=1: the game's 60 Hz timer paces a VRR display
     long long vrr_slot_ns = 0;  // steady_clock time of the last VRR present slot
     bool first_present_reported = false;
@@ -789,6 +798,11 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->Flush();
     }
     sunRelease(presenter->sun);
+    for (auto &timer : presenter->gpu_timers) {
+        releaseCom(timer.disjoint);
+        releaseCom(timer.begin);
+        releaseCom(timer.end);
+    }
     releaseCom(presenter->present_target_view);
     releaseCom(presenter->vrr_target_view);
     releaseCom(presenter->vrr_source);
@@ -3979,25 +3993,20 @@ UINT fixedRefreshInterval(UINT hz, UINT rate = 60u)
     return (k == 2u || k == 4u) && hz >= rate * k && hz <= rate * k + 1u ? k : 1u;
 }
 
-// Whole-game high frame rate presents RECOMP_GAME_HZ frames per second.
+// Whole-game high frame rate presents the passes per second that currently fit.
 UINT presentationRate()
 {
-    static const UINT rate = [] {
-        const char *text = std::getenv("RECOMP_GAME_HZ");
-        char *end = nullptr;
-        const unsigned long hz = text != nullptr ? std::strtoul(text, &end, 10) : 0ul;
-        return end != text && end != nullptr && *end == '\0' && hz >= 60ul && hz <= 360ul
-            ? static_cast<UINT>(hz) : 60u;
-    }();
-    return rate;
+    return recomp_d3d_display_rate();
 }
 
 UINT syncInterval(RecompD3dPresenter *presenter)
 {
     if (split_presentation) return 1u;
+    const UINT rate = presentationRate();
     const auto now = std::chrono::steady_clock::now();
-    if (now >= presenter->next_refresh_check) {
+    if (now >= presenter->next_refresh_check || rate != presenter->sync_rate) {
         presenter->next_refresh_check = now + std::chrono::seconds(1);
+        presenter->sync_rate = rate;
         MONITORINFOEXW monitor{};
         monitor.cbSize = sizeof monitor;
         DEVMODEW mode{};
@@ -4005,11 +4014,66 @@ UINT syncInterval(RecompD3dPresenter *presenter)
         UINT interval = 1u;
         if (GetMonitorInfoW(MonitorFromWindow(presenter->window, MONITOR_DEFAULTTONEAREST), &monitor) &&
             EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
-            interval = fixedRefreshInterval(mode.dmDisplayFrequency, presentationRate());
+            interval = fixedRefreshInterval(mode.dmDisplayFrequency, rate);
         }
         presenter->sync_interval = interval;
     }
     return presenter->sync_interval;
+}
+
+double steadyMs()
+{
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void beginFrameCost(RecompD3dPresenter *presenter)
+{
+    presenter->frame_timing = true;
+    presenter->frame_start_ms = steadyMs();
+    auto &timer = presenter->gpu_timers[presenter->gpu_timer_next % 4u];
+    if (timer.disjoint == nullptr) {
+        D3D11_QUERY_DESC desc{D3D11_QUERY_TIMESTAMP_DISJOINT, 0u};
+        presenter->device->CreateQuery(&desc, &timer.disjoint);
+        desc.Query = D3D11_QUERY_TIMESTAMP;
+        presenter->device->CreateQuery(&desc, &timer.begin);
+        presenter->device->CreateQuery(&desc, &timer.end);
+    }
+    if (timer.disjoint != nullptr && timer.begin != nullptr && timer.end != nullptr) {
+        presenter->context->Begin(timer.disjoint);
+        presenter->context->End(timer.begin);
+    }
+}
+
+void endFrameCost(RecompD3dPresenter *presenter)
+{
+    if (!presenter->frame_timing) return;
+    presenter->frame_timing = false;
+    const double cpu_ms = steadyMs() - presenter->frame_start_ms;
+    auto *context = presenter->context;
+    auto &timer = presenter->gpu_timers[presenter->gpu_timer_next++ % 4u];
+    if (timer.disjoint != nullptr && timer.begin != nullptr && timer.end != nullptr) {
+        context->End(timer.end);
+        context->End(timer.disjoint);
+    }
+    const auto &oldest = presenter->gpu_timers[presenter->gpu_timer_next % 4u];
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+    UINT64 begin = 0u, end = 0u;
+    constexpr UINT flags = D3D11_ASYNC_GETDATA_DONOTFLUSH;
+    if (presenter->gpu_timer_next >= 4u && oldest.disjoint != nullptr &&
+        oldest.begin != nullptr && oldest.end != nullptr &&
+        context->GetData(oldest.disjoint, &disjoint, sizeof disjoint, flags) == S_OK &&
+        context->GetData(oldest.begin, &begin, sizeof begin, flags) == S_OK &&
+        context->GetData(oldest.end, &end, sizeof end, flags) == S_OK &&
+        !disjoint.Disjoint && disjoint.Frequency != 0u && end >= begin) {
+        presenter->gpu_frame_ms = (end - begin) * 1000.0 / disjoint.Frequency;
+        presenter->cost_gpu_ms += presenter->gpu_frame_ms;
+        ++presenter->cost_gpu_frames;
+    }
+    presenter->cost_cpu_ms += cpu_ms;
+    ++presenter->cost_frames;
+    recomp_d3d_set_frame_cost_ns(static_cast<uint32_t>(
+        (std::min)((std::max)(cpu_ms, presenter->gpu_frame_ms), 4000.0) * 1e6));
 }
 
 void recordFrameStatistics(RecompD3dPresenter *presenter,
@@ -4084,6 +4148,8 @@ RecompD3dPresenterError submitPresent(
     if (presenter->rtgi_pending) applyRtgi(presenter);
     presenter->rtgi_applied = false;
 #endif
+    // Before the output pass: its back-buffer write waits for the display.
+    endFrameCost(presenter);
     if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
             ? presenter->vrr_target_view : presenter->present_target_view)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4199,13 +4265,21 @@ RecompD3dPresenterError submitPresent(
                 max_ms = (std::max)(max_ms, gap);
                 late += gap > frame_ms * 1.5;
             }
+            unsigned passes[3];
+            recomp_d3d_take_passes(passes);
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u "
+                "ticks_s=%u passes_s=%u dropped_s=%u render_cpu_ms=%.2f render_gpu_ms=%.2f\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
                 max_ms, late, presenter->present_call_max_ms,
                 presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
                 presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
-                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8],
+                passes[0], passes[1], passes[2],
+                presenter->cost_frames ? presenter->cost_cpu_ms / presenter->cost_frames : 0.0,
+                presenter->cost_gpu_frames ? presenter->cost_gpu_ms / presenter->cost_gpu_frames : 0.0);
+            presenter->cost_cpu_ms = presenter->cost_gpu_ms = 0.0;
+            presenter->cost_frames = presenter->cost_gpu_frames = 0u;
             std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
@@ -4488,6 +4562,7 @@ RecompD3dPresenterError d3d11_backend_submit(
     if (command == nullptr) {
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
+    if (!presenter->frame_timing) beginFrameCost(presenter);
     if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) ++presenter->sun.draw_index;
 
     switch (command->type) {
