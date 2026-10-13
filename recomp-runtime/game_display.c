@@ -1,6 +1,7 @@
 #include "game_display.h"
 #include "game_scheduler.h"
 #include "d3d_split_pose.h"
+#include "stop_report.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
