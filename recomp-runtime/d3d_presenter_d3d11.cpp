@@ -2663,6 +2663,8 @@ RecompD3dPresenterError submitDraw(
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw))
+        return RECOMP_D3D_PRESENTER_OK; // the shadow map replaces it
 
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) ||

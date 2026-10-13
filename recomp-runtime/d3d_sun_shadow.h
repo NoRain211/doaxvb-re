@@ -61,6 +61,13 @@ int sunDirection(const RecompD3dDirectionalLighting &light, float direction[3])
     return selected;
 }
 
+// The game's character shadow: untextured, stencil-tested pieces darkened by a black texture factor.
+bool sunGameShadow(const RecompD3dPresenterDrawCommand &draw)
+{
+    return !draw.has_texture && !draw.target.offscreen && draw.depth.stencil_enable &&
+        !draw.depth.depth_write_enable && draw.blend.blend_enable && (draw.texture_factor & 0xffffffu) == 0;
+}
+
 bool sunInverse(const float matrix[16], float inverse[16])
 {
     double rows[4][8]{};

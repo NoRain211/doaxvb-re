@@ -48,7 +48,9 @@ with the sky's visible sun.
 
 Nine comparison-filtered samples provide shadow visibility. Only the selected
 direct diffuse term is reduced before material/texture processing and fog;
-ambient, point lights and other directional terms remain. Non-host-lit passes,
+ambient, point lights and other directional terms remain. While the shadow map is valid, the game's own character shadow is skipped: its
+untextured, stencil-tested pieces darkened by a black texture factor. Other
+non-host-lit passes,
 including the existing projected palm/net shadow receivers, bypass the effect.
 The implementation uses ordinary D3D11 depth comparisons and slope bias;
 see Microsoft's [comparison sampling documentation](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/samplecmplevelzero-s-float-float-int-uint-)

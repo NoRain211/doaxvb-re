@@ -3113,6 +3113,17 @@ static bool testSunShadow(unsigned samples)
         passed = passed && sunDirection(light, direction) == 0 && direction[2] == 1;
     }
     _putenv_s("RECOMP_D3D_SUN_DIR", "");
+    {
+        RecompD3dPresenterDrawCommand game_shadow{};
+        game_shadow.depth.stencil_enable = true;
+        game_shadow.blend.blend_enable = true;
+        game_shadow.texture_factor = 0x82000000u;
+        passed = passed && sunGameShadow(game_shadow);
+        game_shadow.texture_factor = 0x82ffffffu;
+        passed = passed && !sunGameShadow(game_shadow);
+        game_shadow.texture_factor = 0x82000000u; game_shadow.has_texture = true;
+        passed = passed && !sunGameShadow(game_shadow);
+    }
     passed = passed && d3d11_backend_shadow_begin(&presenter, false);
     auto invalid = draw;
     invalid.target.offscreen = true;
