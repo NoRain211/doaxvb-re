@@ -3128,6 +3128,7 @@ static bool testSunShadow(unsigned samples)
         game_shadow.depth.stencil_enable = true;
         game_shadow.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
         game_shadow.depth.stencil_ref = 1; game_shadow.depth.stencil_read_mask = 3;
+        game_shadow.depth.stencil_pass = RECOMP_D3D_STENCIL_ZERO;
         game_shadow.blend.blend_enable = true;
         game_shadow.blend.color_write_mask = 15;
         game_shadow.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;

@@ -2663,8 +2663,12 @@ RecompD3dPresenterError submitDraw(
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
-    if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw))
-        return RECOMP_D3D_PRESENTER_OK; // the shadow map replaces it
+    if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
+        // The shadow map replaces its darkening; keep its stencil writes.
+        auto stencil_only = draw;
+        stencil_only.blend.color_write_mask = 0;
+        return submitDraw(presenter, stencil_only);
+    }
 
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) ||

@@ -59,15 +59,15 @@ int sunDirection(const RecompD3dPresenterDrawCommand &draw, float direction[3])
     return selected;
 }
 
-// The game's projected shadow (actors and ball), darkening pass only: the stencil-marking
-// pass still draws, so stencil state matches the original frame.
+// The game's projected shadow (actors and ball), darkening pass only. That pass also
+// zeroes the stencil it read, so the caller keeps it with color writes off.
 bool sunGameShadow(const RecompD3dPresenterDrawCommand &draw)
 {
     const auto &d = draw.depth;
     return draw.fvf == 0x112u && !draw.has_texture && draw.use_texture_factor && !draw.target.offscreen &&
         !draw.directional.enabled && (draw.texture_factor & 0xffffffu) == 0 && (draw.texture_factor >> 24) != 0 &&
         d.stencil_enable && d.stencil_func == RECOMP_D3D_COMPARE_EQUAL && d.stencil_ref == 1 &&
-        (d.stencil_read_mask & 3u) == 3u && d.stencil_pass == RECOMP_D3D_STENCIL_KEEP &&
+        (d.stencil_read_mask & 3u) == 3u && d.stencil_pass == RECOMP_D3D_STENCIL_ZERO &&
         d.stencil_fail == RECOMP_D3D_STENCIL_KEEP && d.stencil_zfail == RECOMP_D3D_STENCIL_KEEP &&
         d.depth_test_enable && !d.depth_write_enable && draw.blend.blend_enable && draw.blend.color_write_mask &&
         draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA && draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA;

@@ -42,9 +42,9 @@ Nine comparison-filtered samples provide shadow visibility. Only the selected
 direct diffuse term is reduced before material/texture processing and fog;
 ambient, point lights and other directional terms remain. While the shadow map is valid, the game's projected shadow for characters and
 the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
-lighting off, black texture factor with any alpha, stencil EQUAL 1 with KEEP
-operations, depth writes off and SRC_ALPHA blending. The stencil-marking pass
-still draws, so stencil state matches the original frame. Other non-host-lit
+lighting off, black texture factor with any alpha, stencil EQUAL 1 then ZERO,
+depth writes off and SRC_ALPHA blending. It still draws with color writes off,
+as does the stencil-marking pass, so stencil state matches the original frame. Other non-host-lit
 passes, including the existing projected palm/net shadow receivers, bypass the effect.
 The implementation uses ordinary D3D11 depth comparisons and slope bias;
 see Microsoft's [comparison sampling documentation](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/samplecmplevelzero-s-float-float-int-uint-)
