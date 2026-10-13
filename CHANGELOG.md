@@ -21,6 +21,10 @@
   entries are not written to the save; a suit taken out of the Collection is
   kept for good. Off by default, and with it off nothing changes. See
   `docs/swimsuit-unlock.md`.
+- **Demo cut hold**. A **Shorter demo cuts** launcher option, or
+  `RECOMP_DEMO_CUT_HOLD` (1 to 59 frames), shortens the one-second freeze
+  between the scenes of the real-time demo. Off by default; the game keeps its
+  own 60 frames. See `docs/title-idle.md`.
 
 ### Changed
 
