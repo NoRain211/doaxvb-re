@@ -1196,7 +1196,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
 #ifdef RECOMP_RTGI
     if (presenter->depth_sample != nullptr) {
         presenter->rtgi = d3d_rtgi_create(
-            presenter->device, mainWidth(presenter), mainHeight(presenter));
+            presenter->device, mainWidth(presenter), mainHeight(presenter),
+            presenter->performance_counter);
         if (presenter->rtgi != nullptr) {
             std::fprintf(stderr, "recomp rtgi: enabled at %ux%u\n",
                 mainWidth(presenter), mainHeight(presenter));
@@ -4186,13 +4187,31 @@ RecompD3dPresenterError submitPresent(
                 max_ms = (std::max)(max_ms, gap);
                 late += gap > frame_ms * 1.5;
             }
+            char rtgi_costs[384] = "";
+#ifdef RECOMP_RTGI
+            if (presenter->rtgi != nullptr) {
+                /* CPU per GI pass; GPU per timed pass. Traced passes rebuild and trace
+                   the scene; reused passes reproject the last traced GI. */
+                const D3dRtgiStats s = d3d_rtgi_take_stats(presenter->rtgi);
+                const double passes = (std::max)(1u, s.traced + s.reused);
+                const double d12 = (std::max)(1u, s.d3d12Passes), d11 = (std::max)(1u, s.d3d11Passes);
+                std::snprintf(rtgi_costs, sizeof rtgi_costs,
+                    " rtgi_traced=%u rtgi_reused=%u rtgi_tris=%.0f rtgi_cpu_ms=collect:%.2f,apply:%.2f,wait:%.2f"
+                    " rtgi_gpu_ms=build:%.2f,trace:%.2f,temporal:%.2f,spatial:%.2f,composite:%.2f,sync:%.2f",
+                    s.traced, s.reused, double(s.triangles) / (std::max)(1u, s.traced),
+                    s.collectMs / passes, s.applyMs / passes, s.waitMs / passes,
+                    s.buildMs / d12, s.traceMs / d12, s.temporalMs / d12, s.spatialMs / d12,
+                    s.compositeMs / d11, s.syncMs / d11);
+            }
+#endif
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u%s\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
                 max_ms, late, presenter->present_call_max_ms,
                 presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
                 presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
-                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8],
+                rtgi_costs);
             std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
