@@ -59,8 +59,12 @@ shadows stay. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
 travel** direction, normalized on input; invalid, zero and nonfinite values are
 ignored. It does not move the sky sun or change the game's light rig.
 
-Nine comparison-filtered samples provide shadow visibility, which scales the
-receiver's lit vertex color before material/texture processing and fog. While the shadow map is valid, the game's projected shadow for characters and
+Nine comparison-filtered samples provide shadow visibility near the camera.
+When a screen pixel covers more than three shadow texels, a 4x4 filter covers
+its footprint (capped at sixteen texels) so fine net wires do not pulse as the
+camera moves. Receiver-plane depth correction keeps that wider filter from
+shadowing sloped ground. Visibility scales the receiver's lit vertex color
+before material/texture processing and fog. While the shadow map is valid, the game's projected shadow for characters and
 the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
 lighting off, black texture factor with any alpha, stencil EQUAL 1 then ZERO,
 depth writes off and SRC_ALPHA blending. It still draws with color writes off,
