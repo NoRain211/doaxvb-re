@@ -72,8 +72,9 @@ Live palm targets must be swizzled ARGB8 at 512x256 or 256x512, cleared to
 transparent and populated only by textured black silhouette passes without
 depth or stencil testing. Another color-writing producer invalidates that
 identity until the next clear; releasing the target retires it. Unknown
-payloads and targets keep drawing. Suppression requires a valid sun map;
-this does not extend caster coverage or guarantee a replacement for each palm.
+payloads and targets keep drawing. Suppression requires a valid sun map.
+The caster rules above provide replacements within the map coverage; objects
+outside that coverage do not cast into the visible map.
 The implementation uses ordinary D3D11 depth comparisons and slope bias;
 see Microsoft's [comparison sampling documentation](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/samplecmplevelzero-s-float-float-int-uint-)
 and [depth bias documentation](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias).
