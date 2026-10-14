@@ -69,6 +69,13 @@ stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
 in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
 
+On D3D11, optional sun shadows include court posts, palm trunks and leaves,
+and the volleyball net. Leaves and net mesh cast through their texture alpha;
+blended foliage uses a half-alpha cutoff. The map keeps its fixed court-area
+resolution and excludes broad opaque scenery and flat receivers. The game's
+separate post/palm shadow overlays remain visible. Sun shadows stay off by
+default; see [sun-shadow.md](sun-shadow.md) for the experimental limits.
+
 The direct PowerShell route accepts an explicit extractor path:
 
 ```powershell

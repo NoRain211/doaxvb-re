@@ -3304,6 +3304,7 @@ RecompD3dPresenterError submitDraw(
             layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled && !model &&
             sun.game_alpha > 0 && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
         constants[17] = sun.game_alpha;
+        constants[18] = sun.casting ? 1.0f : 0.0f;
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4562,13 +4563,13 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
     if (command->type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) return;
     const auto &draw = command->data.draw;
     if (!sun.casting) { sunSelectCamera(sun, draw); return; }
-    float extent;
+    float size[3];
     sun.compact.push_back(0);
-    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, extent)) return;
-    sun.compact.back() = !draw.blend_weight_count && extent <= 4;
-    if (!draw.directional.enabled || draw.blend.blend_enable ||
-        (!draw.blend_weight_count && extent > 4)) return;
-    // shortcut: compact rigid normal-bearing draws include the ball and small props; add identity if needed.
+    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, size)) return;
+    const bool casts = sunCaster(draw, size);
+    sun.compact.back() = !draw.blend_weight_count &&
+        (casts || (std::max)({size[0], size[1], size[2]}) <= 4);
+    if (!casts) return;
     RecompD3dPresenterDrawCommand caster = draw;
     for (unsigned b = 0; b <= draw.blend_weight_count; ++b) {
         float *out = b ? caster.blend_transforms[b-1] : caster.transform;
@@ -4578,6 +4579,13 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
         }
     }
     caster.directional.enabled = false;
+    caster.has_combiner = caster.has_reflection = false;
+    caster.depth.depth_write_enable = true;
+    if (draw.blend.blend_enable) {
+        caster.depth.alpha_test_enable = true;
+        caster.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+        caster.depth.alpha_ref = 127;
+    }
     caster.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
     caster.depth.stencil_enable = false;
     if (submitDraw(presenter, caster) == RECOMP_D3D_PRESENTER_OK) ++sun.casters;

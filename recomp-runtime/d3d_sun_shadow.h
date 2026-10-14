@@ -13,7 +13,7 @@ struct SunShadow {
     unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
     // Game shadow opacity (texture-factor alpha) seen last frame; 0 when the game drew none.
     float game_alpha = 0, seen_alpha = 0;
-    // Caster pass marks compact rigid draws (ball, props) in draw order; the visible pass
+    // Caster pass marks rigid models (ball, props) in draw order; the visible pass
     // replays the same packet, so draw_index finds the flag without rescanning vertices.
     std::vector<uint8_t> compact;
     size_t draw_index = 0;
@@ -104,18 +104,20 @@ bool sunInverse(const float matrix[16], float inverse[16])
     return true;
 }
 
-bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float &extent)
+bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float size[3])
 {
     RecompD3dVertexLayout layout;
     if (draw.target.offscreen || draw.target.no_depth || !draw.has_transform || draw.program_count ||
-        !draw.vertex_bytes || !draw.index_bytes || !draw.vertex_count || !draw.triangle_count ||
-        !draw.depth.depth_test_enable || !draw.depth.depth_write_enable ||
+        !draw.vertex_bytes || !draw.index_bytes || !draw.vertex_count || !draw.index_count || !draw.triangle_count ||
+        !draw.depth.depth_test_enable ||
         !recomp_d3d_fvf_layout(draw.fvf, &layout) || layout.pretransformed ||
-        layout.normal_offset == RECOMP_D3D_FVF_ABSENT || layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT ||
+        (layout.normal_offset == RECOMP_D3D_FVF_ABSENT && layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) ||
         layout.stride > draw.vertex_stride || draw.blend_weight_count > 3 ||
         (draw.blend_weight_count && draw.blend_weight_count != layout.blend_weight_count)) return false;
     float minimum[3] = {INFINITY, INFINITY, INFINITY}, maximum[3] = {-INFINITY, -INFINITY, -INFINITY};
-    for (unsigned v = 0; v < draw.vertex_count; ++v) {
+    for (unsigned i = 0; i < draw.index_count; ++i) {
+        const unsigned v = static_cast<const uint16_t *>(draw.index_bytes)[i];
+        if (v >= draw.vertex_count) return false;
         float vertex[6]{};
         std::memcpy(vertex, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v)*draw.vertex_stride,
             (3+draw.blend_weight_count)*sizeof(float));
@@ -133,8 +135,30 @@ bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float &extent)
             maximum[a] = (std::max)(maximum[a], position[a]);
         }
     }
-    extent = (std::max)({maximum[0]-minimum[0], maximum[1]-minimum[1], maximum[2]-minimum[2]});
+    for (unsigned a = 0; a < 3; ++a) size[a] = maximum[a]-minimum[a];
+    const float extent = (std::max)({size[0], size[1], size[2]});
     return extent > 0 && extent < 200;
+}
+
+bool sunCaster(const RecompD3dPresenterDrawCommand &draw, const float size[3])
+{
+    if (!draw.blend.color_write_mask) return false;
+    const float extent = (std::max)({size[0], size[1], size[2]});
+    const bool opaque = !draw.blend.blend_enable && draw.depth.depth_write_enable;
+    if (draw.directional.enabled && opaque && (draw.blend_weight_count || extent <= 4)) return true;
+    if (draw.blend_weight_count || !draw.has_texture || draw.texture.render_target ||
+        draw.texture_is_backbuffer || draw.texture_is_frontbuffer) return false;
+    const bool blended = draw.blend.blend_enable && draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+        draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && draw.blend.op == RECOMP_D3D_BLEND_OP_ADD;
+    if (!opaque && !blended) return false;
+    const bool cutout = draw.depth.alpha_test_enable && draw.depth.alpha_ref >= 128 &&
+        (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER || draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL);
+    const float horizontal = (std::max)(size[0], size[2]);
+    // Cutouts batch trees across the scene; flat receivers and broad opaque rocks must stay out.
+    if (blended || cutout) return extent >= 0.5f && horizontal <= 128 &&
+        size[1] >= horizontal*(blended ? 0.1f : 0.05f);
+    // shortcut: narrow rigid geometry covers posts and net tape; add identity if other scenery shares these bounds.
+    return horizontal <= 8 && (std::min)(size[0], size[2]) <= 1;
 }
 
 bool sunSameCamera(const SunShadow &sun, const RecompD3dPresenterDrawCommand &draw)
@@ -147,8 +171,11 @@ bool sunSameCamera(const SunShadow &sun, const RecompD3dPresenterDrawCommand &dr
 
 void sunSelectCamera(SunShadow &sun, const RecompD3dPresenterDrawCommand &draw)
 {
-    float extent, inverse[16], direction[3];
-    if (draw.triangle_count <= sun.triangles || !sunSceneDraw(draw, extent) ||
+    float size[3], inverse[16], direction[3];
+    RecompD3dVertexLayout layout;
+    if (draw.triangle_count <= sun.triangles || !draw.depth.depth_write_enable ||
+        !recomp_d3d_fvf_layout(draw.fvf, &layout) || layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
+        layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT || !sunSceneDraw(draw, size) ||
         sunDirection(draw, direction) < 0 || !sunInverse(draw.view_projection, inverse)) return;
     sun.triangles = draw.triangle_count;
     sun.camera_epoch = sun.epoch;
@@ -284,6 +311,10 @@ float sunVisibility(float3 p) {
     // Normal offset (~2.5 texels) keeps grazing surfaces from shadowing themselves at a low sun.
     if (lit != std::string::npos)
         source.insert(lit, "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04;\n");
+    // Mip averages erase thin net wires before the alpha cutoff.
+    source.insert(source.find("    if (draw_flags.y > 0.5f) {"),
+        "    if (sun_flags.z > 0 && draw_flags.x > 0.5f)\n"
+        "        shaded.a = guest_texture.SampleLevel(guest_sampler, input.texcoord * texture_flags.xy, 0).a;\n");
     source.insert(source.find("    float4 shaded = input.color;"),
         "    if (sun_flags.x > 0) input.color.rgb *= 1 - sun_flags.y*(1-sunVisibility(input.sun_world));\n");
 }
