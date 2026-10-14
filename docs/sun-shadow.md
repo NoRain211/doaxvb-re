@@ -51,8 +51,16 @@ receiver's lit vertex color before material/texture processing and fog. While th
 the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
 lighting off, black texture factor with any alpha, stencil EQUAL 1 then ZERO,
 depth writes off and SRC_ALPHA blending. It still draws with color writes off,
-as does the stencil-marking pass, so stencil state matches the original frame. Other non-host-lit
-passes, including the existing projected palm/net shadow receivers, bypass the effect.
+as does the stencil-marking pass, so stencil state matches the original frame.
+Verified post and palm overlays also keep only depth/stencil writes: their
+unlit alpha-blended receiver states must match along with texture identity.
+Static DXT5 overlays use full compressed-mip payload hashes cached on upload.
+Live palm targets must be swizzled ARGB8 at 512x256 or 256x512, cleared to
+transparent and populated only by textured black silhouette passes without
+depth or stencil testing. Another color-writing producer invalidates that
+identity until the next clear; releasing the target retires it. Unknown
+payloads and targets keep drawing. Suppression requires a valid sun map;
+this does not extend caster coverage or guarantee a replacement for each palm.
 The implementation uses ordinary D3D11 depth comparisons and slope bias;
 see Microsoft's [comparison sampling documentation](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/samplecmplevelzero-s-float-float-int-uint-)
 and [depth bias documentation](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias).
@@ -71,5 +79,6 @@ attract-demo captures matched only whole actor and ball shadow sets (19 passes
 per actor) across seven scenes. A user play test accepted the look on the
 morning, dusk, sunset, Niki Beach and private beach courts and measured 59.9 fps
 after startup at 2160p with 8x MSAA and SMAA; the hotel is not verified.
-`RECOMP_PERF_COUNTER=1` reports caster counts, hidden game-shadow passes and the
+`RECOMP_PERF_COUNTER=1` reports caster counts, hidden game-shadow passes,
+hidden prop overlays (`prop_shadows`) and the
 map's direction alongside the existing FPS/late-frame observations.

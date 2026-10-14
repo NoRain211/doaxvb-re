@@ -11,6 +11,7 @@ constexpr float kSunBox = 64, kSunAhead = 20, kSunDepth = 120;
 struct SunShadow {
     bool enabled = false, valid = false, casting = false;
     unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
+    unsigned prop_shadows = 0;
     // Game shadow opacity (texture-factor alpha) seen last frame; 0 when the game drew none.
     float game_alpha = 0, seen_alpha = 0;
     // Caster pass marks compact rigid draws (ball, props) in draw order; the visible pass
@@ -72,6 +73,99 @@ bool sunGameShadow(const RecompD3dPresenterDrawCommand &draw)
         d.depth_test_enable && !d.depth_write_enable && draw.blend.blend_enable && draw.blend.color_write_mask &&
         draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA && draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA;
 }
+
+bool sunPropCombiner(const RecompD3dPresenterDrawCommand &draw)
+{
+    if (!draw.has_combiner) return true;
+    const auto &a = draw.combiner[0];
+    const auto &b = draw.combiner[1];
+    return ((a[0] == 2 && a[2] == 2 && a[3] == 1) ||
+        (a[0] == 4 && a[2] == 2 && a[3] == 0)) &&
+        a[4] == 4 && a[6] == 2 && a[7] == 0 &&
+        b[0] == 4 && b[2] == 3 && b[3] == 1 && b[4] == 4 && b[6] == 3 && b[7] == 1;
+}
+
+bool sunPropShadow(const RecompD3dPresenterDrawCommand &draw)
+{
+    const auto &d = draw.depth;
+    const auto &b = draw.blend;
+    return !draw.target.offscreen && !draw.target.no_depth && draw.has_texture &&
+        !draw.texture_is_backbuffer && !draw.texture_is_frontbuffer && !draw.directional.enabled &&
+        !draw.program_count && sunPropCombiner(draw) && !draw.has_alpha_mask && !draw.has_reflection &&
+        !draw.four_tap_filter && !draw.use_texture_factor &&
+        (draw.texture_factor & 0xffffffu) == 0xffffffu &&
+        (draw.fvf == 0x112u || draw.fvf == 0x142u) &&
+        d.alpha_test_enable && d.alpha_func == RECOMP_D3D_COMPARE_GREATER && d.alpha_ref == 1 &&
+        d.depth_test_enable && d.depth_func == RECOMP_D3D_COMPARE_LESS_EQUAL &&
+        d.stencil_enable && d.stencil_func == RECOMP_D3D_COMPARE_ALWAYS &&
+        (d.stencil_ref == 0 || d.stencil_ref == 254) &&
+        d.stencil_read_mask == 255 && d.stencil_write_mask == 255 &&
+        d.stencil_fail == RECOMP_D3D_STENCIL_KEEP && d.stencil_zfail == RECOMP_D3D_STENCIL_KEEP &&
+        d.stencil_pass == RECOMP_D3D_STENCIL_REPLACE && b.color_write_mask == 15 &&
+        b.blend_enable && b.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+        b.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && b.op == RECOMP_D3D_BLEND_OP_ADD;
+}
+
+uint64_t sunPropPayloadHash(const void *bytes, uint32_t size)
+{
+    uint64_t hash = 0xcbf29ce484222325ull;
+    const auto *data = static_cast<const uint8_t *>(bytes);
+    for (uint32_t i = 0; i < size; ++i) hash = (hash ^ data[i]) * 0x100000001b3ull;
+    return hash;
+}
+
+bool sunStaticPropTexture(const RecompD3dTextureDesc &desc, uint64_t hash)
+{
+    if (desc.linear || desc.depth || desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) return false;
+    // shortcut: only verified static overlays; add identities after inspecting other courts.
+    const struct { unsigned width, height, mips; uint64_t hash; } shadows[] = {
+        {512, 128, 1, 0x945549f88c8cfe40ull}, // posts
+        {256, 128, 8, 0xd99af6253b620e05ull},
+        {512, 64, 7, 0x7135e45fe936c958ull},
+        {256, 256, 1, 0xbc0a582f6161a6e7ull}, // palms
+        {64, 128, 1, 0xbeb1f08e42f78a97ull},
+        {128, 128, 1, 0xbd7d31e39cc51a98ull},
+        {64, 128, 1, 0x6445a295ffd45cc5ull},
+    };
+    for (const auto &s : shadows)
+        if (desc.width == s.width && desc.height == s.height &&
+            desc.mip_levels == s.mips && hash == s.hash) return true;
+    return false;
+}
+
+bool sunPalmTexture(const RecompD3dTextureDesc &desc)
+{
+    return !desc.linear && !desc.depth && desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 &&
+        desc.mip_levels <= 1 && ((desc.width == 512 && desc.height == 256) ||
+        (desc.width == 256 && desc.height == 512));
+}
+
+bool sunPalmProducer(const RecompD3dPresenterDrawCommand &draw)
+{
+    return draw.target.offscreen && draw.target.no_depth && draw.fvf == 0x112 &&
+        draw.has_texture && !draw.texture_is_backbuffer && !draw.texture_is_frontbuffer &&
+        !draw.program_count && sunPropCombiner(draw) && !draw.has_alpha_mask && !draw.has_reflection &&
+        (!draw.has_combiner || draw.combiner[0][0] == 4) &&
+        !draw.four_tap_filter && draw.directional.enabled && draw.zero_diffuse_rgb &&
+        !draw.use_texture_factor && !draw.modulate_texture_factor && draw.texture_factor == 0xffffffffu &&
+        !draw.depth.depth_test_enable && !draw.depth.stencil_enable &&
+        draw.depth.alpha_test_enable && draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER &&
+        draw.depth.alpha_ref == 1 && draw.blend.color_write_mask == 15 &&
+        (!draw.blend.blend_enable || (draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+        draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && draw.blend.op == RECOMP_D3D_BLEND_OP_ADD));
+}
+
+struct SunPalmTarget {
+    // Scene copies and reused targets must not inherit a silhouette's identity.
+    bool cleared = false, silhouette = false;
+    void clear(uint32_t color) { cleared = (color >> 24) == 0; silhouette = false; }
+    void draw(const RecompD3dPresenterDrawCommand &draw) {
+        if (!draw.blend.color_write_mask) return;
+        if (sunPalmProducer(draw)) silhouette = true;
+        else cleared = false;
+    }
+    bool valid() const { return cleared && silhouette; }
+};
 
 bool sunInverse(const float matrix[16], float inverse[16])
 {

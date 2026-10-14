@@ -3084,6 +3084,163 @@ static bool testPacingPolicies()
 }
 
 
+static bool testSunPropShadows(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x112; draw.vertex_stride = 32;
+    float vertices[4][8]{};
+    const uint16_t indices[] = {0,1,2,3};
+    const uint32_t white = 0xffffffffu;
+    for (unsigned i = 0; i < 4; ++i) {
+        vertices[i][0] = i&1 ? 1.0f : -1.0f;
+        vertices[i][1] = i&2 ? -1.0f : 1.0f;
+        vertices[i][2] = 0.5f;
+        draw.transform[i*5] = 1;
+    }
+    draw.vertex_count = draw.index_count = 4; draw.triangle_count = 2;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes = vertices; draw.index_bytes = indices;
+    draw.has_transform = draw.has_texture = true;
+    draw.texture_factor = white;
+    draw.texture = {RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8,32,false,false,false,1,1,0,0x600000,1};
+    draw.texture_bytes = &white; draw.texture_byte_count = 4;
+    draw.blend.color_write_mask = 15;
+    draw.directional.enabled = draw.zero_diffuse_rgb = true;
+    draw.depth.alpha_test_enable = true; draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+    draw.depth.alpha_ref = 1;
+    draw.target.offscreen = draw.target.no_depth = true;
+    draw.target.color = draw.texture;
+    draw.target.color.width = 512; draw.target.color.height = 256;
+    draw.target.color.data = 0x610000;
+    RecompD3dPresenterClearCommand clear{};
+    clear.target = draw.target; clear.clear_color = true;
+    presenter->sun.enabled = true;
+    bool passed = submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+        submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK;
+    auto *target = findRenderTarget(presenter, draw.target.color);
+    passed &= target && target->sun_palm.valid();
+    auto receiver = draw;
+    receiver.target = {}; receiver.texture = draw.target.color;
+    receiver.texture_bytes = nullptr; receiver.texture_byte_count = 0;
+    receiver.directional.enabled = receiver.zero_diffuse_rgb = false;
+    receiver.depth.depth_test_enable = receiver.depth.depth_write_enable = true;
+    receiver.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    receiver.depth.stencil_enable = true; receiver.depth.stencil_func = RECOMP_D3D_COMPARE_ALWAYS;
+    receiver.depth.stencil_ref = 254; receiver.depth.stencil_read_mask = receiver.depth.stencil_write_mask = 255;
+    receiver.depth.stencil_pass = RECOMP_D3D_STENCIL_REPLACE;
+    receiver.blend.blend_enable = true;
+    receiver.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+    receiver.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+    passed &= sunPropShadow(receiver);
+    for (unsigned variant = 0; variant < 12; ++variant) {
+        auto other = receiver;
+        switch (variant) {
+        case 0: other.target.offscreen = true; break;
+        case 1: other.directional.enabled = true; break;
+        case 2: other.depth.stencil_ref = 1; break;
+        case 3: other.depth.stencil_write_mask = 3; break;
+        case 4: other.depth.stencil_pass = RECOMP_D3D_STENCIL_ZERO; break;
+        case 5: other.depth.alpha_ref = 2; break;
+        case 6: other.depth.depth_func = RECOMP_D3D_COMPARE_ALWAYS; break;
+        case 7: other.blend.dst_factor = RECOMP_D3D_BLEND_ONE; break;
+        case 8: other.blend.color_write_mask = 0; break;
+        case 9: other.has_combiner = true; break;
+        case 10: other.texture_is_backbuffer = true; break;
+        case 11: other.use_texture_factor = true; break;
+        }
+        passed &= !sunPropShadow(other);
+    }
+    auto diffuse = receiver; diffuse.fvf = 0x142; diffuse.depth.stencil_ref = 0;
+    passed &= sunPropShadow(diffuse);
+    diffuse.has_combiner = true;
+    const uint32_t stages[2][8] = {{2,0,2,1,4,0,2,0}, {4,0,3,1,4,0,3,1}};
+    std::memcpy(diffuse.combiner, stages, sizeof stages);
+    passed &= sunPropShadow(diffuse);
+    auto leaves = draw;
+    leaves.has_combiner = true;
+    std::memcpy(leaves.combiner, stages, sizeof stages);
+    leaves.combiner[0][0] = 4; leaves.combiner[0][3] = 0;
+    passed &= sunPalmProducer(leaves);
+    passed &= !sunPalmProducer(diffuse);
+    leaves.combiner[0][0] = 2; leaves.combiner[0][3] = 1;
+    passed &= !sunPalmProducer(leaves);
+    leaves.combiner[0][0] = 4; leaves.combiner[0][3] = 0;
+    leaves.combiner[1][2] = 2;
+    passed &= !sunPalmProducer(leaves);
+    const uint32_t unchanged[] = {white,white,white,white};
+    const uint32_t black[] = {0xff000000u,0xff000000u,0xff000000u,0xff000000u};
+    const uint32_t red[] = {0xffff0000u,0xffff0000u,0xffff0000u,0xffff0000u};
+    RecompD3dPresenterClearCommand main{};
+    main.clear_color = main.clear_depth = main.clear_stencil = true;
+    main.color = white; main.z = 1;
+    for (unsigned mode = 0; passed && mode < 4; ++mode) {
+        presenter->sun.enabled = mode != 0;
+        presenter->sun.valid = mode != 0;
+        receiver.depth.depth_write_enable = mode != 2;
+        if (mode == 3) {
+            auto unrelated = draw; unrelated.zero_diffuse_rgb = false;
+            passed &= submitDraw(presenter, unrelated) == RECOMP_D3D_PRESENTER_OK && !target->sun_palm.valid();
+        }
+        passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter, color, readback, "prop shadow color", mode == 0 || mode == 3 ? black : unchanged);
+        if (mode == 0 || mode == 3) continue;
+        auto probe = receiver;
+        probe.has_texture = false; probe.use_texture_factor = true; probe.texture_factor = red[0];
+        probe.blend.blend_enable = false; probe.depth.alpha_test_enable = false;
+        probe.depth.depth_func = probe.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+        probe.depth.depth_write_enable = false; probe.depth.stencil_write_mask = 0;
+        probe.depth.stencil_pass = RECOMP_D3D_STENCIL_KEEP;
+        for (auto &v : vertices) v[2] = mode == 2 ? 1.0f : 0.5f;
+        passed &= submitDraw(presenter, probe) == RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter, color, readback, "hidden prop keeps depth/stencil", red);
+        for (auto &v : vertices) v[2] = 0.5f;
+    }
+    passed &= presenter->sun.prop_shadows == 2;
+    passed &= submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK && !target->sun_palm.valid();
+    passed &= submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK && target->sun_palm.valid();
+    SunPalmTarget fresh;
+    fresh.draw(draw);
+    passed &= !fresh.valid();
+    fresh.clear(0xff000000u); fresh.draw(draw);
+    passed &= !fresh.valid();
+    auto desc = receiver.texture;
+    desc.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT5;
+    desc.width = 512; desc.height = 128;
+    passed &= sunStaticPropTexture(desc, 0x945549f88c8cfe40ull);
+    desc.data += 0x1000;
+    passed &= sunStaticPropTexture(desc, 0x945549f88c8cfe40ull) &&
+        !sunStaticPropTexture(desc, 0x945549f88c8cfe41ull);
+    desc.height = 256;
+    passed &= !sunStaticPropTexture(desc, 0x945549f88c8cfe40ull);
+    passed &= sunPropPayloadHash("abc", 3) == 0xe71fa2190541574bull;
+    bool tagged = true;
+    auto *view = lookupTexture(presenter, draw, &tagged);
+    passed &= view && !tagged;
+    auto cached = std::find_if(presenter->textures.begin(), presenter->textures.end(),
+        [view](const TextureEntry &entry) { return entry.used && entry.view == view; });
+    if (cached != presenter->textures.end()) {
+        cached->sun_prop_shadow = true;
+        passed &= lookupTexture(presenter, draw, &tagged) == view && tagged;
+        const uint32_t changed = 0xff112233u;
+        auto rewrite = draw; rewrite.texture_bytes = &changed;
+        passed &= lookupTexture(presenter, rewrite, &tagged) && !tagged;
+    } else passed = false;
+    auto *previous = active_presenter;
+    active_presenter = presenter;
+    passed &= d3d11_backend_release_memory(presenter, draw.target.color.data, 1) == RECOMP_D3D_PRESENTER_OK &&
+        !findRenderTarget(presenter, draw.target.color);
+    ID3D11RenderTargetView *color_view;
+    ID3D11DepthStencilView *depth_view;
+    passed &= bindTarget(presenter, draw.target, color_view, depth_view) == RECOMP_D3D_PRESENTER_OK &&
+        !findRenderTarget(presenter, draw.target.color)->sun_palm.valid();
+    active_presenter = previous;
+    presenter->sun = {};
+    if (!passed) std::fprintf(stderr, "FAIL sun prop identity, producer or depth/stencil preservation\n");
+    return passed;
+}
+
 static bool testSunShadow(unsigned samples)
 {
     _putenv_s("RECOMP_D3D_SUN_SHADOW", "");
@@ -3546,6 +3703,7 @@ int main()
     if (status == 0 && !testSupersampledBackBuffer(&presenter)) status = 84;
     if (status == 0 && !testCombiner(&presenter, color, readback)) status = 99;
     if (status == 0 && !testAddressSamplers(&presenter)) status = 83;
+    if (status == 0 && !testSunPropShadows(&presenter, color, readback)) status = 100;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
     releaseCom(color);

@@ -495,6 +495,7 @@ struct TextureEntry {
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     uint64_t fingerprint;
+    bool sun_prop_shadow = false;
     TextureIdentity identity;
     ID3D11ShaderResourceView *view;
 };
@@ -533,6 +534,7 @@ struct RenderTargetEntry {
     ID3D11ShaderResourceView *sample_view;
     float scale = 1.0f;  // host texels per guest texel
     uint64_t bytes = 0u;
+    SunPalmTarget sun_palm;
 };
 
 /* Depth belongs to its guest storage, which can serve several color targets. */
@@ -1543,6 +1545,9 @@ RecompD3dPresenterError submitClear(
     if (clear.clear_color) {
         presenter->context->ClearRenderTargetView(
             color_view, color);
+        if (presenter->sun.enabled && clear.target.offscreen)
+            if (auto *entry = findRenderTarget(presenter, clear.target.color))
+                entry->sun_palm.clear(clear.color);
     }
     UINT depth_stencil_flags = 0u;
     if (clear.clear_depth) {
@@ -2549,8 +2554,10 @@ void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 
 ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
-    const RecompD3dPresenterDrawCommand &draw)
+    const RecompD3dPresenterDrawCommand &draw,
+    bool *sun_prop_shadow = nullptr)
 {
+    if (sun_prop_shadow) *sun_prop_shadow = false;
     const RecompD3dTextureDesc &desc = draw.texture;
     const bool palettized = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8;
     const bool linear_bgra = desc.format_byte == 0x12u;
@@ -2573,6 +2580,7 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     if (RenderTargetEntry *entry = findRenderTarget(presenter, desc)) {
+        if (sun_prop_shadow) *sun_prop_shadow = sunPalmTexture(desc) && entry->sun_palm.valid();
         return entry->sample_view;
     }
     if (linear_bgra && (!desc.linear || desc.depth ||
@@ -2617,6 +2625,7 @@ ID3D11ShaderResourceView *lookupTexture(
                     resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
                 releaseCom(resource);
             }
+            if (sun_prop_shadow) *sun_prop_shadow = entry.sun_prop_shadow;
             return replaceable ? presenter->replacements.lookup(entry.identity.key, entry.view) : entry.view;
         }
     }
@@ -2714,6 +2723,11 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.fingerprint = fingerprint;
+    entry.sun_prop_shadow = presenter->sun.enabled &&
+        desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5 &&
+        draw.texture_byte_count == recomp_d3d_texture_compressed_mip_span(&desc) &&
+        sunStaticPropTexture(desc, sunPropPayloadHash(draw.texture_bytes, draw.texture_byte_count));
+    if (sun_prop_shadow) *sun_prop_shadow = entry.sun_prop_shadow;
     presenter->texture_identity_bytes -= entry.identity.bytes.size();
     entry.identity = {};
     if (replaceable && presenter->texture_identity_bytes + draw.texture_byte_count +
@@ -2931,6 +2945,15 @@ RecompD3dPresenterError submitDraw(
         if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch &&
             sunSameCamera(presenter->sun, draw)) {
             ++presenter->sun.game_shadows;
+            auto stencil_only = draw;
+            stencil_only.blend.color_write_mask = 0;
+            return submitDraw(presenter, stencil_only);
+        }
+    }
+    if (presenter->sun.valid && !presenter->sun.casting && sunPropShadow(draw)) {
+        bool shadow = false;
+        if (lookupTexture(presenter, draw, &shadow) && shadow) {
+            ++presenter->sun.prop_shadows;
             auto stencil_only = draw;
             stencil_only.blend.color_write_mask = 0;
             return submitDraw(presenter, stencil_only);
@@ -3328,6 +3351,8 @@ RecompD3dPresenterError submitDraw(
     }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
     if (sun.casting) return RECOMP_D3D_PRESENTER_OK;
+    if (sun.enabled && draw.target.offscreen && sunPalmTexture(draw.target.color))
+        if (auto *entry = findRenderTarget(presenter, draw.target.color)) entry->sun_palm.draw(draw);
 #ifdef RECOMP_RTGI
     /* Render-target and backbuffer views change within a frame, so their
        draws trace as opaque. */
@@ -4598,9 +4623,11 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
     presenter->context->OMSetRenderTargets(0, nullptr, nullptr);
     // game_shadows counts the previous frame's hidden darkening passes (false-match audit).
     if (presenter->performance_counter && presenter->present_count % 120 == 0 && sun.valid)
-        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u direction=%.4f,%.4f,%.4f\n",
-            presenter->present_count, sun.casters, sun.game_shadows, sun.direction[0], sun.direction[1], sun.direction[2]);
+        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u prop_shadows=%u direction=%.4f,%.4f,%.4f\n",
+            presenter->present_count, sun.casters, sun.game_shadows, sun.prop_shadows,
+            sun.direction[0], sun.direction[1], sun.direction[2]);
     sun.game_shadows = 0;
+    sun.prop_shadows = 0;
     sun.game_alpha = sun.seen_alpha;
     sun.seen_alpha = 0;
     sun.draw_index = 0;
