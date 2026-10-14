@@ -3321,6 +3321,42 @@ static bool testSunShadow(unsigned samples)
         other = draw; other.sun[1] = other.directional.directions[0][1] = -0.6f;
         passed = passed && sunDirection(other, direction) < 0; // light below the horizon
     }
+    {
+        auto prop = draw;
+        prop.directional.enabled = false;
+        const float post[] = {0.7f, 7, 0.6f}, tape[] = {6, 0.06f, 0.05f};
+        const float sand[] = {80, 0.2f, 80}, rock[] = {20, 14, 20};
+        const float trees[] = {90, 12, 90}, net[] = {6, 0.8f, 0.1f};
+        passed = passed && sunCaster(prop, post) && sunCaster(prop, tape) &&
+            !sunCaster(prop, sand) && !sunCaster(prop, rock);
+        prop.depth.alpha_test_enable = true;
+        prop.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+        prop.depth.alpha_ref = 192;
+        passed = passed && sunCaster(prop, trees) && !sunCaster(prop, sand);
+        prop.depth.depth_write_enable = false;
+        prop.blend.blend_enable = true;
+        prop.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        prop.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        prop.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+        passed = passed && sunCaster(prop, trees) && sunCaster(prop, net) && !sunCaster(prop, sand);
+        prop.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+        passed = passed && !sunCaster(prop, trees);
+        prop.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        prop.texture.render_target = true;
+        passed = passed && !sunCaster(prop, trees);
+        prop = draw;
+        float bounds[3], unused[5][8]{};
+        std::memcpy(unused, vertices, sizeof vertices);
+        unused[4][0] = NAN;
+        prop.vertex_bytes = unused; prop.vertex_count = 5;
+        passed = passed && sunSceneDraw(prop, bounds) && bounds[0] == 2 && bounds[1] == 2;
+        const uint16_t bad[] = {0,1,2,5};
+        prop.index_bytes = bad;
+        passed = passed && !sunSceneDraw(prop, bounds);
+        prop.index_bytes = indices; unused[0][0] = NAN;
+        passed = passed && !sunSceneDraw(prop, bounds);
+        if (!passed) std::fprintf(stderr, "FAIL sun caster filters or referenced bounds\n");
+    }
     _putenv_s("RECOMP_D3D_SUN_DIR", "1,-2,3");
     passed = passed && sunDirection(draw, direction) == 0 && direction[0] > 0 && direction[1] < 0;
     for (const char *invalid : {"0,0,0", "nan,1,0", "1,2,3junk"}) {
@@ -3416,6 +3452,62 @@ static bool testSunShadow(unsigned samples)
         passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
             pixels("no game shadow, no receiver", unshadowed);
         presenter.sun.game_alpha = 0.75f;
+    }
+    {
+        struct CutoutVertex { float position[3]; uint32_t color; float uv[2]; } cutout[4]{};
+        for (unsigned i = 0; i < 4; ++i) {
+            cutout[i].position[0] = vertices[i][0];
+            cutout[i].position[1] = vertices[i][1];
+            cutout[i].position[2] = 0.25f;
+            cutout[i].color = 0x10ffffff;
+            cutout[i].uv[0] = i&1 ? 1.0f : 0.0f;
+            cutout[i].uv[1] = i&2 ? 1.0f : 0.0f;
+        }
+        const uint32_t alpha[] = {0x00ffffff, white, 0x40ffffff, 0x80ffffff};
+        const uint32_t minified[] = {white, white, white, white, 0, 0, 0};
+        for (unsigned mode = 0; mode < 3; ++mode) {
+            const bool blended = mode == 1;
+            draw = receiver;
+            draw.fvf = 0x142; draw.vertex_stride = sizeof(CutoutVertex);
+            draw.vertex_bytes = cutout; draw.directional.enabled = false;
+            draw.texture.data += 0x100;
+            draw.texture.width = 4; draw.texture.height = 1;
+            draw.address_u = draw.address_v = 5;
+            draw.texture_bytes = alpha; draw.texture_byte_count = sizeof alpha;
+            if (mode == 2) {
+                draw.texture.mip_levels = 3;
+                draw.texture_bytes = minified; draw.texture_byte_count = sizeof minified;
+                for (auto &v : cutout) v.uv[0] *= 4096;
+            }
+            draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
+            draw.material_alpha = 0.1f;
+            draw.depth.alpha_test_enable = true;
+            draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+            draw.depth.alpha_ref = blended ? 1 : 192;
+            draw.depth.depth_write_enable = !blended;
+            draw.blend.blend_enable = blended;
+            draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+            draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+            draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+            presenter.sun.casting = true;
+            presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+            ID3D11ShaderResourceView *empty = nullptr;
+            presenter.context->PSSetShaderResources(2, 1, &empty);
+            presenter.context->ClearDepthStencilView(presenter.sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
+            const unsigned before = presenter.sun.casters;
+            d3d11_backend_shadow_command(&presenter, &command);
+            d3d11_backend_shadow_end(&presenter);
+            presenter.sun.game_alpha = 0.75f;
+            presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+            presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+            const uint32_t tested[] = {white, 0xff404040, white, white};
+            const uint32_t foliage[] = {white, 0xff404040, white, 0xff404040};
+            const uint32_t wires[] = {0xff404040, 0xff404040, 0xff404040, 0xff404040};
+            passed = passed && presenter.sun.casters == before + 1 &&
+                submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+                pixels(mode == 2 ? "thin wires survive mip averaging" : blended ? "blended cutout shadow" : "alpha-tested cutout shadow",
+                    mode == 2 ? wires : blended ? foliage : tested);
+        }
     }
     // Non-host-lit draws and a different scene-depth epoch must bypass the map.
     draw = receiver;
