@@ -303,6 +303,8 @@ Set `RECOMP_MUSIC_SHUFFLE=1` to shuffle Radio Station playlists; see
 [`docs/native-audio.md`](native-audio.md#radio-shuffle).
 Set `RECOMP_TITLE_IDLE` to `no-cutscene` or `cpu-exhibition` to change what
 the idle title screen leads to; see [`docs/title-idle.md`](title-idle.md).
+Set `RECOMP_UNLOCK_SWIMSUITS=1` to unlock the swimsuits; see
+[`docs/swimsuit-unlock.md`](swimsuit-unlock.md).
 Tick **Shorter demo cuts** in the launcher, or set `RECOMP_DEMO_CUT_HOLD` from
 1 to 59 to shorten the one-second freeze between the demo's scenes; see
 [`docs/title-idle.md`](title-idle.md#demo-cut-hold).

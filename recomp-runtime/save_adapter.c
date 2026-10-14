@@ -5,6 +5,7 @@
 #include "kernel_abi.h"
 #include "save_transaction.h"
 #include "stop_report.h"
+#include "unlock_swimsuits.h"
 
 #include <inttypes.h>
 
@@ -27,7 +28,9 @@ static void save_original(uint32_t address, uint32_t success_value)
     /* Raw dispatch preserves the original ABI and cannot reenter this hook.
        Nested region saves join this fiber's transaction even when the
        enclosing guest routine ignores their return value. */
+    recomp_unlock_swimsuits_saving(true);
     original();
+    recomp_unlock_swimsuits_saving(false);
     if (!recomp_kernel_save_handles_closed(owner)) {
         recomp_save_note_failure(owner);
     }
