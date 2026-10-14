@@ -9,7 +9,8 @@ not a calibrated replacement for the game's lighting.
 The render worker runs camera selection and a caster pass through the same
 pose/split replay as the visible pass. Camera selection accepts finite,
 invertible view-projection matrices from main-target, transformed,
-normal-bearing fixed-function draws without vertex diffuse. It requires depth
+normal-bearing fixed-function draws without vertex diffuse. Bounds use only
+referenced vertices. It requires depth
 test/write and host lighting, rejects world extents of 200 units or more,
 and chooses the largest triangle count. This excludes the observed sky domes
 and cloud sheets without relying on draw order or private texture identities.
@@ -21,18 +22,30 @@ along the camera's near ray, with 120 units of light-space depth. The XY fit
 snaps to shadow texels and shadows fade over the outer tenth of the box.
 Receivers offset their lookup 0.04 units along the vertex normal, and the
 compare bias is 0.0002 of light depth, so grazing ground under a low sun does
-not shadow itself. Skinned draws and compact rigid casters (the ball) do
+not shadow itself. Skinned draws and rigid casters (the ball and scene props) do
 not receive, so models keep the game's shading. Other receivers darken by the
 game's own shadow opacity, taken from last frame's hidden darkening pass,
 because many stages light the sand with a separate rig or mostly baked light.
 When the game drew no shadow last frame (hotel, menus), nothing receives.
-The caster pass records which draws are compact, in draw order, and the visible
-pass reads that flag by its own draw count. Casters are opaque (including alpha-tested), host-lit
-normal-bearing skinned draws and rigid draws no larger than four world units.
-The rigid rule includes the ball but can include small scenery; transparent
-hair and distant objects are outside this initial test. Vertex blending uses
-the command's replayed `world[]` palette and the same explicit/remainder
-weights as the visible pass.
+The caster pass records rigid models in draw order; the visible pass reads
+that flag by its own draw count. Casters retain the opaque host-lit skinned
+and compact rigid draws, and add textured posts, palms and net geometry,
+including unlit draws and vertex colors. Narrow opaque props have at most
+eight units of horizontal extent and at most one unit across their narrower
+horizontal axis. Upright cutouts can span 128 units to accommodate batched
+trees; opaque cutouts require a GREATER/GREATER_EQUAL alpha reference of at
+least 128. Their height must be at least 5% of horizontal extent, or 10% for
+SRC_ALPHA/INV_SRC_ALPHA blended cutouts. This rejects flat ground and shadow
+overlays, broad opaque rocks, sea and sky. These are geometry/state limits,
+not an object identity classifier.
+
+The caster pass samples base-mip texture alpha independently of material or
+vertex alpha, so mip averages do not erase thin net wires. Opaque cutouts keep the game's alpha comparison and reference;
+blended cutouts use GREATER 127 and write map depth even when the visible draw
+does not write depth. Render-target textures and additive effects are excluded
+from the added props. The fixed map fit does not expand for larger casters.
+Vertex blending uses the command's replayed `world[]` palette and the same
+explicit/remainder weights as the visible pass.
 
 The light direction is the one the game projects its own character and ball
 shadows along: three floats at guest 0x00333870, a toward-light vector that the
@@ -74,7 +87,8 @@ backend and no vendor-specific capability is required.
 The presenter tests cover opt-out resource parity, invalid cameras and sky
 extent rejection, sun selection/override validation, GPU shadow visibility,
 ground darkening by the game's shadow opacity, compact and no-game-shadow
-bypasses, rigid and one-to-three-weight casters and resource release. Private
+bypasses, rigid and one-to-three-weight casters, referenced bounds, prop/receiver
+selection, texture-alpha cutouts under 1x/8x MSAA and resource release. Private
 attract-demo captures matched only whole actor and ball shadow sets (19 passes
 per actor) across seven scenes. A user play test accepted the look on the
 morning, dusk, sunset, Niki Beach and private beach courts and measured 59.9 fps

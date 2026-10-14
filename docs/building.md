@@ -69,13 +69,15 @@ stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
 in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
 
-On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) also hides
-the game's verified post and palm shadow overlays while a valid sun map is
-available. Their depth and stencil writes remain. Static overlays match by
-texture payload; live palm textures must come from silhouette rendering.
-Unrecognized overlays keep drawing. `RECOMP_PERF_COUNTER=1` reports hidden
-overlays as `prop_shadows` beside the sun caster count. See
-[sun shadows](sun-shadow.md) for the experiment's coverage and limits.
+On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) include
+court posts, palm trunks and leaves, and the volleyball net tape and rope.
+Leaves cast through texture alpha; blended foliage uses a half-alpha cutoff.
+The map keeps its fixed court-area resolution. Verified original post and
+palm shadow overlays retain only depth/stencil writes while a valid sun map
+is available. Static overlays match by texture payload; live palm textures
+must come from silhouette rendering. Unrecognized overlays keep drawing.
+`RECOMP_PERF_COUNTER=1` reports hidden overlays as `prop_shadows` beside the
+caster count. See [sun shadows](sun-shadow.md) for coverage and limits.
 
 The direct PowerShell route accepts an explicit extractor path:
 
