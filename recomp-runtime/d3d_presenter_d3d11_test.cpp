@@ -3241,6 +3241,39 @@ static bool testSunPropShadows(RecompD3dPresenter *presenter,
     return passed;
 }
 
+static bool testSunParticleCasters()
+{
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x142;
+    draw.has_texture = true;
+    draw.blend.color_write_mask = 15;
+    draw.blend.blend_enable = true;
+    draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+    draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+    draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+    draw.depth.depth_test_enable = true;
+    draw.depth.alpha_test_enable = true;
+    draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+    draw.depth.alpha_ref = 1;
+    const float billboard[] = {1, 1, 0};
+    for (unsigned alpha : {255u, 242u, 0u}) {
+        draw.texture_factor = (alpha << 24) | 0xffffffu;
+        if (sunCaster(draw, billboard)) {
+            std::fprintf(stderr, "FAIL fading particle casts at alpha=%u\n", alpha);
+            return false;
+        }
+    }
+    // The same dimensions alone cannot distinguish a particle from a solid cutout.
+    draw.depth.depth_write_enable = true;
+    const float net[] = {5, 0.8f, 0.02f};
+    if (!sunCaster(draw, billboard) || !sunCaster(draw, net)) return false;
+    draw.depth.depth_write_enable = false;
+    draw.directional.enabled = true;
+    draw.fvf = 0x112;
+    const float frond[] = {1.6f, 0.7f, 1.4f};
+    return sunCaster(draw, frond) && sunCaster(draw, net);
+}
+
 static bool testSunShadow(unsigned samples)
 {
     _putenv_s("RECOMP_D3D_SUN_SHADOW", "");
@@ -3334,6 +3367,7 @@ static bool testSunShadow(unsigned samples)
         prop.depth.alpha_ref = 192;
         passed = passed && sunCaster(prop, trees) && !sunCaster(prop, sand);
         prop.depth.depth_write_enable = false;
+        prop.directional.enabled = true;
         prop.blend.blend_enable = true;
         prop.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
         prop.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
@@ -3474,6 +3508,8 @@ static bool testSunShadow(unsigned samples)
     }
     {
         struct CutoutVertex { float position[3]; uint32_t color; float uv[2]; } cutout[4]{};
+        float frond[4][8];
+        std::memcpy(frond, vertices, sizeof frond);
         for (unsigned i = 0; i < 4; ++i) {
             cutout[i].position[0] = vertices[i][0];
             cutout[i].position[1] = vertices[i][1];
@@ -3481,6 +3517,8 @@ static bool testSunShadow(unsigned samples)
             cutout[i].color = 0x10ffffff;
             cutout[i].uv[0] = i&1 ? 1.0f : 0.0f;
             cutout[i].uv[1] = i&2 ? 1.0f : 0.0f;
+            frond[i][2] = 0.25f;
+            frond[i][6] = cutout[i].uv[0]; frond[i][7] = cutout[i].uv[1];
         }
         const uint32_t alpha[] = {0x00ffffff, white, 0x40ffffff, 0x80ffffff};
         const uint32_t minified[] = {white, white, white, white, 0, 0, 0};
@@ -3489,6 +3527,10 @@ static bool testSunShadow(unsigned samples)
             draw = receiver;
             draw.fvf = 0x142; draw.vertex_stride = sizeof(CutoutVertex);
             draw.vertex_bytes = cutout; draw.directional.enabled = false;
+            if (blended) {
+                draw.fvf = 0x112; draw.vertex_stride = sizeof frond[0];
+                draw.vertex_bytes = frond; draw.directional.enabled = true;
+            }
             draw.texture.data += 0x100;
             draw.texture.width = 4; draw.texture.height = 1;
             draw.address_u = draw.address_v = 5;
@@ -3736,6 +3778,7 @@ int main()
 #endif
     _putenv_s("RECOMP_D3D_FOG", "");
     _putenv_s("RECOMP_D3D_FOG_FACTOR", "");
+    if (!testSunParticleCasters()) return 1;
     if (!testSunShadow(1) || !testSunShadow(8)) return 1;
     if (!testReplacementFormats()) return 1;
     if (!testTextureAntialiasing()) return 82;
