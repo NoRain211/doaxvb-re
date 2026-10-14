@@ -242,6 +242,8 @@ bool sunCaster(const RecompD3dPresenterDrawCommand &draw, const float size[3])
     if (draw.directional.enabled && opaque && (draw.blend_weight_count || extent <= 4)) return true;
     if (draw.blend_weight_count || !draw.has_texture || draw.texture.render_target ||
         draw.texture_is_backbuffer || draw.texture_is_frontbuffer) return false;
+    // Fading unlit particles do not own scene depth.
+    if (!draw.depth.depth_write_enable && !draw.directional.enabled) return false;
     const bool blended = draw.blend.blend_enable && draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
         draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && draw.blend.op == RECOMP_D3D_BLEND_OP_ADD;
     if (!opaque && !blended) return false;
