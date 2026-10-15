@@ -390,14 +390,32 @@ SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
 float sunVisibility(float3 p) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
-    if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
     float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
+    float2 dx = ddx(uv), dy = ddy(uv);
+    float2 dz = float2(ddx(q.z), ddy(q.z));
+    float2 footprint = abs(dx) + abs(dy);
+    if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
     float visibility = 0;
-    [unroll] for (int y=-1; y<=1; ++y)
-        [unroll] for (int x=-1; x<=1; ++x)
-            visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)*sun_texel,q.z-0.0002);
+    if (max(footprint.x, footprint.y) > 3*sun_texel) {
+        // Average a minified shadow over the pixel so thin distant lines do not shimmer.
+        float2 width = clamp(footprint, 3*sun_texel, 16*sun_texel);
+        float determinant = dx.x*dy.y-dx.y*dy.x;
+        float2 slope = abs(determinant) > 1e-12 ?
+            float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
+        [unroll] for (int y=0; y<4; ++y)
+            [unroll] for (int x=0; x<4; ++x) {
+                float2 offset = (float2(x,y)-1.5)*width/4;
+                visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+offset,q.z+dot(slope,offset)-0.0002);
+            }
+        visibility /= 16;
+    } else {
+        [unroll] for (int y=-1; y<=1; ++y)
+            [unroll] for (int x=-1; x<=1; ++x)
+                visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)*sun_texel,q.z-0.0002);
+        visibility /= 9;
+    }
     // Fade over the outer tenth of the box so shadows do not cut off at its edge.
-    return lerp(1, visibility/9, saturate((1-max(abs(q.x),abs(q.y)))*10));
+    return lerp(1, visibility, saturate((1-max(abs(q.x),abs(q.y)))*10));
 }
 )");
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),

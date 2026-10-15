@@ -3551,6 +3551,43 @@ static bool testSunShadow(unsigned samples)
                     mode == 2 ? wires : blended ? foliage : tested);
         }
     }
+    {
+        // A minified one-texel wire repeated every four texels has 25% coverage.
+        // Sliding its phase must not pulse between dark and light bands on the sand.
+        std::vector<float> wire_depth(kSunMapSize*kSunMapSize, 1.0f);
+        for (unsigned y = 0; y < kSunMapSize; ++y)
+            for (unsigned x = 0; x < kSunMapSize; x += 4)
+                wire_depth[y*kSunMapSize+x] = 0.25f;
+        presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11ShaderResourceView *empty = nullptr;
+        presenter.context->PSSetShaderResources(2, 1, &empty);
+        presenter.context->UpdateSubresource(presenter.sun.texture, 0, nullptr,
+            wire_depth.data(), kSunMapSize*sizeof(float), 0);
+        presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+        presenter.sun.projection[0] = 16.0f/kSunMapSize;
+        const uint32_t expected[] = {0xffcfcfcf,0xffcfcfcf,0xffcfcfcf,0xffcfcfcf};
+        for (unsigned phase = 0; phase < 4; ++phase) {
+            presenter.sun.projection[12] = phase*1.0f/kSunMapSize;
+            presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+            passed = submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+                pixels("minified net shadow keeps average coverage", expected) && passed;
+        }
+        // A wider footprint must compare against the receiver plane, not one center depth.
+        for (unsigned y = 0; y < kSunMapSize; ++y)
+            for (unsigned x = 0; x < kSunMapSize; ++x)
+                wire_depth[y*kSunMapSize+x] = 0.718f+(x+0.5f-kSunMapSize/2)*0.00025f;
+        presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+        presenter.context->PSSetShaderResources(2, 1, &empty);
+        presenter.context->UpdateSubresource(presenter.sun.texture, 0, nullptr,
+            wire_depth.data(), kSunMapSize*sizeof(float), 0);
+        presenter.sun.projection[12] = 0;
+        presenter.sun.projection[2] = 0.002f;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t unshadowed[] = {white,white,white,white};
+        passed = submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("wide shadow filter preserves sloped receivers", unshadowed) && passed;
+        std::memcpy(presenter.sun.projection, receiver.view_projection, sizeof receiver.view_projection);
+    }
     // Non-host-lit draws and a different scene-depth epoch must bypass the map.
     draw = receiver;
     for (unsigned mode = 0; passed && mode < 3; ++mode) {
