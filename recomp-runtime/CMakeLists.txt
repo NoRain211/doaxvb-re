@@ -56,32 +56,48 @@ else()
             target_link_libraries(${target} PRIVATE SDL3::SDL3)
         endif()
     endfunction()
+endif()
 
-    # Dear ImGui draws the runtime's overlay text over the game; see
-    # overlay_sdl_gpu.cpp. Set FETCHCONTENT_SOURCE_DIR_IMGUI to build offline.
-    if(SDL3_FOUND)
-        if(POLICY CMP0135)
-            cmake_policy(SET CMP0135 NEW)
-        endif()
-        include(FetchContent)
-        FetchContent_Declare(imgui
-            URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9.tar.gz
-            URL_HASH SHA256=3872a5f90df78fced023c1945f4466b654fd74573370b77b17742149763a7a7c)
-        FetchContent_MakeAvailable(imgui)
-        add_library(recomp_imgui STATIC
-            "${imgui_SOURCE_DIR}/imgui.cpp"
-            "${imgui_SOURCE_DIR}/imgui_draw.cpp"
-            "${imgui_SOURCE_DIR}/imgui_tables.cpp"
-            "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
-            "${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp")
-        target_include_directories(recomp_imgui PUBLIC "${imgui_SOURCE_DIR}")
+# Dear ImGui draws the runtime's overlay text over the game, through the D3D11
+# presenter on Windows and the SDL GPU one elsewhere; see overlay_*.cpp. Set
+# FETCHCONTENT_SOURCE_DIR_IMGUI to configure offline.
+if(WIN32 OR SDL3_FOUND)
+    if(POLICY CMP0135)
+        cmake_policy(SET CMP0135 NEW)
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(imgui
+        URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9.tar.gz
+        URL_HASH SHA256=3872a5f90df78fced023c1945f4466b654fd74573370b77b17742149763a7a7c)
+    FetchContent_MakeAvailable(imgui)
+    if(WIN32)
+        set(_recomp_imgui_backend "${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp")
+    else()
+        set(_recomp_imgui_backend "${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp")
+    endif()
+    add_library(recomp_imgui STATIC
+        "${imgui_SOURCE_DIR}/imgui.cpp"
+        "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+        "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+        "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+        "${_recomp_imgui_backend}")
+    target_include_directories(recomp_imgui PUBLIC "${imgui_SOURCE_DIR}")
+    if(WIN32)
+        target_link_libraries(recomp_imgui PUBLIC d3d11 d3dcompiler)
+    else()
         recomp_use_sdl3(recomp_imgui)
     endif()
-    function(recomp_use_overlay target)
-        target_sources(${target} PRIVATE overlay_sdl_gpu.cpp overlay_text.c)
-        target_link_libraries(${target} PRIVATE recomp_imgui)
-    endfunction()
 endif()
+# Adds the presenter's overlay drawer; the text model, overlay_text.c, is
+# added where the game side is.
+function(recomp_use_overlay target)
+    if(WIN32)
+        target_sources(${target} PRIVATE overlay_d3d11.cpp overlay_imgui_panel.cpp)
+    else()
+        target_sources(${target} PRIVATE overlay_sdl_gpu.cpp overlay_imgui_panel.cpp)
+    endif()
+    target_link_libraries(${target} PRIVATE recomp_imgui)
+endfunction()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(Threads REQUIRED)
@@ -668,14 +684,14 @@ if(RECOMP_PROGRAM_DIR)
         target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
         recomp_use_sdl3(recomp_program_runner)
     else()
-        target_sources(recomp_program_runner PRIVATE win32_compat.c overlay_sdl_gpu.cpp)
-        target_link_libraries(recomp_program_runner PRIVATE recomp_imgui)
+        target_sources(recomp_program_runner PRIVATE win32_compat.c)
         if(RECOMP_FIBER_ASM)
             enable_language(ASM)
             target_sources(recomp_program_runner PRIVATE ${RECOMP_FIBER_ASM})
         endif()
         recomp_use_sdl3(recomp_program_runner)
     endif()
+    recomp_use_overlay(recomp_program_runner)
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
@@ -715,6 +731,8 @@ if(WIN32)
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
+    recomp_use_overlay(recomp_d3d_presenter_d3d11_test)
+    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
@@ -737,6 +755,8 @@ if(WIN32)
         d3d_texture_model.c)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
+    recomp_use_overlay(recomp_d3d_presenter_thread_test)
+    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
@@ -763,6 +783,7 @@ else()
         d3d_texture_model.c)
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
     recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test)
+    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c)
     add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)

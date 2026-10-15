@@ -2440,8 +2440,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // The runtime's overlay text goes on the window, not the
                 // game's back buffer, which the game reads back as its front
                 // buffer.
+                RecompOverlayText overlay;
+                recomp_overlay_take(&overlay);
                 recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
-                    swapchain_tex, swap_w, swap_h, recomp_overlay_shown());
+                    swapchain_tex, swap_w, swap_h, &overlay);
             }
         }
 

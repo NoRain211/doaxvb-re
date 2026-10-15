@@ -39,7 +39,10 @@ int main(void)
     recomp_overlay_set_hint(&text, "F1 leave");
     check(!recomp_overlay_empty(&text), "a hint alone is not empty");
 
-    check(recomp_overlay_shown() == recomp_overlay_shown(), "there is one shown overlay");
+    RecompOverlayText taken;
+    recomp_overlay_publish(&text);
+    recomp_overlay_take(&taken);
+    check(memcmp(&taken, &text, sizeof text) == 0, "a taken overlay is the published one");
 
     if (failures == 0) printf("overlay text test passed\n");
     return failures == 0 ? 0 : 1;

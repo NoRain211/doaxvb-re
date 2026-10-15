@@ -33,8 +33,10 @@ bool recomp_overlay_add_line(RecompOverlayText *text, const char *format, ...);
 void recomp_overlay_set_hint(RecompOverlayText *text, const char *hint);
 bool recomp_overlay_empty(const RecompOverlayText *text);
 
-/* The overlay the presenter draws. */
-RecompOverlayText *recomp_overlay_shown(void);
+/* The game side hands a finished overlay over once a frame; a presenter,
+   possibly on its own thread, takes a copy of the latest one to draw. */
+void recomp_overlay_publish(const RecompOverlayText *text);
+void recomp_overlay_take(RecompOverlayText *text);
 
 #ifdef __cplusplus
 }

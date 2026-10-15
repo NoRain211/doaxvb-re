@@ -2,6 +2,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#include "overlay_d3d11.h"
 #include "texture_replacement.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -829,6 +830,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->target_copy_ps);
     releaseCom(presenter->front_buffer_sample);
     releaseCom(presenter->front_buffer_copy);
+    // The overlay's ImGui backend holds the device; it starts again on the next.
+    recomp_overlay_d3d11_shutdown();
     releaseCom(presenter->swap_chain);
     releaseCom(presenter->context);
     releaseCom(presenter->device);
@@ -3785,6 +3788,23 @@ RecompD3dPresenterError submitPresent(
         context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
         context->Draw(3u, 0u);
         context->ClearState();
+    }
+    {
+        // The runtime's overlay text goes on the window's back buffer, after
+        // the front buffer the game reads back has been copied.
+        RecompOverlayText overlay;
+        recomp_overlay_take(&overlay);
+        if (!recomp_overlay_empty(&overlay)) {
+            ID3D11Texture2D *back_buffer = nullptr;
+            presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+            if (back_buffer != nullptr) {
+                D3D11_TEXTURE2D_DESC window{};
+                back_buffer->GetDesc(&window);
+                releaseCom(back_buffer);
+                recomp_overlay_d3d11_draw(presenter->device, presenter->context,
+                    presenter->present_target_view, window.Width, window.Height, &overlay);
+            }
+        }
     }
     // Capture the rendered buffer before flip presentation releases it.
     if (!compareReplay(presenter)) return RECOMP_D3D_PRESENTER_HOST_FAILURE;

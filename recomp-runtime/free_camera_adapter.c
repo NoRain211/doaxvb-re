@@ -444,9 +444,8 @@ void recomp_free_camera_frame_character(void)
     state.frame_pending = true;
 }
 
-void recomp_free_camera_overlay(bool viewer)
+static void fill_overlay(RecompOverlayText *text, bool viewer)
 {
-    RecompOverlayText *text = recomp_overlay_shown();
     recomp_overlay_clear(text);
     if (!state.active || state.panel_hidden) return;
 
@@ -478,6 +477,13 @@ void recomp_free_camera_overlay(bool viewer)
             : "F1 off   P freeze   . step   H clean view\n"
               "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl");
     }
+}
+
+void recomp_free_camera_overlay(bool viewer)
+{
+    RecompOverlayText text;
+    fill_overlay(&text, viewer);
+    recomp_overlay_publish(&text);
 }
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
