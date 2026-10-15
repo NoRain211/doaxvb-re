@@ -15,13 +15,13 @@ bool failed;
 SDL_GPUDevice *owner;
 Uint64 last_ticks;
 
-bool start(SDL_GPUDevice *device, SDL_Window *window)
+bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
 {
     if (ready) return true;
     if (failed) return false;
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    recomp_overlay_imgui_style();
+    recomp_overlay_imgui_style(static_cast<float>(height));
 
     ImGui_ImplSDLGPU3_InitInfo info{};
     info.Device = device;
@@ -49,7 +49,7 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
         width == 0u || height == 0u || recomp_overlay_empty(text)) {
         return;
     }
-    if (!start(device, window)) return;
+    if (!start(device, window, height)) return;
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));

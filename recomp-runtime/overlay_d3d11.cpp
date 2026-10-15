@@ -13,13 +13,13 @@ bool ready;
 bool failed;
 std::chrono::steady_clock::time_point last_frame;
 
-bool start(ID3D11Device *device, ID3D11DeviceContext *context)
+bool start(ID3D11Device *device, ID3D11DeviceContext *context, UINT height)
 {
     if (ready) return true;
     if (failed) return false;
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    recomp_overlay_imgui_style();
+    recomp_overlay_imgui_style(static_cast<float>(height));
     if (!ImGui_ImplDX11_Init(device, context)) {
         std::fprintf(stderr, "[overlay] ImGui D3D11 backend failed to start\n");
         ImGui::DestroyContext();
@@ -40,7 +40,7 @@ void recomp_overlay_d3d11_draw(ID3D11Device *device, ID3D11DeviceContext *contex
         width == 0u || height == 0u || recomp_overlay_empty(text)) {
         return;
     }
-    if (!start(device, context)) return;
+    if (!start(device, context, height)) return;
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
