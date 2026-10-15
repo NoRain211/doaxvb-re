@@ -70,8 +70,8 @@ in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
 
 On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) include
-court posts, palm trunks and leaves, and the volleyball net. Leaves and net
-mesh cast through texture alpha; blended foliage uses a half-alpha cutoff.
+court posts, palm trunks and leaves, and the volleyball net tape and rope.
+Leaves cast through texture alpha; blended foliage uses a half-alpha cutoff.
 The map keeps its fixed court-area resolution. Verified original post and
 palm shadow overlays retain only depth/stencil writes while a valid sun map
 is available. Static overlays match by texture payload; live palm textures
