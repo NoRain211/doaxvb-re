@@ -7,7 +7,8 @@ runner starts. Then press **F1**, or hold **Back** and click the right stick,
 to switch the free camera on and off in any scene.
 
 While it flies, the game reads a neutral controller on the first port, so
-the game ignores what moves the camera. The game itself keeps running.
+the game ignores what moves the camera. The game itself keeps running until
+you freeze it.
 
 | Action | Keyboard | Controller |
 |---|---|---|
@@ -18,6 +19,12 @@ the game ignores what moves the camera. The game itself keeps running.
 | Faster / slower | Shift / Ctrl (held) | A / B (held) |
 | Back to the game's view | R | Y |
 | Next camera | C | X |
+| Freeze / unfreeze the scene | P | Start |
+| Hide / show the overlay while frozen | H | Left shoulder |
+
+Switching the free camera off also unfreezes the scene and the game carries
+on where it stopped. Music keeps playing while frozen; the scene's own sounds
+stop.
 
 Linux and macOS save the launcher choice in `private/launcher.json` as
 `free_camera`, and `run_game.py` turns it into the variable. The Windows
@@ -51,18 +58,54 @@ left. The camera starts where the game's camera was. It moves at half the
 game's eye-to-target distance per second, and keeps the target that distance
 ahead, in case the game reads it as a focus distance.
 
+## Freezing the scene
+
+The game runs its systems as cooperative tasks, one turn each per frame on
+its own fiber. The task table at `0x5F2C38` holds 32-byte records: `+0` the
+state, `+4` set once the task has yielded, `+8` its fiber and `+0xC` its
+function. The scheduler stores the index of the task it is about to run at
+`0x5F2E5C` and switches to its fiber; the task switches back when its turn is
+over. Only some tasks draw, and which ones depends on the scene: the island
+map draws from `0x00079D00` and `0x0008A970`, the real-time demo from
+`0x000B42B0` and `0x0008A970`. The game's own camera, and so the free
+camera's build, runs inside a drawing task.
+
+`recomp-runtime/scene_freeze_adapter.c` installs a hook in the fiber
+adapter's `SwitchToFiber` replacement. It counts the draws each task issues
+per turn; the plain model in `scene_freeze.c`, tested by
+`scene_freeze_test.c`, keeps the last eight turns of each task. While frozen,
+a turn of a task that has not drawn in that history is declined: the switch
+returns at once and the record is left as a yield leaves it, with bit `0x10`
+of the state clear and `+4` set. The drawing tasks keep their turns, so the
+last game state is drawn again every frame from wherever the free camera is.
+Hiding the overlay declines the turns of `0x0008A970`, which draws the 2D
+text, portraits, menus and the demo's logo.
+
+The game polls the controller from a task the freeze skips, so while frozen
+the free camera samples the controller itself once a frame from the camera
+build.
+
 ## Verification
 
 Scripted runs on an M-series Mac flew the camera in the real-time demo and on
-the island map. Back with the right stick switched it on, and the frames
+the island map. A user play test on the Mac confirmed keyboard flight. Back with the right stick switched it on, and the frames
 showed the view leaving the game's own. Turning and strafing right moved the
 scene left in the frame. **Next camera** moved it to the island map's second
 object. Each run used a constant debug input, `RECOMP_FREE_CAMERA_DRIFT`
 (right, up, forward, turn and pitch, comma-separated), because scripted input
 cannot move a stick.
 
-Not yet verified: keyboard and physical controller flight, scenes beyond
-the demo and the island map, and Windows and Linux builds.
+Freezing was checked the same way. In the demo, Start froze the scene with
+the girl on screen; with the camera held still, frames 120 apart matched
+except for the sea, and turning the camera showed the frozen scene from new
+angles. Switching the camera off thawed it and the demo went on to its next
+scene. On the island map the frozen dialog stayed put, the overlay hid, and
+the camera flew down to the beach. A recording of the sound through a freeze
+showed the music going on at a lower level with no repeating buffer.
+
+Not yet verified: freezing in a play test, physical controller flight,
+scenes beyond the demo and the island map (matches, the hotel, the shops),
+and Windows and Linux builds.
 
 ## Debugging
 
