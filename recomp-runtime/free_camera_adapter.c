@@ -2,6 +2,7 @@
 #include "free_camera.h"
 #include "input_host_win32.h"
 #include "scene_freeze_adapter.h"
+#include "actor_pose_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,13 @@
    right shoulder moves it on one frame, and putting the camera away thaws
    it. The game polls the controller from a task the freeze skips, so while
    frozen the freeze's frame hook samples it here once a frame, in any scene,
-   so the scene can always be thawed. */
+   so the scene can always be thawed.
+
+   [ and ] or the d-pad's left and right play the previous or next animation
+   clip on a character and hold it (actor_pose_adapter.c); \ or the left
+   stick's click picks the next character. Changing the clip of a frozen scene
+   steps it one frame so the new pose shows. Putting the camera away hands
+   the animation back to the game. */
 enum {
     BUILD_CAMERA = 0x00023B10u,
     CAMERA_FIRST = 0x0041A800u,
@@ -45,7 +52,10 @@ enum {
     TRACE_LINES = 600u,
     XBOX_DPAD_UP = 0x0001u,
     XBOX_DPAD_DOWN = 0x0002u,
+    XBOX_DPAD_LEFT = 0x0004u,
+    XBOX_DPAD_RIGHT = 0x0008u,
     XBOX_START = 0x0010u,
+    XBOX_LEFT_THUMB = 0x0040u,
     XBOX_BACK = 0x0020u,
     XBOX_RIGHT_THUMB = 0x0080u,
     ANALOG_A = 0u,
@@ -70,6 +80,7 @@ static struct {
     RecompInputSampleSource source;
     bool active, started;
     bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
+    bool clip_back_held, clip_next_held, actor_held;
     uint32_t slot;
     /* Objects built in the frame being drawn and in the one before it. */
     uint32_t built_frame, built, built_before;
@@ -110,7 +121,10 @@ static void set_active(bool active)
     if (state.active == active) return;
     state.active = active;
     state.started = false;
-    if (!active) recomp_scene_freeze_set(false);
+    if (!active) {
+        recomp_scene_freeze_set(false);
+        recomp_actor_pose_release();
+    }
     fprintf(stderr, "recomp free camera: %s\n", active ? "on" : "off");
 }
 
@@ -147,6 +161,22 @@ static bool take_sample(const RecompInputGamepad *gamepad)
         gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED);
     if (step && !state.step_held) recomp_scene_freeze_step();
     state.step_held = step;
+
+    bool clip_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET) ||
+        (gamepad->buttons & XBOX_DPAD_LEFT) != 0u);
+    bool clip_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
+        (gamepad->buttons & XBOX_DPAD_RIGHT) != 0u);
+    int clip_step = (clip_next && !state.clip_next_held) - (clip_back && !state.clip_back_held);
+    if (clip_step != 0 && recomp_actor_pose_step_clip(clip_step) && recomp_scene_freeze_active()) {
+        recomp_scene_freeze_step();
+    }
+    state.clip_back_held = clip_back;
+    state.clip_next_held = clip_next;
+
+    bool actor = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_BACKSLASH) ||
+        (gamepad->buttons & XBOX_LEFT_THUMB) != 0u);
+    if (actor && !state.actor_held) recomp_actor_pose_next_actor();
+    state.actor_held = actor;
 
     if (state.active || toggle) state.pad = *gamepad;
     return state.active || toggle;
@@ -243,6 +273,7 @@ static void build_camera(void)
         object == CAMERA_FIRST + slot * CAMERA_STRIDE;
 
     if (state.built_frame != frame) {
+        recomp_actor_pose_frame();
         state.built_before = state.built;
         state.built = 0u;
         state.built_frame = frame;

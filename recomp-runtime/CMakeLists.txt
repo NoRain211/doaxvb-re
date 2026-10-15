@@ -560,6 +560,8 @@ if(RECOMP_PROGRAM_DIR)
         free_camera_adapter.c
         scene_freeze.c
         scene_freeze_adapter.c
+        actor_pose.c
+        actor_pose_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c
@@ -766,6 +768,7 @@ add_executable(recomp_cpu_exhibition_test cpu_exhibition_test.c)
 add_executable(recomp_title_idle_test title_idle_test.c)
 add_executable(recomp_free_camera_test free_camera.c free_camera_test.c)
 add_executable(recomp_scene_freeze_test scene_freeze.c scene_freeze_test.c)
+add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
 add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
 add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
@@ -783,6 +786,7 @@ add_test(NAME recomp-runtime-cpu-exhibition COMMAND recomp_cpu_exhibition_test)
 add_test(NAME recomp-runtime-title-idle COMMAND recomp_title_idle_test)
 add_test(NAME recomp-runtime-free-camera COMMAND recomp_free_camera_test)
 add_test(NAME recomp-runtime-scene-freeze COMMAND recomp_scene_freeze_test)
+add_test(NAME recomp-runtime-actor-pose COMMAND recomp_actor_pose_test)
 add_test(NAME recomp-runtime-title-idle-unexpected-table COMMAND recomp_title_idle_test --unexpected-table)
 add_test(NAME recomp-runtime-title-idle-cpu-exhibition COMMAND recomp_title_idle_test --cpu-exhibition)
 add_test(NAME recomp-runtime-title-idle-cut-hold COMMAND recomp_title_idle_test --cut-hold)

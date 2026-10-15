@@ -283,6 +283,9 @@ bool recomp_input_host_key(RecompInputHostKey key)
     case RECOMP_INPUT_HOST_KEY_P: return focused() && pressed(KEY('P', SDL_SCANCODE_P));
     case RECOMP_INPUT_HOST_KEY_H: return focused() && pressed(KEY('H', SDL_SCANCODE_H));
     case RECOMP_INPUT_HOST_KEY_PERIOD: return focused() && pressed(KEY(VK_OEM_PERIOD, SDL_SCANCODE_PERIOD));
+    case RECOMP_INPUT_HOST_KEY_LEFT_BRACKET: return focused() && pressed(KEY(VK_OEM_4, SDL_SCANCODE_LEFTBRACKET));
+    case RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET: return focused() && pressed(KEY(VK_OEM_6, SDL_SCANCODE_RIGHTBRACKET));
+    case RECOMP_INPUT_HOST_KEY_BACKSLASH: return focused() && pressed(KEY(VK_OEM_5, SDL_SCANCODE_BACKSLASH));
     case RECOMP_INPUT_HOST_KEY_UP: return focused() && pressed(KEY(VK_UP, SDL_SCANCODE_UP));
     case RECOMP_INPUT_HOST_KEY_DOWN: return focused() && pressed(KEY(VK_DOWN, SDL_SCANCODE_DOWN));
     case RECOMP_INPUT_HOST_KEY_LEFT: return focused() && pressed(KEY(VK_LEFT, SDL_SCANCODE_LEFT));

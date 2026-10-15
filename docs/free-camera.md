@@ -22,9 +22,11 @@ you freeze it.
 | Freeze / unfreeze the scene | P | Start |
 | Hide / show the overlay while frozen | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
+| Previous / next animation | [ / ] | D-pad left / right |
+| Next character to animate | `\` (backslash) | Left stick click |
 
-Switching the free camera off also unfreezes the scene and the game carries
-on where it stopped. Music keeps playing while frozen; the scene's own sounds
+Switching the free camera off also unfreezes the scene, hands every
+animation back to the game, and the game carries on where it stopped. Music keeps playing while frozen; the scene's own sounds
 stop.
 
 Linux and macOS save the launcher choice in `private/launcher.json` as
@@ -89,6 +91,32 @@ the free camera samples the controller itself once a frame, from the freeze's
 own hook in the scheduler. That works in any scene, including 2D screens with
 no camera, so a frozen scene can always be thawed.
 
+## Choosing an animation
+
+Up to four characters animate at once; `0x4D6FD0 + n` is nonzero while
+character `n` is active. Each has two animation layers of `0x80` bytes, the
+first at `0x5E0800 + n * 0x100`. Each frame `0x000AC100` updates a
+character's layers. When the first layer's byte `+0x74` is set, it clears it
+and calls `0x000AEC80`, which starts the clip numbered at `+0x62`. Bit
+`0x2000` of the number picks a shared bank; otherwise the layer's byte
+`+0x6E` picks the character's bank. The bank table at `0x5DD844` has 12-byte
+entries whose first word is the bank, the shared bank fifth. A bank is 1000
+clip pointers, and a clip the scene did not load points at a placeholder
+`0xFA4` bytes into the bank.
+
+`recomp-runtime/actor_pose_adapter.c` lists the clips the scene loaded for
+the chosen character and the shared ones (the plain model in
+`actor_pose.c`, tested by `actor_pose_test.c`), and starts the chosen one the
+same way the game does. It then holds it: a clip the game's own logic starts
+in its place is replaced again. A clip carries its own root position, so the
+character's position at `+8` of its root block, `0x4D6FF0 + n * 0xBC`, is put
+back each frame while a clip is held. Some clips still offset the body from
+that position; fly the camera to the character if she leaves the view.
+
+Only clips the scene loaded can be chosen: 45 for the girl in the demo's
+first scene, including 3 shared ones. The clips have no names, only numbers,
+which the log reports (`recomp pose: character 0 clip 02b0 (36 of 45)`).
+
 ## Verification
 
 Scripted runs on an M-series Mac flew the camera in the real-time demo and on
@@ -113,8 +141,13 @@ mid-air while the camera flew around them. A frame step changed the frozen
 picture once and it then held again. Start unfroze the match and it went on.
 On the title screen, a 2D scene with no camera, Start froze and unfroze it.
 
-Not yet verified: mouse look, freezing in a play test, physical controller
-flight, scenes beyond the demo, the island map and Exhibition matches (the
+Animation select was checked in the demo's first scene: each press of the
+d-pad started a different clip on the girl (bending, walking, standing,
+resting a hand on her knee) and the scene's script did not take it back.
+With the scene frozen, a press changed her pose once and it then held.
+
+Not yet verified: mouse look, freezing and animation select in a play test,
+animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
 hotel, the shops, the pool), and Windows and Linux builds.
 
 ## Debugging
