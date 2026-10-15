@@ -851,6 +851,20 @@ static int run_music_shuffle_pick(void)
         recomp_music_shuffle_pick(masks, 2, 1, 1, 0u) == -1;
 }
 
+/* A sphere 90 units ahead reaches the sun map; one 120 units away does not.
+   The world matrix moves it, and the view matrix measures from the camera. */
+static int run_sun_caster_near(void)
+{
+    float world[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float view[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const float near_sphere[4] = {0, 0, 40, 1}, far_sphere[4] = {0, 0, 70, 1};
+
+    world[14] = 50.0f;
+    view[12] = 3.0f;
+    return recomp_sun_caster_near(near_sphere, world, view) &&
+        !recomp_sun_caster_near(far_sphere, world, view);
+}
+
 static int run_ram_pending_ohci(void)
 {
     uint8_t *ram = calloc_ram_fixture();
@@ -918,6 +932,7 @@ int main(int argc, char **argv)
     }
     passed &= run_cached_ram_alias();
     passed &= run_music_shuffle_pick();
+    passed &= run_sun_caster_near();
     passed &= run_physical_ram_alias();
     passed &= recomp_xapi_time_adapter_test();
     passed &= recomp_game_scheduler_test();
