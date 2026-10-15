@@ -51,6 +51,10 @@ void recomp_free_camera_step(RecompFreeCamera *camera,
 /* Turns the camera to face a point, keeping its position. False leaves it
    untouched when the point is the camera's position or not finite. */
 bool recomp_free_camera_look_at(RecompFreeCamera *camera, const float point[3]);
+/* Moves the camera to the given distance from a point, along the line it
+   now sees it on, and faces it with the given field of view. */
+bool recomp_free_camera_frame(RecompFreeCamera *camera, const float point[3],
+    float distance, float fov);
 /* The point the camera looks at, focus units ahead of the position. */
 void recomp_free_camera_target(const RecompFreeCamera *camera, float target[3]);
 

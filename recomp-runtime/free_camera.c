@@ -119,6 +119,29 @@ bool recomp_free_camera_look_at(RecompFreeCamera *camera, const float point[3])
     return true;
 }
 
+bool recomp_free_camera_frame(RecompFreeCamera *camera, const float point[3],
+    float distance, float fov)
+{
+    float view[AXES];
+    float squared = 0.0f;
+
+    if (camera == NULL || point == NULL || !(distance > 0.0f) || !isfinite(distance)) return false;
+    for (unsigned i = 0u; i < AXES; ++i) {
+        if (!isfinite(point[i])) return false;
+        view[i] = point[i] - camera->position[i];
+        squared += view[i] * view[i];
+    }
+    if (!(squared > 0.0f) || !isfinite(squared)) return false;
+    float length = sqrtf(squared);
+    for (unsigned i = 0u; i < AXES; ++i) {
+        camera->position[i] = point[i] - view[i] / length * distance;
+    }
+    camera->fov = isfinite(fov) ? clampf(fov, FOV_MIN, FOV_MAX) : camera->fov;
+    camera->focus = distance;
+    camera->speed = distance * 0.5f > SPEED_MIN ? distance * 0.5f : SPEED_MIN;
+    return recomp_free_camera_look_at(camera, point);
+}
+
 void recomp_free_camera_target(const RecompFreeCamera *camera, float target[3])
 {
     float forward[AXES];

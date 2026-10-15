@@ -1,6 +1,7 @@
 #include "actor_pose_adapter.h"
 #include "actor_pose.h"
 
+#include <math.h>
 #include <stdio.h>
 
 #ifdef RECOMP_FULL_PROGRAM
@@ -32,7 +33,13 @@
    0x4D3650 + n * 0x800 with the translation in floats 12 to 14. After it
    builds a held character, every bone is moved across the ground so the first
    bone, the hips, stays where it stood when the hold began. Height is left
-   alone, so sitting and standing clips keep their own. */
+   alone, so sitting and standing clips keep their own.
+
+   A character can also be hidden: after her skeleton is built every bone is
+   moved HIDE_DEPTH below where it stood, out of any view above the ground.
+   A frozen scene builds no skeletons, so hiding and showing also move the
+   bones already built; each build leaves a hidden character's bones that
+   far down, so the two agree. */
 enum {
     ACTOR_COUNT = 4u,
     ACTOR_ACTIVE = 0x004D6FD0u,
@@ -56,6 +63,8 @@ enum {
     BONE_SIZE = 64u,
 };
 
+static const float HIDE_DEPTH = 100.0f;
+
 void sub_000B01E0(void);
 
 static struct {
@@ -66,6 +75,7 @@ static struct {
     /* The hips' place on the ground when the hold began. */
     float hips[2];
     bool hips_known;
+    uint32_t hidden;
 } pose;
 
 static bool active(uint32_t actor)
@@ -88,6 +98,25 @@ static uint32_t bone_of(uint32_t actor, uint32_t bone)
     return BONE_FIRST + actor * BONE_STRIDE + bone * BONE_SIZE;
 }
 
+static void lower_bones(uint32_t actor, float depth);
+
+void recomp_actor_pose_choose(uint32_t actor)
+{
+    if (actor >= ACTOR_COUNT) return;
+    if (actor != pose.actor) recomp_actor_pose_release();
+    pose.actor = actor;
+}
+
+void recomp_actor_pose_set_hidden(uint32_t mask)
+{
+    for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
+        uint32_t bit = 1u << actor;
+        if ((mask & bit) != 0u && (pose.hidden & bit) == 0u) lower_bones(actor, HIDE_DEPTH);
+        if ((mask & bit) == 0u && (pose.hidden & bit) != 0u) lower_bones(actor, -HIDE_DEPTH);
+    }
+    pose.hidden = mask;
+}
+
 bool recomp_actor_pose_focus(float point[3])
 {
     if (!active(pose.actor)) recomp_actor_pose_next_actor();
@@ -96,12 +125,44 @@ bool recomp_actor_pose_focus(float point[3])
     return true;
 }
 
+bool recomp_actor_pose_facing(float direction[3])
+{
+    if (!active(pose.actor)) return false;
+    float matrix[16];
+    recomp_guest_load(matrix, bone_of(pose.actor, 0u), sizeof matrix);
+    /* The hips' third axis points the way she faces. */
+    direction[0] = matrix[8];
+    direction[1] = 0.0f;
+    direction[2] = matrix[10];
+    float length = sqrtf(direction[0] * direction[0] + direction[2] * direction[2]);
+    if (!(length > 1e-4f)) return false;
+    direction[0] /= length;
+    direction[2] /= length;
+    return true;
+}
+
+static void lower_bones(uint32_t actor, float depth)
+{
+    for (uint32_t bone = 0u; bone < BONE_COUNT; ++bone) {
+        float matrix[16];
+        uint32_t address = bone_of(actor, bone);
+        recomp_guest_load(matrix, address, sizeof matrix);
+        if (matrix[15] == 0.0f) continue;
+        matrix[13] -= depth;
+        recomp_guest_store(address, matrix, sizeof matrix);
+    }
+}
+
 static void build_skeleton(void)
 {
     uint32_t actor = recomp_runtime.registers.eax;
     RecompFunction observed = recomp_animation_probe_lookup_manual(BUILD_SKELETON);
     if (observed != NULL) observed();
     else sub_000B01E0();
+    if (actor < ACTOR_COUNT && (pose.hidden & (1u << actor)) != 0u) {
+        lower_bones(actor, HIDE_DEPTH);
+        return;
+    }
     if (!pose.holding || actor != pose.actor || !pose.hips_known) return;
 
     float hips[3];
@@ -227,6 +288,22 @@ bool recomp_actor_pose_focus(float point[3])
 {
     (void)point;
     return false;
+}
+
+bool recomp_actor_pose_facing(float direction[3])
+{
+    (void)direction;
+    return false;
+}
+
+void recomp_actor_pose_choose(uint32_t actor)
+{
+    (void)actor;
+}
+
+void recomp_actor_pose_set_hidden(uint32_t mask)
+{
+    (void)mask;
 }
 
 RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address)

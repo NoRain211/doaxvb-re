@@ -14,6 +14,13 @@ extern "C" {
 void recomp_free_camera_set_source(RecompInputSampleSource source);
 bool recomp_free_camera_sample(uint32_t port, RecompInputGamepad *gamepad);
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address);
+/* Switches the free camera on or off as its toggle does. */
+void recomp_free_camera_set_active(bool active);
+bool recomp_free_camera_active(void);
+/* Turns the camera to the chosen character at its next build. */
+void recomp_free_camera_face_character(void);
+/* Moves the camera close to the chosen character at its next build. */
+void recomp_free_camera_frame_character(void);
 
 #ifdef __cplusplus
 }

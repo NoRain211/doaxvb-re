@@ -1,0 +1,66 @@
+# Model viewer
+
+With **Free camera** ticked in the launcher (`RECOMP_FREE_CAMERA=1`), the
+main menu has a third item, **MODEL VIEWER**, under GO TO ZACK ISLAND and
+EXHIBITION. It leads through Exhibition's own screens: choose the girl and
+her swimsuit as Player 1, then the partner, the opponents and the court as
+usual. When the match has started, the viewer takes it over:
+
+- the free camera comes on in front of Player 1's girl,
+- the scene freezes,
+- the other three players and the on-screen overlay are hidden.
+
+Every free camera control then works as described in
+[`free-camera.md`](free-camera.md): fly around her, step or unfreeze the
+scene, and play another of the scene's animation clips on her. Put the
+free camera away (F1, or Back with the right stick) to leave: the match is
+quit and the game returns to the main menu.
+
+## How it works
+
+`recomp-runtime/viewer_menu_adapter.c` does the menu and the hand-over.
+
+The menu scene runs one screen at a time from the table at `0x2A78B0`,
+32-byte records of seven handlers and a data block; the main menu is screen
+0. Its setup, `0x000F3B30`, creates the list widget at `0x5C57F8` through
+`0x0008D800`, which takes the number of rows, and fills its items: for each
+string number at `0x2A7A90` it appends the text, for the language in
+`0x3A4C45`, from the string table at `0x31F7C8` to the item list at
+`0x5C5860`, counting at `0x5C585C`. The widget draws each item in the game's
+own font and button frames. After the setup the viewer makes the widget
+again with three rows, through the same `0x0008D800`, and fills it with the
+two items and its own, whose text is in a small pool block.
+
+The screen's update, `0x000F3E40`, keeps the cursor in the screen's data
+block at `0x9D9E0C`. Confirming item 0 goes to screen 1 and item 1,
+Exhibition, to screen 2; any other item does nothing. When item 2 is
+confirmed the viewer runs the update as if item 1 were chosen, so the game
+plays its sound and leaves for Exhibition, and the viewer notes that it was
+asked for. The cursor stays on Exhibition, because the menu hands its value
+on as the mode to start; 2 would start a vacation.
+
+The match loads as usual. After it has run 240 frames the viewer chooses the
+first player for the animation controls, hides the other three, turns on
+and frames the free camera, freezes the scene and hides the overlay. A
+character is hidden by moving her skeleton 100 units below the ground after
+it is built (`0x000B01E0`), and at once when hiding starts, since a frozen
+scene builds no skeletons. The camera is placed 2.5 units in front of her
+hips, along the third axis of her hip bone, which points the way she faces.
+
+When the free camera is put away the viewer quits the match the way the
+results menu's Quit does (`0x5D8978` = 3, then `0x4D6FC8` = 1). Quit leads to
+the title, which the viewer moves on to the main menu the way START would,
+as CPU Exhibition does: once the title step has run 60 frames (`0x4D994C`)
+it sets the step's leaving count at `0x4D994A`.
+
+## Verification
+
+Scripted runs on an M-series Mac showed MODEL VIEWER in the main menu in the
+game's own style, under the other two items, and moved the cursor onto it.
+Confirming it led to Exhibition's setup, character select and court select.
+After the match started the viewer showed only Player 1's girl, from the
+front, frozen, with no overlay. Switching the free camera off quit the match
+and the game came back to the main menu.
+
+Not yet verified: a play test, a girl other than the first, every court,
+Windows and Linux builds, and the Japanese language setting.

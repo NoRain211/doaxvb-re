@@ -25,7 +25,13 @@
   2D overlay and . or the right shoulder steps one frame, for screenshots.
   [ and ] or the d-pad's left and right play another of the scene's animation
   clips on a character and hold it, and `\` or the left stick's click picks the
-  character. Off by default. See `docs/free-camera.md`.
+  character.
+- **Model viewer**. With Free camera on, the main menu has a MODEL VIEWER
+  item. It goes through Exhibition's own character and court select; once
+  the match starts, the free camera comes on in front of Player 1's girl,
+  the scene freezes and the other players and the overlay are hidden.
+  Putting the camera away returns to the main menu. See
+  `docs/model-viewer.md`. Off by default. See `docs/free-camera.md`.
 
 ### Changed
 

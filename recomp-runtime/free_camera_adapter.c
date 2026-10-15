@@ -72,6 +72,11 @@ enum {
 static const float STICK_DEADZONE = 0.15f;
 /* At a field of view of one radian. */
 static const float MOUSE_RADIANS_PER_PIXEL = 0.004f;
+/* Framing a character: this far from her hips, raised a little, at this
+   field of view. */
+static const float FRAME_DISTANCE = 2.5f;
+static const float FRAME_LIFT = 0.15f;
+static const float FRAME_FOV = 0.75f;
 /* The free camera steps once per presented frame. */
 static const float FRAME_SECONDS = 1.0f / 60.0f;
 
@@ -81,8 +86,9 @@ static struct {
     bool active, started;
     bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
     bool clip_back_held, clip_next_held, actor_held;
-    /* Face the chosen character at the next camera build. */
-    bool aim_pending;
+    /* Face the chosen character at the next camera build; frame_pending
+       also moves close to her. */
+    bool aim_pending, frame_pending;
     uint32_t slot;
     /* Objects built in the frame being drawn and in the one before it. */
     uint32_t built_frame, built, built_before;
@@ -330,10 +336,26 @@ static void build_camera(void)
             state.stepped_frame = frame;
         }
     }
-    if (fly && state.started && state.aim_pending) {
+    if (fly && state.started && (state.aim_pending || state.frame_pending)) {
         float point[3];
-        if (recomp_actor_pose_focus(point)) recomp_free_camera_look_at(&state.camera, point);
+        if (recomp_actor_pose_focus(point)) {
+            if (state.frame_pending) {
+                float facing[3];
+                point[1] += FRAME_LIFT;
+                if (recomp_actor_pose_facing(facing)) {
+                    /* Stand in front of her: frame from a point ahead of
+                       her hips, so the line of sight runs back to them. */
+                    for (unsigned i = 0u; i < 3u; ++i) {
+                        state.camera.position[i] = point[i] + facing[i] * FRAME_DISTANCE;
+                    }
+                }
+                recomp_free_camera_frame(&state.camera, point, FRAME_DISTANCE, FRAME_FOV);
+            } else {
+                recomp_free_camera_look_at(&state.camera, point);
+            }
+        }
         state.aim_pending = false;
+        state.frame_pending = false;
     }
     if (fly && state.started) {
         float flown[3];
@@ -361,10 +383,47 @@ RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
     if (guest_address == BUILD_CAMERA) return build_camera;
     return recomp_actor_pose_lookup_manual(guest_address);
 }
+void recomp_free_camera_set_active(bool active)
+{
+    if (enabled()) set_active(active);
+}
+
+bool recomp_free_camera_active(void)
+{
+    return state.active;
+}
+
+void recomp_free_camera_face_character(void)
+{
+    state.aim_pending = true;
+}
+
+void recomp_free_camera_frame_character(void)
+{
+    state.frame_pending = true;
+}
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
 {
     (void)guest_address;
     return NULL;
+}
+
+void recomp_free_camera_set_active(bool active)
+{
+    (void)active;
+}
+
+bool recomp_free_camera_active(void)
+{
+    return false;
+}
+
+void recomp_free_camera_face_character(void)
+{
+}
+
+void recomp_free_camera_frame_character(void)
+{
 }
 #endif

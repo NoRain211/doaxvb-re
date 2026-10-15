@@ -81,6 +81,12 @@ int main(void)
         "looking at a point keeps the position and faces it");
     check(!recomp_free_camera_look_at(&camera, origin), "looking at the camera's own position is refused");
 
+    const float far_point[3] = {0.0f, 0.0f, 20.0f};
+    check(recomp_free_camera_begin(&camera, origin, ahead, 0.2f), "begin for framing");
+    check(recomp_free_camera_frame(&camera, far_point, 2.5f, 0.8f), "frame a far point");
+    check(near(camera.position[2], 17.5f) && near(camera.fov, 0.8f) && near(camera.focus, 2.5f),
+        "framing moves to the distance along the line of sight");
+
     RecompFreeCamera untouched = camera;
     check(!recomp_free_camera_begin(&camera, eye, eye, 0.8f), "eye on target is refused");
     check(memcmp(&untouched, &camera, sizeof camera) == 0, "a refused begin leaves the camera");

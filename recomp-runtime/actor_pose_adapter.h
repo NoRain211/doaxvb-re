@@ -12,8 +12,14 @@ extern "C" {
 
 /* Picks the next active character to pose. */
 void recomp_actor_pose_next_actor(void);
+/* Chooses a character to pose by number. */
+void recomp_actor_pose_choose(uint32_t actor);
+/* Characters whose bit is set are moved far below the ground. */
+void recomp_actor_pose_set_hidden(uint32_t mask);
 /* Where the chosen character's hips are, for the camera to face. */
 bool recomp_actor_pose_focus(float point[3]);
+/* The level direction the chosen character's hips face. */
+bool recomp_actor_pose_facing(float direction[3]);
 /* Plays the next (step > 0) or previous clip on the chosen character and
    holds it. True when a clip was requested. */
 bool recomp_actor_pose_step_clip(int step);

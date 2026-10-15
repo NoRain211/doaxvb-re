@@ -20,6 +20,8 @@ void recomp_scene_freeze_step(void);
    the game's own input polling is frozen with it. */
 typedef void (*RecompSceneFreezeFrameHook)(uint32_t frame);
 void recomp_scene_freeze_set_frame_hook(RecompSceneFreezeFrameHook hook);
+/* Called once a frame whether frozen or not, from the scheduler. */
+void recomp_scene_freeze_set_tick_hook(RecompSceneFreezeFrameHook hook);
 /* The fiber adapter's switch hook (recomp_fiber_set_switch_hook). */
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle);
 

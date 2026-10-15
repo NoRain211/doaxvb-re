@@ -10,6 +10,7 @@
 #include "fiber_adapter.h"
 #include "input_adapter.h"
 #include "free_camera_adapter.h"
+#include "viewer_menu_adapter.h"
 #include "scene_freeze_adapter.h"
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
@@ -890,6 +891,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_input_adapter_set_source(recomp_free_camera_sample);
     }
     recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
+    recomp_viewer_install();
 #endif
 #ifndef RECOMP_FULL_PROGRAM
     recomp_imports_reset();

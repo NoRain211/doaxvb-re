@@ -51,8 +51,8 @@ static bool frozen, overlay_hidden;
 static uint32_t turn_draws;
 /* While the swap counter is below this, a frozen scene runs as usual. */
 static uint32_t step_until;
-static RecompSceneFreezeFrameHook frame_hook;
-static uint32_t hooked_frame;
+static RecompSceneFreezeFrameHook frame_hook, tick_hook;
+static uint32_t hooked_frame, ticked_frame;
 
 void recomp_scene_freeze_set(bool freeze)
 {
@@ -92,6 +92,11 @@ void recomp_scene_freeze_set_frame_hook(RecompSceneFreezeFrameHook hook)
     frame_hook = hook;
 }
 
+void recomp_scene_freeze_set_tick_hook(RecompSceneFreezeFrameHook hook)
+{
+    tick_hook = hook;
+}
+
 void recomp_scene_freeze_step(void)
 {
     if (frozen) step_until = recomp_d3d_frame_adapter_swap_counter() + 1u;
@@ -108,6 +113,10 @@ bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     bool holding = frozen && frame >= step_until;
 
+    if (tick_hook != NULL && ticked_frame != frame) {
+        ticked_frame = frame;
+        tick_hook(frame);
+    }
     if (frozen && frame_hook != NULL && hooked_frame != frame) {
         hooked_frame = frame;
         frame_hook(frame);
@@ -149,6 +158,11 @@ bool recomp_scene_freeze_overlay_hidden(void)
 }
 
 void recomp_scene_freeze_set_frame_hook(RecompSceneFreezeFrameHook hook)
+{
+    (void)hook;
+}
+
+void recomp_scene_freeze_set_tick_hook(RecompSceneFreezeFrameHook hook)
 {
     (void)hook;
 }

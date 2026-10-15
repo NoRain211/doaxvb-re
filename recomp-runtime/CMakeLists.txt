@@ -243,6 +243,7 @@ add_executable(recomp_runtime_test
     xapi_time_adapter.cpp
     program_manual.c
     free_camera_adapter.c
+    viewer_menu_adapter.c
     animation_track.c
     animation_track_adapter.c
     animation_probe.c
@@ -562,6 +563,7 @@ if(RECOMP_PROGRAM_DIR)
         scene_freeze_adapter.c
         actor_pose.c
         actor_pose_adapter.c
+        viewer_menu_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c
