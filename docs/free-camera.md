@@ -31,8 +31,7 @@ While the camera flies, a panel at the top left names the chosen character,
 the animation playing on her (the game's own, or the held clip as its place
 in the scene's list) and whether the scene is frozen, and two lines along
 the bottom list the controls: the keyboard's after a key was last used, the
-controller's after a controller was (and from the start on a Steam Deck). On Windows the panel is not drawn
-yet.
+controller's after a controller was (and from the start on a Steam Deck).
 
 Switching the free camera off also unfreezes the scene, hands every
 animation back to the game, and the game carries on where it stopped. Music keeps playing while frozen; the scene's own sounds
@@ -169,6 +168,8 @@ the hips were kept only through the root they drifted to the edge. Choosing
 her with the left stick click, after the second character, turned the
 camera back to her.
 
+The Windows drawer has been built with llvm-mingw but not yet run.
+
 Not yet verified: mouse look, freezing and animation select in a play test,
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
 hotel, the shops, the pool), and Windows and Linux builds.
@@ -176,10 +177,14 @@ hotel, the shops, the pool), and Windows and Linux builds.
 ## The overlay
 
 The panel is plain text in `recomp-runtime/overlay_text.c` (tested by
-`overlay_text_test.c`), which the free camera fills once a frame. On macOS
-and Linux, `overlay_sdl_gpu.cpp` draws it with Dear ImGui's SDL GPU backend
-onto the window after the game's frame is copied there, and never into the
-game's own back buffer, which the game reads back as its front buffer. In a
+`overlay_text_test.c`), which the free camera fills and hands over once a
+frame; a presenter, on Windows on its own thread, takes a copy under a short
+lock. `overlay_imgui_panel.cpp` lays it out in Dear ImGui. On macOS and
+Linux, `overlay_sdl_gpu.cpp` draws it with ImGui's SDL GPU backend onto the
+window after the game's frame is copied there; on Windows,
+`overlay_d3d11.cpp` draws it with ImGui's D3D11 backend into the swap
+chain's back buffer, after the front buffer is copied. Neither draws into a
+buffer the game reads back. In a
 match the character's name is read from the game: character `n` is player
 `n`, whose choice at `0x9DAA68 + n * 0xB8` holds her character number at
 `+1`, and the English names are pointed to from `0x3245BC` by that number.
