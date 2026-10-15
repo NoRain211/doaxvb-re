@@ -72,6 +72,15 @@ int main(void)
     recomp_free_camera_step(&camera, &controls, 0.5f);
     check(camera.fov < before, "zooming in narrows the field of view");
 
+    const float origin[3] = {0.0f, 0.0f, 0.0f};
+    const float to_left[3] = {5.0f, 0.0f, 0.0f};
+    check(recomp_free_camera_begin(&camera, origin, ahead, 0.8f), "begin at the origin");
+    check(recomp_free_camera_look_at(&camera, to_left), "look at a point");
+    recomp_free_camera_target(&camera, target);
+    check(near(camera.position[0], 0.0f) && target[0] > 9.9f && fabsf(target[2]) < 1e-3f,
+        "looking at a point keeps the position and faces it");
+    check(!recomp_free_camera_look_at(&camera, origin), "looking at the camera's own position is refused");
+
     RecompFreeCamera untouched = camera;
     check(!recomp_free_camera_begin(&camera, eye, eye, 0.8f), "eye on target is refused");
     check(memcmp(&untouched, &camera, sizeof camera) == 0, "a refused begin leaves the camera");

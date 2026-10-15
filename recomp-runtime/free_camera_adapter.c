@@ -38,7 +38,7 @@
 
    [ and ] or the d-pad's left and right play the previous or next animation
    clip on a character and hold it (actor_pose_adapter.c); \ or the left
-   stick's click picks the next character. Changing the clip of a frozen scene
+   stick's click picks the next character and turns the camera to face her. Changing the clip of a frozen scene
    steps it one frame so the new pose shows. Putting the camera away hands
    the animation back to the game. */
 enum {
@@ -81,6 +81,8 @@ static struct {
     bool active, started;
     bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
     bool clip_back_held, clip_next_held, actor_held;
+    /* Face the chosen character at the next camera build. */
+    bool aim_pending;
     uint32_t slot;
     /* Objects built in the frame being drawn and in the one before it. */
     uint32_t built_frame, built, built_before;
@@ -175,7 +177,10 @@ static bool take_sample(const RecompInputGamepad *gamepad)
 
     bool actor = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_BACKSLASH) ||
         (gamepad->buttons & XBOX_LEFT_THUMB) != 0u);
-    if (actor && !state.actor_held) recomp_actor_pose_next_actor();
+    if (actor && !state.actor_held) {
+        recomp_actor_pose_next_actor();
+        state.aim_pending = true;
+    }
     state.actor_held = actor;
 
     if (state.active || toggle) state.pad = *gamepad;
@@ -325,6 +330,11 @@ static void build_camera(void)
             state.stepped_frame = frame;
         }
     }
+    if (fly && state.started && state.aim_pending) {
+        float point[3];
+        if (recomp_actor_pose_focus(point)) recomp_free_camera_look_at(&state.camera, point);
+        state.aim_pending = false;
+    }
     if (fly && state.started) {
         float flown[3];
         recomp_free_camera_target(&state.camera, flown);
@@ -347,8 +357,9 @@ static void build_camera(void)
 
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
 {
-    if (guest_address == BUILD_CAMERA && enabled()) return build_camera;
-    return NULL;
+    if (!enabled()) return NULL;
+    if (guest_address == BUILD_CAMERA) return build_camera;
+    return recomp_actor_pose_lookup_manual(guest_address);
 }
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)

@@ -23,7 +23,7 @@ you freeze it.
 | Hide / show the overlay while frozen | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
 | Previous / next animation | [ / ] | D-pad left / right |
-| Next character to animate | `\` (backslash) | Left stick click |
+| Next character to animate (the camera turns to her) | `\` (backslash) | Left stick click |
 
 Switching the free camera off also unfreezes the scene, hands every
 animation back to the game, and the game carries on where it stopped. Music keeps playing while frozen; the scene's own sounds
@@ -110,8 +110,18 @@ the chosen character and the shared ones (the plain model in
 same way the game does. It then holds it: a clip the game's own logic starts
 in its place is replaced again. A clip carries its own root position, so the
 character's position at `+8` of its root block, `0x4D6FF0 + n * 0xBC`, is put
-back each frame while a clip is held. Some clips still offset the body from
-that position; fly the camera to the character if she leaves the view.
+back each frame while a clip is held. Many clips also move the body away from
+the root, so the adapter wraps the skeleton build at `0x000B01E0` as well.
+It writes 32 row-vector world matrices of 64 bytes at `0x4D3650 + n * 0x800`,
+the first being the hips. After a held character's skeleton is built, every
+bone is moved across the ground so the hips stay where they stood when the
+hold began; height is left alone, so sitting and standing clips keep their
+own. The character's shadow is not moved with her and can sit apart.
+
+Choosing a character turns the free camera to face her hips. A scene can
+have active characters that are not shown, such as the second one in the
+demo's first scene; choosing one of those turns the camera to wherever the
+game keeps her.
 
 Only clips the scene loaded can be chosen: 45 for the girl in the demo's
 first scene, including 3 shared ones. The clips have no names, only numbers,
@@ -145,6 +155,10 @@ Animation select was checked in the demo's first scene: each press of the
 d-pad started a different clip on the girl (bending, walking, standing,
 resting a hand on her knee) and the scene's script did not take it back.
 With the scene frozen, a press changed her pose once and it then held.
+Across four clips her hips stayed in the middle of the view, where before
+the hips were kept only through the root they drifted to the edge. Choosing
+her with the left stick click, after the second character, turned the
+camera back to her.
 
 Not yet verified: mouse look, freezing and animation select in a play test,
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the

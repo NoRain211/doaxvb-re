@@ -48,6 +48,9 @@ bool recomp_free_camera_begin(RecompFreeCamera *camera,
     const float eye[3], const float target[3], float fov);
 void recomp_free_camera_step(RecompFreeCamera *camera,
     const RecompFreeCameraControls *controls, float seconds);
+/* Turns the camera to face a point, keeping its position. False leaves it
+   untouched when the point is the camera's position or not finite. */
+bool recomp_free_camera_look_at(RecompFreeCamera *camera, const float point[3]);
 /* The point the camera looks at, focus units ahead of the position. */
 void recomp_free_camera_target(const RecompFreeCamera *camera, float target[3]);
 

@@ -5,6 +5,7 @@
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "runtime.h"
+#include "animation_probe.h"
 
 /* Animation select: plays a chosen clip on a character and holds it.
 
@@ -23,7 +24,15 @@
    character. The character's root block at 0x4D6FF0 + n * 0xBC holds its
    position at +8; it is put back each frame while a clip is held, after the
    game's animation update and before the frame is drawn. While held, a clip
-   the game's own logic starts in its place is replaced again. */
+   the game's own logic starts in its place is replaced again.
+
+   The root block does not hold everything: many clips also move the body
+   away from the root. 0x000B01E0 builds a character's 32 bone matrices from
+   the sampled clip, row-vector world matrices of 64 bytes at
+   0x4D3650 + n * 0x800 with the translation in floats 12 to 14. After it
+   builds a held character, every bone is moved across the ground so the first
+   bone, the hips, stays where it stood when the hold began. Height is left
+   alone, so sitting and standing clips keep their own. */
 enum {
     ACTOR_COUNT = 4u,
     ACTOR_ACTIVE = 0x004D6FD0u,
@@ -40,13 +49,23 @@ enum {
     ROOT_FIRST = 0x004D6FF0u,
     ROOT_STRIDE = 0xBCu,
     ROOT_POSITION = 0x08u,
+    BUILD_SKELETON = 0x000B01E0u,
+    BONE_FIRST = 0x004D3650u,
+    BONE_STRIDE = 0x800u,
+    BONE_COUNT = 32u,
+    BONE_SIZE = 64u,
 };
+
+void sub_000B01E0(void);
 
 static struct {
     uint32_t actor;
     bool holding;
     uint16_t clip;
     float position[3];
+    /* The hips' place on the ground when the hold began. */
+    float hips[2];
+    bool hips_known;
 } pose;
 
 static bool active(uint32_t actor)
@@ -62,6 +81,46 @@ static uint32_t layer_of(uint32_t actor)
 static uint32_t root_of(uint32_t actor)
 {
     return ROOT_FIRST + actor * ROOT_STRIDE;
+}
+
+static uint32_t bone_of(uint32_t actor, uint32_t bone)
+{
+    return BONE_FIRST + actor * BONE_STRIDE + bone * BONE_SIZE;
+}
+
+bool recomp_actor_pose_focus(float point[3])
+{
+    if (!active(pose.actor)) recomp_actor_pose_next_actor();
+    if (!active(pose.actor)) return false;
+    recomp_guest_load(point, bone_of(pose.actor, 0u) + 12u * sizeof(float), 3u * sizeof(float));
+    return true;
+}
+
+static void build_skeleton(void)
+{
+    uint32_t actor = recomp_runtime.registers.eax;
+    RecompFunction observed = recomp_animation_probe_lookup_manual(BUILD_SKELETON);
+    if (observed != NULL) observed();
+    else sub_000B01E0();
+    if (!pose.holding || actor != pose.actor || !pose.hips_known) return;
+
+    float hips[3];
+    recomp_guest_load(hips, bone_of(actor, 0u) + 12u * sizeof(float), sizeof hips);
+    float dx = pose.hips[0] - hips[0], dz = pose.hips[1] - hips[2];
+    for (uint32_t bone = 0u; bone < BONE_COUNT; ++bone) {
+        float matrix[16];
+        uint32_t address = bone_of(actor, bone);
+        recomp_guest_load(matrix, address, sizeof matrix);
+        if (matrix[15] == 0.0f) continue;
+        matrix[12] += dx;
+        matrix[14] += dz;
+        recomp_guest_store(address, matrix, sizeof matrix);
+    }
+}
+
+RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address)
+{
+    return guest_address == BUILD_SKELETON ? build_skeleton : NULL;
 }
 
 static bool load_bank(uint32_t entry, uint32_t *bank, uint32_t entries[RECOMP_ACTOR_POSE_BANK_SIZE])
@@ -112,7 +171,12 @@ bool recomp_actor_pose_step_clip(int step)
     uint32_t position;
     if (!recomp_actor_pose_next(&clips, current, step, &next, &position)) return false;
     if (!pose.holding) {
+        float hips[3];
         recomp_guest_load(pose.position, root_of(pose.actor) + ROOT_POSITION, sizeof pose.position);
+        recomp_guest_load(hips, bone_of(pose.actor, 0u) + 12u * sizeof(float), sizeof hips);
+        pose.hips[0] = hips[0];
+        pose.hips[1] = hips[2];
+        pose.hips_known = true;
         pose.holding = true;
     }
     pose.clip = next;
@@ -157,5 +221,17 @@ void recomp_actor_pose_release(void)
 
 void recomp_actor_pose_frame(void)
 {
+}
+
+bool recomp_actor_pose_focus(float point[3])
+{
+    (void)point;
+    return false;
+}
+
+RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address)
+{
+    (void)guest_address;
+    return NULL;
 }
 #endif

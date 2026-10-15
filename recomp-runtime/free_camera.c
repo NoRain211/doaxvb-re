@@ -100,6 +100,25 @@ void recomp_free_camera_step(RecompFreeCamera *camera,
     }
 }
 
+bool recomp_free_camera_look_at(RecompFreeCamera *camera, const float point[3])
+{
+    float view[AXES];
+    float squared = 0.0f;
+
+    if (camera == NULL || point == NULL) return false;
+    for (unsigned i = 0u; i < AXES; ++i) {
+        if (!isfinite(point[i])) return false;
+        view[i] = point[i] - camera->position[i];
+        squared += view[i] * view[i];
+    }
+    if (!(squared > 0.0f) || !isfinite(squared)) return false;
+    float distance = sqrtf(squared);
+    camera->heading = atan2f(view[0], view[2]);
+    camera->pitch = clampf(asinf(clampf(view[1] / distance, -1.0f, 1.0f)),
+        -PITCH_LIMIT, PITCH_LIMIT);
+    return true;
+}
+
 void recomp_free_camera_target(const RecompFreeCamera *camera, float target[3])
 {
     float forward[AXES];
