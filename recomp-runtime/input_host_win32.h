@@ -44,6 +44,9 @@ typedef enum RecompInputHostKey {
 
 /* False while the game window does not have the keyboard. */
 bool recomp_input_host_key(RecompInputHostKey key);
+/* True while the right mouse button is held over the game, with the pointer's
+   motion in pixels since the last call; zero on the call that starts a drag. */
+bool recomp_input_host_mouse_drag(float *dx, float *dy);
 
 #ifdef __cplusplus
 }

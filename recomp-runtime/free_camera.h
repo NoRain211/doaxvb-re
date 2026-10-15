@@ -31,6 +31,8 @@ typedef struct RecompFreeCameraControls {
     float move[3];
     /* Heading (positive turns right) and pitch (positive looks up). */
     float look[2];
+    /* Radians to turn at once, in the same senses as look: a mouse drag. */
+    float turn[2];
     /* Positive narrows the field of view. */
     float zoom;
     bool fast, slow;

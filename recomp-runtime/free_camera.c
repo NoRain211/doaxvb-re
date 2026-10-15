@@ -75,9 +75,11 @@ void recomp_free_camera_step(RecompFreeCamera *camera,
 
     /* A narrow field of view turns slower so aiming stays steady. */
     float turn = TURN_RATE * seconds * (camera->fov / 1.0f);
-    camera->heading -= clampf(controls->look[0], -1.0f, 1.0f) * turn;
+    camera->heading -= clampf(controls->look[0], -1.0f, 1.0f) * turn +
+        (isfinite(controls->turn[0]) ? controls->turn[0] : 0.0f);
     camera->heading = remainderf(camera->heading, 2.0f * PI);
-    camera->pitch = clampf(camera->pitch + clampf(controls->look[1], -1.0f, 1.0f) * turn,
+    camera->pitch = clampf(camera->pitch + clampf(controls->look[1], -1.0f, 1.0f) * turn +
+        (isfinite(controls->turn[1]) ? controls->turn[1] : 0.0f),
         -PITCH_LIMIT, PITCH_LIMIT);
     camera->fov = clampf(
         camera->fov * expf(-clampf(controls->zoom, -1.0f, 1.0f) * ZOOM_RATE * seconds),

@@ -14,7 +14,7 @@ you freeze it.
 |---|---|---|
 | Move | W A S D | Left stick |
 | Down / up | Q / E | Left / right trigger |
-| Look | Arrow keys | Right stick |
+| Look | Arrow keys, or drag with the right mouse button | Right stick |
 | Zoom in / out | Z / X | D-pad up / down |
 | Faster / slower | Shift / Ctrl (held) | A / B (held) |
 | Back to the game's view | R | Y |
@@ -113,7 +113,7 @@ mid-air while the camera flew around them. A frame step changed the frozen
 picture once and it then held again. Start unfroze the match and it went on.
 On the title screen, a 2D scene with no camera, Start froze and unfroze it.
 
-Not yet verified: freezing in a play test, physical controller flight,
+Not yet verified: mouse look, freezing in a play test, physical controller flight,
 scenes beyond the demo, the island map and Exhibition matches (the hotel,
 the shops, the pool), and Windows and Linux builds.
 

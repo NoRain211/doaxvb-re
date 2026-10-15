@@ -60,6 +60,8 @@ enum {
 };
 
 static const float STICK_DEADZONE = 0.15f;
+/* At a field of view of one radian. */
+static const float MOUSE_RADIANS_PER_PIXEL = 0.004f;
 /* The free camera steps once per presented frame. */
 static const float FRAME_SECONDS = 1.0f / 60.0f;
 
@@ -211,6 +213,12 @@ static void read_controls(RecompFreeCameraControls *controls)
     controls->zoom = ((pad->buttons & XBOX_DPAD_UP) ? 1.0f : 0.0f) -
         ((pad->buttons & XBOX_DPAD_DOWN) ? 1.0f : 0.0f) +
         key(RECOMP_INPUT_HOST_KEY_Z, RECOMP_INPUT_HOST_KEY_X);
+    /* Dragging with the right mouse button aims; a narrow view aims finer. */
+    float drag_x, drag_y;
+    if (recomp_input_host_mouse_drag(&drag_x, &drag_y)) {
+        controls->turn[0] = drag_x * MOUSE_RADIANS_PER_PIXEL * state.camera.fov;
+        controls->turn[1] = -drag_y * MOUSE_RADIANS_PER_PIXEL * state.camera.fov;
+    }
     controls->fast = analog(pad, ANALOG_A) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_SHIFT);
     controls->slow = analog(pad, ANALOG_B) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_CONTROL);
 

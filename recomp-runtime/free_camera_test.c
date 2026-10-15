@@ -53,6 +53,15 @@ int main(void)
     check(target[0] < camera.position[0], "looking right turns toward -X, the right-hand side");
 
     memset(&controls, 0, sizeof controls);
+    float heading = camera.heading;
+    controls.turn[0] = 0.25f;
+    recomp_free_camera_step(&camera, &controls, 0.1f);
+    check(near(camera.heading, heading - 0.25f), "a turn applies its radians at once");
+    controls.turn[0] = NAN;
+    recomp_free_camera_step(&camera, &controls, 0.1f);
+    check(near(camera.heading, heading - 0.25f), "a non-finite turn is ignored");
+
+    memset(&controls, 0, sizeof controls);
     controls.look[1] = 1.0f;
     for (int i = 0; i < 200; ++i) recomp_free_camera_step(&camera, &controls, 0.1f);
     check(camera.pitch < 1.5708f && camera.pitch > 1.5f, "pitch stops short of straight up");

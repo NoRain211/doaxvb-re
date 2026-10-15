@@ -297,3 +297,31 @@ bool recomp_input_host_key(RecompInputHostKey key)
     }
     return false;
 }
+
+bool recomp_input_host_mouse_drag(float *dx, float *dy)
+{
+    static bool dragging;
+    static float last_x, last_y;
+    float x = 0.0f, y = 0.0f;
+    bool held = false;
+
+    *dx = *dy = 0.0f;
+    if (focused()) {
+#ifdef _WIN32
+        POINT point;
+        held = pressed(VK_RBUTTON) && GetCursorPos(&point);
+        x = (float)point.x;
+        y = (float)point.y;
+#else
+        held = (SDL_GetMouseState(&x, &y) & SDL_BUTTON_RMASK) != 0u;
+#endif
+    }
+    if (held && dragging) {
+        *dx = x - last_x;
+        *dy = y - last_y;
+    }
+    dragging = held;
+    last_x = x;
+    last_y = y;
+    return held;
+}
