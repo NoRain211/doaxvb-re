@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "input_model.h"
 #include "runtime.h"
 
 #ifdef __cplusplus
@@ -17,6 +18,9 @@ bool recomp_viewer_menu_requested(void);
 void recomp_viewer_menu_clear(void);
 /* Hooks the viewer's once-a-frame work in; the runner calls it at start. */
 void recomp_viewer_install(void);
+/* Port 0's input on its way to the game: the viewer confirms the other
+   players' picks in character select by itself. */
+void recomp_viewer_input(RecompInputGamepad *gamepad);
 
 #ifdef __cplusplus
 }

@@ -32,6 +32,15 @@
    value on as the mode to start, and 2 would start a vacation. Exhibition's
    own screens choose the girl, her swimsuit, the other players and the court.
 
+   Only Player 1's pick matters to the viewer, so once it is made the viewer
+   confirms the rest itself: character select keeps the pick under way in its
+   data block at 0x9DAA48, +0 the pick (0 to 3) and +8 the step within it, 4
+   once the court is being chosen. While the menu is on character select
+   (screen 4), past the first pick and short of the court, the viewer presses
+   A on port 0 every AUTO_PICK_POLLS polls, so the game accepts the girl,
+   swimsuit and attitude it offers for the partner and both opponents. The
+   court is left to the player.
+
    The match then loads as usual. Once it has run for SETTLE_FRAMES the
    viewer takes it over: the free camera comes on close to the first player,
    the scene freezes, and the other three players are hidden. Putting the
@@ -82,6 +91,14 @@ enum {
     RESULTS_QUIT = 3,
     MATCH_OVER = 0x004D6FC8u,
     SETTLE_FRAMES = 240,
+    MENU_SCREEN = 0x009D9D80u,
+    SCREEN_CHARACTER_SELECT = 4,
+    PICKS = 0x009DAA48u,
+    PICK_NUMBER = 0x0u,
+    PICK_STEP = 0x8u,
+    PICK_STEP_COURT = 4,
+    AUTO_PICK_POLLS = 12,
+    ANALOG_A = 0,
     SCENE_MENU = 3,
     SCENE_TITLE = 4,
     STEP_FRAMES = 0x004D994Cu,
@@ -278,6 +295,20 @@ void recomp_viewer_install(void)
     if (viewer_enabled()) recomp_scene_freeze_set_tick_hook(viewer_tick);
 }
 
+void recomp_viewer_input(RecompInputGamepad *gamepad)
+{
+    static uint32_t polls;
+    if (gamepad == NULL || session != VIEWER_WAITING ||
+        *recomp_memory(SCENE, 1u) != SCENE_MENU ||
+        *recomp_memory(MENU_SCREEN, 1u) != SCREEN_CHARACTER_SELECT ||
+        *recomp_memory(PICKS + PICK_NUMBER, 1u) == 0u ||
+        *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT) {
+        polls = 0u;
+        return;
+    }
+    if (++polls % AUTO_PICK_POLLS == 0u) gamepad->analog_buttons[ANALOG_A] = 0xFFu;
+}
+
 RecompFunction recomp_viewer_menu_lookup_manual(uint32_t guest_address)
 {
     if (!viewer_enabled()) return NULL;
@@ -305,5 +336,10 @@ void recomp_viewer_menu_clear(void)
 
 void recomp_viewer_install(void)
 {
+}
+
+void recomp_viewer_input(RecompInputGamepad *gamepad)
+{
+    (void)gamepad;
 }
 #endif

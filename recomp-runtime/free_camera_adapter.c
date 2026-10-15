@@ -3,6 +3,7 @@
 #include "input_host_win32.h"
 #include "scene_freeze_adapter.h"
 #include "actor_pose_adapter.h"
+#include "viewer_menu_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -202,6 +203,7 @@ bool recomp_free_camera_sample(uint32_t port, RecompInputGamepad *gamepad)
     if (state.source != NULL) present = state.source(port, gamepad);
     if (port != 0u || !enabled()) return present;
     if (take_sample(gamepad)) memset(gamepad, 0, sizeof *gamepad);
+    else recomp_viewer_input(gamepad);
     return present;
 }
 

@@ -3,8 +3,9 @@
 With **Free camera** ticked in the launcher (`RECOMP_FREE_CAMERA=1`), the
 main menu has a third item, **MODEL VIEWER**, under GO TO ZACK ISLAND and
 EXHIBITION. It leads through Exhibition's own screens: choose the girl and
-her swimsuit as Player 1, then the partner, the opponents and the court as
-usual. When the match has started, the viewer takes it over:
+her swimsuit as Player 1, and the viewer accepts the partner and opponents
+the game offers by itself, then choose the court. When the match has
+started, the viewer takes it over:
 
 - the free camera comes on in front of Player 1's girl,
 - the scene freezes,
@@ -39,6 +40,14 @@ plays its sound and leaves for Exhibition, and the viewer notes that it was
 asked for. The cursor stays on Exhibition, because the menu hands its value
 on as the mode to start; 2 would start a vacation.
 
+Only Player 1's pick matters to the viewer. Character select keeps the pick
+under way in its data block at `0x9DAA48`: `+0` the pick (0 to 3, Player 1
+first) and `+8` the step within it (girl, swimsuit, attitude), 4 once the
+court is being chosen. While the menu is on character select (screen 4, in
+`0x9D9D80`), past the first pick and short of the court, the viewer presses
+A on the first controller every 12 polls, so the game accepts the girl,
+swimsuit and attitude it offers for the partner and both opponents.
+
 The match loads as usual. After it has run 240 frames the viewer chooses the
 first player for the animation controls, hides the other three, turns on
 and frames the free camera, freezes the scene and hides the overlay. A
@@ -57,7 +66,9 @@ it sets the step's leaving count at `0x4D994A`.
 
 Scripted runs on an M-series Mac showed MODEL VIEWER in the main menu in the
 game's own style, under the other two items, and moved the cursor onto it.
-Confirming it led to Exhibition's setup, character select and court select.
+Confirming it led to Exhibition's setup and character select; after Player
+1's girl (the third one) and swimsuit were picked, the other three picks were
+made by themselves and court select came up.
 After the match started the viewer showed only Player 1's girl, from the
 front, frozen, with no overlay. Switching the free camera off quit the match
 and the game came back to the main menu.
