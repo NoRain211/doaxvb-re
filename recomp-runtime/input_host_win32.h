@@ -20,6 +20,7 @@ void recomp_input_host_stop_vibration(void);
 /* Keys the runtime reads for itself rather than handing to the game. */
 typedef enum RecompInputHostKey {
     RECOMP_INPUT_HOST_KEY_F1,
+    RECOMP_INPUT_HOST_KEY_F12,
     RECOMP_INPUT_HOST_KEY_W,
     RECOMP_INPUT_HOST_KEY_A,
     RECOMP_INPUT_HOST_KEY_S,

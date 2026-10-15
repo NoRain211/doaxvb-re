@@ -3,6 +3,7 @@
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 #include "overlay_d3d11.h"
+#include "screenshot.h"
 #include "texture_replacement.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -838,6 +839,34 @@ void releaseGraphics(RecompD3dPresenter *presenter)
 }
 
 void flushFrameDumps(RecompD3dPresenter *presenter);
+
+// Saves the window's back buffer, before the overlay is drawn on it, through
+// a CPU-readable copy. Only a requested screenshot pays for the wait.
+void saveScreenshot(RecompD3dPresenter *presenter)
+{
+    ID3D11Texture2D *back_buffer = nullptr;
+    presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+    if (back_buffer == nullptr) return;
+    D3D11_TEXTURE2D_DESC desc{};
+    back_buffer->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0u;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0u;
+    ID3D11Texture2D *staging = nullptr;
+    if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && desc.SampleDesc.Count == 1u &&
+        SUCCEEDED(presenter->device->CreateTexture2D(&desc, nullptr, &staging))) {
+        presenter->context->CopyResource(staging, back_buffer);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(presenter->context->Map(staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
+            recomp_screenshot_save(static_cast<const uint8_t *>(mapped.pData),
+                desc.Width, desc.Height, mapped.RowPitch);
+            presenter->context->Unmap(staging, 0u);
+        }
+    }
+    releaseCom(staging);
+    releaseCom(back_buffer);
+}
 
 void releasePresenter(RecompD3dPresenter *presenter)
 {
@@ -3790,6 +3819,7 @@ RecompD3dPresenterError submitPresent(
         context->ClearState();
     }
     {
+        if (recomp_screenshot_take_request()) saveScreenshot(presenter);
         // The runtime's overlay text goes on the window's back buffer, after
         // the front buffer the game reads back has been copied.
         RecompOverlayText overlay;

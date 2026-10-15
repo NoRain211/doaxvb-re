@@ -25,6 +25,7 @@ you freeze it.
 | Clean view: hide the panel and the game's overlay (the latter while frozen) | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
 | Previous / next animation | [ / ] | D-pad left / right |
+| Screenshot (anywhere; the controller while flying) | F12 | Back + A |
 | Next character to animate (the camera turns to her) | `\` (backslash) | Left stick click |
 
 While the camera flies, a panel at the top left names the chosen character,
@@ -191,6 +192,18 @@ buffer the game reads back. In a
 match the character's name is read from the game: character `n` is player
 `n`, whose choice at `0x9DAA68 + n * 0xB8` holds her character number at
 `+1`, and the English names are pointed to from `0x3245BC` by that number.
+
+## Screenshots
+
+F12 saves the game's frame, without the runtime's panel, as a PNG in
+`Pictures/DOAXBV` in your home folder, or in `RECOMP_SCREENSHOT_DIR` when it
+is set; the log names the file. H first hides the game's own overlay too.
+The presenter takes the request when it presents: the SDL GPU one downloads
+the frame it rendered, and the D3D11 one copies the window's back buffer
+before the panel is drawn on it. `recomp-runtime/screenshot.c` writes the
+PNG itself, uncompressed, so no image library is needed (tested by
+`screenshot_test.c`). A 720p screenshot is about 2.7 MB. The Windows path
+is built but not yet run.
 
 ## Debugging
 

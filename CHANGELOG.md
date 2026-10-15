@@ -33,6 +33,8 @@
   the scene freezes and the other players and the overlay are hidden.
   Putting the camera away returns to the main menu. See
   `docs/model-viewer.md`.
+- **Screenshots**. With Free camera on, F12 (or Back + A while flying) saves
+  the game's frame, without the overlay panel, as a PNG in Pictures/DOAXBV.
 - **Overlay panel**. While the free camera flies, a small panel drawn with
   Dear ImGui (D3D11 on Windows, SDL GPU elsewhere) names the chosen character, shows her
   animation and freeze state and lists the controls; H hides it with the

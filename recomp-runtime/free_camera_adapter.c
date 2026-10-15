@@ -5,6 +5,7 @@
 #include "actor_pose_adapter.h"
 #include "viewer_menu_adapter.h"
 #include "overlay_text.h"
+#include "screenshot.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,7 +88,7 @@ static struct {
     RecompInputSampleSource source;
     bool active, started;
     bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
-    bool clip_back_held, clip_next_held, actor_held;
+    bool clip_back_held, clip_next_held, actor_held, shot_held;
     /* Face the chosen character at the next camera build; frame_pending
        also moves close to her. */
     bool aim_pending, frame_pending;
@@ -190,6 +191,13 @@ static bool take_sample(const RecompInputGamepad *gamepad)
         ((gamepad->buttons & XBOX_BACK) != 0u && (gamepad->buttons & XBOX_RIGHT_THUMB) != 0u);
     if (toggle && !state.toggle_held) set_active(!state.active);
     state.toggle_held = toggle;
+
+    /* F12 saves a screenshot anywhere, Back with A while flying. */
+    bool shot = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_F12) ||
+        (state.active && (gamepad->buttons & XBOX_BACK) != 0u &&
+         gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED);
+    if (shot && !state.shot_held) recomp_screenshot_request();
+    state.shot_held = shot;
 
     /* P pauses anywhere, flying or not; Start only while flying, since the
        game has its own use for it. The game's keyboard bindings leave P, H
@@ -466,7 +474,7 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         recomp_overlay_set_title(text, "PAUSED");
         recomp_overlay_set_hint(text, state.controller_hints > 0
             ? "P resume   Back + R3 free camera"
-            : "P resume   . step   H clean view   F1 free camera");
+            : "P resume   . step   H clean view   F12 screenshot   F1 free camera");
         return;
     }
 
@@ -487,15 +495,15 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
     if (state.controller_hints > 0) {
         recomp_overlay_set_hint(text, viewer
-            ? "Back + R3 leave   Start freeze   RB step   LB clean view\n"
+            ? "Back + R3 leave   Start freeze   RB step   LB clean view   Back + A screenshot\n"
               "Left stick move   LT RT down/up   Right stick look   D-pad left/right animation   L3 next girl"
-            : "Back + R3 off   Start freeze   RB step   LB clean view\n"
+            : "Back + R3 off   Start freeze   RB step   LB clean view   Back + A screenshot\n"
               "Left stick move   LT RT down/up   Right stick look   D-pad left/right animation   L3 next girl");
     } else {
         recomp_overlay_set_hint(text, viewer
-            ? "F1 leave   P freeze   . step   H clean view\n"
+            ? "F1 leave   P freeze   . step   H clean view   F12 screenshot\n"
               "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl"
-            : "F1 off   P freeze   . step   H clean view\n"
+            : "F1 off   P freeze   . step   H clean view   F12 screenshot\n"
               "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl");
     }
 }
