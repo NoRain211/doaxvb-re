@@ -311,7 +311,7 @@ bool recomp_input_host_mouse_drag(float *dx, float *dy)
     *dx = *dy = 0.0f;
     if (focused()) {
 #ifdef _WIN32
-        POINT point;
+        POINT point = {0, 0};
         held = pressed(VK_RBUTTON) && GetCursorPos(&point);
         x = (float)point.x;
         y = (float)point.y;
