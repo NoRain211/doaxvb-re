@@ -395,25 +395,21 @@ float sunVisibility(float3 p) {
     float2 dz = float2(ddx(q.z), ddy(q.z));
     float2 footprint = abs(dx) + abs(dy);
     if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
+    // One kernel at every distance: taps stay within two texels of each other so a
+    // thin distant line cannot fall between them, and near shadows stay sharp.
+    float2 spacing = clamp(footprint/5, 0.6*sun_texel, 2*sun_texel);
+    float determinant = dx.x*dy.y-dx.y*dy.x;
+    float2 slope = abs(determinant) > 1e-12 ?
+        float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
+    // Each tap blends neighbouring texels, so sloped ground needs one texel of slope as bias.
+    float bias = 0.0002 + dot(abs(slope), sun_texel);
     float visibility = 0;
-    if (max(footprint.x, footprint.y) > 3*sun_texel) {
-        // Average a minified shadow over the pixel so thin distant lines do not shimmer.
-        float2 width = clamp(footprint, 3*sun_texel, 16*sun_texel);
-        float determinant = dx.x*dy.y-dx.y*dy.x;
-        float2 slope = abs(determinant) > 1e-12 ?
-            float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
-        [unroll] for (int y=0; y<4; ++y)
-            [unroll] for (int x=0; x<4; ++x) {
-                float2 offset = (float2(x,y)-1.5)*width/4;
-                visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+offset,q.z+dot(slope,offset)-0.0002);
-            }
-        visibility /= 16;
-    } else {
-        [unroll] for (int y=-1; y<=1; ++y)
-            [unroll] for (int x=-1; x<=1; ++x)
-                visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)*sun_texel,q.z-0.0002);
-        visibility /= 9;
-    }
+    [unroll] for (int y=0; y<5; ++y)
+        [unroll] for (int x=0; x<5; ++x) {
+            float2 offset = (float2(x,y)-2)*spacing;
+            visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+offset,q.z+dot(slope,offset)-bias);
+        }
+    visibility /= 25;
     // Fade over the outer tenth of the box so shadows do not cut off at its edge.
     return lerp(1, visibility, saturate((1-max(abs(q.x),abs(q.y)))*10));
 }
