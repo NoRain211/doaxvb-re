@@ -29,18 +29,21 @@ because many stages light the sand with a separate rig or mostly baked light.
 When the game drew no shadow last frame (hotel, menus), nothing receives.
 The caster pass records rigid models in draw order; the visible pass reads
 that flag by its own draw count. Casters retain the opaque host-lit skinned
-and compact rigid draws, and add textured posts, palms and net geometry,
+and compact rigid draws, and add textured posts, palms and the net tape and rope,
 including unlit draws and vertex colors. Narrow opaque props have at most
 eight units of horizontal extent and at most one unit across their narrower
 horizontal axis. Upright cutouts can span 128 units to accommodate batched
 trees; opaque cutouts require a GREATER/GREATER_EQUAL alpha reference of at
 least 128. Their height must be at least 5% of horizontal extent, or 10% for
 SRC_ALPHA/INV_SRC_ALPHA blended cutouts. This rejects flat ground and shadow
-overlays, broad opaque rocks, sea and sky. These are geometry/state limits,
+overlays, broad opaque rocks, sea and sky. Blended sheets thinner than 2% of
+their width and wider than twice their height, such as the net mesh, do not
+cast: their wires are finer than a map texel and reach the sand as a smear.
+These are geometry/state limits,
 not an object identity classifier.
 
 The caster pass samples base-mip texture alpha independently of material or
-vertex alpha, so mip averages do not erase thin net wires. Opaque cutouts keep the game's alpha comparison and reference;
+vertex alpha, so mip averages do not erase thin leaf edges. Opaque cutouts keep the game's alpha comparison and reference;
 blended cutouts use GREATER 127 and write map depth even when the visible draw
 does not write depth. Render-target textures and additive effects are excluded
 from the added props. The fixed map fit does not expand for larger casters.
@@ -68,12 +71,8 @@ shadows stay. `RECOMP_D3D_SUN_DIR="x,y,z"` overrides the map's **light
 travel** direction, normalized on input; invalid, zero and nonfinite values are
 ignored. It does not move the sky sun or change the game's light rig.
 
-Nine comparison-filtered samples provide shadow visibility near the camera.
-When a screen pixel covers more than three shadow texels, a 4x4 filter covers
-its footprint (capped at sixteen texels) so fine net wires do not pulse as the
-camera moves. Receiver-plane depth correction keeps that wider filter from
-shadowing sloped ground. Visibility scales the receiver's lit vertex color
-before material/texture processing and fog. While the shadow map is valid, the game's projected shadow for characters and
+Nine comparison-filtered samples provide shadow visibility, which scales the
+receiver's lit vertex color before material/texture processing and fog. While the shadow map is valid, the game's projected shadow for characters and
 the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
 lighting off, black texture factor with any alpha, stencil EQUAL 1 then ZERO,
 depth writes off and SRC_ALPHA blending. It still draws with color writes off,

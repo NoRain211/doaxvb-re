@@ -247,9 +247,12 @@ bool sunCaster(const RecompD3dPresenterDrawCommand &draw, const float size[3])
     const bool blended = draw.blend.blend_enable && draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
         draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && draw.blend.op == RECOMP_D3D_BLEND_OP_ADD;
     if (!opaque && !blended) return false;
+    const float horizontal = (std::max)(size[0], size[2]);
+    // The net mesh is a paper-thin sheet whose wires are finer than a map texel; they
+    // reach the sand as a smear, so only its posts, tape and rope cast.
+    if (blended && (std::min)(size[0], size[2]) <= horizontal*0.02f && horizontal > size[1]*2) return false;
     const bool cutout = draw.depth.alpha_test_enable && draw.depth.alpha_ref >= 128 &&
         (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER || draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL);
-    const float horizontal = (std::max)(size[0], size[2]);
     // Cutouts batch trees across the scene; flat receivers and broad opaque rocks must stay out.
     if (blended || cutout) return extent >= 0.5f && horizontal <= 128 &&
         size[1] >= horizontal*(blended ? 0.1f : 0.05f);
@@ -387,32 +390,14 @@ SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
 float sunVisibility(float3 p) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
-    float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
-    float2 dx = ddx(uv), dy = ddy(uv);
-    float2 dz = float2(ddx(q.z), ddy(q.z));
-    float2 footprint = abs(dx) + abs(dy);
     if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
+    float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
     float visibility = 0;
-    if (max(footprint.x, footprint.y) > 3*sun_texel) {
-        // Integrate minified wires over a pixel instead of undersampling their repeating grid.
-        float2 width = clamp(footprint, 3*sun_texel, 16*sun_texel);
-        float determinant = dx.x*dy.y-dx.y*dy.x;
-        float2 slope = abs(determinant) > 1e-12 ?
-            float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
-        [unroll] for (int y=0; y<4; ++y)
-            [unroll] for (int x=0; x<4; ++x) {
-                float2 offset = (float2(x,y)-1.5)*width/4;
-                visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+offset,q.z+dot(slope,offset)-0.0002);
-            }
-        visibility /= 16;
-    } else {
-        [unroll] for (int y=-1; y<=1; ++y)
-            [unroll] for (int x=-1; x<=1; ++x)
-                visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)*sun_texel,q.z-0.0002);
-        visibility /= 9;
-    }
+    [unroll] for (int y=-1; y<=1; ++y)
+        [unroll] for (int x=-1; x<=1; ++x)
+            visibility += sun_depth.SampleCmpLevelZero(sun_sampler,uv+float2(x,y)*sun_texel,q.z-0.0002);
     // Fade over the outer tenth of the box so shadows do not cut off at its edge.
-    return lerp(1, visibility, saturate((1-max(abs(q.x),abs(q.y)))*10));
+    return lerp(1, visibility/9, saturate((1-max(abs(q.x),abs(q.y)))*10));
 }
 )");
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),
