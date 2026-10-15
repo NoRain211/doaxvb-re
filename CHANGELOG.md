@@ -18,6 +18,10 @@
   `RECOMP_DEMO_CUT_HOLD` (1 to 59 frames), shortens the one-second freeze
   between the scenes of the real-time demo. Off by default; the game keeps its
   own 60 frames. See `docs/title-idle.md`.
+- **Free camera**. A **Free camera** launcher option, or
+  `RECOMP_FREE_CAMERA=1`, lets F1 (or Back with the right stick clicked) take
+  over the game's camera and fly it with the keyboard or a controller. Off by
+  default. See `docs/free-camera.md`.
 
 ### Changed
 

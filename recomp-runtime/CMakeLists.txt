@@ -242,6 +242,7 @@ add_executable(recomp_runtime_test
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
     program_manual.c
+    free_camera_adapter.c
     animation_track.c
     animation_track_adapter.c
     animation_probe.c
@@ -555,6 +556,8 @@ if(RECOMP_PROGRAM_DIR)
         save_adapter.c
         cpu_exhibition.c
         title_idle.c
+        free_camera.c
+        free_camera_adapter.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c
@@ -759,11 +762,13 @@ endif()
 add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
 add_executable(recomp_cpu_exhibition_test cpu_exhibition_test.c)
 add_executable(recomp_title_idle_test title_idle_test.c)
+add_executable(recomp_free_camera_test free_camera.c free_camera_test.c)
 add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
 add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
 add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
 if(NOT MSVC)
     target_link_libraries(recomp_animation_skeleton_test PRIVATE m)
+    target_link_libraries(recomp_free_camera_test PRIVATE m)
     target_link_libraries(recomp_animation_pose_test PRIVATE m)
     target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
 endif()
@@ -773,6 +778,7 @@ add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test
 add_test(NAME recomp-runtime-animation-palette COMMAND recomp_animation_palette_test)
 add_test(NAME recomp-runtime-cpu-exhibition COMMAND recomp_cpu_exhibition_test)
 add_test(NAME recomp-runtime-title-idle COMMAND recomp_title_idle_test)
+add_test(NAME recomp-runtime-free-camera COMMAND recomp_free_camera_test)
 add_test(NAME recomp-runtime-title-idle-unexpected-table COMMAND recomp_title_idle_test --unexpected-table)
 add_test(NAME recomp-runtime-title-idle-cpu-exhibition COMMAND recomp_title_idle_test --cpu-exhibition)
 add_test(NAME recomp-runtime-title-idle-cut-hold COMMAND recomp_title_idle_test --cut-hold)

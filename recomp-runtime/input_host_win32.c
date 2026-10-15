@@ -265,3 +265,32 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
     trace_sample(gamepad, host, true);
     return true;
 }
+
+bool recomp_input_host_key(RecompInputHostKey key)
+{
+    switch (key) {
+    case RECOMP_INPUT_HOST_KEY_F1: return focused() && pressed(KEY(VK_F1, SDL_SCANCODE_F1));
+    case RECOMP_INPUT_HOST_KEY_W: return focused() && pressed(KEY('W', SDL_SCANCODE_W));
+    case RECOMP_INPUT_HOST_KEY_A: return focused() && pressed(KEY('A', SDL_SCANCODE_A));
+    case RECOMP_INPUT_HOST_KEY_S: return focused() && pressed(KEY('S', SDL_SCANCODE_S));
+    case RECOMP_INPUT_HOST_KEY_D: return focused() && pressed(KEY('D', SDL_SCANCODE_D));
+    case RECOMP_INPUT_HOST_KEY_Q: return focused() && pressed(KEY('Q', SDL_SCANCODE_Q));
+    case RECOMP_INPUT_HOST_KEY_E: return focused() && pressed(KEY('E', SDL_SCANCODE_E));
+    case RECOMP_INPUT_HOST_KEY_R: return focused() && pressed(KEY('R', SDL_SCANCODE_R));
+    case RECOMP_INPUT_HOST_KEY_Z: return focused() && pressed(KEY('Z', SDL_SCANCODE_Z));
+    case RECOMP_INPUT_HOST_KEY_X: return focused() && pressed(KEY('X', SDL_SCANCODE_X));
+    case RECOMP_INPUT_HOST_KEY_C: return focused() && pressed(KEY('C', SDL_SCANCODE_C));
+    case RECOMP_INPUT_HOST_KEY_UP: return focused() && pressed(KEY(VK_UP, SDL_SCANCODE_UP));
+    case RECOMP_INPUT_HOST_KEY_DOWN: return focused() && pressed(KEY(VK_DOWN, SDL_SCANCODE_DOWN));
+    case RECOMP_INPUT_HOST_KEY_LEFT: return focused() && pressed(KEY(VK_LEFT, SDL_SCANCODE_LEFT));
+    case RECOMP_INPUT_HOST_KEY_RIGHT: return focused() && pressed(KEY(VK_RIGHT, SDL_SCANCODE_RIGHT));
+    case RECOMP_INPUT_HOST_KEY_SHIFT:
+        return focused() && (pressed(KEY(VK_LSHIFT, SDL_SCANCODE_LSHIFT)) ||
+            pressed(KEY(VK_RSHIFT, SDL_SCANCODE_RSHIFT)));
+    case RECOMP_INPUT_HOST_KEY_CONTROL:
+        return focused() && (pressed(KEY(VK_LCONTROL, SDL_SCANCODE_LCTRL)) ||
+            pressed(KEY(VK_RCONTROL, SDL_SCANCODE_RCTRL)));
+    case RECOMP_INPUT_HOST_KEY_COUNT: break;
+    }
+    return false;
+}
