@@ -47,7 +47,15 @@ first) and `+8` the step within it (girl, swimsuit, attitude), 4 once the
 court is being chosen. While the menu is on character select (screen 4, in
 `0x9D9D80`), past the first pick and short of the court, the viewer presses
 A on the first controller every 12 polls, so the game accepts the girl,
-swimsuit and attitude it offers for the partner and both opponents. It
+swimsuit and attitude it offers for the partner and both opponents.
+Meanwhile only Player 1's column is shown. Character select draws its four
+columns as 2D quads at fixed places in its 720 x 480 screen, Player 1's at x
+56 to 202. The draw adapter's screen mask
+(`recomp_d3d_draw_set_screen_mask`) leaves out every pre-transformed quad
+drawn to the back buffer that lies wholly inside a given rectangle: x 200 to
+720, y 60 to 362 while picking, and only y 60 to 250 once the court grid
+fills the lower half. The last opponent's attitude list overlaps the court
+grid, so it can be seen fading out for a moment. It
 confirms Exhibition's first screen (screen 2) the same way while its cursor,
 the byte at `0x9D9F6D`, is on One Player.
 

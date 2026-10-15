@@ -2169,6 +2169,42 @@ static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t 
     fputs("]}\n", draw_capture.file);
 }
 
+static float screen_mask[RECOMP_D3D_SCREEN_MASKS][4];
+static uint32_t screen_mask_count;
+
+void recomp_d3d_draw_set_screen_mask(const float rects[][4], uint32_t count)
+{
+    if (rects == NULL || count > RECOMP_D3D_SCREEN_MASKS) count = 0u;
+    for (uint32_t i = 0u; i < count; ++i) memcpy(screen_mask[i], rects[i], sizeof screen_mask[i]);
+    screen_mask_count = count;
+}
+
+/* True when a quad drawn to the back buffer lies wholly inside the mask. */
+static bool screen_masked(uint32_t device, const uint8_t *vertex_bytes, uint32_t stride)
+{
+    if (screen_mask_count == 0u ||
+        *recomp_memory_u32(device + D3D_CURRENT_RENDER_TARGET_OFFSET) !=
+        *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET)) {
+        return false;
+    }
+    float box[4] = {INFINITY, INFINITY, -INFINITY, -INFINITY};
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        float position[2];
+        memcpy(position, vertex_bytes + i * stride, sizeof position);
+        box[0] = fminf(box[0], position[0]);
+        box[1] = fminf(box[1], position[1]);
+        box[2] = fmaxf(box[2], position[0]);
+        box[3] = fmaxf(box[3], position[1]);
+    }
+    for (uint32_t i = 0u; i < screen_mask_count; ++i) {
+        if (box[0] >= screen_mask[i][0] && box[1] >= screen_mask[i][1] &&
+            box[2] <= screen_mask[i][2] && box[3] <= screen_mask[i][3]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void recomp_d3d_draw_vertices_up_adapter(void)
 {
     const uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -2217,6 +2253,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             goto finished;
         }
     }
+    if (screen_masked(device, vertex_bytes, stride)) goto finished;
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     command.data.draw.primitive_type = primitive;
     command.data.draw.index_count = 4u;

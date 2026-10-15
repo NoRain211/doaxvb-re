@@ -9,6 +9,7 @@
 #include "actor_pose_adapter.h"
 #include "free_camera_adapter.h"
 #include "scene_freeze_adapter.h"
+#include "d3d_draw_adapter.h"
 
 /* MODEL VIEWER: a third item in the main menu, under GO TO ZACK ISLAND and
    EXHIBITION, shown when RECOMP_FREE_CAMERA is set.
@@ -39,7 +40,13 @@
    (screen 4), past the first pick and short of the court, the viewer presses
    A on port 0 every AUTO_PICK_POLLS polls, so the game accepts the girl,
    swimsuit and attitude it offers for the partner and both opponents. The
-   court is left to the player. It confirms Exhibition's first screen
+   court is left to the player. Only Player 1's column is shown meanwhile:
+   character select draws four columns of 2D quads at fixed places in its
+   720 x 480 screen, the first at x 56 to 202, and the viewer has the draw
+   adapter leave out every quad wholly inside the other three columns
+   (PICKING_MASK). Once the court is being chosen its grid fills the lower
+   half, so only the columns' portraits above it are left out (COURT_MASK).
+   It confirms Exhibition's first screen
    (screen 2: One Player, the match length, controller settings) the same
    way, on One Player.
 
@@ -129,6 +136,25 @@ static enum {
     VIEWER_LEAVING,
 } session;
 static uint32_t match_frames;
+
+static const float PICKING_MASK[1][4] = {{200.0f, 60.0f, 720.0f, 362.0f}};
+static const float COURT_MASK[1][4] = {{200.0f, 60.0f, 720.0f, 250.0f}};
+
+/* Shows only Player 1's column of character select while the viewer waits. */
+static void mask_character_select(void)
+{
+    static int shown = -1;
+    int mask = 0;
+    if (session == VIEWER_WAITING && *recomp_memory(SCENE, 1u) == SCENE_MENU &&
+        *recomp_memory(MENU_SCREEN, 1u) == SCREEN_CHARACTER_SELECT) {
+        mask = *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT ? 2 : 1;
+    }
+    if (mask == shown) return;
+    shown = mask;
+    if (mask == 1) recomp_d3d_draw_set_screen_mask(PICKING_MASK, 1u);
+    else if (mask == 2) recomp_d3d_draw_set_screen_mask(COURT_MASK, 1u);
+    else recomp_d3d_draw_set_screen_mask(NULL, 0u);
+}
 
 static bool viewer_enabled(void)
 {
@@ -247,6 +273,7 @@ static void viewer_tick(uint32_t frame)
 {
     (void)frame;
     recomp_free_camera_overlay(session == VIEWER_VIEWING);
+    mask_character_select();
     bool in_match = *recomp_memory(SCENE, 1u) == SCENE_MATCH;
     switch (session) {
     case VIEWER_IDLE:
