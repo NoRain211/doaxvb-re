@@ -5,6 +5,8 @@ scene, for screenshots or a closer look at a model. It is off by default. Tick
 **Free camera** in the launcher, or set `RECOMP_FREE_CAMERA=1` before the
 runner starts. Then press **F1**, or hold **Back** and click the right stick,
 to switch the free camera on and off in any scene.
+The setting also adds MODEL VIEWER to the main menu, which sets up a scene
+with one girl for the free camera; see [`model-viewer.md`](model-viewer.md).
 
 While it flies, the game reads a neutral controller on the first port, so
 the game ignores what moves the camera. The game itself keeps running until
