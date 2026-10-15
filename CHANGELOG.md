@@ -31,7 +31,11 @@
   the match starts, the free camera comes on in front of Player 1's girl,
   the scene freezes and the other players and the overlay are hidden.
   Putting the camera away returns to the main menu. See
-  `docs/model-viewer.md`. Off by default. See `docs/free-camera.md`.
+  `docs/model-viewer.md`.
+- **Overlay panel** (macOS and Linux). While the free camera flies, a small
+  panel drawn with Dear ImGui names the chosen character, shows her
+  animation and freeze state and lists the controls; H hides it with the
+  game's overlay for a clean view. See `docs/free-camera.md`. Off by default. See `docs/free-camera.md`.
 
 ### Changed
 

@@ -21,6 +21,8 @@ bool recomp_free_camera_active(void);
 void recomp_free_camera_face_character(void);
 /* Moves the camera close to the chosen character at its next build. */
 void recomp_free_camera_frame_character(void);
+/* Once a frame: fills the runtime overlay while the camera flies. */
+void recomp_free_camera_overlay(bool viewer);
 
 #ifdef __cplusplus
 }

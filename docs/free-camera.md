@@ -22,10 +22,16 @@ you freeze it.
 | Back to the game's view | R | Y |
 | Next camera | C | X |
 | Freeze / unfreeze the scene | P | Start |
-| Hide / show the overlay while frozen | H | Left shoulder |
+| Clean view: hide the panel and the game's overlay (the latter while frozen) | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
 | Previous / next animation | [ / ] | D-pad left / right |
 | Next character to animate (the camera turns to her) | `\` (backslash) | Left stick click |
+
+While the camera flies, a panel at the top left names the chosen character,
+the animation playing on her (the game's own, or the held clip as its place
+in the scene's list) and whether the scene is frozen, and two lines along
+the bottom list the keyboard controls. On Windows the panel is not drawn
+yet.
 
 Switching the free camera off also unfreezes the scene, hands every
 animation back to the game, and the game carries on where it stopped. Music keeps playing while frozen; the scene's own sounds
@@ -165,6 +171,17 @@ camera back to her.
 Not yet verified: mouse look, freezing and animation select in a play test,
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
 hotel, the shops, the pool), and Windows and Linux builds.
+
+## The overlay
+
+The panel is plain text in `recomp-runtime/overlay_text.c` (tested by
+`overlay_text_test.c`), which the free camera fills once a frame. On macOS
+and Linux, `overlay_sdl_gpu.cpp` draws it with Dear ImGui's SDL GPU backend
+onto the window after the game's frame is copied there, and never into the
+game's own back buffer, which the game reads back as its front buffer. In a
+match the character's name is read from the game: character `n` is player
+`n`, whose choice at `0x9DAA68 + n * 0xB8` holds her character number at
+`+1`, and the English names are pointed to from `0x3245BC` by that number.
 
 ## Debugging
 

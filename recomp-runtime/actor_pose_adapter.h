@@ -12,6 +12,20 @@ extern "C" {
 
 /* Picks the next active character to pose. */
 void recomp_actor_pose_next_actor(void);
+/* What the pose controls are doing, for the overlay. */
+typedef struct RecompActorPoseStatus {
+    uint32_t actor;
+    bool active;
+    bool holding;
+    uint16_t clip;
+    /* The held clip's place in the list of clips, from 1, and the list's
+       length; zero when nothing is held. */
+    uint32_t position, count;
+} RecompActorPoseStatus;
+void recomp_actor_pose_status(RecompActorPoseStatus *status);
+/* The character's name when the game names her (in a match), else
+   "Character n". */
+void recomp_actor_pose_name(uint32_t actor, char *name, uint32_t size);
 /* Chooses a character to pose by number. */
 void recomp_actor_pose_choose(uint32_t actor);
 /* Characters whose bit is set are moved far below the ground. */

@@ -4,6 +4,7 @@
 #include "scene_freeze_adapter.h"
 #include "actor_pose_adapter.h"
 #include "viewer_menu_adapter.h"
+#include "overlay_text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +91,8 @@ static struct {
     /* Face the chosen character at the next camera build; frame_pending
        also moves close to her. */
     bool aim_pending, frame_pending;
+    /* H's clean view also hides the runtime's own overlay. */
+    bool panel_hidden;
     uint32_t slot;
     /* Objects built in the frame being drawn and in the one before it. */
     uint32_t built_frame, built, built_before;
@@ -132,7 +135,9 @@ static void set_active(bool active)
     state.started = false;
     if (!active) {
         recomp_scene_freeze_set(false);
+        recomp_scene_freeze_set_overlay_hidden(false);
         recomp_actor_pose_release();
+        state.panel_hidden = false;
     }
     fprintf(stderr, "recomp free camera: %s\n", active ? "on" : "off");
 }
@@ -162,7 +167,11 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     bool overlay = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_H) ||
         gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED);
     if (overlay && !state.overlay_held) {
-        recomp_scene_freeze_set_overlay_hidden(!recomp_scene_freeze_overlay_hidden());
+        /* A clean view hides the game's overlay and the runtime's panel
+           together; the next press shows both. */
+        bool hide = !state.panel_hidden || !recomp_scene_freeze_overlay_hidden();
+        state.panel_hidden = hide;
+        recomp_scene_freeze_set_overlay_hidden(hide);
     }
     state.overlay_held = overlay;
 
@@ -404,6 +413,34 @@ void recomp_free_camera_frame_character(void)
 {
     state.frame_pending = true;
 }
+
+void recomp_free_camera_overlay(bool viewer)
+{
+    RecompOverlayText *text = recomp_overlay_shown();
+    recomp_overlay_clear(text);
+    if (!state.active || state.panel_hidden) return;
+
+    RecompActorPoseStatus pose;
+    char name[48];
+    recomp_actor_pose_status(&pose);
+    recomp_overlay_set_title(text, viewer ? "MODEL VIEWER" : "FREE CAMERA");
+    if (pose.active) {
+        recomp_actor_pose_name(pose.actor, name, sizeof name);
+        recomp_overlay_add_line(text, "%s", name);
+        if (pose.holding) {
+            recomp_overlay_add_line(text, "Animation %u of %u (clip %04X)",
+                (unsigned)pose.position, (unsigned)pose.count, (unsigned)pose.clip);
+        } else {
+            recomp_overlay_add_line(text, "Animation: the game's own");
+        }
+    }
+    recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
+    recomp_overlay_set_hint(text, viewer
+        ? "F1 leave   P freeze   . step   H clean view\n"
+          "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl"
+        : "F1 off   P freeze   . step   H clean view\n"
+          "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl");
+}
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
 {
@@ -427,5 +464,10 @@ void recomp_free_camera_face_character(void)
 
 void recomp_free_camera_frame_character(void)
 {
+}
+
+void recomp_free_camera_overlay(bool viewer)
+{
+    (void)viewer;
 }
 #endif

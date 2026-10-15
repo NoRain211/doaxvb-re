@@ -9,7 +9,8 @@ started, the viewer takes it over:
 
 - the free camera comes on in front of Player 1's girl,
 - the scene freezes,
-- the other three players and the on-screen overlay are hidden.
+- the other three players and the game's on-screen overlay are hidden,
+- a panel names her, shows the animation and lists the controls.
 
 Every free camera control then works as described in
 [`free-camera.md`](free-camera.md): fly around her, step or unfreeze the

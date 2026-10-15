@@ -184,7 +184,10 @@ cmake --build build/clang --parallel 4
 ctest --test-dir build/clang --output-on-failure
 ```
 
-On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run:
+On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run
+the commands below. On macOS and Linux, configuration also downloads Dear ImGui
+1.91.9, which draws the free camera's overlay text, and checks its SHA-256; set
+`FETCHCONTENT_SOURCE_DIR_IMGUI` to an unpacked copy to configure offline.
 
 ```bash
 git clone --recurse-submodules https://github.com/NoRain211/doaxvb-re.git

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "d3d_presenter.h"
+#include "overlay_sdl_gpu.h"
 #include "d3d_draw_model.h"
 #include "d3d_texture_model.h"
 #include "d3d_vertex_program.h"
@@ -2436,6 +2437,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 blit.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
                 blit.filter = SDL_GPU_FILTER_LINEAR;
                 SDL_BlitGPUTexture(cmdbuf, &blit);
+                // The runtime's overlay text goes on the window, not the
+                // game's back buffer, which the game reads back as its front
+                // buffer.
+                recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
+                    swapchain_tex, swap_w, swap_h, recomp_overlay_shown());
             }
         }
 
@@ -2806,6 +2812,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
         SDL_SubmitGPUCommandBuffer(p->current_command_buffer);
         p->current_command_buffer = nullptr;
     }
+    recomp_overlay_sdl_gpu_shutdown();
 
     // Release cached textures
     for (uint32_t i = 0u; i < p->texture_count; ++i) {

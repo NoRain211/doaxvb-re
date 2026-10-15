@@ -3,6 +3,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "runtime.h"
@@ -39,7 +40,11 @@
    moved HIDE_DEPTH below where it stood, out of any view above the ground.
    A frozen scene builds no skeletons, so hiding and showing also move the
    bones already built; each build leaves a hidden character's bones that
-   far down, so the two agree. */
+   far down, so the two agree.
+
+   In a match, character n is player n; character select's choice for the
+   player, at 0x9DAA68 + n * 0xB8, holds her character number at +1, and
+   the English names are pointed to from 0x3245BC by that number. */
 enum {
     ACTOR_COUNT = 4u,
     ACTOR_ACTIVE = 0x004D6FD0u,
@@ -61,6 +66,13 @@ enum {
     BONE_STRIDE = 0x800u,
     BONE_COUNT = 32u,
     BONE_SIZE = 64u,
+    SCENE = 0x005DECE0u,
+    SCENE_MATCH = 0,
+    CHOICE = 0x009DAA68u,
+    CHOICE_SIZE = 0xB8u,
+    CHOICE_CHARACTER = 1u,
+    NAMES = 0x003245BCu,
+    NAME_COUNT = 9u,
 };
 
 static const float HIDE_DEPTH = 100.0f;
@@ -76,6 +88,8 @@ static struct {
     float hips[2];
     bool hips_known;
     uint32_t hidden;
+    /* The held clip's place in its list, from 1, and the list's length. */
+    uint32_t listed, listed_count;
 } pose;
 
 static bool active(uint32_t actor)
@@ -99,6 +113,34 @@ static uint32_t bone_of(uint32_t actor, uint32_t bone)
 }
 
 static void lower_bones(uint32_t actor, float depth);
+
+void recomp_actor_pose_status(RecompActorPoseStatus *status)
+{
+    status->actor = pose.actor;
+    status->active = active(pose.actor);
+    status->holding = pose.holding;
+    status->clip = pose.clip;
+    status->position = pose.holding ? pose.listed : 0u;
+    status->count = pose.holding ? pose.listed_count : 0u;
+}
+
+void recomp_actor_pose_name(uint32_t actor, char *name, uint32_t size)
+{
+    if (name == NULL || size == 0u) return;
+    snprintf(name, size, "Character %u", (unsigned)actor + 1u);
+    if (actor >= ACTOR_COUNT || *recomp_memory(SCENE, 1u) != SCENE_MATCH) return;
+    uint8_t character = *recomp_memory(CHOICE + actor * CHOICE_SIZE + CHOICE_CHARACTER, 1u);
+    if (character >= NAME_COUNT) return;
+    uint32_t text = *recomp_memory_u32(NAMES + character * 4u);
+    if (text == 0u) return;
+    char found[32];
+    recomp_guest_load(found, text, sizeof found - 1u);
+    found[sizeof found - 1u] = '\0';
+    for (uint32_t i = 0u; found[i] != '\0'; ++i) {
+        if ((unsigned char)found[i] < 0x20u || (unsigned char)found[i] > 0x7Eu) return;
+    }
+    if (found[0] != '\0') snprintf(name, size, "%s", found);
+}
 
 void recomp_actor_pose_choose(uint32_t actor)
 {
@@ -241,6 +283,8 @@ bool recomp_actor_pose_step_clip(int step)
         pose.holding = true;
     }
     pose.clip = next;
+    pose.listed = position + 1u;
+    pose.listed_count = clips.count;
     request(pose.actor, next);
     fprintf(stderr, "recomp pose: character %u clip %04x (%u of %u)\n",
         pose.actor, next, position + 1u, clips.count);
@@ -299,6 +343,16 @@ bool recomp_actor_pose_facing(float direction[3])
 void recomp_actor_pose_choose(uint32_t actor)
 {
     (void)actor;
+}
+
+void recomp_actor_pose_status(RecompActorPoseStatus *status)
+{
+    memset(status, 0, sizeof *status);
+}
+
+void recomp_actor_pose_name(uint32_t actor, char *name, uint32_t size)
+{
+    if (name != NULL && size != 0u) snprintf(name, size, "Character %u", (unsigned)actor + 1u);
 }
 
 void recomp_actor_pose_set_hidden(uint32_t mask)

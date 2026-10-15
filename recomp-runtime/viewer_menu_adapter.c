@@ -246,6 +246,7 @@ static void main_menu_update(void)
 static void viewer_tick(uint32_t frame)
 {
     (void)frame;
+    recomp_free_camera_overlay(session == VIEWER_VIEWING);
     bool in_match = *recomp_memory(SCENE, 1u) == SCENE_MATCH;
     switch (session) {
     case VIEWER_IDLE:
