@@ -88,8 +88,9 @@ build.
 ## Verification
 
 Scripted runs on an M-series Mac flew the camera in the real-time demo and on
-the island map. A user play test on the Mac confirmed keyboard flight. Back with the right stick switched it on, and the frames
-showed the view leaving the game's own. Turning and strafing right moved the
+the island map, and a user play test on the Mac confirmed the camera flies.
+Back with the right stick switched it on, and the frames showed the view
+leaving the game's own. Turning and strafing right moved the
 scene left in the frame. **Next camera** moved it to the island map's second
 object. Each run used a constant debug input, `RECOMP_FREE_CAMERA_DRIFT`
 (right, up, forward, turn and pitch, comma-separated), because scripted input
