@@ -2,9 +2,9 @@
 
 With **Free camera** ticked in the launcher (`RECOMP_FREE_CAMERA=1`), the
 main menu has a third item, **MODEL VIEWER**, under GO TO ZACK ISLAND and
-EXHIBITION. It leads through Exhibition's own screens: choose the girl and
-her swimsuit as Player 1, and the viewer accepts the partner and opponents
-the game offers by itself, then choose the court. When the match has
+EXHIBITION. It leads through Exhibition's own screens: the viewer picks One
+Player, you choose the girl and her swimsuit as Player 1, the viewer accepts
+the partner and opponents the game offers, and you choose the court. When the match has
 started, the viewer takes it over:
 
 - the free camera comes on in front of Player 1's girl,
@@ -46,7 +46,9 @@ first) and `+8` the step within it (girl, swimsuit, attitude), 4 once the
 court is being chosen. While the menu is on character select (screen 4, in
 `0x9D9D80`), past the first pick and short of the court, the viewer presses
 A on the first controller every 12 polls, so the game accepts the girl,
-swimsuit and attitude it offers for the partner and both opponents.
+swimsuit and attitude it offers for the partner and both opponents. It
+confirms Exhibition's first screen (screen 2) the same way while its cursor,
+the byte at `0x9D9F6D`, is on One Player.
 
 The match loads as usual. After it has run 240 frames the viewer chooses the
 first player for the animation controls, hides the other three, turns on
@@ -73,5 +75,7 @@ After the match started the viewer showed only Player 1's girl, from the
 front, frozen, with no overlay. Switching the free camera off quit the match
 and the game came back to the main menu.
 
-Not yet verified: a play test, a girl other than the first, every court,
+The third girl, Hitomi, was also chosen and framed the same way.
+
+Not yet verified: a play test, every court,
 Windows and Linux builds, and the Japanese language setting.

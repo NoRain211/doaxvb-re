@@ -39,7 +39,9 @@
    (screen 4), past the first pick and short of the court, the viewer presses
    A on port 0 every AUTO_PICK_POLLS polls, so the game accepts the girl,
    swimsuit and attitude it offers for the partner and both opponents. The
-   court is left to the player.
+   court is left to the player. It confirms Exhibition's first screen
+   (screen 2: One Player, the match length, controller settings) the same
+   way, on One Player.
 
    The match then loads as usual. Once it has run for SETTLE_FRAMES the
    viewer takes it over: the free camera comes on close to the first player,
@@ -92,7 +94,10 @@ enum {
     MATCH_OVER = 0x004D6FC8u,
     SETTLE_FRAMES = 240,
     MENU_SCREEN = 0x009D9D80u,
+    SCREEN_EXHIBITION_SETUP = 2,
     SCREEN_CHARACTER_SELECT = 4,
+    /* Exhibition setup's cursor, a byte in its data block; 0 is One Player. */
+    SETUP_CURSOR = 0x009D9F6Du,
     PICKS = 0x009DAA48u,
     PICK_NUMBER = 0x0u,
     PICK_STEP = 0x8u,
@@ -298,11 +303,13 @@ void recomp_viewer_install(void)
 void recomp_viewer_input(RecompInputGamepad *gamepad)
 {
     static uint32_t polls;
+    uint8_t screen = *recomp_memory(MENU_SCREEN, 1u);
+    bool picking = screen == SCREEN_CHARACTER_SELECT &&
+        *recomp_memory(PICKS + PICK_NUMBER, 1u) != 0u &&
+        *recomp_memory(PICKS + PICK_STEP, 1u) != PICK_STEP_COURT;
+    bool setup = screen == SCREEN_EXHIBITION_SETUP && *recomp_memory(SETUP_CURSOR, 1u) == 0u;
     if (gamepad == NULL || session != VIEWER_WAITING ||
-        *recomp_memory(SCENE, 1u) != SCENE_MENU ||
-        *recomp_memory(MENU_SCREEN, 1u) != SCREEN_CHARACTER_SELECT ||
-        *recomp_memory(PICKS + PICK_NUMBER, 1u) == 0u ||
-        *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT) {
+        *recomp_memory(SCENE, 1u) != SCENE_MENU || (!picking && !setup)) {
         polls = 0u;
         return;
     }
