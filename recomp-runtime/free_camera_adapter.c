@@ -29,10 +29,11 @@
    C or X moves it to the next object the game built in the last frame.
 
    P or START freezes the scene while the camera flies (scene_freeze_adapter.c),
-   H or the left shoulder hides the 2D overlay of a frozen scene, and putting
-   the camera away thaws it. The game polls the controller from
-   a task the freeze skips, so while frozen the camera build, which a drawing
-   task still runs, samples the controller itself once a frame. */
+   H or the left shoulder hides the 2D overlay of a frozen scene, . or the
+   right shoulder moves it on one frame, and putting the camera away thaws
+   it. The game polls the controller from a task the freeze skips, so while
+   frozen the freeze's frame hook samples it here once a frame, in any scene,
+   so the scene can always be thawed. */
 enum {
     BUILD_CAMERA = 0x00023B10u,
     CAMERA_FIRST = 0x0041A800u,
@@ -52,6 +53,7 @@ enum {
     ANALOG_X = 2u,
     ANALOG_Y = 3u,
     ANALOG_BLACK = 4u,
+    ANALOG_WHITE = 5u,
     ANALOG_LTRIG = 6u,
     ANALOG_RTRIG = 7u,
     ANALOG_PRESSED = 0x20u,
@@ -65,8 +67,7 @@ static struct {
     int enabled;
     RecompInputSampleSource source;
     bool active, started;
-    bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held;
-    uint32_t sampled_frame;
+    bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
     uint32_t slot;
     /* Objects built in the frame being drawn and in the one before it. */
     uint32_t built_frame, built, built_before;
@@ -111,9 +112,12 @@ static void set_active(bool active)
     fprintf(stderr, "recomp free camera: %s\n", active ? "on" : "off");
 }
 
+static void sample_while_frozen(uint32_t frame);
+
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
     state.source = source;
+    recomp_scene_freeze_set_frame_hook(sample_while_frozen);
 }
 
 /* Handles the toggles in one sample of port 0. True when the sample is the
@@ -137,6 +141,11 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     }
     state.overlay_held = overlay;
 
+    bool step = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_PERIOD) ||
+        gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED);
+    if (step && !state.step_held) recomp_scene_freeze_step();
+    state.step_held = step;
+
     if (state.active || toggle) state.pad = *gamepad;
     return state.active || toggle;
 }
@@ -153,11 +162,10 @@ bool recomp_free_camera_sample(uint32_t port, RecompInputGamepad *gamepad)
     return present;
 }
 
-/* While frozen the game stops polling; sample port 0 once a frame here. */
+/* While frozen the game stops polling; the freeze calls this once a frame. */
 static void sample_while_frozen(uint32_t frame)
 {
-    if (!recomp_scene_freeze_active() || state.sampled_frame == frame) return;
-    state.sampled_frame = frame;
+    (void)frame;
     RecompInputGamepad gamepad;
     memset(&gamepad, 0, sizeof gamepad);
     if (state.source != NULL) state.source(0u, &gamepad);
@@ -232,7 +240,6 @@ static void build_camera(void)
         state.built_frame = frame;
     }
     if (known) state.built |= 1u << slot;
-    sample_while_frozen(frame);
     if (state.active) {
         bool cycle = analog(&state.pad, ANALOG_X) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_C);
         if (cycle && !state.cycle_held) {

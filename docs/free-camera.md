@@ -21,6 +21,7 @@ you freeze it.
 | Next camera | C | X |
 | Freeze / unfreeze the scene | P | Start |
 | Hide / show the overlay while frozen | H | Left shoulder |
+| Advance one frame while frozen | . (period) | Right shoulder |
 
 Switching the free camera off also unfreezes the scene and the game carries
 on where it stopped. Music keeps playing while frozen; the scene's own sounds
@@ -79,11 +80,14 @@ returns at once and the record is left as a yield leaves it, with bit `0x10`
 of the state clear and `+4` set. The drawing tasks keep their turns, so the
 last game state is drawn again every frame from wherever the free camera is.
 Hiding the overlay declines the turns of `0x0008A970`, which draws the 2D
-text, portraits, menus and the demo's logo.
+text, portraits, menus and the demo's logo. In a match the score is drawn by
+the scene's own task, so it stays. A frame step lets every task take its turns
+until the next frame is presented, then holds the scene again.
 
 The game polls the controller from a task the freeze skips, so while frozen
-the free camera samples the controller itself once a frame from the camera
-build.
+the free camera samples the controller itself once a frame, from the freeze's
+own hook in the scheduler. That works in any scene, including 2D screens with
+no camera, so a frozen scene can always be thawed.
 
 ## Verification
 
@@ -104,9 +108,14 @@ scene. On the island map the frozen dialog stayed put, the overlay hid, and
 the camera flew down to the beach. A recording of the sound through a freeze
 showed the music going on at a lower level with no repeating buffer.
 
+In a CPU Exhibition match, the freeze held the ball and a jumping player in
+mid-air while the camera flew around them. A frame step changed the frozen
+picture once and it then held again. Start unfroze the match and it went on.
+On the title screen, a 2D scene with no camera, Start froze and unfroze it.
+
 Not yet verified: freezing in a play test, physical controller flight,
-scenes beyond the demo and the island map (matches, the hotel, the shops),
-and Windows and Linux builds.
+scenes beyond the demo, the island map and Exhibition matches (the hotel,
+the shops, the pool), and Windows and Linux builds.
 
 ## Debugging
 

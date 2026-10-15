@@ -14,6 +14,12 @@ bool recomp_scene_freeze_active(void);
 /* While frozen, also stop drawing the 2D overlay: text, menus, logos. */
 void recomp_scene_freeze_set_overlay_hidden(bool hidden);
 bool recomp_scene_freeze_overlay_hidden(void);
+/* Lets a frozen scene run one more frame, then holds it again. */
+void recomp_scene_freeze_step(void);
+/* Called once a frame while the scene is frozen, from the scheduler, since
+   the game's own input polling is frozen with it. */
+typedef void (*RecompSceneFreezeFrameHook)(uint32_t frame);
+void recomp_scene_freeze_set_frame_hook(RecompSceneFreezeFrameHook hook);
 /* The fiber adapter's switch hook (recomp_fiber_set_switch_hook). */
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle);
 

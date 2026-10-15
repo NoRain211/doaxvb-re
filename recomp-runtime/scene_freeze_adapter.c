@@ -5,6 +5,7 @@
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "d3d_draw_adapter.h"
+#include "d3d_frame_adapter.h"
 #include "runtime.h"
 
 /* Scene freeze: stops the game where it is while it goes on drawing, so the
@@ -28,7 +29,10 @@
 
    0x0008A970 draws the 2D overlay (text, portraits, menus and the demo's
    logo) in every scene seen so far. With the overlay hidden, a frozen scene
-   declines its turns too, leaving only the 3D scene. */
+   declines its turns too, leaving only the 3D scene.
+
+   A step lets every task take its turns until the next frame is presented,
+   so a frozen scene can be moved on one frame at a time. */
 enum {
     TASK_TABLE = 0x005F2C38u,
     TASK_RECORD_SIZE = 0x20u,
@@ -45,6 +49,10 @@ enum {
 static RecompSceneFreezeModel model;
 static bool frozen, overlay_hidden;
 static uint32_t turn_draws;
+/* While the swap counter is below this, a frozen scene runs as usual. */
+static uint32_t step_until;
+static RecompSceneFreezeFrameHook frame_hook;
+static uint32_t hooked_frame;
 
 void recomp_scene_freeze_set(bool freeze)
 {
@@ -79,6 +87,16 @@ bool recomp_scene_freeze_overlay_hidden(void)
     return overlay_hidden;
 }
 
+void recomp_scene_freeze_set_frame_hook(RecompSceneFreezeFrameHook hook)
+{
+    frame_hook = hook;
+}
+
+void recomp_scene_freeze_step(void)
+{
+    if (frozen) step_until = recomp_d3d_frame_adapter_swap_counter() + 1u;
+}
+
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle)
 {
     uint32_t slot = *recomp_memory_u32(TASK_CURRENT);
@@ -87,15 +105,22 @@ bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle
     uint32_t fiber = *recomp_memory_u32(record + TASK_FIBER);
     uint32_t function = *recomp_memory_u32(record + TASK_FUNCTION);
     uint32_t draws = recomp_d3d_draw_adapter_submitted();
+    uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    bool holding = frozen && frame >= step_until;
+
+    if (frozen && frame_hook != NULL && hooked_frame != frame) {
+        hooked_frame = frame;
+        frame_hook(frame);
+    }
 
     if (outgoing_handle == fiber && target_handle != fiber) {
         /* The turn is over. A frozen scene keeps its history as it stood. */
-        if (!frozen) recomp_scene_freeze_note_turn(&model, slot, function, draws - turn_draws);
+        if (!holding) recomp_scene_freeze_note_turn(&model, slot, function, draws - turn_draws);
         return false;
     }
     if (target_handle != fiber || outgoing_handle == fiber) return false;
     turn_draws = draws;
-    if (!frozen) return false;
+    if (!holding) return false;
     if (recomp_scene_freeze_keeps(&model, slot, function) &&
         !(overlay_hidden && function == OVERLAY_TASK_FUNCTION)) return false;
     *recomp_memory_u32(record + TASK_STATE) &= ~TASK_STATE_RUNNING;
@@ -121,6 +146,15 @@ void recomp_scene_freeze_set_overlay_hidden(bool hidden)
 bool recomp_scene_freeze_overlay_hidden(void)
 {
     return false;
+}
+
+void recomp_scene_freeze_set_frame_hook(RecompSceneFreezeFrameHook hook)
+{
+    (void)hook;
+}
+
+void recomp_scene_freeze_step(void)
+{
 }
 
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle)
