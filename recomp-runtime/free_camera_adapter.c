@@ -93,6 +93,9 @@ static struct {
     bool aim_pending, frame_pending;
     /* H's clean view also hides the runtime's own overlay. */
     bool panel_hidden;
+    /* The hint lists controller buttons once a controller was last used,
+       and from the start on a Steam Deck; keys once a key was. */
+    int controller_hints;
     uint32_t slot;
     /* Objects built in the frame being drawn and in the one before it. */
     uint32_t built_frame, built, built_before;
@@ -100,7 +103,7 @@ static struct {
     RecompInputGamepad pad;
     RecompFreeCamera camera;
     uint32_t trace_lines;
-} state = {.enabled = -1};
+} state = {.enabled = -1, .controller_hints = -1};
 
 static const char *setting(const char *name)
 {
@@ -152,8 +155,35 @@ void recomp_free_camera_set_source(RecompInputSampleSource source)
 
 /* Handles the toggles in one sample of port 0. True when the sample is the
    free camera's rather than the game's. */
+static float stick(int16_t value);
+
+static bool controller_used(const RecompInputGamepad *gamepad)
+{
+    if (gamepad->buttons != 0u) return true;
+    for (unsigned i = 0u; i < sizeof gamepad->analog_buttons; ++i) {
+        if (gamepad->analog_buttons[i] >= ANALOG_PRESSED) return true;
+    }
+    return stick(gamepad->thumb_lx) != 0.0f || stick(gamepad->thumb_ly) != 0.0f ||
+        stick(gamepad->thumb_rx) != 0.0f || stick(gamepad->thumb_ry) != 0.0f;
+}
+
+static bool keys_used(void)
+{
+    for (int key = 0; key < RECOMP_INPUT_HOST_KEY_COUNT; ++key) {
+        if (recomp_input_host_key((RecompInputHostKey)key)) return true;
+    }
+    return false;
+}
+
 static bool take_sample(const RecompInputGamepad *gamepad)
 {
+    if (state.controller_hints < 0) {
+        const char *deck = getenv("SteamDeck");
+        state.controller_hints = deck != NULL && strcmp(deck, "1") == 0;
+    }
+    if (keys_used()) state.controller_hints = 0;
+    else if (controller_used(gamepad)) state.controller_hints = 1;
+
     bool toggle = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_F1) ||
         ((gamepad->buttons & XBOX_BACK) != 0u && (gamepad->buttons & XBOX_RIGHT_THUMB) != 0u);
     if (toggle && !state.toggle_held) set_active(!state.active);
@@ -435,11 +465,19 @@ void recomp_free_camera_overlay(bool viewer)
         }
     }
     recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
-    recomp_overlay_set_hint(text, viewer
-        ? "F1 leave   P freeze   . step   H clean view\n"
-          "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl"
-        : "F1 off   P freeze   . step   H clean view\n"
-          "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl");
+    if (state.controller_hints > 0) {
+        recomp_overlay_set_hint(text, viewer
+            ? "Back + R3 leave   Start freeze   RB step   LB clean view\n"
+              "Left stick move   LT RT down/up   Right stick look   D-pad left/right animation   L3 next girl"
+            : "Back + R3 off   Start freeze   RB step   LB clean view\n"
+              "Left stick move   LT RT down/up   Right stick look   D-pad left/right animation   L3 next girl");
+    } else {
+        recomp_overlay_set_hint(text, viewer
+            ? "F1 leave   P freeze   . step   H clean view\n"
+              "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl"
+            : "F1 off   P freeze   . step   H clean view\n"
+              "WASD QE move   arrows / right-drag look   [ ] animation   \\ next girl");
+    }
 }
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)

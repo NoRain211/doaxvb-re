@@ -30,7 +30,8 @@ you freeze it.
 While the camera flies, a panel at the top left names the chosen character,
 the animation playing on her (the game's own, or the held clip as its place
 in the scene's list) and whether the scene is frozen, and two lines along
-the bottom list the keyboard controls. On Windows the panel is not drawn
+the bottom list the controls: the keyboard's after a key was last used, the
+controller's after a controller was (and from the start on a Steam Deck). On Windows the panel is not drawn
 yet.
 
 Switching the free camera off also unfreezes the scene, hands every
