@@ -47,6 +47,15 @@ from the added props. The fixed map fit does not expand for larger casters.
 Vertex blending uses the command's replayed `world[]` palette and the same
 explicit/remainder weights as the visible pass.
 
+The game draws only scenery whose bounding sphere passes its camera test at
+0x0017D2A0, so palms and posts beside or behind the camera vanished from the
+map while their shadows were still on screen. With sun shadows on, the
+runtime routes that test through `recomp_lookup_manual` and also accepts
+spheres within 96 units of the camera plus their radius. Those objects are
+submitted to both passes; the GPU clips them from the visible frame. The
+address is a manual call target, so regenerating the program changes only the
+15 functions that call it.
+
 The light direction is the one the game projects its own character and ball
 shadows along: three floats at guest 0x00333870, a toward-light vector that the
 scene setters normalize. The draw adapter copies it into each draw's `sun`. The
