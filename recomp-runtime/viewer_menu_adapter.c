@@ -296,6 +296,9 @@ static void viewer_tick(uint32_t frame)
     case VIEWER_VIEWING:
         if (recomp_free_camera_active() && in_match) break;
         recomp_free_camera_set_active(false);
+        /* The match must run to be quit. */
+        recomp_scene_freeze_set(false);
+        recomp_scene_freeze_set_overlay_hidden(false);
         match_frames = 0u;
         if (in_match) {
             *recomp_memory_u32(RESULTS_CHOICE) = RESULTS_QUIT;

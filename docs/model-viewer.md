@@ -15,8 +15,8 @@ started, the viewer takes it over:
 Every free camera control then works as described in
 [`free-camera.md`](free-camera.md): fly around her, step or unfreeze the
 scene, and play another of the scene's animation clips on her. Put the
-free camera away (F1, or Back with the right stick) to leave: the match is
-quit and the game returns to the main menu.
+free camera away (F1, or Back with the right stick) to leave: the scene is
+unpaused, the match is quit and the game returns to the main menu.
 
 ## How it works
 

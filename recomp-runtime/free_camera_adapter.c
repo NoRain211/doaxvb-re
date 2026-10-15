@@ -137,10 +137,12 @@ static void set_active(bool active)
     state.active = active;
     state.started = false;
     if (!active) {
-        recomp_scene_freeze_set(false);
-        recomp_scene_freeze_set_overlay_hidden(false);
+        /* A pause outlives the camera; P ends it. */
         recomp_actor_pose_release();
-        state.panel_hidden = false;
+        if (!recomp_scene_freeze_active()) {
+            recomp_scene_freeze_set_overlay_hidden(false);
+            state.panel_hidden = false;
+        }
     }
     fprintf(stderr, "recomp free camera: %s\n", active ? "on" : "off");
 }
@@ -189,13 +191,24 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     if (toggle && !state.toggle_held) set_active(!state.active);
     state.toggle_held = toggle;
 
-    bool freeze = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_P) ||
-        (gamepad->buttons & XBOX_START) != 0u);
-    if (freeze && !state.freeze_held) recomp_scene_freeze_set(!recomp_scene_freeze_active());
+    /* P pauses anywhere, flying or not; Start only while flying, since the
+       game has its own use for it. The game's keyboard bindings leave P, H
+       and . free. */
+    bool freeze = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_P) ||
+        (state.active && (gamepad->buttons & XBOX_START) != 0u);
+    if (freeze && !state.freeze_held) {
+        bool pause = !recomp_scene_freeze_active();
+        recomp_scene_freeze_set(pause);
+        if (!pause && !state.active) {
+            recomp_scene_freeze_set_overlay_hidden(false);
+            state.panel_hidden = false;
+        }
+    }
     state.freeze_held = freeze;
+    const bool paused = recomp_scene_freeze_active();
 
-    bool overlay = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_H) ||
-        gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED);
+    bool overlay = (state.active || paused) && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_H) ||
+        (state.active && gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED));
     if (overlay && !state.overlay_held) {
         /* A clean view hides the game's overlay and the runtime's panel
            together; the next press shows both. */
@@ -205,8 +218,8 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     }
     state.overlay_held = overlay;
 
-    bool step = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_PERIOD) ||
-        gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED);
+    bool step = (state.active || paused) && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_PERIOD) ||
+        (state.active && gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED));
     if (step && !state.step_held) recomp_scene_freeze_step();
     state.step_held = step;
 
@@ -447,7 +460,15 @@ void recomp_free_camera_frame_character(void)
 static void fill_overlay(RecompOverlayText *text, bool viewer)
 {
     recomp_overlay_clear(text);
-    if (!state.active || state.panel_hidden) return;
+    if (state.panel_hidden) return;
+    if (!state.active) {
+        if (!recomp_scene_freeze_active()) return;
+        recomp_overlay_set_title(text, "PAUSED");
+        recomp_overlay_set_hint(text, state.controller_hints > 0
+            ? "P resume   Back + R3 free camera"
+            : "P resume   . step   H clean view   F1 free camera");
+        return;
+    }
 
     RecompActorPoseStatus pose;
     char name[48];

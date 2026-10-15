@@ -21,7 +21,7 @@ you freeze it.
 | Faster / slower | Shift / Ctrl (held) | A / B (held) |
 | Back to the game's view | R | Y |
 | Next camera | C | X |
-| Freeze / unfreeze the scene | P | Start |
+| Pause / resume the game (P works anywhere, camera on or off) | P | Start (while flying) |
 | Clean view: hide the panel and the game's overlay (the latter while frozen) | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
 | Previous / next animation | [ / ] | D-pad left / right |
@@ -33,8 +33,11 @@ in the scene's list) and whether the scene is frozen, and two lines along
 the bottom list the controls: the keyboard's after a key was last used, the
 controller's after a controller was (and from the start on a Steam Deck).
 
-Switching the free camera off also unfreezes the scene, hands every
-animation back to the game, and the game carries on where it stopped. Music keeps playing while frozen; the scene's own sounds
+P pauses the game in any scene even without the free camera; a small PAUSED
+panel says so, and . and H work as above. Start pauses only while the camera
+flies, since the game uses it. Switching the free camera off keeps a pause
+and hands every animation back to the game; P resumes, and the game carries
+on where it stopped. Music keeps playing while frozen; the scene's own sounds
 stop.
 
 Linux and macOS save the launcher choice in `private/launcher.json` as

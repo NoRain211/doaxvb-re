@@ -21,7 +21,8 @@
 - **Free camera**. A **Free camera** launcher option, or
   `RECOMP_FREE_CAMERA=1`, lets F1 (or Back with the right stick clicked) take
   over the game's camera and fly it with the keyboard or a controller. While
-  it flies, P or Start freezes the scene, H or the left shoulder hides the
+  it flies, Start freezes the scene (P pauses the game anywhere, with or
+  without the camera), H or the left shoulder hides the
   2D overlay and . or the right shoulder steps one frame, for screenshots.
   [ and ] or the d-pad's left and right play another of the scene's animation
   clips on a character and hold it, and `\` or the left stick's click picks the
