@@ -92,12 +92,13 @@ bool tapped(int key)
 }
 
 /* F5/F6 RTGI strength -/+, F7 split view, F8 RTGI on/off, F9 pause,
-   F10 pause or step one frame. Returns true when F10 asked for a step. */
+   F10 pause or step one frame, F11 cycle the G-buffer debug view.
+   Returns true when F10 asked for a step. */
 bool pollHotkeys()
 {
     auto &t = recomp_tuning;
     const bool keys[] = {tapped(VK_F5), tapped(VK_F6), tapped(VK_F7),
-        tapped(VK_F8), tapped(VK_F9), tapped(VK_F10)};
+        tapped(VK_F8), tapped(VK_F9), tapped(VK_F10), tapped(VK_F11)};
     const float strength = t.rtgi_strength.load();
     if (keys[0]) t.rtgi_strength = (std::max)(strength - 0.25f, 0.0f);
     if (keys[1]) t.rtgi_strength = (std::min)(strength + 0.25f, 4.0f);
@@ -106,6 +107,7 @@ bool pollHotkeys()
     if (keys[4]) t.paused = !t.paused;
     const bool step = keys[5] && t.paused;
     if (keys[5]) t.paused = true;
+    if (keys[6]) ++t.gbuffer_cycles;
     bool any = false;
     for (bool key : keys) any |= key;
     if (any) {

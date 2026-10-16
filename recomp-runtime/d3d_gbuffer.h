@@ -12,6 +12,7 @@ bool gbufferRequested()
 struct GBuffer {
     bool enabled = false;
     unsigned debug_view = 0; // 1 normal, 2 depth
+    unsigned cycles_seen = 0; // recomp_tuning.gbuffer_cycles already applied
     ID3D11Texture2D *normal = nullptr;
     ID3D11RenderTargetView *target = nullptr;
     ID3D11ShaderResourceView *sample = nullptr;
