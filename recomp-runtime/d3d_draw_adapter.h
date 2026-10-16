@@ -4,6 +4,7 @@
 #include "d3d_draw_model.h"
 #include "runtime.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 void recomp_d3d_draw_adapter_reset(void);
@@ -26,6 +27,11 @@ uint32_t recomp_d3d_draw_adapter_declined(void);
    caller can tell which camera the scene is drawn with; NULL stops it. */
 typedef void (*RecompD3dDrawViewObserver)(const float view[16]);
 void recomp_d3d_draw_set_view_observer(RecompD3dDrawViewObserver observer);
+/* When the device's view transform is `old_view`, puts `view` and
+   `projection` in its place, as D3DDevice_SetTransform would. True when it
+   did. */
+bool recomp_d3d_draw_replace_view(const float old_view[16], const float view[16],
+    const float projection[16]);
 
 /* Reports every distinct FVF that reached the presenter and its draw count. */
 void recomp_d3d_draw_adapter_report_fvf(void);

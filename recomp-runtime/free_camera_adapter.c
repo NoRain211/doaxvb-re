@@ -64,6 +64,7 @@ enum {
     CAMERA_STRIDE = 0x0AE0u,
     CAMERA_COUNT = 5u,
     CAMERA_VIEW = 0x50u,
+    CAMERA_PROJECTION = 0x90u,
     CAMERA_EYE = 0x180u,
     CAMERA_TARGET = 0x190u,
     CAMERA_FOV = 0x1B0u,
@@ -643,7 +644,9 @@ static void build_camera(void)
 /* Some scenes build the camera in a task that does not draw (the pool's
    hopping game), which a frozen scene skips, so the view would stop with
    it. At the start of each frozen frame, if no camera was built in the last
-   one, the free camera builds its object itself. */
+   one, the free camera builds its object itself. That task also handed the
+   view and projection to the device, so where the device still holds the
+   object's last view the new ones replace it. */
 static void frame_started(void)
 {
     if (!state.active || !state.started || !recomp_scene_freeze_holding()) return;
@@ -654,14 +657,21 @@ static void frame_started(void)
     recomp_fpu_context_save(&fpu);
     recomp_runtime.registers.esp -= 4u;
     *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
-    recomp_runtime.registers.eax = CAMERA_FIRST + state.slot * CAMERA_STRIDE;
-    if (tracing(frame)) {
-        ++state.trace_lines;
-        fprintf(stderr, "recomp free camera trace: frame=%u frozen, so built here\n", frame);
-    }
+    const uint32_t object = CAMERA_FIRST + state.slot * CAMERA_STRIDE;
+    float old_view[16], view[16], projection[16];
+    recomp_guest_load(old_view, object + CAMERA_VIEW, sizeof old_view);
+    recomp_runtime.registers.eax = object;
     state.fallback = true;
     build_camera();
     state.fallback = false;
+    recomp_guest_load(view, object + CAMERA_VIEW, sizeof view);
+    recomp_guest_load(projection, object + CAMERA_PROJECTION, sizeof projection);
+    bool replaced = recomp_d3d_draw_replace_view(old_view, view, projection);
+    if (tracing(frame)) {
+        ++state.trace_lines;
+        fprintf(stderr, "recomp free camera trace: frame=%u frozen, so built here; device view %s\n",
+            frame, replaced ? "replaced" : "left (not the object's)");
+    }
     recomp_runtime.registers = registers;
     recomp_fpu_context_restore(&fpu);
 }

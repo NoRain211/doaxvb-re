@@ -1544,6 +1544,23 @@ void recomp_d3d_draw_set_view_observer(RecompD3dDrawViewObserver observer)
     view_observer = observer;
 }
 
+bool recomp_d3d_draw_replace_view(const float old_view[16], const float view[16],
+    const float projection[16])
+{
+    uint32_t device = *recomp_memory_u32(D3D_DEVICE_GLOBAL);
+    float current[16];
+    if (device == 0u || !read_transform(device, D3D_TRANSFORM_VIEW, current)) return false;
+    for (unsigned i = 0u; i < 16u; ++i) {
+        float size = fabsf(old_view[i]) > 1.0f ? fabsf(old_view[i]) : 1.0f;
+        if (fabsf(current[i] - old_view[i]) > 1e-4f * size) return false;
+    }
+    recomp_guest_store(device + D3D_TRANSFORM_BASE_OFFSET + D3D_TRANSFORM_VIEW * D3D_TRANSFORM_STRIDE,
+        view, 64u);
+    recomp_guest_store(device + D3D_TRANSFORM_BASE_OFFSET + D3D_TRANSFORM_PROJECTION * D3D_TRANSFORM_STRIDE,
+        projection, 64u);
+    return true;
+}
+
 void recomp_d3d_draw_set_hidden_buffers(uint32_t first, uint32_t end)
 {
     hidden_buffers_first = first;
