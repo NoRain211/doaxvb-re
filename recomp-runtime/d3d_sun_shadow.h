@@ -487,7 +487,7 @@ cbuffer SunShadow : register(b1) {
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
-float sunVisibility(float3 p, float soft = 0.6) {
+float sunVisibility(float3 p) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
     float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
     float2 dx = ddx(uv), dy = ddy(uv);
@@ -496,7 +496,7 @@ float sunVisibility(float3 p, float soft = 0.6) {
     if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
     // One kernel at every distance: taps stay within two texels of each other so a
     // thin distant line cannot fall between them, and near shadows stay sharp.
-    float2 spacing = clamp(footprint/5, soft*sun_texel, max(soft,2)*sun_texel);
+    float2 spacing = clamp(footprint/5, 0.6*sun_texel, 2*sun_texel);
     float determinant = dx.x*dy.y-dx.y*dy.x;
     float2 slope = abs(determinant) > 1e-12 ?
         float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
@@ -532,12 +532,7 @@ float sunVisibility(float3 p, float soft = 0.6) {
         "        sn *= dot(sn,sn) > 0 ? rsqrt(dot(sn,sn)) : 0;\n"
         "        float ndl = dot(sn, sun_light.xyz);\n"
         // Per-pixel normal offset: ~2.5 texels facing the sun, ~4.5 at grazing angles.
-        "        float visibility = sunVisibility(input.sun_world + sn*(0.04+0.03*(1-saturate(ndl))),\n"
-        "            sun_flags.w > 0 ? 3 : 0.6);\n"
-        // Characters: the game's shading already darkens sides turned from the sun,
-        // where the map only adds self-shadow blotches, so fade it out there. Close-ups
-        // magnify map texels, so characters also get a wider filter and 60% strength.
-        "        if (sun_flags.w > 0) visibility = lerp(1, visibility, 0.6*smoothstep(0.05, 0.3, ndl));\n"
+        "        float visibility = sunVisibility(input.sun_world + sn*(0.04+0.03*(1-saturate(ndl))));\n"
         "        input.color.rgb *= 1 - sun_flags.y*(1-visibility);\n"
         "    }\n");
 }
