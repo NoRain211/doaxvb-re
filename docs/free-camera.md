@@ -106,6 +106,16 @@ the free camera samples the controller itself once a frame, from the freeze's
 own hook in the scheduler. That works in any scene, including 2D screens with
 no camera, so a frozen scene can always be thawed.
 
+## Keys the input host also maps to buttons
+
+For the game, the input host presses controller buttons for some keys
+(`input_host_win32.c`): A, S, Z, X, Q, W, E and R press X, Y, A, B, White,
+Black and the triggers, and the arrows press the d-pad. The free camera
+leaves those buttons out of what it reads while their keys are down, since
+it reads the keys themselves: otherwise holding S pressed Y and reset the
+view every frame, A changed the camera object, and the arrows changed the
+animation and swimsuit.
+
 ## Culling at the screen's edges
 
 The game culls each part of a character against the eye and target it finds

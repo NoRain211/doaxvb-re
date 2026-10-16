@@ -242,8 +242,43 @@ static bool keys_used(void)
     return false;
 }
 
-static bool take_sample(const RecompInputGamepad *gamepad)
+/* The input host also presses controller buttons for some keys, for the
+   game (input_host_win32.c). The free camera reads those keys itself, so
+   their buttons are left out of what it reads: holding S would otherwise
+   press Y and reset the view, A would press X and change the camera object,
+   W and Q would toggle the clean view and step, and the arrows would press
+   the d-pad and change the animation and swimsuit. */
+static void leave_out_keys(RecompInputGamepad *pad)
 {
+    static const struct {
+        RecompInputHostKey key;
+        unsigned analog;
+    } analog_keys[] = {
+        {RECOMP_INPUT_HOST_KEY_A, ANALOG_X}, {RECOMP_INPUT_HOST_KEY_S, ANALOG_Y},
+        {RECOMP_INPUT_HOST_KEY_Z, ANALOG_A}, {RECOMP_INPUT_HOST_KEY_X, ANALOG_B},
+        {RECOMP_INPUT_HOST_KEY_Q, ANALOG_WHITE}, {RECOMP_INPUT_HOST_KEY_W, ANALOG_BLACK},
+        {RECOMP_INPUT_HOST_KEY_E, ANALOG_LTRIG}, {RECOMP_INPUT_HOST_KEY_R, ANALOG_RTRIG},
+    };
+    static const struct {
+        RecompInputHostKey key;
+        uint16_t button;
+    } button_keys[] = {
+        {RECOMP_INPUT_HOST_KEY_UP, XBOX_DPAD_UP}, {RECOMP_INPUT_HOST_KEY_DOWN, XBOX_DPAD_DOWN},
+        {RECOMP_INPUT_HOST_KEY_LEFT, XBOX_DPAD_LEFT}, {RECOMP_INPUT_HOST_KEY_RIGHT, XBOX_DPAD_RIGHT},
+    };
+    for (size_t i = 0u; i < sizeof analog_keys / sizeof analog_keys[0]; ++i) {
+        if (recomp_input_host_key(analog_keys[i].key)) pad->analog_buttons[analog_keys[i].analog] = 0u;
+    }
+    for (size_t i = 0u; i < sizeof button_keys / sizeof button_keys[0]; ++i) {
+        if (recomp_input_host_key(button_keys[i].key)) pad->buttons &= (uint16_t)~button_keys[i].button;
+    }
+}
+
+static bool take_sample(const RecompInputGamepad *raw)
+{
+    RecompInputGamepad pad = *raw;
+    leave_out_keys(&pad);
+    const RecompInputGamepad *gamepad = &pad;
     if (state.controller_hints < 0) {
         const char *deck = getenv("SteamDeck");
         state.controller_hints = deck != NULL && strcmp(deck, "1") == 0;

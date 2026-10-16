@@ -74,6 +74,7 @@ enum {
     CHOICE_CHARACTER = 1u,
     NAMES = 0x003245BCu,
     NAME_COUNT = 9u,
+    NO_CLIP = 0xFFFFu,
 };
 
 static const float HIDE_DEPTH = 100.0f;
@@ -93,6 +94,8 @@ static struct {
     uint32_t listed, listed_count;
     /* A clip being looked for, not yet played. */
     bool browsing;
+    /* Released: the next look starts at the list's first clip. */
+    bool from_start;
     uint16_t browse_clip;
     uint32_t browse_listed, browse_count;
 } pose;
@@ -292,12 +295,15 @@ static bool list_clips(void)
 bool recomp_actor_pose_browse(int step)
 {
     if (!list_clips()) return false;
+    /* After a release the list starts again from its first clip. */
     uint16_t current = pose.browsing ? pose.browse_clip :
-        pose.holding ? pose.clip : *recomp_memory_u16(layer_of(pose.actor) + LAYER_CLIP);
+        pose.holding ? pose.clip :
+        pose.from_start ? NO_CLIP : *recomp_memory_u16(layer_of(pose.actor) + LAYER_CLIP);
     uint16_t next;
     uint32_t position;
     if (!recomp_actor_pose_next(&clips, current, step, &next, &position)) return false;
     pose.browsing = true;
+    pose.from_start = false;
     pose.browse_clip = next;
     pose.browse_listed = position + 1u;
     pose.browse_count = clips.count;
@@ -335,6 +341,7 @@ bool recomp_actor_pose_step_clip(int step)
 void recomp_actor_pose_release(void)
 {
     pose.browsing = false;
+    pose.from_start = true;
     if (!pose.holding) return;
     pose.holding = false;
     fprintf(stderr, "recomp pose: character %u released\n", pose.actor);
