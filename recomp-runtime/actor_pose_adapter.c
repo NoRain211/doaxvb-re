@@ -1,5 +1,6 @@
 #include "actor_pose_adapter.h"
 #include "actor_pose.h"
+#include "scene_freeze_adapter.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -206,6 +207,12 @@ static void lower_bones(uint32_t actor, float depth)
 static void build_skeleton(void)
 {
     uint32_t actor = recomp_runtime.registers.eax;
+    /* Some scenes build skeletons in a task that also draws, which a frozen
+       scene keeps running (the pool): keep the pose already built. */
+    if (actor < ACTOR_COUNT && recomp_scene_freeze_holding()) {
+        recomp_runtime.registers.esp += 4u;
+        return;
+    }
     RecompFunction observed = recomp_animation_probe_lookup_manual(BUILD_SKELETON);
     if (observed != NULL) observed();
     else sub_000B01E0();

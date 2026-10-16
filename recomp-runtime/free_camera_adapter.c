@@ -24,10 +24,12 @@
    frame 0x00023B10 builds one from the object in EAX: it reads the eye at
    +0x180, the target at +0x190 and the vertical field of view in radians at
    +0x1B0, and writes the view and projection matrices at +0x50 and +0x90 that
-   the frame's draws and culling then use. The hook puts the free camera's
-   eye, target and field of view in place for that build and puts the game's
-   own back afterwards, so the game's camera logic carries on undisturbed and
-   the view resumes from it when the free camera is put away.
+   the frame's draws then use. The hook puts the free camera's eye, target
+   and field of view in place for that build and leaves them there: the game
+   culls each part of a character against the eye and target it finds in the
+   object, so putting its own back made parts at the screen's edges vanish.
+   When the free camera is put away the game's camera logic takes the object
+   over again.
 
    Which object holds the main view depends on the scene: the volleyball
    demo builds only the first, while the island map builds the first for the
@@ -96,17 +98,21 @@ static const float FRAME_FOV = 0.75f;
 /* The free camera steps once per presented frame. */
 static const float FRAME_SECONDS = 1.0f / 60.0f;
 
+/* A key or button held down to move through a list: a press moves one
+   place, holding keeps moving, faster the longer it is held. */
+typedef struct HeldRepeat {
+    int direction;
+    uint64_t since, next;
+} HeldRepeat;
+
 static struct {
     int enabled;
     RecompInputSampleSource source;
     bool active, started;
-    bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
+    bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held;
     bool actor_held, shot_held;
-    /* The clip direction held (-1, 0 or 1), since when, and when it next
-       moves on, in milliseconds. */
-    int clip_direction;
-    uint64_t clip_since, clip_repeat_at;
-    bool suit_back_held, suit_next_held;
+    HeldRepeat clip_held;
+    HeldRepeat suit_held, step_repeat;
     /* Face the chosen character at the next camera build; frame_pending
        also moves close to her. */
     bool aim_pending, frame_pending;
@@ -131,6 +137,30 @@ static uint64_t milliseconds(void)
     struct timespec now;
     if (timespec_get(&now, TIME_UTC) == 0) return 0u;
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+/* How many places to move now (signed), given the direction held (-1, 0 or
+   1). *released is set when the keys were just let go. */
+static int held_repeat(HeldRepeat *held, int direction, uint64_t now, bool *released)
+{
+    *released = false;
+    if (direction != 0 && direction != held->direction) {
+        held->direction = direction;
+        held->since = now;
+        held->next = now + CLIP_REPEAT_DELAY_MS;
+        return direction;
+    }
+    if (direction != 0 && now >= held->next) {
+        uint64_t time = now - held->since;
+        int places = time >= CLIP_FASTEST_AFTER_MS ? 10 : time >= CLIP_FASTER_AFTER_MS ? 3 : 1;
+        held->next = now + CLIP_REPEAT_MS;
+        return direction * places;
+    }
+    if (direction == 0 && held->direction != 0) {
+        held->direction = 0;
+        *released = true;
+    }
+    return 0;
 }
 
 static const char *setting(const char *name)
@@ -165,13 +195,12 @@ static void set_active(bool active)
     state.active = active;
     state.started = false;
     if (!active) {
-        /* A pause outlives the camera; P ends it. */
+        /* Putting the camera away hands the scene back, running. */
         recomp_actor_pose_release();
         recomp_suit_switch_forget();
-        if (!recomp_scene_freeze_active()) {
-            recomp_scene_freeze_set_overlay_hidden(false);
-            state.panel_hidden = false;
-        }
+        recomp_scene_freeze_set(false);
+        recomp_scene_freeze_set_overlay_hidden(false);
+        state.panel_hidden = false;
     }
     fprintf(stderr, "recomp free camera: %s\n", active ? "on" : "off");
 }
@@ -257,8 +286,12 @@ static bool take_sample(const RecompInputGamepad *gamepad)
 
     bool step = (state.active || paused) && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_PERIOD) ||
         (state.active && gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED));
-    if (step && !state.step_held) recomp_scene_freeze_step();
-    state.step_held = step;
+    /* Holding it steps on and on, every frame after a while. */
+    bool step_released;
+    int steps = held_repeat(&state.step_repeat, step ? 1 : 0, milliseconds(), &step_released);
+    if (steps != 0 || (step && milliseconds() - state.step_repeat.since >= CLIP_FASTER_AFTER_MS)) {
+        recomp_scene_freeze_step();
+    }
 
     /* A press moves to the next or previous clip; holding keeps moving,
        faster the longer it is held, and the clip plays when let go. */
@@ -266,23 +299,12 @@ static bool take_sample(const RecompInputGamepad *gamepad)
         (gamepad->buttons & XBOX_DPAD_LEFT) != 0u);
     bool clip_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
         (gamepad->buttons & XBOX_DPAD_RIGHT) != 0u);
-    int clip_direction = (int)clip_next - (int)clip_back;
     uint64_t now = milliseconds();
-    if (clip_direction != 0 && clip_direction != state.clip_direction) {
-        recomp_actor_pose_browse(clip_direction);
-        state.clip_direction = clip_direction;
-        state.clip_since = now;
-        state.clip_repeat_at = now + CLIP_REPEAT_DELAY_MS;
-    } else if (clip_direction != 0 && now >= state.clip_repeat_at) {
-        uint64_t held = now - state.clip_since;
-        int places = held >= CLIP_FASTEST_AFTER_MS ? 10 : held >= CLIP_FASTER_AFTER_MS ? 3 : 1;
-        recomp_actor_pose_browse(clip_direction * places);
-        state.clip_repeat_at = now + CLIP_REPEAT_MS;
-    } else if (clip_direction == 0 && state.clip_direction != 0) {
-        state.clip_direction = 0;
-        if (recomp_actor_pose_play_browsed() && recomp_scene_freeze_active()) {
-            recomp_scene_freeze_step();
-        }
+    bool released;
+    int places = held_repeat(&state.clip_held, (int)clip_next - (int)clip_back, now, &released);
+    if (places != 0) recomp_actor_pose_browse(places);
+    if (released && recomp_actor_pose_play_browsed() && recomp_scene_freeze_active()) {
+        recomp_scene_freeze_step();
     }
 
     /* The model viewer shows one girl, so it has no next one. */
@@ -294,18 +316,18 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     }
     state.actor_held = actor;
 
+    /* Swimsuits move the same way and the suit loads when let go. */
     bool suit_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_MINUS) ||
         (gamepad->buttons & XBOX_DPAD_DOWN) != 0u);
     bool suit_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_EQUALS) ||
         (gamepad->buttons & XBOX_DPAD_UP) != 0u);
-    int suit_step = (suit_next && !state.suit_next_held) - (suit_back && !state.suit_back_held);
-    if (suit_step != 0) {
+    places = held_repeat(&state.suit_held, (int)suit_next - (int)suit_back, now, &released);
+    if (places != 0) {
         RecompActorPoseStatus pose;
         recomp_actor_pose_status(&pose);
-        recomp_suit_switch_step(pose.actor, suit_step);
+        recomp_suit_switch_browse(pose.actor, places);
     }
-    state.suit_back_held = suit_back;
-    state.suit_next_held = suit_next;
+    if (released) recomp_suit_switch_wear_browsed();
 
     if (state.active || toggle) state.pad = *gamepad;
     return state.active || toggle;
@@ -506,11 +528,6 @@ static void build_camera(void)
     if (observed != NULL) observed();
     else sub_00023B10();
 
-    if (fly && state.started) {
-        recomp_guest_store(object + CAMERA_EYE, eye, sizeof eye);
-        recomp_guest_store(object + CAMERA_TARGET, target, sizeof target);
-        recomp_guest_store(object + CAMERA_FOV, &fov, sizeof fov);
-    }
 }
 
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
@@ -568,12 +585,14 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         } else {
             recomp_overlay_add_line(text, "Animation: the game's own");
         }
-        uint16_t suit = recomp_suit_switch_current(pose.actor);
+        uint16_t suit = recomp_suit_switch_shown(pose.actor);
+        uint32_t place = 0u, count = 0u;
         if (suit != 0u) {
             char suit_name[48];
             recomp_suit_switch_name(suit, suit_name, sizeof suit_name);
-            recomp_overlay_add_line(text, "Swimsuit: %s%s", suit_name,
-                recomp_suit_switch_busy() ? " (changing)" : "");
+            recomp_suit_switch_place(pose.actor, suit, &place, &count);
+            recomp_overlay_add_line(text, "Swimsuit %u of %u: %s%s", (unsigned)place,
+                (unsigned)count, suit_name, recomp_suit_switch_busy() ? " (changing)" : "");
         }
     }
     recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");

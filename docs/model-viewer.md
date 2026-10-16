@@ -1,14 +1,15 @@
 # Model viewer
 
 With **Free camera** ticked in the launcher (`RECOMP_FREE_CAMERA=1`), the
-main menu has a third item, **MODEL VIEWER**, under GO TO ZACK ISLAND and
+title screen shows for five seconds how to reach the free camera and the
+viewer, and the main menu has a third item, **MODEL VIEWER**, under GO TO ZACK ISLAND and
 EXHIBITION. It leads through Exhibition's own screens: the viewer picks One
 Player, you choose the girl and her swimsuit as Player 1, the viewer accepts
 the partner and opponents the game offers, and you choose the court. When the match has
 started, the viewer takes it over:
 
 - the free camera comes on in front of Player 1's girl,
-- the scene freezes,
+- the scene keeps running (P or Start pauses it),
 - the other three players, the ball and the game's on-screen overlay (the
   score and the players' portraits) are hidden, frozen or not,
 - a panel names her, shows the animation and swimsuit and lists the controls.

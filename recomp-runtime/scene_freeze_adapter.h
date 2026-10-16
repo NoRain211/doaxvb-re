@@ -15,6 +15,8 @@ bool recomp_scene_freeze_active(void);
    and portraits, logos. */
 void recomp_scene_freeze_set_overlay_hidden(bool hidden);
 bool recomp_scene_freeze_overlay_hidden(void);
+/* True while the scene is frozen and not stepping a frame. */
+bool recomp_scene_freeze_holding(void);
 /* Lets a frozen scene run one more frame, then holds it again. */
 void recomp_scene_freeze_step(void);
 /* While `function` is not zero, only the task running that function takes

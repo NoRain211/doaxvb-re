@@ -61,7 +61,7 @@
    first frame the other three players are hidden and the picture holds
    (RECOMP_PRESENT_HOLD_VIEWER). Once it has run for SETTLE_FRAMES the
    viewer takes it over: the free camera comes on close to the first player,
-   the scene freezes, and the other three players are hidden. Putting the
+   the scene keeps running, and the other three players are hidden. Putting the
    free camera away ends the viewer: the match is quit the way its results
    menu's Quit does it (0x5D8978 = 3, then 0x4D6FC8 = 1), and the players
    are shown again once the match scene has gone. Quit leads to the title,
@@ -132,6 +132,7 @@ enum {
     STEP_FRAMES = 0x004D994Cu,
     STEP_LEAVING = 0x004D994Au,
     STEP_SETTLE_FRAMES = 60,
+    TITLE_HINT_FRAMES = 300,
     FIRST_PLAYER = 0,
     OTHER_PLAYERS = 0xEu,
 };
@@ -221,6 +222,25 @@ static void show_time_panel(void)
     recomp_overlay_set_title(&text, "MODEL VIEWER");
     recomp_overlay_add_line(&text, "Time of day: %s", recomp_viewer_time_name(chosen_time));
     recomp_overlay_set_hint(&text, "[ ] or LT RT: time of day");
+    recomp_overlay_publish(&text);
+}
+
+/* For the first TITLE_HINT_FRAMES of each visit to the title screen, a
+   panel says how to reach the free camera and the viewer. */
+static void show_title_hint(void)
+{
+    static uint32_t title_frames;
+    if (*recomp_memory(SCENE, 1u) != SCENE_TITLE || recomp_free_camera_active()) {
+        if (*recomp_memory(SCENE, 1u) != SCENE_TITLE) title_frames = 0u;
+        return;
+    }
+    if (title_frames >= TITLE_HINT_FRAMES) return;
+    ++title_frames;
+    RecompOverlayText text;
+    recomp_overlay_clear(&text);
+    recomp_overlay_set_title(&text, "FREE CAMERA");
+    recomp_overlay_add_line(&text, "F1, or Back + right stick click: free camera");
+    recomp_overlay_add_line(&text, "MODEL VIEWER is in the main menu");
     recomp_overlay_publish(&text);
 }
 
@@ -359,6 +379,7 @@ static void viewer_tick(uint32_t frame)
     recomp_suit_switch_frame(frame);
     recomp_free_camera_overlay(session == VIEWER_VIEWING);
     if (choosing_court()) show_time_panel();
+    show_title_hint();
     if (session == VIEWER_IDLE) restore_courts();
     mask_character_select();
     bool in_match = *recomp_memory(SCENE, 1u) == SCENE_MATCH;
@@ -380,7 +401,6 @@ static void viewer_tick(uint32_t frame)
         recomp_actor_pose_set_hidden(OTHER_PLAYERS);
         recomp_free_camera_set_active(true);
         recomp_free_camera_frame_character();
-        recomp_scene_freeze_set(true);
         recomp_scene_freeze_set_overlay_hidden(true);
         session = VIEWER_VIEWING;
         fprintf(stderr, "recomp viewer: viewing\n");

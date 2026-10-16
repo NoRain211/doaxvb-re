@@ -23,9 +23,9 @@ you freeze it.
 | Next camera | C | X |
 | Pause / resume the game (P works anywhere, camera on or off) | P | Start (while flying) |
 | Clean view: hide the panel and the game's overlay | H | Left shoulder |
-| Advance one frame while frozen | . (period) | Right shoulder |
+| Advance one frame while frozen; hold to keep stepping, every frame after 1.5 s | . (period) | Right shoulder |
 | Previous / next animation; hold to scroll, faster the longer held, and let go to play | [ / ] | D-pad left / right |
-| Previous / next swimsuit on the chosen character | - / = | D-pad down / up |
+| Previous / next swimsuit on the chosen character; hold to scroll, and the suit loads when let go | - / = | D-pad down / up |
 | Screenshot (anywhere; the controller while flying) | F12 | Back + A |
 | Next character to animate (the camera turns to her; not in the model viewer) | `\` (backslash) | Left stick click |
 
@@ -37,9 +37,9 @@ controller's after a controller was (and from the start on a Steam Deck).
 
 P pauses the game in any scene even without the free camera; a small PAUSED
 panel says so, and . and H work as above. Start pauses only while the camera
-flies, since the game uses it. Switching the free camera off keeps a pause
-and hands every animation back to the game; P resumes, and the game carries
-on where it stopped. Music keeps playing while frozen; the scene's own sounds
+flies, since the game uses it. Switching the free camera off ends a pause
+and hands every animation back to the game, which carries on where it
+stopped. Music keeps playing while frozen; the scene's own sounds
 stop.
 
 Linux and macOS save the launcher choice in `private/launcher.json` as
@@ -104,6 +104,20 @@ the free camera samples the controller itself once a frame, from the freeze's
 own hook in the scheduler. That works in any scene, including 2D screens with
 no camera, so a frozen scene can always be thawed.
 
+## Culling at the screen's edges
+
+The game culls each part of a character against the eye and target it finds
+in the camera object, so the free camera leaves its own there after the
+build instead of putting the game's back; with the game's own back, arms and
+legs near the screen's edges vanished when the camera turned away.
+
+## Freezing scenes that animate while drawing
+
+Some scenes, such as the pool, build characters' skeletons in a task that
+also draws, which a frozen scene keeps running. The skeleton build
+(`0x000B01E0`, already wrapped for animation select) is skipped while a
+scene is held, so the pose built last stays.
+
 ## Choosing an animation
 
 A press of `[` or `]` (d-pad left or right) moves to the previous or next
@@ -146,6 +160,10 @@ first scene, including 3 shared ones. The clips have no names, only numbers,
 which the log reports (`recomp pose: character 0 clip 02b0 (36 of 45)`).
 
 ## Changing the swimsuit
+
+The panel shows the suit's place among those she can wear and its name
+(`Swimsuit 37 of 307: Tulip`); holding the key scrolls like the animation
+keys, and the suit loads when it is let go.
 
 `-` and `=`, or the d-pad's down and up, put the chosen
 character's previous or next swimsuit on her, in a running or frozen scene.
@@ -225,7 +243,7 @@ hotel room, where no character is active. A scripted debug setting,
 `RECOMP_SUIT_SWITCH_AT=<frame>[,<frame>...]`, changes the first character's
 suit at those frames.
 
-Not yet verified: mouse look, freezing, animation select and swimsuit changes in a play test,
+Not yet verified: freezing in the pool scene (no save reaches it in scripted runs), mouse look, freezing, animation select and swimsuit changes in a play test,
 swimsuit changes in vacation scenes with a character in them (the beach, the pool),
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
 hotel, the shops, the pool), and Windows and Linux builds.

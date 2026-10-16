@@ -92,6 +92,11 @@ enum {
 };
 
 static RecompSuitSwitch state;
+/* A suit being looked for and not yet worn. */
+static bool browsing;
+static uint32_t browse_actor;
+static uint16_t browse_suit;
+
 /* Each slot's suit before its first switch, and whose it was; 0 when none. */
 static uint16_t original[SLOT_COUNT];
 static uint8_t original_character[SLOT_COUNT];
@@ -236,6 +241,7 @@ bool recomp_suit_switch_restore(uint32_t actor)
 void recomp_suit_switch_forget(void)
 {
     memset(original, 0, sizeof original);
+    browsing = false;
 }
 
 bool recomp_suit_switch_step(uint32_t actor, int step)
@@ -248,6 +254,59 @@ bool recomp_suit_switch_step(uint32_t actor, int step)
     uint16_t suit = recomp_suit_switch_next(current, step, SUIT_END, wearable, &character);
     if (suit == current) return false;
     return begin(actor, suit);
+}
+
+static bool girl(uint32_t actor, uint32_t *character)
+{
+    if (actor >= SLOT_COUNT || *recomp_memory(ACTOR_ACTIVE + actor, 1u) == 0u) return false;
+    *character = *recomp_memory(root(actor) + ROOT_CHARACTER, 1u);
+    return (character_bit(*character) & GIRL_BITS) != 0u;
+}
+
+bool recomp_suit_switch_browse(uint32_t actor, int step)
+{
+    uint32_t character;
+    if (step == 0 || !girl(actor, &character)) return false;
+    if (!browsing || browse_actor != actor) {
+        browse_suit = state.phase != RECOMP_SUIT_IDLE && state.slot == actor ? state.suit :
+            *recomp_memory_u16(root(actor) + ROOT_SUIT);
+    }
+    uint16_t suit = browse_suit;
+    for (int moved = 0; moved < (step > 0 ? step : -step); ++moved) {
+        suit = recomp_suit_switch_next(suit, step > 0 ? 1 : -1, SUIT_END, wearable, &character);
+    }
+    browsing = true;
+    browse_actor = actor;
+    browse_suit = suit;
+    return true;
+}
+
+bool recomp_suit_switch_wear_browsed(void)
+{
+    if (!browsing) return false;
+    browsing = false;
+    if (state.phase != RECOMP_SUIT_IDLE) return false;
+    if (*recomp_memory_u16(root(browse_actor) + ROOT_SUIT) == browse_suit) return false;
+    return begin(browse_actor, browse_suit);
+}
+
+uint16_t recomp_suit_switch_shown(uint32_t actor)
+{
+    if (browsing && browse_actor == actor) return browse_suit;
+    return recomp_suit_switch_current(actor);
+}
+
+void recomp_suit_switch_place(uint32_t actor, uint16_t suit, uint32_t *place, uint32_t *count)
+{
+    uint32_t character;
+    *place = 0u;
+    *count = 0u;
+    if (!girl(actor, &character)) return;
+    for (uint16_t id = 1u; id < SUIT_END; ++id) {
+        if (!wearable(id, &character)) continue;
+        ++*count;
+        if (id == suit) *place = *count;
+    }
 }
 
 bool recomp_suit_switch_busy(void)
@@ -318,6 +377,32 @@ bool recomp_suit_switch_restore(uint32_t actor)
 {
     (void)actor;
     return false;
+}
+
+bool recomp_suit_switch_browse(uint32_t actor, int step)
+{
+    (void)actor;
+    (void)step;
+    return false;
+}
+
+bool recomp_suit_switch_wear_browsed(void)
+{
+    return false;
+}
+
+uint16_t recomp_suit_switch_shown(uint32_t actor)
+{
+    (void)actor;
+    return 0u;
+}
+
+void recomp_suit_switch_place(uint32_t actor, uint16_t suit, uint32_t *place, uint32_t *count)
+{
+    (void)actor;
+    (void)suit;
+    *place = 0u;
+    *count = 0u;
 }
 
 void recomp_suit_switch_forget(void)

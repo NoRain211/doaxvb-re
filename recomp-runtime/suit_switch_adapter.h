@@ -16,6 +16,16 @@ bool recomp_suit_switch_step(uint32_t actor, int step);
 bool recomp_suit_switch_restore(uint32_t actor);
 /* Forgets those first suits. */
 void recomp_suit_switch_forget(void);
+/* Moves the suit being looked for `step` places through the suits
+   character `actor` can wear, without putting it on. */
+bool recomp_suit_switch_browse(uint32_t actor, int step);
+/* Puts on the suit being looked for. True when a switch began. */
+bool recomp_suit_switch_wear_browsed(void);
+/* The suit to show for `actor`: the one looked for, else the one worn. */
+uint16_t recomp_suit_switch_shown(uint32_t actor);
+/* `suit`'s place, from 1, among the suits `actor` can wear, and how many
+   those are; 0 and 0 when she is not a girl. */
+void recomp_suit_switch_place(uint32_t actor, uint16_t suit, uint32_t *place, uint32_t *count);
 /* True while a switch is under way. */
 bool recomp_suit_switch_busy(void);
 /* The swimsuit character `actor` wears, or 0 when she has none. */

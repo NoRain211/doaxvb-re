@@ -82,6 +82,11 @@ bool recomp_scene_freeze_active(void)
     return frozen;
 }
 
+bool recomp_scene_freeze_holding(void)
+{
+    return frozen && recomp_d3d_frame_adapter_swap_counter() >= step_until;
+}
+
 void recomp_scene_freeze_run_only(uint32_t function)
 {
     if (only_function == function) return;
@@ -194,6 +199,11 @@ void recomp_scene_freeze_step(void)
 void recomp_scene_freeze_run_only(uint32_t function)
 {
     (void)function;
+}
+
+bool recomp_scene_freeze_holding(void)
+{
+    return false;
 }
 
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle)
