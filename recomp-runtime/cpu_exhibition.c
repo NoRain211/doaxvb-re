@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -118,7 +119,8 @@ static uint32_t random_below(uint32_t count)
     static uint32_t state;
 
     if (state == 0u) {
-        state = (uint32_t)time(NULL) | 1u;
+        /* A pinned court is a test run: the same cast every time. */
+        state = getenv("RECOMP_CPU_EXHIBITION_COURT") != NULL ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
     }
     state ^= state << 13;
     state ^= state >> 17;
@@ -208,7 +210,10 @@ static void leave_mode(uint8_t scene)
 static bool cast_match(void)
 {
     unsigned girls[GIRL_COUNT];
-    const unsigned court = random_below(COURT_COUNT);
+    /* RECOMP_CPU_EXHIBITION_COURT=0..9 pins the court, for repeatable test runs. */
+    const char *pinned = getenv("RECOMP_CPU_EXHIBITION_COURT");
+    const unsigned court = pinned != NULL && pinned[0] >= '0' && pinned[0] <= '9' && pinned[1] == 0 ?
+        (unsigned)(pinned[0] - '0') : random_below(COURT_COUNT);
 
     for (unsigned i = 0; i < GIRL_COUNT; ++i) {
         girls[i] = i;
