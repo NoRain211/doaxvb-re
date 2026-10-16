@@ -3134,6 +3134,16 @@ static bool testSunPropShadows(RecompD3dPresenter *presenter,
     receiver.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
     receiver.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
     passed &= sunPropShadow(receiver);
+    {
+        auto lit = receiver; // the dusk form: lit, projected, material alpha
+        lit.directional.enabled = true; lit.use_texture_factor = true;
+        passed &= !sunPropShadow(lit) && sunOverlayDraw(lit);
+        lit.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+        passed &= !sunOverlayDraw(lit);
+        lit = receiver; lit.directional.enabled = true;
+        lit.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT5;
+        passed &= !sunOverlayDraw(lit);
+    }
     for (unsigned variant = 0; variant < 12; ++variant) {
         auto other = receiver;
         switch (variant) {
@@ -3186,6 +3196,12 @@ static bool testSunPropShadows(RecompD3dPresenter *presenter,
         passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
             submitDraw(presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
             checkPixels(presenter, color, readback, "prop shadow color", mode == 0 || mode == 3 ? black : unchanged);
+        if (mode == 1) {
+            auto lit = receiver; lit.directional.enabled = true;
+            passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+                submitDraw(presenter, lit) == RECOMP_D3D_PRESENTER_OK &&
+                checkPixels(presenter, color, readback, "lit palm shadow color", unchanged);
+        }
         if (mode == 0 || mode == 3) continue;
         auto probe = receiver;
         probe.has_texture = false; probe.use_texture_factor = true; probe.texture_factor = red[0];
@@ -3198,7 +3214,7 @@ static bool testSunPropShadows(RecompD3dPresenter *presenter,
             checkPixels(presenter, color, readback, "hidden prop keeps depth/stencil", red);
         for (auto &v : vertices) v[2] = 0.5f;
     }
-    passed &= presenter->sun.prop_shadows == 2;
+    passed &= presenter->sun.prop_shadows == 3; // two prop draws and the lit dusk form
     passed &= submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK && !target->sun_palm.valid();
     passed &= submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK && target->sun_palm.valid();
     SunPalmTarget fresh;

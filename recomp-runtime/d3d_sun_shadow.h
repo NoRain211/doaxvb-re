@@ -208,6 +208,18 @@ bool sunPalmTexture(const RecompD3dTextureDesc &desc)
         desc.mip_levels <= 1;
 }
 
+// A draw that may lay a legacy shadow overlay. At dusk the game draws the projected
+// palm shadow lit, through a texture-coordinate projection with material alpha, so
+// only the sampled palm target (validated in lookupTexture) identifies that form.
+bool sunOverlayDraw(const RecompD3dPresenterDrawCommand &draw)
+{
+    const auto &b = draw.blend;
+    return sunPropShadow(draw) || (!draw.target.offscreen && draw.has_texture &&
+        !draw.texture_is_backbuffer && !draw.texture_is_frontbuffer && sunPalmTexture(draw.texture) &&
+        b.blend_enable && b.color_write_mask && b.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+        b.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && b.op == RECOMP_D3D_BLEND_OP_ADD);
+}
+
 bool sunPalmProducer(const RecompD3dPresenterDrawCommand &draw)
 {
     return draw.target.offscreen && draw.target.no_depth && draw.fvf == 0x112 &&
