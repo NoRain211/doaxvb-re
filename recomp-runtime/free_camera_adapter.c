@@ -328,6 +328,8 @@ static bool take_sample(const RecompInputGamepad *raw)
     if (freeze && !state.freeze_held) {
         bool pause = !recomp_scene_freeze_active();
         recomp_scene_freeze_set(pause);
+        /* A trace starts again at each pause. */
+        state.trace_lines = 0u;
         if (!pause && !state.active) {
             recomp_scene_freeze_set_overlay_hidden(false);
             state.panel_hidden = false;
@@ -573,9 +575,13 @@ static void build_camera(void)
     recomp_guest_load(&fov, object + CAMERA_FOV, sizeof fov);
     if (tracing(frame)) {
         ++state.trace_lines;
-        fprintf(stderr, "recomp free camera trace: frame=%u object=%08x active=%d "
+        /* The game task building it: the scheduler's current record's function. */
+        uint32_t task = *recomp_memory_u32(0x005F2E5Cu);
+        uint32_t function = task < 17u ? *recomp_memory_u32(0x005F2C38u + task * 0x20u + 0x0Cu) : 0u;
+        fprintf(stderr, "recomp free camera trace: frame=%u object=%08x active=%d task=%08x "
             "eye=%.3f,%.3f,%.3f target=%.3f,%.3f,%.3f fov=%.4f\n",
-            frame, object, state.active && ours, eye[0], eye[1], eye[2], target[0], target[1], target[2], fov);
+            frame, object, state.active && ours, function, eye[0], eye[1], eye[2],
+            target[0], target[1], target[2], fov);
     }
 
     const bool fly = state.active && ours;
@@ -669,8 +675,10 @@ static void frame_started(void)
     bool replaced = recomp_d3d_draw_replace_view(old_view, view, projection);
     if (tracing(frame)) {
         ++state.trace_lines;
-        fprintf(stderr, "recomp free camera trace: frame=%u frozen, so built here; device view %s\n",
-            frame, replaced ? "replaced" : "left (not the object's)");
+        fprintf(stderr, "recomp free camera trace: frame=%u frozen, so built here; device view %s; "
+            "last frame's draws with each object's view %u %u %u %u %u\n",
+            frame, replaced ? "replaced" : "left (not the object's)", state.drawn_before[0],
+            state.drawn_before[1], state.drawn_before[2], state.drawn_before[3], state.drawn_before[4]);
     }
     recomp_runtime.registers = registers;
     recomp_fpu_context_restore(&fpu);
