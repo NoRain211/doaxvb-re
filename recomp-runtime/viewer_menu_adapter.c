@@ -10,6 +10,9 @@
 #include "free_camera_adapter.h"
 #include "scene_freeze_adapter.h"
 #include "d3d_draw_adapter.h"
+#include "input_host_win32.h"
+#include "overlay_text.h"
+#include "viewer_scene.h"
 
 /* MODEL VIEWER: a third item in the main menu, under GO TO ZACK ISLAND and
    EXHIBITION, shown when RECOMP_FREE_CAMERA is set.
@@ -111,6 +114,11 @@ enum {
     PICK_STEP_COURT = 4,
     AUTO_PICK_POLLS = 12,
     ANALOG_A = 0,
+    ANALOG_LTRIG = 6,
+    ANALOG_RTRIG = 7,
+    ANALOG_PRESSED = 0x20,
+    COURTS = 0x002A7A40u,
+    COURT_SIZE = 6,
     SCENE_MENU = 3,
     SCENE_TITLE = 4,
     STEP_FRAMES = 0x004D994Cu,
@@ -141,6 +149,58 @@ static const float PICKING_MASK[1][4] = {{200.0f, 60.0f, 720.0f, 362.0f}};
 static const float COURT_MASK[1][4] = {{200.0f, 60.0f, 720.0f, 250.0f}};
 
 /* Shows only Player 1's column of character select while the viewer waits. */
+/* Time of day. Court select's tiles pick a place at a time; the viewer's
+   time setting can swap the court's stage for its place's stage at another
+   time (viewer_scene.c). While court select is up, [ and ] or the triggers
+   change the setting and the court table at COURTS, six bytes a court with
+   the stage first, holds the swapped stages, so the match loads the chosen
+   one. The table is put back when the viewer is done. */
+static RecompViewerTime chosen_time;
+static void choose_time(RecompInputGamepad *gamepad);
+static uint8_t own_stages[RECOMP_VIEWER_COURTS];
+static bool table_changed;
+static bool time_back_held, time_next_held;
+
+static void restore_courts(void)
+{
+    if (!table_changed) return;
+    for (uint32_t court = 0u; court < RECOMP_VIEWER_COURTS; ++court) {
+        *recomp_memory(COURTS + court * COURT_SIZE, 1u) = own_stages[court];
+    }
+    table_changed = false;
+}
+
+static void apply_time(void)
+{
+    if (!table_changed) {
+        for (uint32_t court = 0u; court < RECOMP_VIEWER_COURTS; ++court) {
+            own_stages[court] = *recomp_memory(COURTS + court * COURT_SIZE, 1u);
+        }
+        table_changed = true;
+    }
+    for (uint32_t court = 0u; court < RECOMP_VIEWER_COURTS; ++court) {
+        int stage = recomp_viewer_court_stage(court, chosen_time, own_stages[court]);
+        if (stage >= 0) *recomp_memory(COURTS + court * COURT_SIZE, 1u) = (uint8_t)stage;
+    }
+}
+
+static bool choosing_court(void)
+{
+    return session == VIEWER_WAITING && *recomp_memory(SCENE, 1u) == SCENE_MENU &&
+        *recomp_memory(MENU_SCREEN, 1u) == SCREEN_CHARACTER_SELECT &&
+        *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT;
+}
+
+static void show_time_panel(void)
+{
+    RecompOverlayText text;
+    recomp_overlay_clear(&text);
+    recomp_overlay_set_title(&text, "MODEL VIEWER");
+    recomp_overlay_add_line(&text, "Time of day: %s", recomp_viewer_time_name(chosen_time));
+    recomp_overlay_set_hint(&text, "[ ] or LT RT: time of day");
+    recomp_overlay_publish(&text);
+}
+
 static void mask_character_select(void)
 {
     static int shown = -1;
@@ -273,6 +333,8 @@ static void viewer_tick(uint32_t frame)
 {
     (void)frame;
     recomp_free_camera_overlay(session == VIEWER_VIEWING);
+    if (choosing_court()) show_time_panel();
+    if (session == VIEWER_IDLE) restore_courts();
     mask_character_select();
     bool in_match = *recomp_memory(SCENE, 1u) == SCENE_MATCH;
     switch (session) {
@@ -334,6 +396,7 @@ void recomp_viewer_install(void)
 void recomp_viewer_input(RecompInputGamepad *gamepad)
 {
     static uint32_t polls;
+    choose_time(gamepad);
     uint8_t screen = *recomp_memory(MENU_SCREEN, 1u);
     bool picking = screen == SCREEN_CHARACTER_SELECT &&
         *recomp_memory(PICKS + PICK_NUMBER, 1u) != 0u &&
@@ -345,6 +408,30 @@ void recomp_viewer_input(RecompInputGamepad *gamepad)
         return;
     }
     if (++polls % AUTO_PICK_POLLS == 0u) gamepad->analog_buttons[ANALOG_A] = 0xFFu;
+}
+
+/* While court select is up: [ ] or the triggers change the time of day;
+   the triggers are kept from the game. */
+static void choose_time(RecompInputGamepad *gamepad)
+{
+    if (gamepad == NULL || !choosing_court()) {
+        time_back_held = time_next_held = false;
+        return;
+    }
+    bool back = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET) ||
+        gamepad->analog_buttons[ANALOG_LTRIG] >= ANALOG_PRESSED;
+    bool next = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
+        gamepad->analog_buttons[ANALOG_RTRIG] >= ANALOG_PRESSED;
+    int step = (next && !time_next_held) - (back && !time_back_held);
+    time_back_held = back;
+    time_next_held = next;
+    gamepad->analog_buttons[ANALOG_LTRIG] = 0u;
+    gamepad->analog_buttons[ANALOG_RTRIG] = 0u;
+    if (step != 0) {
+        chosen_time = recomp_viewer_time_step(chosen_time, step);
+        fprintf(stderr, "recomp viewer: time of day %s\n", recomp_viewer_time_name(chosen_time));
+    }
+    apply_time();
 }
 
 RecompFunction recomp_viewer_menu_lookup_manual(uint32_t guest_address)

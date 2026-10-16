@@ -18,6 +18,29 @@ scene, and play another of the scene's animation clips on her. Put the
 free camera away (F1, or Back with the right stick) to leave: the scene is
 unpaused, the match is quit and the game returns to the main menu.
 
+## Time of day
+
+On court select, `[` and `]` (or LT and RT) choose the time of day: **As the
+court**, **Day**, **Sunset** or **Dusk**. The game bakes the time of day into
+each stage, and Exhibition's ten courts are three places at dusk, day and
+sunset, then one more beach by day. The viewer swaps the chosen court's stage
+for its place's stage at the chosen time; a place without that time keeps the
+court's own. Places and stages (`recomp-runtime/viewer_scene.c`, tested by
+`viewer_scene_test.c`):
+
+| Place (courts) | Day | Sunset | Dusk |
+|---|---|---|---|
+| Beach A (0-2) | 4 | 5 | 39 |
+| Rock arch (3-5) | 6 | 7 | 40 |
+| Jungle court (6-8) | 8 | 9 | 41 |
+| Beach B (9) | 11 | 12 | - |
+
+The court table at `0x2A7A40` holds six bytes a court, the stage first, and
+the match loads the chosen court's stage from it. While court select is up
+the viewer writes the swapped stages into the table, and puts the game's own
+back once the viewer is done. A shifted system clock changes nothing, so the
+time of day comes only from the stage.
+
 ## How it works
 
 `recomp-runtime/viewer_menu_adapter.c` does the menu and the hand-over.
@@ -85,6 +108,9 @@ front, frozen, with no overlay. Switching the free camera off quit the match
 and the game came back to the main menu.
 
 The third girl, Hitomi, was also chosen and framed the same way.
+
+On court 0, Day and Sunset loaded stages 4 and 5 in place of 39, with the
+matching sky, and the table read 39 again after leaving the viewer.
 
 Not yet verified: a play test, every court,
 Windows and Linux builds, and the Japanese language setting.
