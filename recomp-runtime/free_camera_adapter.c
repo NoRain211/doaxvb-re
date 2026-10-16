@@ -65,6 +65,8 @@ enum {
     CAMERA_COUNT = 5u,
     CAMERA_VIEW = 0x50u,
     CAMERA_PROJECTION = 0x90u,
+    SCENE_VIEW = 0x004D6F20u,
+    SCENE_PROJECTION = 0x004D95F0u,
     CAMERA_EYE = 0x180u,
     CAMERA_TARGET = 0x190u,
     CAMERA_FOV = 0x1B0u,
@@ -647,12 +649,32 @@ static void build_camera(void)
 
 }
 
+static bool same_matrix(const float a[16], const float b[16])
+{
+    for (unsigned i = 0u; i < 16u; ++i) {
+        float size = fabsf(a[i]) > 1.0f ? fabsf(a[i]) : 1.0f;
+        if (fabsf(a[i] - b[i]) > 1e-4f * size) return false;
+    }
+    return true;
+}
+
+/* Puts `matrix` at `address` when it holds `old`. */
+static bool replace_matrix(uint32_t address, const float old[16], const float matrix[16])
+{
+    float current[16];
+    recomp_guest_load(current, address, sizeof current);
+    if (!same_matrix(current, old)) return false;
+    recomp_guest_store(address, matrix, sizeof current);
+    return true;
+}
+
 /* Some scenes build the camera in a task that does not draw (the pool's
    hopping game), which a frozen scene skips, so the view would stop with
    it. At the start of each frozen frame, if no camera was built in the last
-   one, the free camera builds its object itself. That task also handed the
-   view and projection to the device, so where the device still holds the
-   object's last view the new ones replace it. */
+   one, the free camera builds its object itself. That task also copied the
+   view and projection to the globals the drawing task hands the device
+   (0x004D6F20 and 0x004D95F0, copied by 0x001221E0), so where they, and the
+   device, still hold the object's last matrices the new ones replace them. */
 static void frame_started(void)
 {
     if (!state.active || !state.started || !recomp_scene_freeze_holding()) return;
@@ -664,8 +686,9 @@ static void frame_started(void)
     recomp_runtime.registers.esp -= 4u;
     *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
     const uint32_t object = CAMERA_FIRST + state.slot * CAMERA_STRIDE;
-    float old_view[16], view[16], projection[16];
+    float old_view[16], old_projection[16], view[16], projection[16];
     recomp_guest_load(old_view, object + CAMERA_VIEW, sizeof old_view);
+    recomp_guest_load(old_projection, object + CAMERA_PROJECTION, sizeof old_projection);
     recomp_runtime.registers.eax = object;
     state.fallback = true;
     build_camera();
@@ -673,11 +696,14 @@ static void frame_started(void)
     recomp_guest_load(view, object + CAMERA_VIEW, sizeof view);
     recomp_guest_load(projection, object + CAMERA_PROJECTION, sizeof projection);
     bool replaced = recomp_d3d_draw_replace_view(old_view, view, projection);
+    bool copied = replace_matrix(SCENE_VIEW, old_view, view);
+    copied = replace_matrix(SCENE_PROJECTION, old_projection, projection) && copied;
     if (tracing(frame)) {
         ++state.trace_lines;
         fprintf(stderr, "recomp free camera trace: frame=%u frozen, so built here; device view %s; "
-            "last frame's draws with each object's view %u %u %u %u %u\n",
-            frame, replaced ? "replaced" : "left (not the object's)", state.drawn_before[0],
+            "scene copies %s; last frame's draws with each object's view %u %u %u %u %u\n",
+            frame, replaced ? "replaced" : "left (not the object's)",
+            copied ? "replaced" : "not both the object's", state.drawn_before[0],
             state.drawn_before[1], state.drawn_before[2], state.drawn_before[3], state.drawn_before[4]);
     }
     recomp_runtime.registers = registers;
