@@ -44,6 +44,14 @@ static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
     return *recomp_memory_u32(entry_esp + 4u + index * 4u);
 }
 
+static uint32_t present_held;
+
+void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
+{
+    if (hold) present_held |= reason;
+    else present_held &= ~reason;
+}
+
 uint32_t recomp_d3d_frame_adapter_swap_counter(void)
 {
     return frame_state.swap_counter;
@@ -201,8 +209,20 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
     }
 }
 
+static RecompD3dFrameHook first_clear_hook;
+static uint32_t first_clear_swap = UINT32_MAX;
+
+void recomp_d3d_frame_adapter_set_first_clear_hook(RecompD3dFrameHook hook)
+{
+    first_clear_hook = hook;
+}
+
 void recomp_d3d_clear_adapter(void)
 {
+    if (first_clear_hook != NULL && first_clear_swap != frame_state.swap_counter) {
+        first_clear_swap = frame_state.swap_counter;
+        first_clear_hook();
+    }
     uint32_t entry_esp = recomp_runtime.registers.esp;
     uint32_t saved_eax = recomp_runtime.registers.eax;
     RecompD3dFrameResult result = recomp_d3d_frame_clear(
@@ -366,8 +386,8 @@ void recomp_d3d_swap_adapter(void)
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
     recomp_d3d_wait_vblank();
-    presenter_error = recomp_d3d_presenter_submit(
-        presenter, &result.command);
+    presenter_error = present_held != 0u ? RECOMP_D3D_PRESENTER_OK :
+        recomp_d3d_presenter_submit(presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(
         result.command.data.present.swap_counter, (uint32_t)presenter_error);
     recomp_d3d_frame_adapter_exit_if_closed(presenter_error);

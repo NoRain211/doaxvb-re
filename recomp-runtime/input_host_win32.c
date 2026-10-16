@@ -265,3 +265,69 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
     trace_sample(gamepad, host, true);
     return true;
 }
+
+bool recomp_input_host_key(RecompInputHostKey key)
+{
+    switch (key) {
+    case RECOMP_INPUT_HOST_KEY_F1: return focused() && pressed(KEY(VK_F1, SDL_SCANCODE_F1));
+    case RECOMP_INPUT_HOST_KEY_F12: return focused() && pressed(KEY(VK_F12, SDL_SCANCODE_F12));
+    case RECOMP_INPUT_HOST_KEY_W: return focused() && pressed(KEY('W', SDL_SCANCODE_W));
+    case RECOMP_INPUT_HOST_KEY_A: return focused() && pressed(KEY('A', SDL_SCANCODE_A));
+    case RECOMP_INPUT_HOST_KEY_S: return focused() && pressed(KEY('S', SDL_SCANCODE_S));
+    case RECOMP_INPUT_HOST_KEY_D: return focused() && pressed(KEY('D', SDL_SCANCODE_D));
+    case RECOMP_INPUT_HOST_KEY_Q: return focused() && pressed(KEY('Q', SDL_SCANCODE_Q));
+    case RECOMP_INPUT_HOST_KEY_E: return focused() && pressed(KEY('E', SDL_SCANCODE_E));
+    case RECOMP_INPUT_HOST_KEY_R: return focused() && pressed(KEY('R', SDL_SCANCODE_R));
+    case RECOMP_INPUT_HOST_KEY_Z: return focused() && pressed(KEY('Z', SDL_SCANCODE_Z));
+    case RECOMP_INPUT_HOST_KEY_X: return focused() && pressed(KEY('X', SDL_SCANCODE_X));
+    case RECOMP_INPUT_HOST_KEY_C: return focused() && pressed(KEY('C', SDL_SCANCODE_C));
+    case RECOMP_INPUT_HOST_KEY_P: return focused() && pressed(KEY('P', SDL_SCANCODE_P));
+    case RECOMP_INPUT_HOST_KEY_H: return focused() && pressed(KEY('H', SDL_SCANCODE_H));
+    case RECOMP_INPUT_HOST_KEY_PERIOD: return focused() && pressed(KEY(VK_OEM_PERIOD, SDL_SCANCODE_PERIOD));
+    case RECOMP_INPUT_HOST_KEY_LEFT_BRACKET: return focused() && pressed(KEY(VK_OEM_4, SDL_SCANCODE_LEFTBRACKET));
+    case RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET: return focused() && pressed(KEY(VK_OEM_6, SDL_SCANCODE_RIGHTBRACKET));
+    case RECOMP_INPUT_HOST_KEY_BACKSLASH: return focused() && pressed(KEY(VK_OEM_5, SDL_SCANCODE_BACKSLASH));
+    case RECOMP_INPUT_HOST_KEY_MINUS: return focused() && pressed(KEY(VK_OEM_MINUS, SDL_SCANCODE_MINUS));
+    case RECOMP_INPUT_HOST_KEY_EQUALS: return focused() && pressed(KEY(VK_OEM_PLUS, SDL_SCANCODE_EQUALS));
+    case RECOMP_INPUT_HOST_KEY_UP: return focused() && pressed(KEY(VK_UP, SDL_SCANCODE_UP));
+    case RECOMP_INPUT_HOST_KEY_DOWN: return focused() && pressed(KEY(VK_DOWN, SDL_SCANCODE_DOWN));
+    case RECOMP_INPUT_HOST_KEY_LEFT: return focused() && pressed(KEY(VK_LEFT, SDL_SCANCODE_LEFT));
+    case RECOMP_INPUT_HOST_KEY_RIGHT: return focused() && pressed(KEY(VK_RIGHT, SDL_SCANCODE_RIGHT));
+    case RECOMP_INPUT_HOST_KEY_SHIFT:
+        return focused() && (pressed(KEY(VK_LSHIFT, SDL_SCANCODE_LSHIFT)) ||
+            pressed(KEY(VK_RSHIFT, SDL_SCANCODE_RSHIFT)));
+    case RECOMP_INPUT_HOST_KEY_CONTROL:
+        return focused() && (pressed(KEY(VK_LCONTROL, SDL_SCANCODE_LCTRL)) ||
+            pressed(KEY(VK_RCONTROL, SDL_SCANCODE_RCTRL)));
+    case RECOMP_INPUT_HOST_KEY_COUNT: break;
+    }
+    return false;
+}
+
+bool recomp_input_host_mouse_drag(float *dx, float *dy)
+{
+    static bool dragging;
+    static float last_x, last_y;
+    float x = 0.0f, y = 0.0f;
+    bool held = false;
+
+    *dx = *dy = 0.0f;
+    if (focused()) {
+#ifdef _WIN32
+        POINT point = {0, 0};
+        held = pressed(VK_RBUTTON) && GetCursorPos(&point);
+        x = (float)point.x;
+        y = (float)point.y;
+#else
+        held = (SDL_GetMouseState(&x, &y) & SDL_BUTTON_RMASK) != 0u;
+#endif
+    }
+    if (held && dragging) {
+        *dx = x - last_x;
+        *dy = y - last_y;
+    }
+    dragging = held;
+    last_x = x;
+    last_y = y;
+    return held;
+}

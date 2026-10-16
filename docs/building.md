@@ -184,7 +184,10 @@ cmake --build build/clang --parallel 4
 ctest --test-dir build/clang --output-on-failure
 ```
 
-On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run:
+On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run
+the commands below. On macOS and Linux, configuration also downloads Dear ImGui
+1.91.9, which draws the free camera's overlay text, and checks its SHA-256; set
+`FETCHCONTENT_SOURCE_DIR_IMGUI` to an unpacked copy to configure offline.
 
 ```bash
 git clone --recurse-submodules https://github.com/NoRain211/doaxvb-re.git
@@ -306,6 +309,8 @@ the idle title screen leads to; see [`docs/title-idle.md`](title-idle.md).
 Tick **Shorter demo cuts** in the launcher, or set `RECOMP_DEMO_CUT_HOLD` from
 1 to 59 to shorten the one-second freeze between the demo's scenes; see
 [`docs/title-idle.md`](title-idle.md#demo-cut-hold).
+Tick **Free camera** in the launcher, or set `RECOMP_FREE_CAMERA=1`, to fly
+the game's camera with F1; see [`docs/free-camera.md`](free-camera.md).
 The game renders 16:9 in an 854x480 window. Set `RECOMP_D3D_WIDESCREEN=0` for
 its 4:3 view in a 640x480 window.
 Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example

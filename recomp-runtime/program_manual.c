@@ -1,6 +1,8 @@
 #include "program_manual.h"
 #include "animation_track_adapter.h"
 #include "title_idle.h"
+#include "free_camera_adapter.h"
+#include "viewer_menu_adapter.h"
 #include "controller_settings.h"
 #include "kernel_abi.h"
 #include <string.h>
@@ -287,7 +289,17 @@ static void enter_collection_screen(void)
 
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
 {
-    RecompFunction function = recomp_animation_track_lookup_manual(guest_address);
+    /* Ahead of the animation lookups: the free camera chains to the probe's
+       observer of the same camera build. */
+    RecompFunction function = recomp_free_camera_lookup_manual(guest_address);
+
+    if (function == NULL) {
+        function = recomp_viewer_menu_lookup_manual(guest_address);
+    }
+
+    if (function == NULL) {
+        function = recomp_animation_track_lookup_manual(guest_address);
+    }
 
     if (function == NULL) {
         function = recomp_cri_service_lookup_manual(guest_address);
