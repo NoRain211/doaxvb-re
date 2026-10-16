@@ -15,6 +15,7 @@
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "animation_probe.h"
+#include "d3d_draw_adapter.h"
 #include "d3d_frame_adapter.h"
 
 /* Free camera: RECOMP_FREE_CAMERA=1 lets F1, or clicking the right stick,
@@ -33,9 +34,12 @@
    over again.
 
    Which object holds the main view depends on the scene: the volleyball
-   demo builds only the first, while the island map builds the first for the
-   map and others for the portraits. The free camera starts on the first, and
-   C or X moves it to the next object the game built in the last frame.
+   demo builds only the first, the island map builds the first for the map
+   and others for the portraits, and the hotel room builds the first for a
+   view nothing shows and the third for the room. The free camera takes the
+   object after whose builds the most was drawn in the last frame, again
+   whenever the one it flies stops being built, and C or X moves it to the
+   next object the game built in the last frame.
 
    P or START freezes the scene while the camera flies (scene_freeze_adapter.c),
    H or the left shoulder hides the 2D overlay of a frozen scene, . or the
@@ -128,8 +132,17 @@ static struct {
        and from the start on a Steam Deck; keys once a key was. */
     int controller_hints;
     uint32_t slot;
-    /* Objects built in the frame being drawn and in the one before it. */
-    uint32_t built_frame, built, built_before;
+    /* Objects built in the frame being drawn and in the one before it, and
+       the frame the game last built one itself. */
+    uint32_t built_frame, built, built_before, game_built_frame;
+    /* Draws after each object's builds, in this frame and the last; the
+       object built last and the draw count at its build. */
+    uint32_t drawn[CAMERA_COUNT], drawn_before[CAMERA_COUNT];
+    uint32_t drawing_slot, draws_at_build;
+    /* The fallback build of a frozen frame (frame_started) is under way. */
+    bool fallback;
+    /* C or X picked the object flown. */
+    bool picked;
     uint32_t stepped_frame;
     RecompInputGamepad pad;
     RecompFreeCamera camera;
@@ -200,6 +213,7 @@ static void set_active(bool active)
     state.started = false;
     if (!active) {
         state.home_saved = false;
+        state.picked = false;
         /* Putting the camera away hands the scene back, running. */
         recomp_actor_pose_release();
         recomp_suit_switch_forget();
@@ -469,6 +483,26 @@ static void reset_character(void)
     if (posed && recomp_scene_freeze_active()) recomp_scene_freeze_step();
 }
 
+/* Flies the object the scene is drawn with: on the way in, and whenever
+   the one flown stops being built. */
+static void choose_object(void)
+{
+    if (state.built_before == 0u) return;
+    if ((state.started || state.picked) && (state.built_before & (1u << state.slot)) != 0u) return;
+    state.picked = false;
+    uint32_t best = state.slot;
+    for (uint32_t slot = 0u; slot < CAMERA_COUNT; ++slot) {
+        if ((state.built_before & (1u << slot)) == 0u) continue;
+        if ((state.built_before & (1u << best)) == 0u ||
+            state.drawn_before[slot] > state.drawn_before[best]) best = slot;
+    }
+    if (best != state.slot || state.started) {
+        state.slot = best;
+        state.started = false;
+        fprintf(stderr, "recomp free camera: object %u\n", best);
+    }
+}
+
 static void build_camera(void)
 {
     const uint32_t object = recomp_runtime.registers.eax;
@@ -477,11 +511,21 @@ static void build_camera(void)
     const bool known = object >= CAMERA_FIRST && slot < CAMERA_COUNT &&
         object == CAMERA_FIRST + slot * CAMERA_STRIDE;
 
+    const uint32_t draws = recomp_d3d_draw_adapter_submitted();
+    if (state.drawing_slot < CAMERA_COUNT) {
+        state.drawn[state.drawing_slot] += draws - state.draws_at_build;
+    }
+    state.drawing_slot = known ? slot : CAMERA_COUNT;
+    state.draws_at_build = draws;
+    if (!state.fallback) state.game_built_frame = frame;
     if (state.built_frame != frame) {
         recomp_actor_pose_frame();
         state.built_before = state.built;
         state.built = 0u;
+        memcpy(state.drawn_before, state.drawn, sizeof state.drawn);
+        memset(state.drawn, 0, sizeof state.drawn);
         state.built_frame = frame;
+        if (state.active) choose_object();
     }
     if (known) state.built |= 1u << slot;
     recomp_suit_switch_camera_build();
@@ -493,6 +537,7 @@ static void build_camera(void)
                 if ((state.built_before & (1u << next)) != 0u) {
                     if (next != state.slot) {
                         state.slot = next;
+                        state.picked = true;
                         state.started = false;
                         fprintf(stderr, "recomp free camera: object %u\n", next);
                     }
@@ -586,14 +631,16 @@ static void frame_started(void)
 {
     if (!state.active || !state.started || !recomp_scene_freeze_holding()) return;
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
-    if (state.built_frame + 1u >= frame) return;
+    if (state.game_built_frame + 1u >= frame) return;
     const RecompRegisters registers = recomp_runtime.registers;
     RecompFpuContext fpu;
     recomp_fpu_context_save(&fpu);
     recomp_runtime.registers.esp -= 4u;
     *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
     recomp_runtime.registers.eax = CAMERA_FIRST + state.slot * CAMERA_STRIDE;
+    state.fallback = true;
     build_camera();
+    state.fallback = false;
     recomp_runtime.registers = registers;
     recomp_fpu_context_restore(&fpu);
 }

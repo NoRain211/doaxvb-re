@@ -59,17 +59,21 @@ culling all use those matrices.
 
 `recomp-runtime/free_camera_adapter.c` is the manual lookup for
 `0x00023B10`. While the free camera flies, it stores its own eye, target and
-field of view in the chosen object, lets the generated build run, then
-restores the game's values. The game's camera logic carries on undisturbed,
-and the view returns to it when the free camera is switched off. The fly
+field of view in the chosen object and lets the generated build run. It
+leaves its own values there, because the game culls each part of a character
+against the eye and target it finds in the object. The view returns to the
+game's camera logic when the free camera is switched off. The fly
 camera itself is a plain model in `recomp-runtime/free_camera.c`, tested by
 `free_camera_test.c`.
 
 The main view is not always the same object. The real-time demo builds only
 the first. The island map builds the first for the map and three more,
-including the two portrait cameras. The free camera starts on the first, and
-**Next camera** moves it to the next object the game built in the previous
-frame.
+including the two portrait cameras. The hotel room builds the first for a
+view nothing shows and the third for the room. The free camera takes the
+object after whose builds the game drew the most in the previous frame, and
+takes it again whenever the one it flies stops being built, such as on a
+change of scene. **Next camera** moves it to the next object the game built
+in the previous frame.
 
 The game's world is right-handed with +Y up: looking down +Z, +X is on the
 left. The camera starts where the game's camera was. It moves at half the
