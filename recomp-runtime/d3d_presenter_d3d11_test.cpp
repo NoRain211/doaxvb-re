@@ -63,8 +63,8 @@ static bool createTestTargets(
         4u, 4u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
         RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
     D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = 4u;
-    desc.Height = 4u;
+    desc.Width = mainWidth(presenter);
+    desc.Height = mainHeight(presenter);
     desc.MipLevels = 1u;
     desc.ArraySize = 1u;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -82,18 +82,9 @@ static bool createTestTargets(
     if (FAILED(presenter->device->CreateTexture2D(&desc, nullptr, readback))) {
         return false;
     }
-    desc.SampleDesc.Count = presenter->msaa;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    desc.CPUAccessFlags = 0u;
-    if (FAILED(presenter->device->CreateTexture2D(
-            &desc, nullptr, &presenter->depth_texture)) ||
-        FAILED(presenter->device->CreateDepthStencilView(
-            presenter->depth_texture, nullptr, &presenter->depth_view))) {
-        return false;
-    }
-    const D3D11_VIEWPORT viewport = {0.0f, 0.0f, 4.0f, 4.0f, 0.0f, 1.0f};
+    if (FAILED(createMainDepth(presenter))) return false;
+    const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
+        float(mainWidth(presenter)), float(mainHeight(presenter)), 0.0f, 1.0f};
     presenter->context->RSSetViewports(1u, &viewport);
     return true;
 }
@@ -3314,6 +3305,185 @@ static bool testSunParticleCasters()
     return sunCaster(draw, frond) && !sunCaster(draw, net);
 }
 
+static bool testGBuffer(unsigned samples)
+{
+    RecompD3dPresenter presenter;
+    _putenv_s("RECOMP_D3D_GBUFFER", "");
+    if (gbufferRequested() || !presenter.gbuffer.create(nullptr, 0, 0, 0) || presenter.gbuffer.target) return false;
+    _putenv_s("RECOMP_D3D_GBUFFER", "0");
+    if (gbufferRequested()) return false;
+    _putenv_s("RECOMP_D3D_GBUFFER", "1");
+    presenter.gbuffer.enabled = gbufferRequested();
+    _putenv_s("RECOMP_D3D_GBUFFER", "");
+    presenter.msaa = samples;
+    presenter.scale = 2;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+            nullptr, 0, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    ID3D11Texture2D *color = nullptr, *readback = nullptr;
+    bool passed = createTestTargets(&presenter, &color, &readback) && presenter.depth_sample &&
+        presenter.gbuffer.create(presenter.device, mainWidth(&presenter), mainHeight(&presenter), samples);
+    if (!passed) { releaseCom(color); releaseCom(readback); releaseGraphics(&presenter); return false; }
+    D3D11_TEXTURE2D_DESC desc{};
+    presenter.depth_texture->GetDesc(&desc);
+    passed &= desc.Format == DXGI_FORMAT_R24G8_TYPELESS &&
+        desc.BindFlags == (D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE) &&
+        desc.Width == mainWidth(&presenter) && desc.Height == mainHeight(&presenter) &&
+        desc.Height == 8 && desc.SampleDesc.Count == samples;
+    D3D11_DEPTH_STENCIL_VIEW_DESC dsv{};
+    presenter.depth_view->GetDesc(&dsv);
+    passed &= dsv.Format == DXGI_FORMAT_D24_UNORM_S8_UINT;
+    presenter.gbuffer.normal->GetDesc(&desc);
+    passed &= desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM && desc.SampleDesc.Count == samples;
+    ID3D11Texture2D *staging[2]{};
+    desc.SampleDesc.Count = 1;
+    desc.BindFlags = 0; desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (unsigned i = 0; i < 2; ++i) {
+        desc.Format = i ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R10G10B10A2_UNORM;
+        passed &= SUCCEEDED(presenter.device->CreateTexture2D(&desc, nullptr, &staging[i]));
+    }
+    auto pixels = [&](float nx, float ny, float nz, bool valid, float depth) {
+        if (!staging[0] || !staging[1]) return false;
+        presenter.gbuffer.resolveFrame(presenter.context, presenter.depth_sample);
+        bool same = true;
+        for (unsigned i = 0; i < 2; ++i) {
+            ID3D11Resource *resource = nullptr;
+            presenter.gbuffer.resolved[i]->GetResource(&resource);
+            presenter.context->CopyResource(staging[i], resource);
+            resource->Release();
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(presenter.context->Map(staging[i], 0, D3D11_MAP_READ, 0, &mapped))) return false;
+            for (unsigned y = 0; y < mainHeight(&presenter); ++y)
+            for (unsigned x = 0; x < mainWidth(&presenter); ++x) {
+                const auto *p = static_cast<const uint8_t *>(mapped.pData) + y*mapped.RowPitch + x*4;
+                if (i) {
+                    float actual; std::memcpy(&actual, p, 4);
+                    same &= std::abs(actual - depth) < 1e-6f;
+                } else {
+                    uint32_t actual; std::memcpy(&actual, p, 4);
+                    same &= (actual >> 30) == (valid ? 3u : 0u);
+                    if (valid) {
+                        const float expected[] = {nx, ny, nz};
+                        for (unsigned c = 0; c < 3; ++c)
+                            same &= std::abs(float((actual >> (c*10)) & 1023u)/1023 - (expected[c]*0.5f+0.5f)) < 0.002f;
+                    }
+                }
+            }
+            presenter.context->Unmap(staging[i], 0);
+        }
+        return same;
+    };
+    RecompD3dPresenterClearCommand clear{};
+    clear.clear_color = clear.clear_depth = true; clear.z = 1;
+    passed &= submitClear(&presenter, clear) == RECOMP_D3D_PRESENTER_OK && pixels(0,0,0,false,1);
+    float vertices[3][8] = {{-1,-1,0.75f, 1,0,0}, {3,-1,0.75f, 1,0,0}, {-1,3,0.75f, 1,0,0}};
+    const uint16_t indices[] = {0,1,2};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x112; draw.vertex_stride = sizeof vertices[0]; draw.vertex_count = draw.index_count = 3;
+    draw.triangle_count = 1; draw.primitive_type = RECOMP_D3D_PT_TRIANGLELIST;
+    draw.vertex_bytes = vertices; draw.index_bytes = indices; draw.has_transform = true;
+    draw.blend.color_write_mask = 15;
+    draw.depth.depth_test_enable = draw.depth.depth_write_enable = true;
+    draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    draw.directional.enabled = true;
+    for (unsigned i = 0; i < 4; ++i) draw.transform[i*5] = 1;
+    // Nonidentity normal matrix proves that the buffer contains world-space normals.
+    draw.directional.normal_transforms[0][1] = 1;
+    draw.directional.normal_transforms[0][4] = -1;
+    draw.directional.normal_transforms[0][10] = draw.directional.normal_transforms[0][15] = 1;
+    passed &= submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK && pixels(0,1,0,true,0.75f);
+    // Unlit normal-bearing decals and FVF streams without normals preserve the lit surface.
+    auto unlit = draw;
+    unlit.directional.enabled = false;
+    for (auto &v : vertices) v[2] = 0.5f;
+    passed &= submitDraw(&presenter, unlit) == RECOMP_D3D_PRESENTER_OK && pixels(0,1,0,true,0.5f);
+    unlit.fvf = 0x142;
+    passed &= submitDraw(&presenter, unlit) == RECOMP_D3D_PRESENTER_OK && pixels(0,1,0,true,0.5f);
+    // Alpha discard and failed depth tests must reject the MRT write too.
+    draw.depth.alpha_test_enable = true; draw.depth.alpha_func = RECOMP_D3D_COMPARE_NEVER;
+    passed &= submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK && pixels(0,1,0,true,0.5f);
+    draw.depth.alpha_test_enable = false;
+    for (auto &v : vertices) v[2] = 0.9f;
+    passed &= submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK && pixels(0,1,0,true,0.5f);
+    // The normal output replaces rather than alpha blends.
+    for (auto &v : vertices) { v[2] = 0.25f; v[3] = 0; v[4] = 0; v[5] = -1; }
+    draw.blend.blend_enable = true;
+    draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA; draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+    passed &= submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK && pixels(0,0,-1,true,0.25f);
+    if (samples > 1) {
+        // One nearer sample with a different normal: resolving must select the pair, never average.
+        for (auto &v : vertices) { v[2] = 0.125f; v[3] = 1; v[5] = 0; }
+        passed &= submitDraw(&presenter, draw) == RECOMP_D3D_PRESENTER_OK;
+        presenter.context->OMSetBlendState(lookupBlendState(&presenter, draw.blend, false, true), nullptr, 1u << 3);
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 0.25f, 0);
+        const float old_normal[] = {0.5f, 0.5f, 0, 1};
+        presenter.context->ClearRenderTargetView(presenter.gbuffer.target, old_normal);
+        presenter.context->DrawIndexed(3, 0, 0);
+        passed &= pixels(0,1,0,true,0.125f);
+    }
+    for (unsigned weights = 1; weights <= 3; ++weights) {
+        auto skin = draw;
+        const unsigned stride = 8 + weights;
+        std::vector<float> skinned(3*stride, 0);
+        for (unsigned v = 0; v < 3; ++v) {
+            std::memcpy(skinned.data()+v*stride, vertices[v], 3*sizeof(float));
+            skinned[v*stride+2] = 0.125f;
+            for (unsigned w = 0; w < weights; ++w) skinned[v*stride+3+w] = 1.0f/(weights+1);
+            skinned[v*stride+3+weights] = 1;
+        }
+        skin.fvf = 0x114 + weights*2; skin.blend_weight_count = weights;
+        skin.vertex_stride = stride*sizeof(float); skin.vertex_bytes = skinned.data();
+        skin.blend.blend_enable = false;
+        std::memset(skin.directional.normal_transforms, 0, sizeof skin.directional.normal_transforms);
+        for (unsigned w = 0; w <= weights; ++w) {
+            auto *matrix = skin.directional.normal_transforms[w];
+            matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1; matrix[1] = float(w);
+            if (w) for (unsigned i = 0; i < 4; ++i) skin.blend_transforms[w-1][i*5] = 1;
+        }
+        passed &= submitClear(&presenter, clear) == RECOMP_D3D_PRESENTER_OK;
+        const float y = weights*0.5f, length = std::sqrt(1+y*y);
+        passed &= submitDraw(&presenter, skin) == RECOMP_D3D_PRESENTER_OK && pixels(1/length,y/length,0,true,0.125f);
+    }
+    // Exercise both debug shaders with a single-sample output, including context rebinding.
+    ID3D11RenderTargetView *output = nullptr;
+    ID3D11Texture2D *output_texture = nullptr;
+    color->GetDesc(&desc); desc.SampleDesc.Count = 1;
+    passed &= SUCCEEDED(presenter.device->CreateTexture2D(&desc, nullptr, &output_texture));
+    if (output_texture) passed &= SUCCEEDED(presenter.device->CreateRenderTargetView(output_texture, nullptr, &output));
+    if (output) {
+        // Restore a uniform known normal for debug readback.
+        const float normal[] = {0.5f, 0.5f, 0, 1};
+        presenter.context->ClearRenderTargetView(presenter.gbuffer.target, normal);
+        presenter.gbuffer.resolveFrame(presenter.context, presenter.depth_sample);
+        for (unsigned view : {1u, 2u}) {
+            presenter.gbuffer.debug_view = view;
+            presenter.gbuffer.show(presenter.context, output);
+            presenter.context->CopyResource(readback, output_texture);
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(presenter.context->Map(readback, 0, D3D11_MAP_READ, 0, &mapped))) { passed = false; break; }
+            const auto *rgb = static_cast<const uint8_t *>(mapped.pData);
+            passed &= rgb[3] == 255 && (view == 1 ? rgb[0] <= 1 && rgb[1] >= 127 && rgb[2] >= 127 :
+                rgb[0] > 0 && rgb[0] == rgb[1] && rgb[1] == rgb[2]);
+            presenter.context->Unmap(readback, 0);
+        }
+    }
+    clear.clear_color = false;
+    passed &= submitClear(&presenter, clear) == RECOMP_D3D_PRESENTER_OK && pixels(0,0,0,false,1);
+    for (auto &texture : staging) releaseCom(texture);
+    releaseCom(output); releaseCom(output_texture); releaseCom(color); releaseCom(readback);
+    GBuffer invalid;
+    invalid.enabled = true;
+    passed &= !invalid.create(presenter.device, 0, 8, samples) && !invalid.enabled &&
+        !invalid.normal && !invalid.target && !invalid.resolved[0] && !invalid.resolve;
+    releaseGraphics(&presenter);
+    passed &= !presenter.depth_sample && !presenter.depth_texture && !presenter.depth_view &&
+        !presenter.gbuffer.normal && !presenter.gbuffer.target && !presenter.gbuffer.sample &&
+        !presenter.gbuffer.resolved[0] && !presenter.gbuffer.resolved[1] &&
+        !presenter.gbuffer.resolved_targets[0] && !presenter.gbuffer.resolved_targets[1] &&
+        !presenter.gbuffer.vertex && !presenter.gbuffer.resolve && !presenter.gbuffer.debug[0] && !presenter.gbuffer.debug[1];
+    std::fprintf(stderr, "%s gbuffer scaled %ux normals, unlit preservation, depth, debug and release\n", passed ? "PASS" : "FAIL", samples);
+    return passed;
+}
+
 static bool testSunShadow(unsigned samples)
 {
     _putenv_s("RECOMP_D3D_SUN_SHADOW", "");
@@ -3825,6 +3995,20 @@ static bool testNormalCacheCost()
 
 int main()
 {
+    if (!testGBuffer(1) || !testGBuffer(8)) return 1;
+    for (const bool coverage : {false, true}) for (const bool pixel : {false, true})
+    for (const bool sun : {false, true}) for (const auto fvf : kBootDrawFvfs) {
+        RecompD3dVertexLayout layout;
+        std::string source;
+        if (!drawShaderSource(fvf, DrawPipeline{}, layout, source, coverage, sun, pixel, true)) return 1;
+        for (const bool vertex : {true, false}) {
+            ID3DBlob *blob = nullptr;
+            const bool compiled = compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
+                vertex ? "vs_4_0" : coverage ? "ps_4_1" : "ps_4_0", &blob);
+            releaseCom(blob);
+            if (!compiled) return 1;
+        }
+    }
     for (const bool sun : {false, true}) {
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
