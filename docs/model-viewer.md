@@ -89,7 +89,8 @@ the byte at `0x9D9F6D`, is on One Player.
 
 The match loads as usual, but its opening, which shows every player, is
 never seen: from the match's first frame the other three are hidden and Swap
-holds the last picture (`recomp_d3d_frame_adapter_hold_present`). The ball
+holds the last picture, as it does over Exhibition's first screen, which the
+viewer confirms itself (`recomp_d3d_frame_adapter_hold_present`). The ball
 is hidden by leaving out every draw from the vertex buffers of the model the
 loader keeps at `0x4D9440`, the match ball's (`recomp_d3d_draw_set_hidden_buffers`);
 some of her poses otherwise leave it in her hands. While the others pick,

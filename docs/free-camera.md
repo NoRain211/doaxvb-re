@@ -118,7 +118,10 @@ legs near the screen's edges vanished when the camera turned away.
 Some scenes, such as the pool, build characters' skeletons in a task that
 also draws, which a frozen scene keeps running. The skeleton build
 (`0x000B01E0`, already wrapped for animation select) is skipped while a
-scene is held, so the pose built last stays.
+scene is held, so the pose built last stays. Some build the camera in a task that does
+not draw (the pool's hopping game), which a frozen scene skips: at the first
+Clear of each frozen frame, if no camera was built in the last one, the free
+camera builds its object itself (`recomp_d3d_frame_adapter_set_first_clear_hook`).
 
 ## Choosing an animation
 

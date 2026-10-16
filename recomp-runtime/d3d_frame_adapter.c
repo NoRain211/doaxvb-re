@@ -209,8 +209,20 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
     }
 }
 
+static RecompD3dFrameHook first_clear_hook;
+static uint32_t first_clear_swap = UINT32_MAX;
+
+void recomp_d3d_frame_adapter_set_first_clear_hook(RecompD3dFrameHook hook)
+{
+    first_clear_hook = hook;
+}
+
 void recomp_d3d_clear_adapter(void)
 {
+    if (first_clear_hook != NULL && first_clear_swap != frame_state.swap_counter) {
+        first_clear_swap = frame_state.swap_counter;
+        first_clear_hook();
+    }
     uint32_t entry_esp = recomp_runtime.registers.esp;
     uint32_t saved_eax = recomp_runtime.registers.eax;
     RecompD3dFrameResult result = recomp_d3d_frame_clear(

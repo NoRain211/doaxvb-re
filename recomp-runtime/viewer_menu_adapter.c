@@ -59,7 +59,7 @@
 
    The match then loads as usual, but its opening is never seen: from its
    first frame the other three players are hidden and the picture holds
-   (RECOMP_PRESENT_HOLD_VIEWER). Once it has run for SETTLE_FRAMES the
+   (RECOMP_PRESENT_HOLD_VIEWER), as it does over Exhibition's first screen. Once it has run for SETTLE_FRAMES the
    viewer takes it over: the free camera comes on close to the first player,
    the scene keeps running, and the other three players are hidden. Putting the
    free camera away ends the viewer: the match is quit the way its results
@@ -374,9 +374,20 @@ static void main_menu_update(void)
 
 /* Once a frame: takes over the match the viewer asked for, and gives it
    back when the free camera is put away. */
+/* The picture holds over what the viewer passes through unseen: Exhibition's
+   first screen, which it confirms itself, and the match's opening. */
+static bool holding(void)
+{
+    if (session != VIEWER_WAITING) return false;
+    uint8_t scene = *recomp_memory(SCENE, 1u);
+    if (scene == SCENE_MATCH) return match_frames < SETTLE_FRAMES;
+    return scene == SCENE_MENU && *recomp_memory(MENU_SCREEN, 1u) == SCREEN_EXHIBITION_SETUP;
+}
+
 static void viewer_tick(uint32_t frame)
 {
     recomp_suit_switch_frame(frame);
+    recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, holding());
     recomp_free_camera_overlay(session == VIEWER_VIEWING);
     if (choosing_court()) show_time_panel();
     show_title_hint();
@@ -391,12 +402,10 @@ static void viewer_tick(uint32_t frame)
             match_frames = 0u;
             break;
         }
-        /* The match's opening shows every player: the picture holds and
-           the others are hidden until the viewer takes over. */
-        recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, true);
+        /* The match's opening shows every player: the picture holds (see
+           holding()) and the others are hidden until the viewer takes over. */
         recomp_actor_pose_set_hidden(OTHER_PLAYERS);
         if (++match_frames < SETTLE_FRAMES) break;
-        recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, false);
         recomp_actor_pose_choose(FIRST_PLAYER);
         recomp_actor_pose_set_hidden(OTHER_PLAYERS);
         recomp_free_camera_set_active(true);

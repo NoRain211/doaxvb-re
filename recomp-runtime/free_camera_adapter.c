@@ -211,11 +211,13 @@ static void set_active(bool active)
 }
 
 static void sample_while_frozen(uint32_t frame);
+static void frame_started(void);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
     state.source = source;
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
+    recomp_d3d_frame_adapter_set_first_clear_hook(frame_started);
 }
 
 /* Handles the toggles in one sample of port 0. True when the sample is the
@@ -539,6 +541,26 @@ static void build_camera(void)
     if (observed != NULL) observed();
     else sub_00023B10();
 
+}
+
+/* Some scenes build the camera in a task that does not draw (the pool's
+   hopping game), which a frozen scene skips, so the view would stop with
+   it. At the start of each frozen frame, if no camera was built in the last
+   one, the free camera builds its object itself. */
+static void frame_started(void)
+{
+    if (!state.active || !state.started || !recomp_scene_freeze_holding()) return;
+    uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    if (state.built_frame + 1u >= frame) return;
+    const RecompRegisters registers = recomp_runtime.registers;
+    RecompFpuContext fpu;
+    recomp_fpu_context_save(&fpu);
+    recomp_runtime.registers.esp -= 4u;
+    *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+    recomp_runtime.registers.eax = CAMERA_FIRST + state.slot * CAMERA_STRIDE;
+    build_camera();
+    recomp_runtime.registers = registers;
+    recomp_fpu_context_restore(&fpu);
 }
 
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
