@@ -1,9 +1,13 @@
 #include "overlay_text.h"
 
 #include <stdarg.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <stdatomic.h>
+#endif
 
 static void copy_text(char *destination, size_t size, const char *source)
 {
@@ -47,19 +51,32 @@ bool recomp_overlay_empty(const RecompOverlayText *text)
 }
 
 static RecompOverlayText published;
+#ifdef _WIN32
+static volatile LONG published_lock;
+#else
 static atomic_flag published_lock = ATOMIC_FLAG_INIT;
+#endif
 
 /* The copy is a few hundred bytes, so a spin lock held only for it is
    enough between the game thread and a render thread. */
 static void lock(void)
 {
+#ifdef _WIN32
+    while (InterlockedExchange(&published_lock, 1) != 0) {
+    }
+#else
     while (atomic_flag_test_and_set_explicit(&published_lock, memory_order_acquire)) {
     }
+#endif
 }
 
 static void unlock(void)
 {
+#ifdef _WIN32
+    InterlockedExchange(&published_lock, 0);
+#else
     atomic_flag_clear_explicit(&published_lock, memory_order_release);
+#endif
 }
 
 void recomp_overlay_publish(const RecompOverlayText *text)

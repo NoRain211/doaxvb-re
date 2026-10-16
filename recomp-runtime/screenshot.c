@@ -1,7 +1,6 @@
 #include "screenshot.h"
 
 #include <errno.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,22 +8,36 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <windows.h>
 #define make_folder(path) _mkdir(path)
 #else
+#include <stdatomic.h>
 #include <sys/stat.h>
 #define make_folder(path) mkdir(path, 0755)
 #endif
 
+#ifdef _WIN32
+static volatile LONG requested;
+#else
 static atomic_bool requested;
+#endif
 
 void recomp_screenshot_request(void)
 {
+#ifdef _WIN32
+    InterlockedExchange(&requested, 1);
+#else
     atomic_store(&requested, true);
+#endif
 }
 
 bool recomp_screenshot_take_request(void)
 {
+#ifdef _WIN32
+    return InterlockedExchange(&requested, 0) != 0;
+#else
     return atomic_exchange(&requested, false);
+#endif
 }
 
 static uint32_t crc_table[256];
