@@ -3209,24 +3209,63 @@ static bool testSunPropShadows(RecompD3dPresenter *presenter,
     auto desc = receiver.texture;
     desc.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT5;
     desc.width = 512; desc.height = 128;
-    passed &= sunStaticPropTexture(desc, 0x945549f88c8cfe40ull);
+    passed &= sunStaticOverlay(desc, 0x945549f88c8cfe40ull) == SunOverlay::NetPost;
     desc.data += 0x1000;
-    passed &= sunStaticPropTexture(desc, 0x945549f88c8cfe40ull) &&
-        !sunStaticPropTexture(desc, 0x945549f88c8cfe41ull);
+    passed &= sunStaticOverlay(desc, 0x945549f88c8cfe40ull) == SunOverlay::NetPost &&
+        sunStaticOverlay(desc, 0x945549f88c8cfe41ull) == SunOverlay::None;
     desc.height = 256;
-    passed &= !sunStaticPropTexture(desc, 0x945549f88c8cfe40ull);
+    passed &= sunStaticOverlay(desc, 0x945549f88c8cfe40ull) == SunOverlay::None;
+    desc.width = desc.height = 256;
+    passed &= sunStaticOverlay(desc, 0xbc0a582f6161a6e7ull) == SunOverlay::None;
+    {
+        // 8x4: one clear block, one black block at alpha 120.
+        uint8_t blocks[64] = {};
+        blocks[16] = 120; blocks[17] = 0;
+        auto pair = desc; pair.width = 8; pair.height = 4;
+        passed &= sunShadowTexels(pair, blocks, 32) && !sunShadowTexels(pair, blocks, 31);
+        blocks[0] = 120;
+        passed &= !sunShadowTexels(pair, blocks, 32); // dense canopy shade
+        blocks[0] = 0;
+        blocks[16] = 255;
+        passed &= !sunShadowTexels(pair, blocks, 32); // opaque foliage mask
+        blocks[16] = 0; blocks[17] = 120; std::memset(blocks + 18, 0xff, 6);
+        passed &= !sunShadowTexels(pair, blocks, 32); // six-alpha mode index 7 is 255
+        std::memset(blocks + 18, 0, 6); blocks[16] = 120; blocks[17] = 0;
+        passed &= sunShadowTexels(pair, blocks, 32);
+        blocks[24] = 0xe0; blocks[25] = 0x07;
+        passed &= !sunShadowTexels(pair, blocks, 32); // green texels
+        std::memset(blocks, 0, 32);
+        passed &= !sunShadowTexels(pair, blocks, 32); // fully transparent
+        blocks[16] = 120; pair.width = 16; pair.height = 4;
+        passed &= !sunShadowTexels(pair, blocks, 64); // sea reflection strip
+    }
+    desc.width = 256; desc.height = 128; desc.mip_levels = 8;
+    passed &= sunStaticOverlay(desc, 0xd99af6253b620e05ull) == SunOverlay::NetPost;
+    desc.width = 512; desc.height = 64; desc.mip_levels = 7;
+    passed &= sunStaticOverlay(desc, 0x7135e45fe936c958ull) == SunOverlay::NetPost;
     passed &= sunPropPayloadHash("abc", 3) == 0xe71fa2190541574bull;
-    bool tagged = true;
+    SunOverlay tagged = SunOverlay::Palm;
     auto *view = lookupTexture(presenter, draw, &tagged);
-    passed &= view && !tagged;
+    passed &= view && tagged == SunOverlay::None;
     auto cached = std::find_if(presenter->textures.begin(), presenter->textures.end(),
         [view](const TextureEntry &entry) { return entry.used && entry.view == view; });
     if (cached != presenter->textures.end()) {
-        cached->sun_prop_shadow = true;
-        passed &= lookupTexture(presenter, draw, &tagged) == view && tagged;
+        cached->sun_overlay = SunOverlay::Palm;
+        passed &= lookupTexture(presenter, draw, &tagged) == view && tagged == SunOverlay::Palm;
+        auto overlay = receiver;
+        overlay.texture = draw.texture; overlay.texture_bytes = draw.texture_bytes;
+        overlay.texture_byte_count = draw.texture_byte_count;
+        const auto hidden = presenter->sun.prop_shadows;
+        passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, overlay) == RECOMP_D3D_PRESENTER_OK &&
+            presenter->sun.prop_shadows == hidden + 1;
+        cached->sun_overlay = SunOverlay::NetPost;
+        passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, overlay) == RECOMP_D3D_PRESENTER_OK &&
+            presenter->sun.prop_shadows == hidden + 1;
         const uint32_t changed = 0xff112233u;
         auto rewrite = draw; rewrite.texture_bytes = &changed;
-        passed &= lookupTexture(presenter, rewrite, &tagged) && !tagged;
+        passed &= lookupTexture(presenter, rewrite, &tagged) && tagged == SunOverlay::None;
     } else passed = false;
     auto *previous = active_presenter;
     active_presenter = presenter;
@@ -3358,6 +3397,28 @@ static bool testSunShadow(unsigned samples)
     {
         auto prop = draw;
         prop.directional.enabled = false;
+        auto net_post = prop;
+        net_post.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+        net_post.texture.width = 64; net_post.texture.height = 128;
+        const float low[] = {-2.4f, 1.2f, 0}, high[] = {2.4f, 2, 0.05f};
+        passed &= sunNetPart(net_post, low, high);
+        net_post.world[0][12] = 1;
+        passed &= !sunNetPart(net_post, low, high);
+        net_post.world[0][12] = 0;
+        const float away[] = {2.4f, 2, 2};
+        passed &= !sunNetPart(net_post, low, away);
+        net_post.blend_weight_count = 1;
+        passed &= !sunNetPart(net_post, low, high);
+        net_post.blend_weight_count = 0;
+        const float post_low[] = {2.7f, -0.2f, -0.3f}, post_high[] = {3.5f, 3.9f, 0.3f};
+        passed &= !sunNetPart(net_post, post_low, post_high); // posts cast into the sun map
+        RecompD3dTextureDesc overlay{};
+        overlay.width = 512; overlay.height = 128;
+        std::vector<uint8_t> blocks(128u/4u * 512u/4u * 16u, 0xff);
+        sunKeepNetLine(overlay, blocks.data(), 1);
+        const auto alpha = [&](unsigned x, unsigned y) { return blocks[((y/4)*128u + x/4)*16u]; };
+        passed &= alpha(300, 64) == 0xff && alpha(116, 80) == 0xff && // net line, side tape
+            alpha(40, 110) == 0 && alpha(470, 100) == 0 && blocks[((100u/4)*128u + 40u/4)*16u + 8] == 0xff;
         const float post[] = {0.7f, 7, 0.6f}, tape[] = {6, 0.06f, 0.05f};
         const float sand[] = {80, 0.2f, 80}, rock[] = {20, 14, 20};
         const float trees[] = {90, 12, 90}, net[] = {6, 0.8f, 0.1f};
@@ -3443,6 +3504,37 @@ static bool testSunShadow(unsigned samples)
     // An identity light projection makes the synthetic occluder's coverage exact.
     std::memcpy(presenter.sun.projection, draw.view_projection, sizeof draw.view_projection);
     auto receiver = draw;
+    {
+        // Uneven-ground shadow decals satisfy the old scenery height/width test.
+        draw.directional.enabled = false;
+        draw.texture_factor = 0xffffffffu;
+        draw.depth.alpha_test_enable = true;
+        draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER; draw.depth.alpha_ref = 1;
+        draw.depth.stencil_enable = true; draw.depth.stencil_func = RECOMP_D3D_COMPARE_ALWAYS;
+        draw.depth.stencil_read_mask = draw.depth.stencil_write_mask = 255;
+        draw.depth.stencil_pass = RECOMP_D3D_STENCIL_REPLACE;
+        draw.blend.blend_enable = true; draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        auto *view = lookupTexture(&presenter, draw);
+        auto entry = std::find_if(presenter.textures.begin(), presenter.textures.end(),
+            [view](const TextureEntry &e) { return e.used && e.view == view; });
+        float bounds[3];
+        passed &= entry != presenter.textures.end() && sunPropShadow(draw) &&
+            sunSceneDraw(draw, bounds) && sunCaster(draw, bounds);
+        if (entry != presenter.textures.end()) {
+            for (auto kind : {SunOverlay::Palm, SunOverlay::NetPost, SunOverlay::None}) {
+                entry->sun_overlay = kind;
+                const auto before = presenter.sun.casters;
+                d3d11_backend_shadow_command(&presenter, &command);
+                const auto expected = before + (kind == SunOverlay::None ? 1u : 0u);
+                if (presenter.sun.casters != expected) {
+                    std::fprintf(stderr, "FAIL legacy overlay entered sun map kind=%d\n", int(kind));
+                    passed = false;
+                }
+            }
+        }
+        draw = receiver;
+    }
     for (unsigned weights = 0; passed && weights <= 3; ++weights) {
         draw = receiver;
         draw.blend_weight_count = weights;

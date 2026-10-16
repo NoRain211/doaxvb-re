@@ -27,9 +27,12 @@ not receive, so models keep the game's shading. Other receivers darken by the
 game's own shadow opacity, taken from last frame's hidden darkening pass,
 because many stages light the sand with a separate rig or mostly baked light.
 When the game drew no shadow last frame (hotel, menus), nothing receives.
+Unlit opaque or alpha-blended depth-writing draws also receive, so shadows
+cross from the sand onto the baked-color grass verge instead of stopping at its
+edge. Their world position comes from the draw's world matrix.
 The caster pass records rigid models in draw order; the visible pass reads
 that flag by its own draw count. Casters retain the opaque host-lit skinned
-and compact rigid draws, and add textured posts, palms and the net tape and rope,
+and compact rigid draws, and add textured palms and other props,
 including unlit draws and vertex colors. Narrow opaque props have at most
 eight units of horizontal extent and at most one unit across their narrower
 horizontal axis. Upright cutouts can span 128 units to accommodate batched
@@ -74,7 +77,7 @@ ignored. It does not move the sky sun or change the game's light rig.
 Twenty-five comparison-filtered samples provide shadow visibility. Their
 spacing follows the screen pixel's footprint in the map, from 0.6 texels near
 the camera to at most two texels far away, so distant thin shadows such as the
-net tape and rope do not shimmer or break into blocks as the camera moves.
+remaining thin shadows receive a wider filter at a distance. This does not guarantee temporal stability.
 Receiver-plane depth correction keeps the wider spacing from shadowing sloped
 ground. Visibility scales the receiver's lit vertex color
 before material/texture processing and fog. While the shadow map is valid, the game's projected shadow for characters and
@@ -82,10 +85,18 @@ the ball is skipped. Only its darkening pass is matched: FVF 0x112, untextured,
 lighting off, black texture factor with any alpha, stencil EQUAL 1 then ZERO,
 depth writes off and SRC_ALPHA blending. It still draws with color writes off,
 as does the stencil-marking pass, so stencil state matches the original frame.
-Verified post and palm overlays also keep only depth/stencil writes: their
+Legacy tree overlays also keep only depth/stencil writes: their
 unlit alpha-blended receiver states must match along with texture identity.
-Static DXT5 overlays use full compressed-mip payload hashes cached on upload.
-Live palm targets must be swizzled ARGB8 at 512x256 or 256x512, cleared to
+Each court and time of day bakes its own static tree silhouettes, so a DXT5
+texture counts as a tree overlay when every visible block of its top mip has
+black color endpoints and alpha that never exceeds 210. Foliage fringe masks
+and the net mesh reach full alpha and keep drawing, as does dense canopy shade
+(more than 70% of texels covered), whose trees do not cast into the sun map.
+Strips more than twice as wide as tall are cliff reflections mirrored on the
+sea and keep drawing.
+The runner logs each texture
+this rule matches. Net/post overlays still use full compressed-mip payload hashes
+cached on upload. Live palm targets must be swizzled ARGB8 (any size), cleared to
 transparent and populated only by textured black silhouette passes without
 depth or stencil testing. Another color-writing producer invalidates that
 identity until the next clear; releasing the target retires it. Unknown
@@ -114,3 +125,21 @@ after startup at 2160p with 8x MSAA and SMAA; the hotel is not verified.
 `RECOMP_PERF_COUNTER=1` reports caster counts, hidden game-shadow passes,
 hidden prop overlays (`prop_shadows`) and the
 map's direction alongside the existing FPS/late-frame observations.
+
+The net keeps its original textured shadow; the posts, poles and vines cast
+into the sun map. The game bakes posts and net into one overlay texture, so on
+upload the three verified overlays keep alpha only in 4x4 blocks near
+hand-measured net lines (top line and side tapes). Every other block gets zero
+alpha. The sun caster pass excludes static, untransformed draws thinner than
+0.15 units across within the net assembly bounds (world X +/-3.6, Z +/-0.4,
+Y -0.5 through 4): the mesh, tapes and ropes. Posts and vine bundles are
+thicker and cast normally. The baked net line follows the game's fixed light,
+so its ends need not meet the posts' sun shadows. The bounds rule needs
+revision if a court moves or rotates the net assembly.
+
+Legacy shadow textures are classified as palm overlays or combined net/post
+overlays in the texture cache. Both types are excluded from the sun caster
+pass: decals bent over uneven sand can pass the ordinary scenery bounds test.
+Only palm overlays lose color writes in the visible pass; net/post overlays
+retain their original rendering. The same classification is used by both
+passes, without hashing payloads again for each cast.

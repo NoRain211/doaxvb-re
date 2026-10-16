@@ -114,30 +114,98 @@ uint64_t sunPropPayloadHash(const void *bytes, uint32_t size)
     return hash;
 }
 
-bool sunStaticPropTexture(const RecompD3dTextureDesc &desc, uint64_t hash)
+enum class SunOverlay { None, Palm, NetPost };
+
+SunOverlay sunStaticOverlay(const RecompD3dTextureDesc &desc, uint64_t hash)
 {
-    if (desc.linear || desc.depth || desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) return false;
-    // shortcut: only verified static overlays; add identities after inspecting other courts.
-    const struct { unsigned width, height, mips; uint64_t hash; } shadows[] = {
-        {512, 128, 1, 0x945549f88c8cfe40ull}, // posts
-        {256, 128, 8, 0xd99af6253b620e05ull},
-        {512, 64, 7, 0x7135e45fe936c958ull},
-        {256, 256, 1, 0xbc0a582f6161a6e7ull}, // palms
-        {64, 128, 1, 0xbeb1f08e42f78a97ull},
-        {128, 128, 1, 0xbd7d31e39cc51a98ull},
-        {64, 128, 1, 0x6445a295ffd45cc5ull},
+    if (desc.linear || desc.depth || desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) return SunOverlay::None;
+    // shortcut: only verified net/post overlays; add identities after inspecting other courts.
+    const struct { unsigned width, height, mips; uint64_t hash; SunOverlay kind; } shadows[] = {
+        {512, 128, 1, 0x945549f88c8cfe40ull, SunOverlay::NetPost},
+        {256, 128, 8, 0xd99af6253b620e05ull, SunOverlay::NetPost},
+        {512, 64, 7, 0x7135e45fe936c958ull, SunOverlay::NetPost},
     };
     for (const auto &s : shadows)
         if (desc.width == s.width && desc.height == s.height &&
-            desc.mip_levels == s.mips && hash == s.hash) return true;
-    return false;
+            desc.mip_levels == s.mips && hash == s.hash) return s.kind;
+    return SunOverlay::None;
+}
+
+// Legacy tree shadows are black DXT5 silhouettes with partial alpha that never
+// reaches opaque; foliage masks and the net mesh reach 255. Courts and times of
+// day bake their own silhouettes, so match the texels rather than each payload.
+// Dense canopy shade (over 70% covered) has no casters in the sun map and stays.
+// Wider-than-2:1 strips are mirrored cliff reflections on the sea and stay too.
+bool sunShadowTexels(const RecompD3dTextureDesc &desc, const uint8_t *blocks, uint32_t size)
+{
+    if (desc.linear || desc.depth || desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5) return false;
+    if (desc.width > 2*desc.height) return false;
+    const uint32_t count = (std::max)(1u, (desc.width + 3)/4)*(std::max)(1u, (desc.height + 3)/4);
+    if (!blocks || size < count*16) return false;
+    uint32_t covered = 0;
+    for (uint32_t i = 0; i < count; ++i, blocks += 16) {
+        uint8_t alpha[8] = {blocks[0], blocks[1]};
+        for (int k = 2; k < 8; ++k)
+            alpha[k] = alpha[0] > alpha[1] ? uint8_t(((8 - k)*alpha[0] + (k - 1)*alpha[1])/7) :
+                k < 6 ? uint8_t(((6 - k)*alpha[0] + (k - 1)*alpha[1])/5) : k == 6 ? 0 : 255;
+        uint64_t bits = 0;
+        for (int k = 0; k < 6; ++k) bits |= uint64_t(blocks[2 + k]) << (8*k);
+        uint8_t top = 0;
+        for (int t = 0; t < 16; ++t) {
+            const uint8_t a = alpha[(bits >> (3*t)) & 7];
+            top = (std::max)(top, a);
+            covered += a > 8;
+        }
+        if (!top) continue;
+        if (top > 210) return false;
+        for (int c = 8; c < 12; c += 2) {
+            const unsigned rgb = blocks[c] | blocks[c + 1] << 8;
+            if ((rgb >> 11) > 1 || ((rgb >> 5) & 63) > 2 || (rgb & 31) > 1) return false;
+        }
+    }
+    return covered && covered*10 <= count*16*7;
+}
+
+// The legacy net/post overlay bakes the posts and vines in with the net. Clear
+// the BC3 alpha of every block away from the net line so the posts can cast
+// into the sun map instead.
+// shortcut: lines hand-measured on the three verified overlays; re-measure when one is added.
+void sunKeepNetLine(const RecompD3dTextureDesc &desc, uint8_t *blocks, uint32_t levels)
+{
+    struct Line { float x0, y0, x1, y1; };
+    static const Line wide[] = {{100, 63.5f, 452, 63.5f}, {126, 65, 108, 92}, {433, 65, 414, 92}};
+    static const Line frame[] = {{30, 72.5f, 192, 71.5f}, {32, 74, 8, 115}, {192, 78, 177, 109}};
+    static const Line slope[] = {{62, 23.8f, 408, 40.8f}};
+    const struct { unsigned width, height, count; const Line *lines; } layouts[] = {
+        {512, 128, 3, wide}, {256, 128, 3, frame}, {512, 64, 1, slope}};
+    for (const auto &layout : layouts) {
+        if (desc.width != layout.width || desc.height != layout.height) continue;
+        uint32_t width = desc.width, height = desc.height;
+        for (uint32_t level = 0; level < levels; ++level) {
+            const float scale = float(1u << level), reach = 2 + 2.83f*scale;
+            for (uint32_t by = 0; by < (height + 3)/4; ++by)
+                for (uint32_t bx = 0; bx < (width + 3)/4; ++bx, blocks += 16) {
+                    const float x = (bx*4 + 2)*scale, y = (by*4 + 2)*scale;
+                    bool kept = false;
+                    for (unsigned i = 0; i < layout.count && !kept; ++i) {
+                        const Line &l = layout.lines[i];
+                        const float dx = l.x1 - l.x0, dy = l.y1 - l.y0;
+                        const float t = (std::max)(0.0f, (std::min)(1.0f, ((x - l.x0)*dx + (y - l.y0)*dy)/(dx*dx + dy*dy)));
+                        kept = std::hypot(x - l.x0 - t*dx, y - l.y0 - t*dy) <= reach;
+                    }
+                    if (!kept) std::memset(blocks, 0, 8); // both endpoints 0: every texel alpha 0
+                }
+            width = (std::max)(1u, width/2); height = (std::max)(1u, height/2);
+        }
+        return;
+    }
 }
 
 bool sunPalmTexture(const RecompD3dTextureDesc &desc)
 {
+    // Any size: the clear/producer history in SunPalmTarget is the identity.
     return !desc.linear && !desc.depth && desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 &&
-        desc.mip_levels <= 1 && ((desc.width == 512 && desc.height == 256) ||
-        (desc.width == 256 && desc.height == 512));
+        desc.mip_levels <= 1;
 }
 
 bool sunPalmProducer(const RecompD3dPresenterDrawCommand &draw)
@@ -198,7 +266,23 @@ bool sunInverse(const float matrix[16], float inverse[16])
     return true;
 }
 
-bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float size[3])
+// The net keeps its legacy shadow; the posts and vines beside it cast into the sun map.
+// shortcut: the captured courts place the net assembly at world Z=0; use object identity if layouts change.
+bool sunNetPart(const RecompD3dPresenterDrawCommand &draw, const float minimum[3], const float maximum[3])
+{
+    if (draw.blend_weight_count || !draw.has_texture || draw.texture.render_target ||
+        (draw.fvf != 0x112 && draw.fvf != 0x142)) return false;
+    // Static court geometry is already in world space; moving rigid actor parts are not.
+    for (unsigned i = 0; i < 16; ++i)
+        if (!std::isfinite(draw.world[0][i]) ||
+            std::fabs(draw.world[0][i] - (i%5 == 0 ? 1.0f : 0.0f)) > 1e-5f) return false;
+    // Mesh, tape, side tapes and ropes are under 0.07 units thick; posts and vine bundles exceed 0.2.
+    const bool thin = (std::min)(maximum[0] - minimum[0], maximum[2] - minimum[2]) < 0.15f;
+    return thin && minimum[0] >= -3.6f && maximum[0] <= 3.6f &&
+        minimum[1] >= -0.5f && maximum[1] <= 4 && minimum[2] >= -0.4f && maximum[2] <= 0.4f;
+}
+
+bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float size[3], bool *net = nullptr)
 {
     RecompD3dVertexLayout layout;
     if (draw.target.offscreen || draw.target.no_depth || !draw.has_transform || draw.program_count ||
@@ -229,6 +313,7 @@ bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float size[3])
             maximum[a] = (std::max)(maximum[a], position[a]);
         }
     }
+    if (net) *net = sunNetPart(draw, minimum, maximum);
     for (unsigned a = 0; a < 3; ++a) size[a] = maximum[a]-minimum[a];
     const float extent = (std::max)({size[0], size[1], size[2]});
     return extent > 0 && extent < 200;
@@ -348,7 +433,7 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
     view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     view.Texture2D.MipLevels = 1;
     D3D11_BUFFER_DESC constants{};
-    constants.ByteWidth = 20*sizeof(float);
+    constants.ByteWidth = 36*sizeof(float);
     constants.Usage = D3D11_USAGE_DYNAMIC;
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -384,6 +469,7 @@ void sunShaderSource(std::string &source)
 cbuffer SunShadow : register(b1) {
     row_major float4x4 sun_projection;
     float4 sun_flags;
+    row_major float4x4 sun_object; // world matrix; unlit receivers have no lighting position
 };
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
@@ -417,7 +503,7 @@ float sunVisibility(float3 p) {
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),
         "\n    float3 sun_world : TEXCOORD8;\n");
     source.insert(source.find("    VSOut output;")+std::strlen("    VSOut output;"),
-        "\n    output.sun_world=0;\n");
+        "\n    output.sun_world=mul(float4(input.position.xyz,1),sun_object).xyz;\n");
     const char *anchor = "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
     auto lit = source.find(anchor);
     if (lit != std::string::npos) lit += std::strlen(anchor);
