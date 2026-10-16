@@ -4270,6 +4270,11 @@ RecompD3dPresenterError submitPresent(
     // Before the output pass: its back-buffer write waits for the display.
     endFrameCost(presenter);
     auto *output = presenter->vrr_target_view != nullptr ? presenter->vrr_target_view : presenter->present_target_view;
+    if (presenter->gbuffer.enabled) {
+        const unsigned cycles = recomp_tuning.gbuffer_cycles.load();
+        presenter->gbuffer.debug_view = (presenter->gbuffer.debug_view + cycles - presenter->gbuffer.cycles_seen) % 3u;
+        presenter->gbuffer.cycles_seen = cycles;
+    }
     if (presenter->gbuffer.enabled && presenter->gbuffer.debug_view) {
         presenter->gbuffer.show(presenter->context, output);
     } else if (!renderOutput(presenter, output)) {

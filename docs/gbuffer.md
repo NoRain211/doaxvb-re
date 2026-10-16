@@ -13,6 +13,7 @@ black for missing normals. `depth` shows near pixels brighter using
 `log2(1 + 1024 * (1-z)) / log2(1025)`; cleared depth is black. These views
 require the feature to be enabled, fill the presentation output, and bypass
 gamma and SMAA. Ordinary color rendering retains those effects.
+In game, F11 cycles the game image, normal view and depth view.
 
 Normals use `R10G10B10A2_UNORM`: RGB = `normal * 0.5 + 0.5`, A = 1 for a
 valid unit vector, or all zero for missing/degenerate normals. Consumers decode
