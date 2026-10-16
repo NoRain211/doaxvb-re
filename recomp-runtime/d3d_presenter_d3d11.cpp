@@ -3382,26 +3382,29 @@ RecompD3dPresenterError submitDraw(
     }
     auto &sun = presenter->sun;
     if (sun.enabled && sun.constants) {
-        float constants[36]{};
+        float constants[40]{};
         std::memcpy(constants, sun.projection, sizeof sun.projection);
         // Ground darkens only where the game draws its own shadow, by that shadow's opacity, so scenes
-        // without one (hotel, menus) stay untouched. Models keep the game's shading; self-shadowing blotched them.
-        // shortcut: models never receive; add a dedicated character map if self-shadowing is wanted.
+        // without one (hotel, menus) stay untouched. Rigid props keep the game's shading; lit skinned
+        // characters receive with a per-pixel sun-facing fade (see sunShaderSource).
         const size_t index = sun.draw_index - 1;
         const bool model = draw.blend_weight_count || (index < sun.compact.size() && sun.compact[index]);
         const bool lit_ground = layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
             layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled;
+        const bool character = draw.blend_weight_count && lit_ground;
         // Grass and its sand fringe are unlit with baked vertex colors; shadows must cross onto them too.
         const bool unlit_ground = !draw.directional.enabled && draw.depth.depth_write_enable &&
             (!draw.blend.blend_enable || (draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
              draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA));
         constants[16] = !sun.casting && sun.valid && sun.epoch == sun.camera_epoch &&
             !draw.target.offscreen && !draw.target.no_depth && !draw.program_count &&
-            !layout.pretransformed && (lit_ground || unlit_ground) && !model &&
+            !layout.pretransformed && (((lit_ground || unlit_ground) && !model) || character) &&
             sun.game_alpha > 0 && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
         constants[17] = sun.game_alpha;
         constants[18] = sun.casting ? 1.0f : 0.0f;
+        constants[19] = character ? 1.0f : 0.0f;
         std::memcpy(constants + 20, draw.world[0], sizeof draw.world[0]);
+        for (unsigned i = 0; i < 3; ++i) constants[36 + i] = -sun.direction[i];
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;

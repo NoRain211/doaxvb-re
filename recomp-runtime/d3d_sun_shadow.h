@@ -445,7 +445,7 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
     view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     view.Texture2D.MipLevels = 1;
     D3D11_BUFFER_DESC constants{};
-    constants.ByteWidth = 36*sizeof(float);
+    constants.ByteWidth = 40*sizeof(float);
     constants.Usage = D3D11_USAGE_DYNAMIC;
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -482,11 +482,12 @@ cbuffer SunShadow : register(b1) {
     row_major float4x4 sun_projection;
     float4 sun_flags;
     row_major float4x4 sun_object; // world matrix; unlit receivers have no lighting position
+    float4 sun_light; // xyz: unit vector toward the sun
 };
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
-float sunVisibility(float3 p) {
+float sunVisibility(float3 p, float soft = 0.6) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
     float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
     float2 dx = ddx(uv), dy = ddy(uv);
@@ -495,7 +496,7 @@ float sunVisibility(float3 p) {
     if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
     // One kernel at every distance: taps stay within two texels of each other so a
     // thin distant line cannot fall between them, and near shadows stay sharp.
-    float2 spacing = clamp(footprint/5, 0.6*sun_texel, 2*sun_texel);
+    float2 spacing = clamp(footprint/5, soft*sun_texel, max(soft,2)*sun_texel);
     float determinant = dx.x*dy.y-dx.y*dy.x;
     float2 slope = abs(determinant) > 1e-12 ?
         float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
@@ -513,21 +514,32 @@ float sunVisibility(float3 p) {
 }
 )");
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),
-        "\n    float3 sun_world : TEXCOORD8;\n");
+        "\n    float3 sun_world : TEXCOORD8;\n    float3 sun_normal : TEXCOORD14;\n");
     source.insert(source.find("    VSOut output;")+std::strlen("    VSOut output;"),
-        "\n    output.sun_world=mul(float4(input.position.xyz,1),sun_object).xyz;\n");
+        "\n    output.sun_world=mul(float4(input.position.xyz,1),sun_object).xyz;\n    output.sun_normal=0;\n");
     const char *anchor = "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
     auto lit = source.find(anchor);
     if (lit != std::string::npos) lit += std::strlen(anchor);
-    // Normal offset (~2.5 texels) keeps grazing surfaces from shadowing themselves at a low sun.
     if (lit != std::string::npos)
-        source.insert(lit, "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04;\n");
+        source.insert(lit, "        output.sun_world=world_pos; output.sun_normal=n;\n");
     // Mip averages erase thin net wires before the alpha cutoff.
     source.insert(source.find("    if (draw_flags.y > 0.5f) {"),
         "    if (sun_flags.z > 0 && draw_flags.x > 0.5f)\n"
         "        shaded.a = guest_texture.SampleLevel(guest_sampler, input.texcoord * texture_flags.xy, 0).a;\n");
     source.insert(source.find("    float4 shaded = input.color;"),
-        "    if (sun_flags.x > 0) input.color.rgb *= 1 - sun_flags.y*(1-sunVisibility(input.sun_world));\n");
+        "    if (sun_flags.x > 0) {\n"
+        "        float3 sn = input.sun_normal;\n"
+        "        sn *= dot(sn,sn) > 0 ? rsqrt(dot(sn,sn)) : 0;\n"
+        "        float ndl = dot(sn, sun_light.xyz);\n"
+        // Per-pixel normal offset: ~2.5 texels facing the sun, ~4.5 at grazing angles.
+        "        float visibility = sunVisibility(input.sun_world + sn*(0.04+0.03*(1-saturate(ndl))),\n"
+        "            sun_flags.w > 0 ? 3 : 0.6);\n"
+        // Characters: the game's shading already darkens sides turned from the sun,
+        // where the map only adds self-shadow blotches, so fade it out there. Close-ups
+        // magnify map texels, so characters also get a wider filter and 60% strength.
+        "        if (sun_flags.w > 0) visibility = lerp(1, visibility, 0.6*smoothstep(0.05, 0.3, ndl));\n"
+        "        input.color.rgb *= 1 - sun_flags.y*(1-visibility);\n"
+        "    }\n");
 }
 
 } // namespace
