@@ -27,7 +27,8 @@ the sun and up to 0.07 at grazing angles, and the compare bias is 0.0002 of
 light depth, so grazing ground under a low sun does not shadow itself. Lit
 models (character pieces, skinned or rigid, the ball and posts) receive
 occluder shadows only: they look up from 0.5 units toward the sun, with a
-three-texel filter and no normal term. That lookup moves only the compare
+six-texel (about 40 cm) filter, no normal term and no receiver-plane depth
+correction, which swings near curved silhouettes and left streaky blotches. That lookup moves only the compare
 depth, so palm and post shadows land where they should while nothing within
 half a unit, including the model's own body, shadows it. A normal-faded
 receiver banded at every joint, because limbs are separately lit pieces whose

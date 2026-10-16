@@ -490,7 +490,7 @@ cbuffer SunShadow : register(b1) {
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
-float sunVisibility(float3 p, float soft) {
+float sunVisibility(float3 p, float soft, bool plane) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
     float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
     float2 dx = ddx(uv), dy = ddy(uv);
@@ -501,7 +501,8 @@ float sunVisibility(float3 p, float soft) {
     // thin distant line cannot fall between them, and near shadows stay sharp.
     float2 spacing = clamp(footprint/5, soft*sun_texel, max(soft,2)*sun_texel);
     float determinant = dx.x*dy.y-dx.y*dy.x;
-    float2 slope = abs(determinant) > 1e-12 ?
+    // Receiver-plane depth only suits flat ground; on curved models it swings near silhouettes.
+    float2 slope = plane && abs(determinant) > 1e-12 ?
         float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
     // Each tap blends neighbouring texels, so sloped ground needs one texel of slope as bias.
     float bias = 0.0002 + dot(abs(slope), sun_texel);
@@ -538,9 +539,9 @@ float sunVisibility(float3 p, float soft) {
         "        float visibility = sun_flags.w > 0 ?\n"
         // Models: look up from half a unit toward the sun, so their own body (under half a
         // unit thick) never shadows them while palms and posts still do, and skip any normal
-        // term because limb normals break at the joints. Close-ups magnify texels: wider filter.
-        "            sunVisibility(input.sun_world + sun_light.xyz*0.5, 3) :\n"
-        "            sunVisibility(input.sun_world + sn*(0.04+0.03*(1-saturate(ndl))), 0.6);\n"
+        // term because limb normals break at the joints. A ~40 cm filter keeps frond shade soft.
+        "            sunVisibility(input.sun_world + sun_light.xyz*0.5, 6, false) :\n"
+        "            sunVisibility(input.sun_world + sn*(0.04+0.03*(1-saturate(ndl))), 0.6, true);\n"
         "        input.color.rgb *= 1 - sun_flags.y*(1-visibility);\n"
         "    }\n");
 }
