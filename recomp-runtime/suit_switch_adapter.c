@@ -92,6 +92,9 @@ enum {
 };
 
 static RecompSuitSwitch state;
+/* Each slot's suit before its first switch, and whose it was; 0 when none. */
+static uint16_t original[SLOT_COUNT];
+static uint8_t original_character[SLOT_COUNT];
 
 static uint32_t root(uint32_t actor)
 {
@@ -210,6 +213,31 @@ void recomp_suit_switch_frame(uint32_t frame)
     }
 }
 
+static bool begin(uint32_t actor, uint16_t suit)
+{
+    uint8_t character = *recomp_memory(root(actor) + ROOT_CHARACTER, 1u);
+    uint16_t current = *recomp_memory_u16(root(actor) + ROOT_SUIT);
+    if (state.phase != RECOMP_SUIT_IDLE) return false;
+    if (original[actor] == 0u || original_character[actor] != character) {
+        original[actor] = current;
+        original_character[actor] = character;
+    }
+    return recomp_suit_switch_begin(&state, actor, suit, recomp_d3d_frame_adapter_swap_counter());
+}
+
+bool recomp_suit_switch_restore(uint32_t actor)
+{
+    if (actor >= SLOT_COUNT || original[actor] == 0u || state.phase != RECOMP_SUIT_IDLE) return false;
+    if (*recomp_memory(root(actor) + ROOT_CHARACTER, 1u) != original_character[actor]) return false;
+    if (*recomp_memory_u16(root(actor) + ROOT_SUIT) == original[actor]) return false;
+    return recomp_suit_switch_begin(&state, actor, original[actor], recomp_d3d_frame_adapter_swap_counter());
+}
+
+void recomp_suit_switch_forget(void)
+{
+    memset(original, 0, sizeof original);
+}
+
 bool recomp_suit_switch_step(uint32_t actor, int step)
 {
     if (actor >= SLOT_COUNT || step == 0 || state.phase != RECOMP_SUIT_IDLE) return false;
@@ -219,7 +247,7 @@ bool recomp_suit_switch_step(uint32_t actor, int step)
     uint16_t current = *recomp_memory_u16(root(actor) + ROOT_SUIT);
     uint16_t suit = recomp_suit_switch_next(current, step, SUIT_END, wearable, &character);
     if (suit == current) return false;
-    return recomp_suit_switch_begin(&state, actor, suit, recomp_d3d_frame_adapter_swap_counter());
+    return begin(actor, suit);
 }
 
 bool recomp_suit_switch_busy(void)
@@ -283,6 +311,16 @@ void recomp_suit_switch_name(uint16_t suit, char *name, uint32_t size)
 }
 
 void recomp_suit_switch_camera_build(void)
+{
+}
+
+bool recomp_suit_switch_restore(uint32_t actor)
+{
+    (void)actor;
+    return false;
+}
+
+void recomp_suit_switch_forget(void)
 {
 }
 

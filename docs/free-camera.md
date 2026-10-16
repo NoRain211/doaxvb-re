@@ -17,17 +17,17 @@ you freeze it.
 | Move | W A S D | Left stick |
 | Down / up | Q / E | Left / right trigger |
 | Look | Arrow keys, or drag with the right mouse button | Right stick |
-| Zoom in / out | Z / X | D-pad up / down |
+| Zoom in / out | Z / X | (move closer with the left stick) |
 | Faster / slower | Shift / Ctrl (held) | A / B (held) |
-| Back to the game's view | R | Y |
+| Reset: the game's view (in the model viewer, the view in front of her), her own animation and her first swimsuit | R | Y |
 | Next camera | C | X |
 | Pause / resume the game (P works anywhere, camera on or off) | P | Start (while flying) |
 | Clean view: hide the panel and the game's overlay | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
 | Previous / next animation; hold to scroll, faster the longer held, and let go to play | [ / ] | D-pad left / right |
-| Previous / next swimsuit on the chosen character | - / = | Back + d-pad down / up |
+| Previous / next swimsuit on the chosen character | - / = | D-pad down / up |
 | Screenshot (anywhere; the controller while flying) | F12 | Back + A |
-| Next character to animate (the camera turns to her) | `\` (backslash) | Left stick click |
+| Next character to animate (the camera turns to her; not in the model viewer) | `\` (backslash) | Left stick click |
 
 While the camera flies, a panel at the top left names the chosen character,
 the animation playing on her (the game's own, or the held clip as its place
@@ -147,7 +147,7 @@ which the log reports (`recomp pose: character 0 clip 02b0 (36 of 45)`).
 
 ## Changing the swimsuit
 
-`-` and `=`, or Back with the d-pad's down and up, put the chosen
+`-` and `=`, or the d-pad's down and up, put the chosen
 character's previous or next swimsuit on her, in a running or frozen scene.
 The picture holds for the few frames the load takes, then the scene goes on
 with her in the new suit and the panel names it.

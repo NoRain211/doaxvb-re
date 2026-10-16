@@ -1535,6 +1535,14 @@ static bool attach_vertex_program(uint32_t handle, uint32_t device,
     return true;
 }
 
+static uint32_t hidden_buffers_first, hidden_buffers_end;
+
+void recomp_d3d_draw_set_hidden_buffers(uint32_t first, uint32_t end)
+{
+    hidden_buffers_first = first;
+    hidden_buffers_end = end > first ? end : first;
+}
+
 static void recomp_d3d_draw_indexed_vertices_adapter(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -1564,6 +1572,9 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
 
     draw_state.stream0.stride = *recomp_memory_u32(D3D_STREAM0_STRIDE);
     vertex_buffer = *recomp_memory_u32(D3D_STREAM0_BUFFER);
+    /* A vertex buffer the runtime hides is left out of the host draw; the
+       guest's own bookkeeping above has already run. */
+    if (vertex_buffer >= hidden_buffers_first && vertex_buffer < hidden_buffers_end) return;
     if (vertex_buffer != 0u &&
         guest_span(vertex_buffer, 8u) != NULL &&
         (*recomp_memory_u32(vertex_buffer) & D3D_RESOURCE_TYPE_MASK) ==

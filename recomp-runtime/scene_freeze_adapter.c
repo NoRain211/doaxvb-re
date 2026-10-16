@@ -87,7 +87,7 @@ void recomp_scene_freeze_run_only(uint32_t function)
     if (only_function == function) return;
     only_function = function;
     /* Nothing draws meanwhile: keep the last picture on screen. */
-    recomp_d3d_frame_adapter_hold_present(function != 0u);
+    recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_SCENE, function != 0u);
     if (function != 0u) fprintf(stderr, "recomp scene freeze: running only %08x\n", function);
     else fprintf(stderr, "recomp scene freeze: every task runs again\n");
 }

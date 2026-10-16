@@ -110,6 +110,8 @@ static struct {
     /* Face the chosen character at the next camera build; frame_pending
        also moves close to her. */
     bool aim_pending, frame_pending;
+    /* The model viewer has the camera (recomp_free_camera_overlay). */
+    bool viewer;
     /* H's clean view also hides the runtime's own overlay. */
     bool panel_hidden;
     /* The hint lists controller buttons once a controller was last used,
@@ -165,6 +167,7 @@ static void set_active(bool active)
     if (!active) {
         /* A pause outlives the camera; P ends it. */
         recomp_actor_pose_release();
+        recomp_suit_switch_forget();
         if (!recomp_scene_freeze_active()) {
             recomp_scene_freeze_set_overlay_hidden(false);
             state.panel_hidden = false;
@@ -282,7 +285,8 @@ static bool take_sample(const RecompInputGamepad *gamepad)
         }
     }
 
-    bool actor = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_BACKSLASH) ||
+    /* The model viewer shows one girl, so it has no next one. */
+    bool actor = state.active && !state.viewer && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_BACKSLASH) ||
         (gamepad->buttons & XBOX_LEFT_THUMB) != 0u);
     if (actor && !state.actor_held) {
         recomp_actor_pose_next_actor();
@@ -290,11 +294,10 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     }
     state.actor_held = actor;
 
-    bool back = (gamepad->buttons & XBOX_BACK) != 0u;
     bool suit_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_MINUS) ||
-        (back && (gamepad->buttons & XBOX_DPAD_DOWN) != 0u));
+        (gamepad->buttons & XBOX_DPAD_DOWN) != 0u);
     bool suit_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_EQUALS) ||
-        (back && (gamepad->buttons & XBOX_DPAD_UP) != 0u));
+        (gamepad->buttons & XBOX_DPAD_UP) != 0u);
     int suit_step = (suit_next && !state.suit_next_held) - (suit_back && !state.suit_back_held);
     if (suit_step != 0) {
         RecompActorPoseStatus pose;
@@ -367,11 +370,8 @@ static void read_controls(RecompFreeCameraControls *controls)
         key(RECOMP_INPUT_HOST_KEY_RIGHT, RECOMP_INPUT_HOST_KEY_LEFT);
     controls->look[1] = stick(pad->thumb_ry) +
         key(RECOMP_INPUT_HOST_KEY_UP, RECOMP_INPUT_HOST_KEY_DOWN);
-    /* With BACK held the d-pad's up and down change the swimsuit instead. */
-    const uint32_t zoom_pad = (pad->buttons & XBOX_BACK) != 0u ? 0u : pad->buttons;
-    controls->zoom = ((zoom_pad & XBOX_DPAD_UP) ? 1.0f : 0.0f) -
-        ((zoom_pad & XBOX_DPAD_DOWN) ? 1.0f : 0.0f) +
-        key(RECOMP_INPUT_HOST_KEY_Z, RECOMP_INPUT_HOST_KEY_X);
+    /* The d-pad's up and down change the swimsuit; only keys zoom. */
+    controls->zoom = key(RECOMP_INPUT_HOST_KEY_Z, RECOMP_INPUT_HOST_KEY_X);
     /* Dragging with the right mouse button aims; a narrow view aims finer. */
     float drag_x, drag_y;
     if (recomp_input_host_mouse_drag(&drag_x, &drag_y)) {
@@ -391,6 +391,18 @@ static void read_controls(RecompFreeCameraControls *controls)
         controls->look[0] += add[3];
         controls->look[1] += add[4];
     }
+}
+
+/* Reset also hands the chosen character's animation back to the game and
+   puts her first swimsuit back on. */
+static void reset_character(void)
+{
+    RecompActorPoseStatus pose;
+    recomp_actor_pose_status(&pose);
+    bool posed = pose.holding;
+    recomp_actor_pose_release();
+    recomp_suit_switch_restore(pose.actor);
+    if (posed && recomp_scene_freeze_active()) recomp_scene_freeze_step();
 }
 
 static void build_camera(void)
@@ -442,7 +454,12 @@ static void build_camera(void)
     const bool fly = state.active && ours;
     if (fly) {
         bool reset = analog(&state.pad, ANALOG_Y) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_R);
-        if ((!state.started || (reset && !state.reset_held)) &&
+        bool resetting = reset && !state.reset_held;
+        if (resetting) reset_character();
+        if (resetting && state.viewer && state.started) {
+            /* The viewer's view is the one in front of her. */
+            state.frame_pending = true;
+        } else if ((!state.started || resetting) &&
             recomp_free_camera_begin(&state.camera, eye, target, fov)) {
             state.started = true;
             state.stepped_frame = frame;
@@ -530,8 +547,8 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         if (!recomp_scene_freeze_active()) return;
         recomp_overlay_set_title(text, "PAUSED");
         recomp_overlay_set_hint(text, state.controller_hints > 0
-            ? "P resume   Back + R3 free camera"
-            : "P resume   . step   H clean view   F12 screenshot   F1 free camera");
+            ? "P resume  |  Back + R3 free camera"
+            : "P resume  |  . step  |  H clean view  |  F12 screenshot  |  F1 free camera");
         return;
     }
 
@@ -543,7 +560,7 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         recomp_actor_pose_name(pose.actor, name, sizeof name);
         recomp_overlay_add_line(text, "%s", name);
         if (pose.browsing) {
-            recomp_overlay_add_line(text, "Animation %u of %u (clip %04X): let go to play",
+            recomp_overlay_add_line(text, "Animation %u of %u (clip %04X)",
                 (unsigned)pose.browse_position, (unsigned)pose.browse_count, (unsigned)pose.browse_clip);
         } else if (pose.holding) {
             recomp_overlay_add_line(text, "Animation %u of %u (clip %04X)",
@@ -562,26 +579,27 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
     if (state.controller_hints > 0) {
         recomp_overlay_set_hint(text, viewer
-            ? "Back + R3 leave   Start freeze   RB step   LB clean view   Back + A screenshot\n"
-              "Left stick move   LT RT down/up   Right stick look   L3 next girl\n"
-              "D-pad left/right animation   Back + d-pad up/down swimsuit"
-            : "Back + R3 off   Start freeze   RB step   LB clean view   Back + A screenshot\n"
-              "Left stick move   LT RT down/up   Right stick look   L3 next girl\n"
-              "D-pad left/right animation   Back + d-pad up/down swimsuit");
+            ? "Back + R3 leave  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
+              "Left stick move  |  LT RT down/up  |  Right stick look\n"
+              "D-pad left/right animation  |  D-pad up/down swimsuit"
+            : "Back + R3 off  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
+              "Left stick move  |  LT RT down/up  |  Right stick look  |  L3 next girl\n"
+              "D-pad left/right animation  |  D-pad up/down swimsuit");
     } else {
         recomp_overlay_set_hint(text, viewer
-            ? "F1 leave   P freeze   . step   H clean view   F12 screenshot\n"
-              "WASD QE move   arrows / right-drag look   \\ next girl\n"
-              "[ ] animation   - = swimsuit"
-            : "F1 off   P freeze   . step   H clean view   F12 screenshot\n"
-              "WASD QE move   arrows / right-drag look   \\ next girl\n"
-              "[ ] animation   - = swimsuit");
+            ? "F1 leave  |  P freeze  |  . step  |  H clean view  |  F12 screenshot  |  R reset\n"
+              "WASD QE move  |  arrows / right-drag look  |  Z X zoom\n"
+              "[ ] animation  |  - = swimsuit"
+            : "F1 off  |  P freeze  |  . step  |  H clean view  |  F12 screenshot  |  R reset\n"
+              "WASD QE move  |  arrows / right-drag look  |  Z X zoom  |  \\ next girl\n"
+              "[ ] animation  |  - = swimsuit");
     }
 }
 
 void recomp_free_camera_overlay(bool viewer)
 {
     RecompOverlayText text;
+    state.viewer = viewer;
     fill_overlay(&text, viewer);
     recomp_overlay_publish(&text);
 }

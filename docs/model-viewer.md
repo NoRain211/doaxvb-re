@@ -9,14 +9,15 @@ started, the viewer takes it over:
 
 - the free camera comes on in front of Player 1's girl,
 - the scene freezes,
-- the other three players and the game's on-screen overlay (the score and
-  the players' portraits) are hidden, frozen or not,
+- the other three players, the ball and the game's on-screen overlay (the
+  score and the players' portraits) are hidden, frozen or not,
 - a panel names her, shows the animation and swimsuit and lists the controls.
 
 Every free camera control then works as described in
 [`free-camera.md`](free-camera.md): fly around her, step or unfreeze the
 scene, play another of the scene's animation clips on her, or change her
-swimsuit with `-` and `=` (Back with the d-pad's down and up). Put the
+swimsuit with `-` and `=` (the d-pad's down and up). R (Y) puts back the
+view in front of her, her own animation and her first swimsuit. Put the
 free camera away (F1, or Back with the right stick) to leave: the scene is
 unpaused, the match is quit and the game returns to the main menu.
 
@@ -85,7 +86,16 @@ grid, so it can be seen fading out for a moment. It
 confirms Exhibition's first screen (screen 2) the same way while its cursor,
 the byte at `0x9D9F6D`, is on One Player.
 
-The match loads as usual. After it has run 240 frames the viewer chooses the
+The match loads as usual, but its opening, which shows every player, is
+never seen: from the match's first frame the other three are hidden and Swap
+holds the last picture (`recomp_d3d_frame_adapter_hold_present`). The ball
+is hidden by leaving out every draw from the vertex buffers of the model the
+loader keeps at `0x4D9440`, the match ball's (`recomp_d3d_draw_set_hidden_buffers`);
+some of her poses otherwise leave it in her hands. While the others pick,
+the row of girls is left out as well, so the girls they take do not leave
+it one by one.
+
+After the match has run 240 frames the viewer chooses the
 first player for the animation controls, hides the other three, turns on
 and frames the free camera, freezes the scene and hides the overlay. A
 character is hidden by moving her skeleton 100 units below the ground after

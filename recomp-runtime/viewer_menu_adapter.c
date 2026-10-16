@@ -11,6 +11,7 @@
 #include "free_camera_adapter.h"
 #include "scene_freeze_adapter.h"
 #include "d3d_draw_adapter.h"
+#include "d3d_frame_adapter.h"
 #include "input_host_win32.h"
 #include "overlay_text.h"
 #include "viewer_scene.h"
@@ -51,11 +52,14 @@
    adapter leave out every quad wholly inside the other three columns
    (PICKING_MASK). Once the court is being chosen its grid fills the lower
    half, so only the columns' portraits above it are left out (COURT_MASK).
+   While the others pick, the row of girls is left out as well (OTHERS_MASK).
    It confirms Exhibition's first screen
    (screen 2: One Player, the match length, controller settings) the same
    way, on One Player.
 
-   The match then loads as usual. Once it has run for SETTLE_FRAMES the
+   The match then loads as usual, but its opening is never seen: from its
+   first frame the other three players are hidden and the picture holds
+   (RECOMP_PRESENT_HOLD_VIEWER). Once it has run for SETTLE_FRAMES the
    viewer takes it over: the free camera comes on close to the first player,
    the scene freezes, and the other three players are hidden. Putting the
    free camera away ends the viewer: the match is quit the way its results
@@ -112,6 +116,8 @@ enum {
     SETUP_CURSOR = 0x009D9F6Du,
     PICKS = 0x009DAA48u,
     PICKS_DONE = 0x2u,
+    BALL_MODEL = 0x004D9440u,
+    BALL_HEADERS = 0x1000u,
     PICK_STEP = 0x8u,
     PICK_STEP_COURT = 4,
     AUTO_PICK_POLLS = 12,
@@ -149,6 +155,9 @@ static uint32_t match_frames;
 
 static const float PICKING_MASK[1][4] = {{200.0f, 60.0f, 720.0f, 362.0f}};
 static const float COURT_MASK[1][4] = {{200.0f, 60.0f, 720.0f, 250.0f}};
+/* Once Player 1 has picked, the row of girls goes too, so the girls the
+   others take do not leave it one by one. */
+static const float OTHERS_MASK[2][4] = {{200.0f, 60.0f, 720.0f, 362.0f}, {0.0f, 330.0f, 720.0f, 480.0f}};
 
 /* Shows only Player 1's column of character select while the viewer waits. */
 /* Time of day. Court select's tiles pick a place at a time; the viewer's
@@ -186,6 +195,18 @@ static void apply_time(void)
     }
 }
 
+/* The match ball's model is the one the loader keeps at BALL_MODEL; its
+   vertex buffer objects lie in the first BALL_HEADERS bytes. */
+static void hide_ball(bool hide)
+{
+    uint32_t model = *recomp_memory_u32(BALL_MODEL);
+    if (hide && model != 0u && model != 0xFFFFFFFFu) {
+        recomp_d3d_draw_set_hidden_buffers(model, model + BALL_HEADERS);
+    } else {
+        recomp_d3d_draw_set_hidden_buffers(0u, 0u);
+    }
+}
+
 static bool choosing_court(void)
 {
     return session == VIEWER_WAITING && *recomp_memory(SCENE, 1u) == SCENE_MENU &&
@@ -209,12 +230,14 @@ static void mask_character_select(void)
     int mask = 0;
     if (session == VIEWER_WAITING && *recomp_memory(SCENE, 1u) == SCENE_MENU &&
         *recomp_memory(MENU_SCREEN, 1u) == SCREEN_CHARACTER_SELECT) {
-        mask = *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT ? 2 : 1;
+        mask = *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT ? 2 :
+            *recomp_memory(PICKS + PICKS_DONE, 1u) != 0u ? 3 : 1;
     }
     if (mask == shown) return;
     shown = mask;
     if (mask == 1) recomp_d3d_draw_set_screen_mask(PICKING_MASK, 1u);
     else if (mask == 2) recomp_d3d_draw_set_screen_mask(COURT_MASK, 1u);
+    else if (mask == 3) recomp_d3d_draw_set_screen_mask(OTHERS_MASK, 2u);
     else recomp_d3d_draw_set_screen_mask(NULL, 0u);
 }
 
@@ -347,7 +370,12 @@ static void viewer_tick(uint32_t frame)
             match_frames = 0u;
             break;
         }
+        /* The match's opening shows every player: the picture holds and
+           the others are hidden until the viewer takes over. */
+        recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, true);
+        recomp_actor_pose_set_hidden(OTHER_PLAYERS);
         if (++match_frames < SETTLE_FRAMES) break;
+        recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, false);
         recomp_actor_pose_choose(FIRST_PLAYER);
         recomp_actor_pose_set_hidden(OTHER_PLAYERS);
         recomp_free_camera_set_active(true);
@@ -359,10 +387,13 @@ static void viewer_tick(uint32_t frame)
         break;
     case VIEWER_VIEWING:
         if (recomp_free_camera_active() && in_match) {
-            /* The match's score and portraits stay hidden, running or not. */
+            /* The match's score and portraits stay hidden, running or not,
+               and so does the ball, which some poses leave in her hands. */
             recomp_scene_freeze_set_overlay_hidden(true);
+            hide_ball(true);
             break;
         }
+        hide_ball(false);
         recomp_free_camera_set_active(false);
         /* The match must run to be quit. */
         recomp_scene_freeze_set(false);

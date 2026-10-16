@@ -11,6 +11,11 @@ extern "C" {
 /* Puts the next (step > 0) or previous swimsuit the character can wear on
    character `actor`, live. True when a switch began. */
 bool recomp_suit_switch_step(uint32_t actor, int step);
+/* Puts back the suit character `actor` wore before her first switch. True
+   when a switch began. */
+bool recomp_suit_switch_restore(uint32_t actor);
+/* Forgets those first suits. */
+void recomp_suit_switch_forget(void);
 /* True while a switch is under way. */
 bool recomp_suit_switch_busy(void);
 /* The swimsuit character `actor` wears, or 0 when she has none. */
