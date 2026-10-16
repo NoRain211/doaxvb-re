@@ -20,10 +20,16 @@ depth interval and matching camera receive shadows.
 A single 4096-square D32 shadow map covers a 64-unit box centered 20 units
 along the camera's near ray, with 120 units of light-space depth. The XY fit
 snaps to shadow texels and shadows fade over the outer tenth of the box.
-Receivers offset their lookup 0.04 units along the vertex normal, and the
-compare bias is 0.0002 of light depth, so grazing ground under a low sun does
-not shadow itself. Skinned draws and rigid casters (the ball and scene props) do
-not receive, so models keep the game's shading. Other receivers darken by the
+Lit receivers offset their lookup along the per-pixel normal, 0.04 units facing
+the sun and up to 0.07 at grazing angles, and the compare bias is 0.0002 of
+light depth, so grazing ground under a low sun does not shadow itself. Lit
+skinned characters receive too, but per pixel the shadow fades out where the
+surface turns from the sun (N dot L below 0.3, gone below 0.05): the game's
+shading already darkens those sides, and the map there only made self-shadow
+blotches. Rigid casters (the ball and scene props) do not receive and keep the
+Characters also use a filter at least three map texels wide and 60% of the
+ground strength, because close-ups magnify map texels into hard facets.
+game's shading. Other receivers darken by the
 game's own shadow opacity, taken from last frame's hidden darkening pass,
 because many stages light the sand with a separate rig or mostly baked light.
 When the game drew no shadow last frame (hotel, menus), nothing receives.
