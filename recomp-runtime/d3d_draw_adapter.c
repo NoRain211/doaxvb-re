@@ -1537,6 +1537,13 @@ static bool attach_vertex_program(uint32_t handle, uint32_t device,
 
 static uint32_t hidden_buffers_first, hidden_buffers_end;
 
+static RecompD3dDrawViewObserver view_observer;
+
+void recomp_d3d_draw_set_view_observer(RecompD3dDrawViewObserver observer)
+{
+    view_observer = observer;
+}
+
 void recomp_d3d_draw_set_hidden_buffers(uint32_t first, uint32_t end)
 {
     hidden_buffers_first = first;
@@ -2090,6 +2097,10 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     }
     ++draw_submitted;
     record_fvf(result.plan.fvf);
+    if (view_observer != NULL) {
+        float view[16];
+        if (read_transform(device, D3D_TRANSFORM_VIEW, view)) view_observer(view);
+    }
 finished:
     if (decline != NULL) report_decline(decline);
     capture_draw(device, primitive_type, index_count, index_data, &result,

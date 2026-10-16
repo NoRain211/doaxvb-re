@@ -70,7 +70,8 @@ The main view is not always the same object. The real-time demo builds only
 the first. The island map builds the first for the map and three more,
 including the two portrait cameras. The hotel room builds the first for a
 view nothing shows and the third for the room. The free camera takes the
-object after whose builds the game drew the most in the previous frame, and
+object whose view the most draws used in the previous frame (it matches each
+draw's view transform against each object's view matrix), and
 takes it again whenever the one it flies stops being built, such as on a
 change of scene. **Next camera** moves it to the next object the game built
 in the previous frame.
@@ -298,4 +299,8 @@ is built but not yet run.
 
 `RECOMP_FREE_CAMERA_TRACE=<frame>` logs every camera build from that frame
 on, up to 600 lines, with the object, whether the free camera drove it, and
-the game's own eye, target and field of view.
+the game's own eye, target and field of view. `RECOMP_FREE_CAMERA_TRACE=on`
+starts the 600 lines each time the free camera is turned on, and also logs
+the frozen frames in which the free camera built its object itself. Turning
+the camera on always logs the object chosen, the objects built and how many
+draws used each object's view in the previous frame.

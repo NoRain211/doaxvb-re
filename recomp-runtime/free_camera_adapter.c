@@ -8,6 +8,7 @@
 #include "overlay_text.h"
 #include "screenshot.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,9 +38,11 @@
    demo builds only the first, the island map builds the first for the map
    and others for the portraits, and the hotel room builds the first for a
    view nothing shows and the third for the room. The free camera takes the
-   object after whose builds the most was drawn in the last frame, again
-   whenever the one it flies stops being built, and C or X moves it to the
-   next object the game built in the last frame.
+   object whose view the most draws used in the last frame (each draw's view
+   transform is matched against each object's view matrix), again whenever
+   the one it flies stops being built, and C or X moves it to the next
+   object the game built in the last frame. Choosing by the order of builds
+   and draws instead lost the view of the poolside's rest and hopping game.
 
    P or START freezes the scene while the camera flies (scene_freeze_adapter.c),
    H or the left shoulder hides the 2D overlay of a frozen scene, . or the
@@ -60,6 +63,7 @@ enum {
     CAMERA_FIRST = 0x0041A800u,
     CAMERA_STRIDE = 0x0AE0u,
     CAMERA_COUNT = 5u,
+    CAMERA_VIEW = 0x50u,
     CAMERA_EYE = 0x180u,
     CAMERA_TARGET = 0x190u,
     CAMERA_FOV = 0x1B0u,
@@ -135,10 +139,8 @@ static struct {
     /* Objects built in the frame being drawn and in the one before it, and
        the frame the game last built one itself. */
     uint32_t built_frame, built, built_before, game_built_frame;
-    /* Draws after each object's builds, in this frame and the last; the
-       object built last and the draw count at its build. */
+    /* Draws that used each object's view, in this frame and the last. */
     uint32_t drawn[CAMERA_COUNT], drawn_before[CAMERA_COUNT];
-    uint32_t drawing_slot, draws_at_build;
     /* The fallback build of a frozen frame (frame_started) is under way. */
     bool fallback;
     /* C or X picked the object flown. */
@@ -198,12 +200,14 @@ static bool enabled(void)
     return state.enabled != 0;
 }
 
-/* RECOMP_FREE_CAMERA_TRACE=<frame> logs camera builds from that frame on. */
+/* RECOMP_FREE_CAMERA_TRACE=<frame> logs camera builds from that frame on;
+   =on logs them each time the free camera is turned on. */
 static bool tracing(uint32_t frame)
 {
     const char *from = setting("RECOMP_FREE_CAMERA_TRACE");
-    return from != NULL && frame >= (uint32_t)strtoul(from, NULL, 10) &&
-        state.trace_lines < TRACE_LINES;
+    if (from == NULL || state.trace_lines >= TRACE_LINES) return false;
+    if (strcmp(from, "on") == 0) return state.active;
+    return frame >= (uint32_t)strtoul(from, NULL, 10);
 }
 
 static void set_active(bool active)
@@ -211,6 +215,7 @@ static void set_active(bool active)
     if (state.active == active) return;
     state.active = active;
     state.started = false;
+    state.trace_lines = 0u;
     if (!active) {
         state.home_saved = false;
         state.picked = false;
@@ -226,12 +231,14 @@ static void set_active(bool active)
 
 static void sample_while_frozen(uint32_t frame);
 static void frame_started(void);
+static void draw_viewed(const float view[16]);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
     state.source = source;
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
     recomp_d3d_frame_adapter_set_first_clear_hook(frame_started);
+    recomp_d3d_draw_set_view_observer(draw_viewed);
 }
 
 /* Handles the toggles in one sample of port 0. True when the sample is the
@@ -483,6 +490,22 @@ static void reset_character(void)
     if (posed && recomp_scene_freeze_active()) recomp_scene_freeze_step();
 }
 
+/* Counts a draw against the objects whose view it used. */
+static void draw_viewed(const float view[16])
+{
+    for (uint32_t slot = 0u; slot < CAMERA_COUNT; ++slot) {
+        float matrix[16];
+        recomp_guest_load(matrix, CAMERA_FIRST + slot * CAMERA_STRIDE + CAMERA_VIEW, sizeof matrix);
+        bool same = true;
+        for (unsigned i = 0u; i < 16u && same; ++i) {
+            float difference = matrix[i] - view[i];
+            float size = fabsf(matrix[i]) > 1.0f ? fabsf(matrix[i]) : 1.0f;
+            same = fabsf(difference) <= 1e-4f * size;
+        }
+        if (same) ++state.drawn[slot];
+    }
+}
+
 /* Flies the object the scene is drawn with: on the way in, and whenever
    the one flown stops being built. */
 static void choose_object(void)
@@ -496,11 +519,11 @@ static void choose_object(void)
         if ((state.built_before & (1u << best)) == 0u ||
             state.drawn_before[slot] > state.drawn_before[best]) best = slot;
     }
-    if (best != state.slot || state.started) {
-        state.slot = best;
-        state.started = false;
-        fprintf(stderr, "recomp free camera: object %u\n", best);
-    }
+    state.slot = best;
+    state.started = false;
+    fprintf(stderr, "recomp free camera: object %u (built %02x, draws %u %u %u %u %u)\n", best,
+        state.built_before, state.drawn_before[0], state.drawn_before[1], state.drawn_before[2],
+        state.drawn_before[3], state.drawn_before[4]);
 }
 
 static void build_camera(void)
@@ -511,12 +534,6 @@ static void build_camera(void)
     const bool known = object >= CAMERA_FIRST && slot < CAMERA_COUNT &&
         object == CAMERA_FIRST + slot * CAMERA_STRIDE;
 
-    const uint32_t draws = recomp_d3d_draw_adapter_submitted();
-    if (state.drawing_slot < CAMERA_COUNT) {
-        state.drawn[state.drawing_slot] += draws - state.draws_at_build;
-    }
-    state.drawing_slot = known ? slot : CAMERA_COUNT;
-    state.draws_at_build = draws;
     if (!state.fallback) state.game_built_frame = frame;
     if (state.built_frame != frame) {
         recomp_actor_pose_frame();
@@ -638,6 +655,10 @@ static void frame_started(void)
     recomp_runtime.registers.esp -= 4u;
     *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
     recomp_runtime.registers.eax = CAMERA_FIRST + state.slot * CAMERA_STRIDE;
+    if (tracing(frame)) {
+        ++state.trace_lines;
+        fprintf(stderr, "recomp free camera trace: frame=%u frozen, so built here\n", frame);
+    }
     state.fallback = true;
     build_camera();
     state.fallback = false;

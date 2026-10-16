@@ -22,6 +22,10 @@ void recomp_d3d_draw_set_screen_mask(const float rects[][4], uint32_t count);
    [first, end) are left out of the host frame; first == end shows them. */
 void recomp_d3d_draw_set_hidden_buffers(uint32_t first, uint32_t end);
 uint32_t recomp_d3d_draw_adapter_declined(void);
+/* Called with the view transform of each indexed draw submitted, so a
+   caller can tell which camera the scene is drawn with; NULL stops it. */
+typedef void (*RecompD3dDrawViewObserver)(const float view[16]);
+void recomp_d3d_draw_set_view_observer(RecompD3dDrawViewObserver observer);
 
 /* Reports every distinct FVF that reached the presenter and its draw count. */
 void recomp_d3d_draw_adapter_report_fvf(void);
