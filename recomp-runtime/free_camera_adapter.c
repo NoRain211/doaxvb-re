@@ -239,6 +239,9 @@ static void draw_viewed(const float view[16]);
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
     state.source = source;
+    /* Off, the free camera leaves the game alone: only the input passes
+       through it. */
+    if (!enabled()) return;
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
     recomp_d3d_frame_adapter_set_first_clear_hook(frame_started);
     recomp_d3d_draw_set_view_observer(draw_viewed);
