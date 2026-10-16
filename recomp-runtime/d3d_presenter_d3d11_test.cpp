@@ -3752,12 +3752,29 @@ static bool testSunShadow(unsigned samples)
             pixels("ground darkens by game shadow opacity", weights ? right : left);
     }
     {
-        // A draw the caster pass marked compact (ball, props) keeps the game's shading.
+        // A lit draw the caster pass marked compact (ball, props) receives occluder shadows only.
+        // The last caster above moved right; rows where it lies within half a unit toward the sun
+        // are ignored like a model's own body, so only some right-hand pixels darken.
         presenter.sun.compact.assign(1, 1); presenter.sun.draw_index = 1;
         presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
         const uint32_t unshadowed[] = {white,white,white,white};
-        passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
-            pixels("compact caster does not receive", unshadowed);
+        bool received = false, left_lit = true;
+        passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK;
+        if (resolved) presenter.context->ResolveSubresource(resolved, 0, color, 0, DXGI_FORMAT_B8G8R8A8_UNORM);
+        presenter.context->CopyResource(readback, resolved ? resolved : color);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (passed && SUCCEEDED(presenter.context->Map(readback, 0, D3D11_MAP_READ, 0, &mapped))) {
+            for (unsigned y = 0; y < 4; ++y) {
+                const auto *row = reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(mapped.pData) + y*mapped.RowPitch);
+                left_lit = left_lit && (row[0] & 0xff) >= 0xfd && (row[1] & 0xff) >= 0xfd;
+                received = received || (row[2] & 0xff) < 0x80 || (row[3] & 0xff) < 0x80;
+            }
+            presenter.context->Unmap(readback, 0);
+        }
+        if (!received || !left_lit) {
+            std::fprintf(stderr, "FAIL lit compact model receives occluder shadows received=%d left_lit=%d\n", received, left_lit);
+            passed = false;
+        }
         presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
         // No game shadow last frame (hotel, menus): nothing receives.
         presenter.sun.game_alpha = 0;
