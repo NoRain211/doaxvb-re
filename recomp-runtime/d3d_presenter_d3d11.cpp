@@ -34,6 +34,7 @@
 #include <string>
 
 #include "d3d_sun_shadow.h"
+#include "d3d_gbuffer.h"
 
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
@@ -471,6 +472,7 @@ struct BlendStateEntry {
     bool used;
     bool enable;
     bool alpha_to_coverage;
+    bool normal_write;
     RecompD3dBlendFactor src;
     RecompD3dBlendFactor dst;
     RecompD3dBlendOp op;
@@ -561,6 +563,7 @@ struct DeferredFrameDump {
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
     SunShadow sun;
+    GBuffer gbuffer;
     DWORD owner_thread = 0;
     HINSTANCE instance = nullptr;
     bool owns_window_class = false;
@@ -577,7 +580,7 @@ struct RecompD3dPresenter {
     bool rtgi_pending = false;  // 3D draws recorded since the last GI pass
     bool rtgi_applied = false;  // GI already lit this frame; later draws skip it
 #endif
-    ID3D11ShaderResourceView *depth_sample = nullptr; // main depth, only for RTGI
+    ID3D11ShaderResourceView *depth_sample = nullptr; // main depth, RTGI or G-buffer
     ID3D11VertexShader *smaa_vs[3]{};   // edges, weights, blend
     ID3D11PixelShader *smaa_ps[3]{};
     ID3D11ShaderResourceView *smaa_views[6]{}; // -, edges, area, search, weights, output
@@ -809,6 +812,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     const bool sun_enabled = presenter->sun.enabled;
     sunRelease(presenter->sun);
     presenter->sun.enabled = sun_enabled;
+    presenter->gbuffer.release();
     for (auto &timer : presenter->gpu_timers) {
         releaseCom(timer.disjoint);
         releaseCom(timer.begin);
@@ -1056,6 +1060,55 @@ HRESULT createDeviceWithDriver(
     return result;
 }
 
+HRESULT createMainDepth(RecompD3dPresenter *presenter)
+{
+    // Keep the D24S8 DSV; only opt-in consumers need a typeless resource and SRV.
+    HRESULT result = S_OK;
+    for (const bool readable_depth : {presenter->rtgi_requested || presenter->gbuffer.enabled, false}) {
+        releaseCom(presenter->depth_sample);
+        releaseCom(presenter->depth_view);
+        releaseCom(presenter->depth_texture);
+        D3D11_TEXTURE2D_DESC depth_desc{};
+        depth_desc.Width = mainWidth(presenter);
+        depth_desc.Height = mainHeight(presenter);
+        depth_desc.MipLevels = 1u;
+        depth_desc.ArraySize = 1u;
+        depth_desc.Format = readable_depth
+            ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_desc.SampleDesc.Count = presenter->msaa;
+        depth_desc.Usage = D3D11_USAGE_DEFAULT;
+        depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL |
+            (readable_depth ? D3D11_BIND_SHADER_RESOURCE : 0u);
+        result = presenter->device->CreateTexture2D(
+            &depth_desc, nullptr, &presenter->depth_texture);
+        D3D11_DEPTH_STENCIL_VIEW_DESC depth_view_desc{};
+        depth_view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        depth_view_desc.ViewDimension = presenter->msaa > 1u
+            ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+        if (SUCCEEDED(result)) {
+            result = presenter->device->CreateDepthStencilView(
+                presenter->depth_texture, readable_depth ? &depth_view_desc : nullptr,
+                &presenter->depth_view);
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC sample_desc{};
+        sample_desc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        sample_desc.ViewDimension = presenter->msaa > 1u
+            ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
+        sample_desc.Texture2D.MipLevels = 1u; // Ignored for Texture2DMS.
+        if (SUCCEEDED(result) && readable_depth) {
+            result = presenter->device->CreateShaderResourceView(
+                presenter->depth_texture, &sample_desc, &presenter->depth_sample);
+        }
+        if (SUCCEEDED(result) || !readable_depth) break;
+        std::fprintf(stderr, "recomp d3d presenter: readable depth unavailable hr=0x%08lX\n",
+            static_cast<unsigned long>(result));
+    }
+    if (FAILED(result)) {
+        return result;
+    }
+    return result;
+}
+
 HRESULT createGraphics(RecompD3dPresenter *presenter)
 {
     HRESULT hardware_result = createDeviceWithDriver(
@@ -1174,52 +1227,22 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         return result;
     }
 
-    /* RTGI reads the main depth, so it needs a typeless texture. Without RTGI,
-       or when that texture cannot be made, depth keeps its typed, depth-only form. */
-    for (const bool readable_depth : {presenter->rtgi_requested, false}) {
-        releaseCom(presenter->depth_sample);
-        releaseCom(presenter->depth_view);
-        releaseCom(presenter->depth_texture);
-        D3D11_TEXTURE2D_DESC depth_desc{};
-        depth_desc.Width = mainWidth(presenter);
-        depth_desc.Height = mainHeight(presenter);
-        depth_desc.MipLevels = 1u;
-        depth_desc.ArraySize = 1u;
-        depth_desc.Format = readable_depth
-            ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depth_desc.SampleDesc.Count = presenter->msaa;
-        depth_desc.Usage = D3D11_USAGE_DEFAULT;
-        depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL |
-            (readable_depth ? D3D11_BIND_SHADER_RESOURCE : 0u);
-        result = presenter->device->CreateTexture2D(
-            &depth_desc, nullptr, &presenter->depth_texture);
-        D3D11_DEPTH_STENCIL_VIEW_DESC depth_view_desc{};
-        depth_view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depth_view_desc.ViewDimension = presenter->msaa > 1u
-            ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
-        if (SUCCEEDED(result)) {
-            result = presenter->device->CreateDepthStencilView(
-                presenter->depth_texture, readable_depth ? &depth_view_desc : nullptr,
-                &presenter->depth_view);
+    result = createMainDepth(presenter);
+    if (FAILED(result)) return result;
+    if (presenter->gbuffer.enabled) {
+        if (presenter->depth_sample) {
+            presenter->gbuffer.create(presenter->device, mainWidth(presenter), mainHeight(presenter), presenter->msaa);
+            if (presenter->gbuffer.target) {
+                const float zero[4]{};
+                presenter->context->ClearRenderTargetView(presenter->gbuffer.target, zero);
+            }
+        } else {
+            std::fprintf(stderr, "recomp gbuffer: readable depth unavailable; disabled\n");
+            presenter->gbuffer.release();
         }
-        D3D11_SHADER_RESOURCE_VIEW_DESC sample_desc{};
-        sample_desc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-        sample_desc.ViewDimension = presenter->msaa > 1u
-            ? D3D11_SRV_DIMENSION_TEXTURE2DMS : D3D11_SRV_DIMENSION_TEXTURE2D;
-        sample_desc.Texture2D.MipLevels = 1u; // Ignored for Texture2DMS.
-        if (SUCCEEDED(result) && readable_depth) {
-            result = presenter->device->CreateShaderResourceView(
-                presenter->depth_texture, &sample_desc, &presenter->depth_sample);
-        }
-        if (SUCCEEDED(result) || !readable_depth) break;
-        std::fprintf(stderr, "recomp rtgi: readable depth unavailable hr=0x%08lX\n",
-            static_cast<unsigned long>(result));
-    }
-    if (FAILED(result)) {
-        return result;
     }
 #ifdef RECOMP_RTGI
-    if (presenter->depth_sample != nullptr) {
+    if (presenter->rtgi_requested && presenter->depth_sample != nullptr) {
         presenter->rtgi = d3d_rtgi_create(
             presenter->device, mainWidth(presenter), mainHeight(presenter),
             presenter->performance_counter);
@@ -1508,7 +1531,13 @@ RecompD3dPresenterError bindTarget(
        before rebinding t0 so sampling the previous output remains valid. */
     ID3D11ShaderResourceView *no_texture = nullptr;
     presenter->context->PSSetShaderResources(0u, 1u, &no_texture);
-    presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
+    if (presenter->gbuffer.enabled && !presenter->sun.casting && !target.offscreen &&
+        depth_view == presenter->depth_view) {
+        ID3D11RenderTargetView *targets[] = {color_view, presenter->gbuffer.target};
+        presenter->context->OMSetRenderTargets(2u, targets, depth_view);
+    } else {
+        presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
+    }
     const D3D11_VIEWPORT viewport = {
         0.0f, 0.0f, host_width, host_height,
         0.0f, 1.0f,
@@ -1535,6 +1564,11 @@ RecompD3dPresenterError submitClear(
         return target_result;
     }
 
+    if (presenter->gbuffer.enabled && !clear.target.offscreen &&
+        (clear.clear_color || (clear.clear_depth && depth_view == presenter->depth_view))) {
+        const float zero[4]{};
+        presenter->context->ClearRenderTargetView(presenter->gbuffer.target, zero);
+    }
     constexpr float byte_to_float = 1.0f / 255.0f;
     const float color[] = {
         static_cast<float>((clear.color >> 16u) & 0xffu) * byte_to_float,
@@ -1640,7 +1674,7 @@ bool drawShaderSource(
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
     std::string &compiled_source, bool explicit_coverage = true, bool sun_shadow = false,
-    bool pixel_lighting = pixelLightingEnabled())
+    bool pixel_lighting = pixelLightingEnabled(), bool gbuffer = false)
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
@@ -1773,6 +1807,7 @@ bool drawShaderSource(
             "    sample_coverage = 0xffffffffu;");
         compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
     }
+    if (gbuffer) gbufferShaderSource(compiled_source, layout, pipeline.program_count != 0);
     return true;
 }
 
@@ -1783,7 +1818,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
-void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage, bool sun_shadow = false)
+void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage, bool sun_shadow = false, bool gbuffer = false)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     const ULONGLONG start = GetTickCount64();
@@ -1793,7 +1828,7 @@ void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
             std::string source;
-            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage, sun_shadow)) continue;
+            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage, sun_shadow, pixelLightingEnabled(), gbuffer)) continue;
             for (const char *stage : {"vs", "ps"}) {
                 if (stop->load()) return;
                 ID3DBlob *blob = nullptr;
@@ -1820,7 +1855,8 @@ bool createDrawPipeline(
     RecompD3dVertexLayout layout;
     std::string compiled_source;
     const bool explicit_coverage = presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
-    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage, presenter->sun.enabled)) {
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage, presenter->sun.enabled,
+            pixelLightingEnabled(), presenter->gbuffer.enabled)) {
         return false;
     }
 
@@ -2763,13 +2799,13 @@ ID3D11ShaderResourceView *lookupTexture(
 ID3D11BlendState *lookupBlendState(
     RecompD3dPresenter *presenter,
     const RecompD3dBlendState &blend,
-    bool alpha_to_coverage = false)
+    bool alpha_to_coverage = false, bool normal_write = false)
 {
     for (uint32_t i = 0u; i < presenter->blend_state_count; ++i) {
         BlendStateEntry &entry = presenter->blend_states[i];
 
         if (entry.used && entry.enable == blend.blend_enable &&
-            entry.alpha_to_coverage == alpha_to_coverage &&
+            entry.alpha_to_coverage == alpha_to_coverage && entry.normal_write == normal_write &&
             entry.src == blend.src_factor && entry.dst == blend.dst_factor &&
             entry.op == blend.op &&
             entry.color_write_mask == blend.color_write_mask) {
@@ -2779,6 +2815,7 @@ ID3D11BlendState *lookupBlendState(
 
     D3D11_BLEND_DESC desc{};
     desc.AlphaToCoverageEnable = alpha_to_coverage;
+    desc.IndependentBlendEnable = presenter->gbuffer.enabled;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2788,6 +2825,11 @@ ID3D11BlendState *lookupBlendState(
     target.DestBlendAlpha = hostBlendFactor(blend.dst_factor, true);
     target.BlendOpAlpha = hostBlendOp(blend.op);
     target.RenderTargetWriteMask = blend.color_write_mask;
+    if (presenter->gbuffer.enabled) {
+        desc.RenderTarget[1] = target;
+        desc.RenderTarget[1].BlendEnable = FALSE;
+        desc.RenderTarget[1].RenderTargetWriteMask = normal_write ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
+    }
 
     ID3D11BlendState *state = nullptr;
     if (FAILED(presenter->device->CreateBlendState(&desc, &state))) {
@@ -2806,6 +2848,7 @@ ID3D11BlendState *lookupBlendState(
     entry.used = true;
     entry.enable = blend.blend_enable;
     entry.alpha_to_coverage = alpha_to_coverage;
+    entry.normal_write = normal_write;
     entry.src = blend.src_factor;
     entry.dst = blend.dst_factor;
     entry.op = blend.op;
@@ -3322,7 +3365,12 @@ RecompD3dPresenterError submitDraw(
             ((color >> 8u) & 255u) / 255.0f,
             (color & 255u) / 255.0f,
             ((color >> 24u) & 255u) / 255.0f};
-        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage);
+        const bool normal_write = presenter->gbuffer.enabled && !presenter->sun.casting &&
+            !draw.target.offscreen && depth_view == presenter->depth_view && !draw.program_count &&
+            !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
+            draw.directional.enabled && draw.depth.depth_test_enable && draw.depth.depth_write_enable &&
+            draw.blend.color_write_mask != 0;
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage, normal_write);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
@@ -4218,10 +4266,13 @@ RecompD3dPresenterError submitPresent(
     if (presenter->rtgi_pending) applyRtgi(presenter);
     presenter->rtgi_applied = false;
 #endif
+    if (presenter->gbuffer.enabled) presenter->gbuffer.resolveFrame(presenter->context, presenter->depth_sample);
     // Before the output pass: its back-buffer write waits for the display.
     endFrameCost(presenter);
-    if (!renderOutput(presenter, presenter->vrr_target_view != nullptr
-            ? presenter->vrr_target_view : presenter->present_target_view)) {
+    auto *output = presenter->vrr_target_view != nullptr ? presenter->vrr_target_view : presenter->present_target_view;
+    if (presenter->gbuffer.enabled && presenter->gbuffer.debug_view) {
+        presenter->gbuffer.show(presenter->context, output);
+    } else if (!renderOutput(presenter, output)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     copyFrontBuffer(presenter);
@@ -4461,6 +4512,12 @@ RecompD3dPresenterError d3d11_backend_create(
         created->msaa = std::clamp(std::atoi(msaa), 1, 32);
     }
     created->sun.enabled = sunShadowRequested();
+    created->gbuffer.enabled = gbufferRequested();
+    if (created->gbuffer.enabled) {
+        const char *view = std::getenv("RECOMP_D3D_GBUFFER_VIEW");
+        if (view && std::strcmp(view, "normal") == 0) created->gbuffer.debug_view = 1;
+        if (view && std::strcmp(view, "depth") == 0) created->gbuffer.debug_view = 2;
+    }
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
     /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
@@ -4509,7 +4566,7 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     try {
         created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop,
-            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1, created->sun.enabled);
+            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1, created->sun.enabled, created->gbuffer.enabled);
     } catch (const std::system_error &) {
         // Shaders then compile on first use, as before.
     }
