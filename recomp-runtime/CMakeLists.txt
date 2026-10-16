@@ -606,6 +606,8 @@ if(RECOMP_PROGRAM_DIR)
         actor_pose_adapter.c
         viewer_menu_adapter.c
         viewer_scene.c
+        suit_switch.c
+        suit_switch_adapter.c
         overlay_text.c
         d3d_creation_model.c
         d3d_creation_adapter.c
@@ -824,6 +826,7 @@ add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
 add_executable(recomp_screenshot_test screenshot.c screenshot_test.c)
 add_executable(recomp_viewer_scene_test viewer_scene.c viewer_scene_test.c)
+add_executable(recomp_suit_switch_test suit_switch.c suit_switch_test.c)
 add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
 add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
 add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
@@ -845,6 +848,7 @@ add_test(NAME recomp-runtime-actor-pose COMMAND recomp_actor_pose_test)
 add_test(NAME recomp-runtime-overlay-text COMMAND recomp_overlay_text_test)
 add_test(NAME recomp-runtime-screenshot COMMAND recomp_screenshot_test)
 add_test(NAME recomp-runtime-viewer-scene COMMAND recomp_viewer_scene_test)
+add_test(NAME recomp-runtime-suit-switch COMMAND recomp_suit_switch_test)
 add_test(NAME recomp-runtime-title-idle-unexpected-table COMMAND recomp_title_idle_test --unexpected-table)
 add_test(NAME recomp-runtime-title-idle-cpu-exhibition COMMAND recomp_title_idle_test --cpu-exhibition)
 add_test(NAME recomp-runtime-title-idle-cut-hold COMMAND recomp_title_idle_test --cut-hold)

@@ -32,7 +32,13 @@
    declines its turns too, leaving only the 3D scene.
 
    A step lets every task take its turns until the next frame is presented,
-   so a frozen scene can be moved on one frame at a time. */
+   so a frozen scene can be moved on one frame at a time.
+
+   Running only one task stops every other one, the drawing tasks included,
+   so nothing is drawn while that task works on what they would draw. The
+   swimsuit switch runs only the game's loader this way while a new suit
+   loads over the old one (suit_switch_adapter.c). Presentation holds
+   meanwhile, so the last picture stays on screen. */
 enum {
     TASK_TABLE = 0x005F2C38u,
     TASK_RECORD_SIZE = 0x20u,
@@ -51,6 +57,7 @@ static bool frozen, overlay_hidden;
 static uint32_t turn_draws;
 /* While the swap counter is below this, a frozen scene runs as usual. */
 static uint32_t step_until;
+static uint32_t only_function;
 static RecompSceneFreezeFrameHook frame_hook, tick_hook;
 static uint32_t hooked_frame, ticked_frame;
 
@@ -73,6 +80,16 @@ void recomp_scene_freeze_set(bool freeze)
 bool recomp_scene_freeze_active(void)
 {
     return frozen;
+}
+
+void recomp_scene_freeze_run_only(uint32_t function)
+{
+    if (only_function == function) return;
+    only_function = function;
+    /* Nothing draws meanwhile: keep the last picture on screen. */
+    recomp_d3d_frame_adapter_hold_present(function != 0u);
+    if (function != 0u) fprintf(stderr, "recomp scene freeze: running only %08x\n", function);
+    else fprintf(stderr, "recomp scene freeze: every task runs again\n");
 }
 
 void recomp_scene_freeze_set_overlay_hidden(bool hidden)
@@ -111,7 +128,7 @@ bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle
     uint32_t function = *recomp_memory_u32(record + TASK_FUNCTION);
     uint32_t draws = recomp_d3d_draw_adapter_submitted();
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
-    bool holding = frozen && frame >= step_until;
+    bool holding = (frozen && frame >= step_until) || only_function != 0u;
 
     if (tick_hook != NULL && ticked_frame != frame) {
         ticked_frame = frame;
@@ -130,8 +147,12 @@ bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle
     if (target_handle != fiber || outgoing_handle == fiber) return false;
     turn_draws = draws;
     if (!holding) return false;
-    if (recomp_scene_freeze_keeps(&model, slot, function) &&
-        !(overlay_hidden && function == OVERLAY_TASK_FUNCTION)) return false;
+    if (only_function != 0u) {
+        if (function == only_function) return false;
+    } else if (recomp_scene_freeze_keeps(&model, slot, function) &&
+        !(overlay_hidden && function == OVERLAY_TASK_FUNCTION)) {
+        return false;
+    }
     *recomp_memory_u32(record + TASK_STATE) &= ~TASK_STATE_RUNNING;
     *recomp_memory_u32(record + TASK_YIELDED) = 1u;
     return true;
@@ -169,6 +190,11 @@ void recomp_scene_freeze_set_tick_hook(RecompSceneFreezeFrameHook hook)
 
 void recomp_scene_freeze_step(void)
 {
+}
+
+void recomp_scene_freeze_run_only(uint32_t function)
+{
+    (void)function;
 }
 
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle)

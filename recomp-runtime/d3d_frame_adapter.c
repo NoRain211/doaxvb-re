@@ -44,6 +44,13 @@ static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
     return *recomp_memory_u32(entry_esp + 4u + index * 4u);
 }
 
+static bool present_held;
+
+void recomp_d3d_frame_adapter_hold_present(bool hold)
+{
+    present_held = hold;
+}
+
 uint32_t recomp_d3d_frame_adapter_swap_counter(void)
 {
     return frame_state.swap_counter;
@@ -366,8 +373,8 @@ void recomp_d3d_swap_adapter(void)
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
     recomp_d3d_wait_vblank();
-    presenter_error = recomp_d3d_presenter_submit(
-        presenter, &result.command);
+    presenter_error = present_held ? RECOMP_D3D_PRESENTER_OK :
+        recomp_d3d_presenter_submit(presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(
         result.command.data.present.swap_counter, (uint32_t)presenter_error);
     recomp_d3d_frame_adapter_exit_if_closed(presenter_error);

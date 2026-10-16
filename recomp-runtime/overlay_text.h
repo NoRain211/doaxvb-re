@@ -14,7 +14,7 @@ extern "C" {
 enum {
     RECOMP_OVERLAY_LINES = 8,
     RECOMP_OVERLAY_LINE_SIZE = 96,
-    RECOMP_OVERLAY_HINT_SIZE = 192,
+    RECOMP_OVERLAY_HINT_SIZE = 320,
 };
 
 typedef struct RecompOverlayText {

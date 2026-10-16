@@ -16,6 +16,10 @@ void recomp_scene_freeze_set_overlay_hidden(bool hidden);
 bool recomp_scene_freeze_overlay_hidden(void);
 /* Lets a frozen scene run one more frame, then holds it again. */
 void recomp_scene_freeze_step(void);
+/* While `function` is not zero, only the task running that function takes
+   its turns, frozen or not; every other task, drawing ones too, waits. Zero
+   hands the scene back to the freeze. */
+void recomp_scene_freeze_run_only(uint32_t function);
 /* Called once a frame while the scene is frozen, from the scheduler, since
    the game's own input polling is frozen with it. */
 typedef void (*RecompSceneFreezeFrameHook)(uint32_t frame);

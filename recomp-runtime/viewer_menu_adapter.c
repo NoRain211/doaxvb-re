@@ -7,6 +7,7 @@
 #ifdef RECOMP_FULL_PROGRAM
 #include "kernel_abi.h"
 #include "actor_pose_adapter.h"
+#include "suit_switch_adapter.h"
 #include "free_camera_adapter.h"
 #include "scene_freeze_adapter.h"
 #include "d3d_draw_adapter.h"
@@ -331,7 +332,7 @@ static void main_menu_update(void)
    back when the free camera is put away. */
 static void viewer_tick(uint32_t frame)
 {
-    (void)frame;
+    recomp_suit_switch_frame(frame);
     recomp_free_camera_overlay(session == VIEWER_VIEWING);
     if (choosing_court()) show_time_panel();
     if (session == VIEWER_IDLE) restore_courts();

@@ -10,11 +10,12 @@ started, the viewer takes it over:
 - the free camera comes on in front of Player 1's girl,
 - the scene freezes,
 - the other three players and the game's on-screen overlay are hidden,
-- a panel names her, shows the animation and lists the controls.
+- a panel names her, shows the animation and swimsuit and lists the controls.
 
 Every free camera control then works as described in
 [`free-camera.md`](free-camera.md): fly around her, step or unfreeze the
-scene, and play another of the scene's animation clips on her. Put the
+scene, play another of the scene's animation clips on her, or change her
+swimsuit with `-` and `=` (Back with the d-pad's down and up). Put the
 free camera away (F1, or Back with the right stick) to leave: the scene is
 unpaused, the match is quit and the game returns to the main menu.
 

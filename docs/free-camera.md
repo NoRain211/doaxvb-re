@@ -25,12 +25,13 @@ you freeze it.
 | Clean view: hide the panel and the game's overlay (the latter while frozen) | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
 | Previous / next animation | [ / ] | D-pad left / right |
+| Previous / next swimsuit on the chosen character | - / = | Back + d-pad down / up |
 | Screenshot (anywhere; the controller while flying) | F12 | Back + A |
 | Next character to animate (the camera turns to her) | `\` (backslash) | Left stick click |
 
 While the camera flies, a panel at the top left names the chosen character,
 the animation playing on her (the game's own, or the held clip as its place
-in the scene's list) and whether the scene is frozen, and two lines along
+in the scene's list), her swimsuit and whether the scene is frozen, and lines along
 the bottom list the controls: the keyboard's after a key was last used, the
 controller's after a controller was (and from the start on a Steam Deck).
 
@@ -139,6 +140,42 @@ Only clips the scene loaded can be chosen: 45 for the girl in the demo's
 first scene, including 3 shared ones. The clips have no names, only numbers,
 which the log reports (`recomp pose: character 0 clip 02b0 (36 of 45)`).
 
+## Changing the swimsuit
+
+`-` and `=`, or Back with the d-pad's down and up, put the chosen
+character's previous or next swimsuit on her, in a running or frozen scene.
+The picture holds for the few frames the load takes, then the scene goes on
+with her in the new suit and the panel names it.
+
+The game loads characters through a loader task, `0x000A0530`. `0x000A2060`
+asks it for a suit (EAX the suit, EBX the character number at `+1` of her
+root block, the slot on the stack) and `0x000A2260` lets a slot's suit go.
+The request record at `0x5DEBD0 + n * 16` holds the phase at `+0`, `0xFF`
+when idle, and the loaded suit at `+4`; once the suit has been read the
+loader binds it to the character (`0x00062A70`) and sets both. The game only
+does this between scenes, because a suit loads into the same memory as the
+one it replaces: nothing may draw her while it loads.
+
+`recomp-runtime/suit_switch_adapter.c` starts the switch in the camera build
+the free camera already wraps, in the middle of a drawing task's turn.
+Letting the old suit go only marks its memory free, so the rest of that turn
+still draws it intact. From then on the scene freeze runs only the loader
+task and Swap shows nothing new, so the last picture stays on screen. When
+the record shows the new suit loaded, the scene waits one more frame and
+runs again. Direct3D still holds the last texture on each stage and the last
+vertex buffer on each stream, pointing into the reloaded memory, so they are
+cleared first without dropping their references (`0x1F2978 + 0xB38`,
+`0x1F2E28`): a seam into the game's statically linked Direct3D, to go when it
+is replaced wholesale. The phases are in `suit_switch.c`, tested by
+`suit_switch_test.c`.
+
+Every swimsuit item can be chosen: the item table at `0x3003E8` points at
+28-byte records whose first byte is 2 for a swimsuit, and each record's
+wearer mask at `+16` allows every girl. The names come from `0x3095F8`, one
+pointer every 8 bytes per item, Japanese first and then each other language,
+indexed by the language byte at `0x4D56D9`; the panel shows the English name
+for Japanese, which its font lacks.
+
 ## Verification
 
 Scripted runs on an M-series Mac flew the camera in the real-time demo and on
@@ -174,7 +211,17 @@ camera back to her.
 
 The Windows drawer has been built with llvm-mingw but not yet run.
 
-Not yet verified: mouse look, freezing and animation select in a play test,
+Swimsuit changes were checked in a CPU Exhibition match, where the first
+player's suit changed twice while the match played on, and in the model
+viewer, where frozen Kasumi went from Tulip to Lily, Hyacinth and Olive in
+the same pose with the panel naming each. One change in the real-time demo
+loaded and bound with no fault. Nothing happened on the island map or in the
+hotel room, where no character is active. A scripted debug setting,
+`RECOMP_SUIT_SWITCH_AT=<frame>[,<frame>...]`, changes the first character's
+suit at those frames.
+
+Not yet verified: mouse look, freezing, animation select and swimsuit changes in a play test,
+swimsuit changes in vacation scenes with a character in them (the beach, the pool),
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
 hotel, the shops, the pool), and Windows and Linux builds.
 
