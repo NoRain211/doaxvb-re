@@ -101,6 +101,9 @@ transparent and populated only by textured black silhouette passes without
 depth or stencil testing. Another color-writing producer invalidates that
 identity until the next clear; releasing the target retires it. Unknown
 payloads and targets keep drawing. Suppression requires a valid sun map.
+At dusk the game draws the projected palm shadow lit, through a texture-coordinate
+projection with material alpha. Any on-screen SRC_ALPHA-blended draw sampling a
+validated palm target is therefore hidden, whatever its lighting or combiner.
 The caster rules above provide replacements within the map coverage; objects
 outside that coverage do not cast into the visible map.
 The implementation uses ordinary D3D11 depth comparisons and slope bias;

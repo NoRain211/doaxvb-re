@@ -2964,7 +2964,7 @@ RecompD3dPresenterError submitDraw(
             return submitDraw(presenter, stencil_only);
         }
     }
-    if (presenter->sun.valid && !presenter->sun.casting && sunPropShadow(draw)) {
+    if (presenter->sun.valid && !presenter->sun.casting && sunOverlayDraw(draw)) {
         SunOverlay shadow = SunOverlay::None;
         if (lookupTexture(presenter, draw, &shadow) && shadow == SunOverlay::Palm) {
             ++presenter->sun.prop_shadows;
@@ -4620,7 +4620,7 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
     if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, size, &net)) return;
     // A terrain-following shadow decal can pass the scenery bounds test.
     SunOverlay overlay = SunOverlay::None;
-    if (sunPropShadow(draw)) lookupTexture(presenter, draw, &overlay);
+    if (sunOverlayDraw(draw)) lookupTexture(presenter, draw, &overlay);
     const bool casts = overlay == SunOverlay::None && !net && sunCaster(draw, size);
     sun.compact.back() = !draw.blend_weight_count &&
         (casts || (std::max)({size[0], size[1], size[2]}) <= 4);
