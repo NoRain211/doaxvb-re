@@ -27,9 +27,9 @@
    and +4 set. The drawing tasks keep their turns, so the picture stays on
    screen, including the camera the free camera puts in place.
 
-   0x0008A970 draws the 2D overlay (text, portraits, menus and the demo's
-   logo) in every scene seen so far. With the overlay hidden, a frozen scene
-   declines its turns too, leaving only the 3D scene.
+   0x0008A970 draws the 2D overlay (text, portraits, menus, a match's score
+   and the demo's logo) in every scene seen so far. With the overlay hidden
+   its turns are declined, frozen or not, leaving only the 3D scene.
 
    A step lets every task take its turns until the next frame is presented,
    so a frozen scene can be moved on one frame at a time.
@@ -146,13 +146,12 @@ bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle
     }
     if (target_handle != fiber || outgoing_handle == fiber) return false;
     turn_draws = draws;
-    if (!holding) return false;
-    if (only_function != 0u) {
-        if (function == only_function) return false;
-    } else if (recomp_scene_freeze_keeps(&model, slot, function) &&
-        !(overlay_hidden && function == OVERLAY_TASK_FUNCTION)) {
-        return false;
-    }
+    bool runs;
+    if (only_function != 0u) runs = function == only_function;
+    /* A hidden overlay stays hidden while the scene runs, too. */
+    else if (overlay_hidden && function == OVERLAY_TASK_FUNCTION) runs = false;
+    else runs = !holding || recomp_scene_freeze_keeps(&model, slot, function);
+    if (runs) return false;
     *recomp_memory_u32(record + TASK_STATE) &= ~TASK_STATE_RUNNING;
     *recomp_memory_u32(record + TASK_YIELDED) = 1u;
     return true;

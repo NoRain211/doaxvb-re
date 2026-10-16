@@ -43,6 +43,10 @@ int main(void)
         "previous wraps to the end");
     check(recomp_actor_pose_next(&clips, RECOMP_ACTOR_POSE_SHARED | 1u, 1, &next, NULL) && next == 0x18,
         "next wraps to the start");
+    check(recomp_actor_pose_next(&clips, 0x18, 2, &next, &position) && position == 2u,
+        "next moves several places");
+    check(recomp_actor_pose_next(&clips, 0x18, -2, &next, &position) && position == clips.count - 2u,
+        "back several places wraps");
     check(recomp_actor_pose_next(&clips, 0x100, 1, &next, &position) && next == 0x18 && position == 0u,
         "an unlisted clip starts from the first");
 

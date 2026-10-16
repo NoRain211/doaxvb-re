@@ -38,9 +38,10 @@
    own screens choose the girl, her swimsuit, the other players and the court.
 
    Only Player 1's pick matters to the viewer, so once it is made the viewer
-   confirms the rest itself: character select keeps the pick under way in its
-   data block at 0x9DAA48, +0 the pick (0 to 3) and +8 the step within it, 4
-   once the court is being chosen. While the menu is on character select
+   confirms the rest itself: character select keeps its state in its data
+   block at 0x9DAA48: +0 the cursor in the row of girls, +2 the number of
+   players whose picks are done (0 to 3) and +8 the step, 4 once the court is
+   being chosen. While the menu is on character select
    (screen 4), past the first pick and short of the court, the viewer presses
    A on port 0 every AUTO_PICK_POLLS polls, so the game accepts the girl,
    swimsuit and attitude it offers for the partner and both opponents. The
@@ -110,7 +111,7 @@ enum {
     /* Exhibition setup's cursor, a byte in its data block; 0 is One Player. */
     SETUP_CURSOR = 0x009D9F6Du,
     PICKS = 0x009DAA48u,
-    PICK_NUMBER = 0x0u,
+    PICKS_DONE = 0x2u,
     PICK_STEP = 0x8u,
     PICK_STEP_COURT = 4,
     AUTO_PICK_POLLS = 12,
@@ -357,7 +358,11 @@ static void viewer_tick(uint32_t frame)
         fprintf(stderr, "recomp viewer: viewing\n");
         break;
     case VIEWER_VIEWING:
-        if (recomp_free_camera_active() && in_match) break;
+        if (recomp_free_camera_active() && in_match) {
+            /* The match's score and portraits stay hidden, running or not. */
+            recomp_scene_freeze_set_overlay_hidden(true);
+            break;
+        }
         recomp_free_camera_set_active(false);
         /* The match must run to be quit. */
         recomp_scene_freeze_set(false);
@@ -400,7 +405,7 @@ void recomp_viewer_input(RecompInputGamepad *gamepad)
     choose_time(gamepad);
     uint8_t screen = *recomp_memory(MENU_SCREEN, 1u);
     bool picking = screen == SCREEN_CHARACTER_SELECT &&
-        *recomp_memory(PICKS + PICK_NUMBER, 1u) != 0u &&
+        *recomp_memory(PICKS + PICKS_DONE, 1u) != 0u &&
         *recomp_memory(PICKS + PICK_STEP, 1u) != PICK_STEP_COURT;
     bool setup = screen == SCREEN_EXHIBITION_SETUP && *recomp_memory(SETUP_CURSOR, 1u) == 0u;
     if (gamepad == NULL || session != VIEWER_WAITING ||

@@ -9,7 +9,8 @@ started, the viewer takes it over:
 
 - the free camera comes on in front of Player 1's girl,
 - the scene freezes,
-- the other three players and the game's on-screen overlay are hidden,
+- the other three players and the game's on-screen overlay (the score and
+  the players' portraits) are hidden, frozen or not,
 - a panel names her, shows the animation and swimsuit and lists the controls.
 
 Every free camera control then works as described in
@@ -65,11 +66,12 @@ plays its sound and leaves for Exhibition, and the viewer notes that it was
 asked for. The cursor stays on Exhibition, because the menu hands its value
 on as the mode to start; 2 would start a vacation.
 
-Only Player 1's pick matters to the viewer. Character select keeps the pick
-under way in its data block at `0x9DAA48`: `+0` the pick (0 to 3, Player 1
-first) and `+8` the step within it (girl, swimsuit, attitude), 4 once the
-court is being chosen. While the menu is on character select (screen 4, in
-`0x9D9D80`), past the first pick and short of the court, the viewer presses
+Only Player 1's pick matters to the viewer. Character select keeps its
+state in its data block at `0x9DAA48`: `+0` the cursor in the row of girls,
+`+2` the number of players whose picks are done (0 to 3) and `+8` the step,
+4 once the court is being chosen. While the menu is on character select
+(screen 4, in `0x9D9D80`), once Player 1's pick is done and short of the
+court, the viewer presses
 A on the first controller every 12 polls, so the game accepts the girl,
 swimsuit and attitude it offers for the partner and both opponents.
 Meanwhile only Player 1's column is shown. Character select draws its four
@@ -112,6 +114,11 @@ The third girl, Hitomi, was also chosen and framed the same way.
 
 On court 0, Day and Sunset loaded stages 4 and 5 in place of 39, with the
 matching sky, and the table read 39 again after leaving the viewer.
+
+Moving the cursor across the girls before picking leaves all nine in the
+row; an earlier build read `+0`, the cursor, as the pick and confirmed picks
+as soon as the cursor moved. After unfreezing, the match ran on with no
+score or portraits on screen.
 
 Not yet verified: a play test, every court,
 Windows and Linux builds, and the Japanese language setting.

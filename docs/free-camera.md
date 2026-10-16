@@ -22,9 +22,9 @@ you freeze it.
 | Back to the game's view | R | Y |
 | Next camera | C | X |
 | Pause / resume the game (P works anywhere, camera on or off) | P | Start (while flying) |
-| Clean view: hide the panel and the game's overlay (the latter while frozen) | H | Left shoulder |
+| Clean view: hide the panel and the game's overlay | H | Left shoulder |
 | Advance one frame while frozen | . (period) | Right shoulder |
-| Previous / next animation | [ / ] | D-pad left / right |
+| Previous / next animation; hold to scroll, faster the longer held, and let go to play | [ / ] | D-pad left / right |
 | Previous / next swimsuit on the chosen character | - / = | Back + d-pad down / up |
 | Screenshot (anywhere; the controller while flying) | F12 | Back + A |
 | Next character to animate (the camera turns to her) | `\` (backslash) | Left stick click |
@@ -105,6 +105,11 @@ own hook in the scheduler. That works in any scene, including 2D screens with
 no camera, so a frozen scene can always be thawed.
 
 ## Choosing an animation
+
+A press of `[` or `]` (d-pad left or right) moves to the previous or next
+clip; holding it keeps moving, one clip every 60 ms after the first 350 ms,
+3 at a time after 1.5 s and 10 at a time after 3.5 s. The panel shows the
+clip being looked for, and the clip plays only when the key is let go.
 
 Up to four characters animate at once; `0x4D6FD0 + n` is nonzero while
 character `n` is active. Each has two animation layers of `0x80` bytes, the

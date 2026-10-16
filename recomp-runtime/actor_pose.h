@@ -29,8 +29,9 @@ typedef struct RecompActorPoseClips {
 void recomp_actor_pose_list(RecompActorPoseClips *clips,
     const uint32_t *character, uint32_t character_placeholder,
     const uint32_t *shared, uint32_t shared_placeholder);
-/* The clip after (step > 0) or before (step < 0) the given one, wrapping;
-   the first clip when the given one is not listed. False when empty. */
+/* The clip `step` places after (step > 0) or before (step < 0) the given
+   one, wrapping; the first clip when the given one is not listed. False when
+   empty. */
 bool recomp_actor_pose_next(const RecompActorPoseClips *clips, uint16_t clip,
     int step, uint16_t *next, uint32_t *position);
 

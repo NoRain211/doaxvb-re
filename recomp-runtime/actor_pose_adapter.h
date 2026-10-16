@@ -21,6 +21,11 @@ typedef struct RecompActorPoseStatus {
     /* The held clip's place in the list of clips, from 1, and the list's
        length; zero when nothing is held. */
     uint32_t position, count;
+    /* A clip being looked for and not yet played, with its place and the
+       list's length. */
+    bool browsing;
+    uint16_t browse_clip;
+    uint32_t browse_position, browse_count;
 } RecompActorPoseStatus;
 void recomp_actor_pose_status(RecompActorPoseStatus *status);
 /* The character's name when the game names her (in a match), else
@@ -37,6 +42,11 @@ bool recomp_actor_pose_facing(float direction[3]);
 /* Plays the next (step > 0) or previous clip on the chosen character and
    holds it. True when a clip was requested. */
 bool recomp_actor_pose_step_clip(int step);
+/* Moves the clip being looked for `step` places through the list without
+   playing it, starting from the one playing. True when there is a list. */
+bool recomp_actor_pose_browse(int step);
+/* Plays and holds the clip being looked for. True when one was. */
+bool recomp_actor_pose_play_browsed(void);
 /* Hands the chosen character's animation back to the game. */
 void recomp_actor_pose_release(void);
 /* Once a frame, after the game's animation update: keeps a held clip playing

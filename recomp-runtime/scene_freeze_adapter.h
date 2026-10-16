@@ -11,7 +11,8 @@ extern "C" {
 /* Freezes and thaws the running scene; see scene_freeze_adapter.c. */
 void recomp_scene_freeze_set(bool frozen);
 bool recomp_scene_freeze_active(void);
-/* While frozen, also stop drawing the 2D overlay: text, menus, logos. */
+/* Stops drawing the 2D overlay, frozen or not: text, menus, a match's score
+   and portraits, logos. */
 void recomp_scene_freeze_set_overlay_hidden(bool hidden);
 bool recomp_scene_freeze_overlay_hidden(void);
 /* Lets a frozen scene run one more frame, then holds it again. */

@@ -38,12 +38,10 @@ bool recomp_actor_pose_next(const RecompActorPoseClips *clips, uint16_t clip,
     uint32_t chosen;
     if (at == clips->count) {
         chosen = 0u;
-    } else if (step > 0) {
-        chosen = (at + 1u) % clips->count;
-    } else if (step < 0) {
-        chosen = (at + clips->count - 1u) % clips->count;
     } else {
-        chosen = at;
+        int64_t moved = ((int64_t)at + step) % (int64_t)clips->count;
+        if (moved < 0) moved += clips->count;
+        chosen = (uint32_t)moved;
     }
     *next = clips->clip[chosen];
     if (position != NULL) *position = chosen;

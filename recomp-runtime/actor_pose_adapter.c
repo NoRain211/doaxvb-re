@@ -90,6 +90,10 @@ static struct {
     uint32_t hidden;
     /* The held clip's place in its list, from 1, and the list's length. */
     uint32_t listed, listed_count;
+    /* A clip being looked for, not yet played. */
+    bool browsing;
+    uint16_t browse_clip;
+    uint32_t browse_listed, browse_count;
 } pose;
 
 static bool active(uint32_t actor)
@@ -122,6 +126,10 @@ void recomp_actor_pose_status(RecompActorPoseStatus *status)
     status->clip = pose.clip;
     status->position = pose.holding ? pose.listed : 0u;
     status->count = pose.holding ? pose.listed_count : 0u;
+    status->browsing = pose.browsing;
+    status->browse_clip = pose.browse_clip;
+    status->browse_position = pose.browse_listed;
+    status->browse_count = pose.browse_count;
 }
 
 void recomp_actor_pose_name(uint32_t actor, char *name, uint32_t size)
@@ -255,10 +263,13 @@ void recomp_actor_pose_next_actor(void)
     }
 }
 
-bool recomp_actor_pose_step_clip(int step)
+static RecompActorPoseClips clips;
+
+/* Lists the clips the scene loaded for the chosen character and the shared
+   ones. False when no character is active. */
+static bool list_clips(void)
 {
     static uint32_t character[RECOMP_ACTOR_POSE_BANK_SIZE], shared[RECOMP_ACTOR_POSE_BANK_SIZE];
-    static RecompActorPoseClips clips;
     uint32_t character_bank = 0u, shared_bank = 0u;
 
     if (!active(pose.actor)) recomp_actor_pose_next_actor();
@@ -268,11 +279,29 @@ bool recomp_actor_pose_step_clip(int step)
     bool has_shared = load_bank(SHARED_BANK_ENTRY, &shared_bank, shared);
     recomp_actor_pose_list(&clips, has_character ? character : NULL, character_bank + BANK_PLACEHOLDER,
         has_shared ? shared : NULL, shared_bank + BANK_PLACEHOLDER);
+    return true;
+}
 
-    uint16_t current = pose.holding ? pose.clip : *recomp_memory_u16(layer + LAYER_CLIP);
+bool recomp_actor_pose_browse(int step)
+{
+    if (!list_clips()) return false;
+    uint16_t current = pose.browsing ? pose.browse_clip :
+        pose.holding ? pose.clip : *recomp_memory_u16(layer_of(pose.actor) + LAYER_CLIP);
     uint16_t next;
     uint32_t position;
     if (!recomp_actor_pose_next(&clips, current, step, &next, &position)) return false;
+    pose.browsing = true;
+    pose.browse_clip = next;
+    pose.browse_listed = position + 1u;
+    pose.browse_count = clips.count;
+    return true;
+}
+
+bool recomp_actor_pose_play_browsed(void)
+{
+    if (!pose.browsing) return false;
+    pose.browsing = false;
+    if (!active(pose.actor)) return false;
     if (!pose.holding) {
         float hips[3];
         recomp_guest_load(pose.position, root_of(pose.actor) + ROOT_POSITION, sizeof pose.position);
@@ -282,17 +311,23 @@ bool recomp_actor_pose_step_clip(int step)
         pose.hips_known = true;
         pose.holding = true;
     }
-    pose.clip = next;
-    pose.listed = position + 1u;
-    pose.listed_count = clips.count;
-    request(pose.actor, next);
+    pose.clip = pose.browse_clip;
+    pose.listed = pose.browse_listed;
+    pose.listed_count = pose.browse_count;
+    request(pose.actor, pose.clip);
     fprintf(stderr, "recomp pose: character %u clip %04x (%u of %u)\n",
-        pose.actor, next, position + 1u, clips.count);
+        pose.actor, pose.clip, pose.listed, pose.listed_count);
     return true;
+}
+
+bool recomp_actor_pose_step_clip(int step)
+{
+    return recomp_actor_pose_browse(step) && recomp_actor_pose_play_browsed();
 }
 
 void recomp_actor_pose_release(void)
 {
+    pose.browsing = false;
     if (!pose.holding) return;
     pose.holding = false;
     fprintf(stderr, "recomp pose: character %u released\n", pose.actor);
@@ -317,6 +352,17 @@ void recomp_actor_pose_next_actor(void)
 bool recomp_actor_pose_step_clip(int step)
 {
     (void)step;
+    return false;
+}
+
+bool recomp_actor_pose_browse(int step)
+{
+    (void)step;
+    return false;
+}
+
+bool recomp_actor_pose_play_browsed(void)
+{
     return false;
 }
 

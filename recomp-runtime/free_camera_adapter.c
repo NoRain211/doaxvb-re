@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "animation_probe.h"
@@ -76,6 +77,15 @@ enum {
 };
 
 static const float STICK_DEADZONE = 0.15f;
+/* Holding a clip key: the first repeat after this long, then one every
+   CLIP_REPEAT_MS, moving 3 clips at a time after CLIP_FASTER_AFTER_MS and 10
+   after CLIP_FASTEST_AFTER_MS. */
+enum {
+    CLIP_REPEAT_DELAY_MS = 350,
+    CLIP_REPEAT_MS = 60,
+    CLIP_FASTER_AFTER_MS = 1500,
+    CLIP_FASTEST_AFTER_MS = 3500,
+};
 /* At a field of view of one radian. */
 static const float MOUSE_RADIANS_PER_PIXEL = 0.004f;
 /* Framing a character: this far from her hips, raised a little, at this
@@ -91,7 +101,11 @@ static struct {
     RecompInputSampleSource source;
     bool active, started;
     bool toggle_held, reset_held, cycle_held, freeze_held, overlay_held, step_held;
-    bool clip_back_held, clip_next_held, actor_held, shot_held;
+    bool actor_held, shot_held;
+    /* The clip direction held (-1, 0 or 1), since when, and when it next
+       moves on, in milliseconds. */
+    int clip_direction;
+    uint64_t clip_since, clip_repeat_at;
     bool suit_back_held, suit_next_held;
     /* Face the chosen character at the next camera build; frame_pending
        also moves close to her. */
@@ -109,6 +123,13 @@ static struct {
     RecompFreeCamera camera;
     uint32_t trace_lines;
 } state = {.enabled = -1, .controller_hints = -1};
+
+static uint64_t milliseconds(void)
+{
+    struct timespec now;
+    if (timespec_get(&now, TIME_UTC) == 0) return 0u;
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
 
 static const char *setting(const char *name)
 {
@@ -223,8 +244,9 @@ static bool take_sample(const RecompInputGamepad *gamepad)
         (state.active && gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED));
     if (overlay && !state.overlay_held) {
         /* A clean view hides the game's overlay and the runtime's panel
-           together; the next press shows both. */
-        bool hide = !state.panel_hidden || !recomp_scene_freeze_overlay_hidden();
+           together; the next press shows both. The model viewer keeps the
+           game's overlay hidden throughout, so there it shows the panel. */
+        bool hide = !state.panel_hidden;
         state.panel_hidden = hide;
         recomp_scene_freeze_set_overlay_hidden(hide);
     }
@@ -235,16 +257,30 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     if (step && !state.step_held) recomp_scene_freeze_step();
     state.step_held = step;
 
+    /* A press moves to the next or previous clip; holding keeps moving,
+       faster the longer it is held, and the clip plays when let go. */
     bool clip_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET) ||
         (gamepad->buttons & XBOX_DPAD_LEFT) != 0u);
     bool clip_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
         (gamepad->buttons & XBOX_DPAD_RIGHT) != 0u);
-    int clip_step = (clip_next && !state.clip_next_held) - (clip_back && !state.clip_back_held);
-    if (clip_step != 0 && recomp_actor_pose_step_clip(clip_step) && recomp_scene_freeze_active()) {
-        recomp_scene_freeze_step();
+    int clip_direction = (int)clip_next - (int)clip_back;
+    uint64_t now = milliseconds();
+    if (clip_direction != 0 && clip_direction != state.clip_direction) {
+        recomp_actor_pose_browse(clip_direction);
+        state.clip_direction = clip_direction;
+        state.clip_since = now;
+        state.clip_repeat_at = now + CLIP_REPEAT_DELAY_MS;
+    } else if (clip_direction != 0 && now >= state.clip_repeat_at) {
+        uint64_t held = now - state.clip_since;
+        int places = held >= CLIP_FASTEST_AFTER_MS ? 10 : held >= CLIP_FASTER_AFTER_MS ? 3 : 1;
+        recomp_actor_pose_browse(clip_direction * places);
+        state.clip_repeat_at = now + CLIP_REPEAT_MS;
+    } else if (clip_direction == 0 && state.clip_direction != 0) {
+        state.clip_direction = 0;
+        if (recomp_actor_pose_play_browsed() && recomp_scene_freeze_active()) {
+            recomp_scene_freeze_step();
+        }
     }
-    state.clip_back_held = clip_back;
-    state.clip_next_held = clip_next;
 
     bool actor = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_BACKSLASH) ||
         (gamepad->buttons & XBOX_LEFT_THUMB) != 0u);
@@ -506,7 +542,10 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     if (pose.active) {
         recomp_actor_pose_name(pose.actor, name, sizeof name);
         recomp_overlay_add_line(text, "%s", name);
-        if (pose.holding) {
+        if (pose.browsing) {
+            recomp_overlay_add_line(text, "Animation %u of %u (clip %04X): let go to play",
+                (unsigned)pose.browse_position, (unsigned)pose.browse_count, (unsigned)pose.browse_clip);
+        } else if (pose.holding) {
             recomp_overlay_add_line(text, "Animation %u of %u (clip %04X)",
                 (unsigned)pose.position, (unsigned)pose.count, (unsigned)pose.clip);
         } else {
