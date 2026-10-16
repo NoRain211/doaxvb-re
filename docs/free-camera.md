@@ -3,8 +3,10 @@
 The free camera takes over the game's camera and flies it anywhere in the
 scene, for screenshots or a closer look at a model. It is off by default. Tick
 **Free camera** in the launcher, or set `RECOMP_FREE_CAMERA=1` before the
-runner starts. Then press **F1**, or hold **Back** and click the right stick,
-to switch the free camera on and off in any scene.
+runner starts. Then press **F1**, or click the right stick, to switch the
+free camera on and off in any scene. (It used to take Back with the click,
+but the game saw Back first and backed out of menus such as the poolside
+one.)
 The setting also adds MODEL VIEWER to the main menu, which sets up a scene
 with one girl for the free camera; see [`model-viewer.md`](model-viewer.md).
 

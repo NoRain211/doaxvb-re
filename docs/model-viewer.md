@@ -18,8 +18,8 @@ Every free camera control then works as described in
 [`free-camera.md`](free-camera.md): fly around her, step or unfreeze the
 scene, play another of the scene's animation clips on her, or change her
 swimsuit with `-` and `=` (the d-pad's down and up). R (Y) puts back the
-view in front of her, her own animation and her first swimsuit. Put the
-free camera away (F1, or Back with the right stick) to leave: the scene is
+view the viewer opened with, her own animation and her first swimsuit. Put the
+free camera away (F1, or click the right stick) to leave: the scene is
 unpaused, the match is quit and the game returns to the main menu.
 
 ## Time of day

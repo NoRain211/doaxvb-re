@@ -17,8 +17,9 @@
 #include "animation_probe.h"
 #include "d3d_frame_adapter.h"
 
-/* Free camera: RECOMP_FREE_CAMERA=1 lets F1, or BACK with the right stick
-   clicked, take the game's camera and fly it.
+/* Free camera: RECOMP_FREE_CAMERA=1 lets F1, or clicking the right stick,
+   take the game's camera and fly it. It used to take BACK with the click,
+   but the game saw that BACK first and backed out of its menus.
 
    The game keeps five camera objects of 0xAE0 bytes from 0x41A800. Each
    frame 0x00023B10 builds one from the object in EAX: it reads the eye at
@@ -118,6 +119,9 @@ static struct {
     bool aim_pending, frame_pending;
     /* The model viewer has the camera (recomp_free_camera_overlay). */
     bool viewer;
+    /* The view the model viewer first framed her in, which reset returns to. */
+    RecompFreeCamera home;
+    bool home_saved, save_home;
     /* H's clean view also hides the runtime's own overlay. */
     bool panel_hidden;
     /* The hint lists controller buttons once a controller was last used,
@@ -195,6 +199,7 @@ static void set_active(bool active)
     state.active = active;
     state.started = false;
     if (!active) {
+        state.home_saved = false;
         /* Putting the camera away hands the scene back, running. */
         recomp_actor_pose_release();
         recomp_suit_switch_forget();
@@ -245,7 +250,7 @@ static bool take_sample(const RecompInputGamepad *gamepad)
     else if (controller_used(gamepad)) state.controller_hints = 1;
 
     bool toggle = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_F1) ||
-        ((gamepad->buttons & XBOX_BACK) != 0u && (gamepad->buttons & XBOX_RIGHT_THUMB) != 0u);
+        (gamepad->buttons & XBOX_RIGHT_THUMB) != 0u;
     if (toggle && !state.toggle_held) set_active(!state.active);
     state.toggle_held = toggle;
 
@@ -478,9 +483,10 @@ static void build_camera(void)
         bool reset = analog(&state.pad, ANALOG_Y) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_R);
         bool resetting = reset && !state.reset_held;
         if (resetting) reset_character();
-        if (resetting && state.viewer && state.started) {
-            /* The viewer's view is the one in front of her. */
-            state.frame_pending = true;
+        if (resetting && state.viewer && state.started && state.home_saved) {
+            /* The viewer's view is the one it first framed her in; framing
+               her again would follow her moving hips. */
+            state.camera = state.home;
         } else if ((!state.started || resetting) &&
             recomp_free_camera_begin(&state.camera, eye, target, fov)) {
             state.started = true;
@@ -511,6 +517,11 @@ static void build_camera(void)
             } else {
                 recomp_free_camera_look_at(&state.camera, point);
             }
+        }
+        if (state.frame_pending && state.save_home) {
+            state.home = state.camera;
+            state.home_saved = true;
+            state.save_home = false;
         }
         state.aim_pending = false;
         state.frame_pending = false;
@@ -554,6 +565,7 @@ void recomp_free_camera_face_character(void)
 void recomp_free_camera_frame_character(void)
 {
     state.frame_pending = true;
+    state.save_home = true;
 }
 
 static void fill_overlay(RecompOverlayText *text, bool viewer)
@@ -564,7 +576,7 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         if (!recomp_scene_freeze_active()) return;
         recomp_overlay_set_title(text, "PAUSED");
         recomp_overlay_set_hint(text, state.controller_hints > 0
-            ? "P resume  |  Back + R3 free camera"
+            ? "P resume  |  R3 free camera"
             : "P resume  |  . step  |  H clean view  |  F12 screenshot  |  F1 free camera");
         return;
     }
@@ -598,10 +610,10 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
     if (state.controller_hints > 0) {
         recomp_overlay_set_hint(text, viewer
-            ? "Back + R3 leave  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
+            ? "R3 leave  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
               "Left stick move  |  LT RT down/up  |  Right stick look\n"
               "D-pad left/right animation  |  D-pad up/down swimsuit"
-            : "Back + R3 off  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
+            : "R3 off  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
               "Left stick move  |  LT RT down/up  |  Right stick look  |  L3 next girl\n"
               "D-pad left/right animation  |  D-pad up/down swimsuit");
     } else {

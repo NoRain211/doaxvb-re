@@ -239,7 +239,7 @@ static void show_title_hint(void)
     RecompOverlayText text;
     recomp_overlay_clear(&text);
     recomp_overlay_set_title(&text, "FREE CAMERA");
-    recomp_overlay_add_line(&text, "F1, or Back + right stick click: free camera");
+    recomp_overlay_add_line(&text, "F1, or click the right stick: free camera");
     recomp_overlay_add_line(&text, "MODEL VIEWER is in the main menu");
     recomp_overlay_publish(&text);
 }
