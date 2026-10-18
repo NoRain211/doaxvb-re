@@ -30,8 +30,9 @@ bool recomp_d3d_frame_adapter_target(RecompD3dPresenterTarget *target);
 /* The guest's swap counter, so seams that run per draw can tell which frame
    they are in. Diagnostics only; nothing in the frame path depends on it. */
 uint32_t recomp_d3d_frame_adapter_swap_counter(void);
-/* While any reason holds it, Swap still counts frames and waits for the
-   display but shows nothing new, so the last picture stays on screen. */
+/* While any reason holds it, Swap still counts frames, waits for the display
+   and presents the frame's work, but the window shows nothing new, so the
+   last picture stays on screen. */
 enum {
     RECOMP_PRESENT_HOLD_SCENE = 1u,
     RECOMP_PRESENT_HOLD_VIEWER = 2u,

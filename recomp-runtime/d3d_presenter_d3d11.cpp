@@ -3818,6 +3818,9 @@ RecompD3dPresenterError submitPresent(
         context->Draw(3u, 0u);
         context->ClearState();
     }
+    // A held frame updates the front buffer the game reads back, but the
+    // window keeps the last picture presented.
+    if (present.hold) return RECOMP_D3D_PRESENTER_OK;
     {
         if (recomp_screenshot_take_request()) saveScreenshot(presenter);
         // The runtime's overlay text goes on the window's back buffer, after

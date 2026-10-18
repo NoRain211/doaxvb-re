@@ -31,14 +31,14 @@ static RecompD3dPresenterCommand clearCommand()
     return command;
 }
 
-static RecompD3dPresenterError tick(RecompD3dPresenter *presenter, uint32_t swap)
+static RecompD3dPresenterError tick(RecompD3dPresenter *presenter, uint32_t swap, bool hold = false)
 {
     auto command = clearCommand();
     const auto error = recomp_d3d_presenter_submit(presenter, &command);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     command = {};
     command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
-    command.data.present = {5u, swap};
+    command.data.present = {5u, swap, hold};
     return recomp_d3d_presenter_submit(presenter, &command);
 }
 
@@ -75,6 +75,8 @@ static bool testTicks()
     });
     other.join();
     for (uint32_t i = 1; i <= 5 && passed; ++i) passed &= expect("tick", tick(presenter, i));
+    for (uint32_t i = 6; i <= 8 && passed; ++i) passed &= expect("held tick", tick(presenter, i, true));
+    passed &= expect("tick after hold", tick(presenter, 9));
     auto clear = clearCommand();
     passed &= expect("partial clear", recomp_d3d_presenter_submit(presenter, &clear));
     passed &= expect("partial release", recomp_d3d_presenter_release_memory(
@@ -171,7 +173,7 @@ static bool testDeferredDump()
     return passed;
 }
 
-static bool testClose(bool idle)
+static bool testClose(bool idle, bool hold = false)
 {
     RecompD3dPresenter *presenter = nullptr;
     if (!expect("create close", recomp_d3d_presenter_create(&config, &presenter))) return false;
@@ -188,13 +190,14 @@ static bool testClose(bool idle)
     RecompD3dPresenterError error = RECOMP_D3D_PRESENTER_OK;
     uint32_t ticks = 0;
     while (passed && error == RECOMP_D3D_PRESENTER_OK && ticks < 600) {
-        error = tick(presenter, ++ticks);
+        error = tick(presenter, ++ticks, hold);
     }
     passed &= expect("close status", error, RECOMP_D3D_PRESENTER_CLOSED);
     passed &= expect("sticky close", recomp_d3d_presenter_submit(presenter, nullptr),
         RECOMP_D3D_PRESENTER_CLOSED);
     passed &= destroy(presenter);
-    if (passed) std::printf("PASS %s close ticks=%u\n", idle ? "idle" : "queued", ticks);
+    if (passed) std::printf("PASS %s%s close ticks=%u\n", idle ? "idle" : "queued",
+        hold ? " held" : "", ticks);
     else std::fprintf(stderr, "FAIL close idle=%d window=%p owner=%lu\n", idle,
         static_cast<void *>(window), owner);
     return passed;
@@ -207,7 +210,9 @@ int main()
     _putenv_s("RECOMP_REPLAY_VERIFY_AT", "1");
     bool captured = testCapturedDraw();
     _putenv_s("RECOMP_REPLAY_VERIFY_AT", "");
-    if (!captured || !testDeferredDump() || !testClose(false) || !testClose(true)) return 1;
+    // A held present still reports the window's close.
+    if (!captured || !testDeferredDump() || !testClose(false) || !testClose(true) ||
+        !testClose(false, true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }

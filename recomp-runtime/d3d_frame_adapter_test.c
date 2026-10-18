@@ -278,6 +278,17 @@ int recomp_d3d_frame_adapter_test(void)
         passed &= memcmp(command->data.gamma, expected, sizeof expected) == 0;
     }
 
+    /* A held Swap still presents, flagged so the window keeps its picture. */
+    for (int hold = 1; hold >= 0; --hold) {
+        recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, hold != 0);
+        prepare_stack(call_memory, swap_args, 1u);
+        swap();
+        if (!recomp_d3d_presenter_memory_snapshot(&snapshot) || snapshot.command_count == 0u) return 0;
+        const RecompD3dPresenterCommand *command = &snapshot.commands[snapshot.command_count-1u];
+        passed &= expect_u32("held Swap presents", command->type, RECOMP_D3D_PRESENTER_COMMAND_PRESENT);
+        passed &= expect_u32("held Swap flag", command->data.present.hold, (uint32_t)hold);
+    }
+
     /* A failed transform/state read must not submit partially enabled fog. */
     recomp_d3d_frame_adapter_reset();
     recomp_d3d_frame_adapter_initialize(&config, TEST_DEVICE);

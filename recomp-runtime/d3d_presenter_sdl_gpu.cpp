@@ -2438,7 +2438,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUTexture *swapchain_tex = nullptr;
         Uint32 swap_w = 0, swap_h = 0;
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(
+        // A held frame updates the front buffer copy, but the window keeps
+        // the last picture presented.
+        if (!present.hold && SDL_WaitAndAcquireGPUSwapchainTexture(
                 cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
                 SDL_GPUBlitInfo blit{};
@@ -2486,9 +2488,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        if (recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf);
+        if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf);
         else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
+        if (present.hold) return RECOMP_D3D_PRESENTER_OK;
         ++presenter->present_count;
 
         if (presenter->performance_counter) reportPerformance(presenter);
