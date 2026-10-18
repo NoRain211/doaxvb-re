@@ -215,33 +215,31 @@ static bool choosing_court(void)
         *recomp_memory(PICKS + PICK_STEP, 1u) == PICK_STEP_COURT;
 }
 
-static void show_time_panel(void)
+static void fill_time_panel(RecompOverlayText *text)
 {
-    RecompOverlayText text;
-    recomp_overlay_clear(&text);
-    recomp_overlay_set_title(&text, "MODEL VIEWER");
-    recomp_overlay_add_line(&text, "Time of day: %s", recomp_viewer_time_name(chosen_time));
-    recomp_overlay_set_hint(&text, "[ ] or LT RT: time of day");
-    recomp_overlay_publish(&text);
+    recomp_overlay_clear(text);
+    recomp_overlay_set_title(text, "MODEL VIEWER");
+    recomp_overlay_add_line(text, "Time of day: %s", recomp_viewer_time_name(chosen_time));
+    recomp_overlay_set_hint(text, "[ ] or LT RT: time of day");
 }
 
 /* For the first TITLE_HINT_FRAMES of each visit to the title screen, a
-   panel says how to reach the free camera and the viewer. */
-static void show_title_hint(void)
+   panel says how to reach the free camera and the viewer. True when it is
+   shown. */
+static bool fill_title_hint(RecompOverlayText *text)
 {
     static uint32_t title_frames;
     if (*recomp_memory(SCENE, 1u) != SCENE_TITLE || recomp_free_camera_active()) {
         if (*recomp_memory(SCENE, 1u) != SCENE_TITLE) title_frames = 0u;
-        return;
+        return false;
     }
-    if (title_frames >= TITLE_HINT_FRAMES) return;
+    if (title_frames >= TITLE_HINT_FRAMES) return false;
     ++title_frames;
-    RecompOverlayText text;
-    recomp_overlay_clear(&text);
-    recomp_overlay_set_title(&text, "FREE CAMERA");
-    recomp_overlay_add_line(&text, "F1, or click the right stick: free camera");
-    recomp_overlay_add_line(&text, "MODEL VIEWER is in the main menu");
-    recomp_overlay_publish(&text);
+    recomp_overlay_clear(text);
+    recomp_overlay_set_title(text, "FREE CAMERA");
+    recomp_overlay_add_line(text, "F1, or click the right stick: free camera");
+    recomp_overlay_add_line(text, "MODEL VIEWER is in the main menu");
+    return true;
 }
 
 static void mask_character_select(void)
@@ -381,16 +379,25 @@ static bool holding(void)
     if (session != VIEWER_WAITING) return false;
     uint8_t scene = *recomp_memory(SCENE, 1u);
     if (scene == SCENE_MATCH) return match_frames < SETTLE_FRAMES;
-    return scene == SCENE_MENU && *recomp_memory(MENU_SCREEN, 1u) == SCREEN_EXHIBITION_SETUP;
+    /* Only while the viewer confirms it (recomp_viewer_input): once the
+       player moves the cursor off One Player, the screen is theirs. */
+    return scene == SCENE_MENU && *recomp_memory(MENU_SCREEN, 1u) == SCREEN_EXHIBITION_SETUP &&
+        *recomp_memory(SETUP_CURSOR, 1u) == 0u;
 }
 
 static void viewer_tick(uint32_t frame)
 {
     recomp_suit_switch_frame(frame);
     recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_VIEWER, holding());
-    recomp_free_camera_overlay(session == VIEWER_VIEWING);
-    if (choosing_court()) show_time_panel();
-    show_title_hint();
+    /* One overlay a frame: a second publish could be drawn after the first. */
+    RecompOverlayText text;
+    bool panel = fill_title_hint(&text);
+    if (choosing_court()) {
+        fill_time_panel(&text);
+        panel = true;
+    }
+    if (panel) recomp_overlay_publish(&text);
+    else recomp_free_camera_overlay(session == VIEWER_VIEWING);
     if (session == VIEWER_IDLE) restore_courts();
     mask_character_select();
     bool in_match = *recomp_memory(SCENE, 1u) == SCENE_MATCH;

@@ -900,7 +900,11 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_free_camera_set_source(recomp_input_host_sample);
         recomp_input_adapter_set_source(recomp_free_camera_sample);
     }
-    recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
+    /* The scene freeze, the viewer and the suit switch all run behind the
+       free camera; off, task switches go unhooked. */
+    if (recomp_free_camera_enabled()) {
+        recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
+    }
     recomp_viewer_install();
 #endif
 #ifndef RECOMP_FULL_PROGRAM

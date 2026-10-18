@@ -177,11 +177,21 @@ static void forget_bindings(void)
     }
 }
 
+static bool girl(uint32_t actor, uint32_t *character);
+
 void recomp_suit_switch_camera_build(void)
 {
-    if (recomp_suit_switch_camera_built(&state, recomp_d3d_frame_adapter_swap_counter()) ==
+    if (state.phase != RECOMP_SUIT_WAITING) return;
+    /* The scene may have moved on since the switch was asked for. */
+    uint32_t character;
+    bool ready = girl(state.slot, &character) &&
+        *recomp_memory(RECORD_FIRST + state.slot * RECORD_SIZE + RECORD_PHASE, 1u) == RECORD_PHASE_IDLE;
+    if (recomp_suit_switch_camera_built(&state, recomp_d3d_frame_adapter_swap_counter(), ready) ==
         RECOMP_SUIT_ACTION_LOAD) {
         load();
+    } else {
+        fprintf(stderr, "recomp suit switch: slot %u not ready; suit %u dropped\n",
+            state.slot, state.suit);
     }
 }
 
@@ -242,6 +252,8 @@ void recomp_suit_switch_forget(void)
 {
     memset(original, 0, sizeof original);
     browsing = false;
+    /* A switch not yet started belongs to the scene being left. */
+    if (state.phase == RECOMP_SUIT_WAITING) state.phase = RECOMP_SUIT_IDLE;
 }
 
 bool recomp_suit_switch_step(uint32_t actor, int step)
@@ -336,7 +348,7 @@ void recomp_suit_switch_name(uint16_t suit, char *name, uint32_t size)
     if (source == NULL || source[0] == '\0') return;
     uint32_t used = 0u;
     for (uint32_t i = 0u; i < NAME_LIMIT && source[i] != '\0' && used + 1u < size; ++i) {
-        if (source[i] == '@' && source[i + 1u] == '|') {
+        if (source[i] == '@' && i + 1u < NAME_LIMIT && source[i + 1u] == '|') {
             ++i;
             continue;
         }

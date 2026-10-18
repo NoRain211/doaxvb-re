@@ -397,8 +397,11 @@ void recomp_d3d_swap_adapter(void)
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
     recomp_d3d_wait_vblank();
-    presenter_error = present_held != 0u ? RECOMP_D3D_PRESENTER_OK :
-        recomp_d3d_presenter_submit(presenter, &result.command);
+    /* A held frame is still presented, so its draws run now while the
+       textures they borrow from guest memory are this frame's, and the
+       presenter keeps handling window events. */
+    result.command.data.present.hold = present_held != 0u;
+    presenter_error = recomp_d3d_presenter_submit(presenter, &result.command);
     recomp_d3d_draw_adapter_capture_present(
         result.command.data.present.swap_counter, (uint32_t)presenter_error);
     recomp_d3d_frame_adapter_exit_if_closed(presenter_error);

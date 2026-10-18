@@ -174,7 +174,10 @@ inputs; complete offline gameplay and rendering acceptance remain open in #16.
 ## Public test route
 
 Install Git, CMake 3.20 or newer, and Visual Studio 2022 or Build Tools with
-Desktop development with C++ and a Windows SDK. In PowerShell, run:
+Desktop development with C++ and a Windows SDK. On every platform,
+configuration downloads Dear ImGui 1.91.9, which draws the free camera's
+overlay text, and checks its SHA-256; set `FETCHCONTENT_SOURCE_DIR_IMGUI` to
+an unpacked copy to configure offline. In PowerShell, run:
 
 ```powershell
 git clone --recurse-submodules https://github.com/NoRain211/doaxbv-re.git
@@ -195,9 +198,7 @@ ctest --test-dir build/clang --output-on-failure
 ```
 
 On macOS, install CMake, Ninja, and SDL3 (`brew install cmake ninja sdl3`), then run
-the commands below. On macOS and Linux, configuration also downloads Dear ImGui
-1.91.9, which draws the free camera's overlay text, and checks its SHA-256; set
-`FETCHCONTENT_SOURCE_DIR_IMGUI` to an unpacked copy to configure offline.
+the commands below.
 
 ```bash
 git clone --recurse-submodules https://github.com/NoRain211/doaxvb-re.git

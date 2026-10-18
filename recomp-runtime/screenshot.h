@@ -4,10 +4,25 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* F12 is shared. On Windows, texture replacement (texture_replacement.cpp)
+   dumps on F12 and reloads on Ctrl+F12 while RECOMP_TEXTURES is set or
+   RECOMP_TEXTURE_DUMP=1; it leaves Shift+F12 alone. */
+static inline bool recomp_texture_keys_enabled(const char *dump, const char *textures)
+{
+    return (dump != NULL && strcmp(dump, "1") == 0) || (textures != NULL && textures[0] != '\0');
+}
+
+/* Shift+F12 always takes a screenshot; F12 does while textures leave it free. */
+static inline bool recomp_screenshot_key(bool f12, bool shift, bool texture_keys)
+{
+    return f12 && (shift || !texture_keys);
+}
 
 /* Screenshots of the game's own frame, without the runtime's overlay. The
    game side asks for one; a presenter, on whatever thread, takes the request
@@ -15,13 +30,14 @@ extern "C" {
 void recomp_screenshot_request(void);
 bool recomp_screenshot_take_request(void);
 
-/* Writes BGRA rows (top row first, `pitch` bytes apart) as an RGB PNG.
-   Uncompressed deflate keeps it dependency-free; false on any failure. */
+/* Writes BGRA rows (top row first, `pitch` bytes apart) as an RGB PNG at a
+   UTF-8 path. Uncompressed deflate keeps it dependency-free; false on any
+   failure. */
 bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
     uint32_t width, uint32_t height, uint32_t pitch);
 
-/* A new file path under RECOMP_SCREENSHOT_DIR, or Pictures/DOAXBV in the
-   user's home, creating the folder. False when no folder can be made. */
+/* A new UTF-8 file path under RECOMP_SCREENSHOT_DIR, or DOAXBV in the user's
+   Pictures folder, creating the folder. False when no folder can be made. */
 bool recomp_screenshot_path(char *path, size_t size);
 
 /* Saves a frame to a new path and reports where; presenters call it after

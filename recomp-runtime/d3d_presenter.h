@@ -60,6 +60,9 @@ typedef struct RecompD3dPresenterClearCommand {
 typedef struct RecompD3dPresenterPresentCommand {
     uint32_t effective_flags;
     uint32_t swap_counter;
+    /* The frame's work still runs, but the window keeps the last picture
+       presented (recomp_d3d_frame_adapter_hold_present). */
+    bool hold;
 } RecompD3dPresenterPresentCommand;
 
 /* Directional and point diffuse/ambient lighting for the material-source path. */

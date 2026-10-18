@@ -28,7 +28,7 @@ you freeze it.
 | Advance one frame while frozen; hold to keep stepping, every frame after 1.5 s | . (period) | Right shoulder |
 | Previous / next animation; hold to scroll, faster the longer held, and let go to play | [ / ] | D-pad left / right |
 | Previous / next swimsuit on the chosen character; hold to scroll, and the suit loads when let go | - / = | D-pad down / up |
-| Screenshot (anywhere; the controller while flying) | F12 | Back + A |
+| Screenshot (anywhere; the controller while flying) | F12, or Shift+F12 with [texture replacement](texture-replacement.md) on | Back + A |
 | Next character to animate (the camera turns to her; not in the model viewer) | `\` (backslash) | Left stick click |
 
 While the camera flies, a panel at the top left names the chosen character,
@@ -286,8 +286,11 @@ match the character's name is read from the game: character `n` is player
 ## Screenshots
 
 F12 saves the game's frame, without the runtime's panel, as a PNG in
-`Pictures/DOAXBV` in your home folder, or in `RECOMP_SCREENSHOT_DIR` when it
+`DOAXBV` in your Pictures folder, or in `RECOMP_SCREENSHOT_DIR` when it
 is set; the log names the file. H first hides the game's own overlay too.
+While `RECOMP_TEXTURES` or `RECOMP_TEXTURE_DUMP=1` turns on texture
+replacement, F12 and Ctrl+F12 are its keys and Shift+F12 takes the
+screenshot; Shift+F12 works at any time, and the panel names the key.
 The presenter takes the request when it presents: the SDL GPU one downloads
 the frame it rendered, and the D3D11 one copies the window's back buffer
 before the panel is drawn on it. `recomp-runtime/screenshot.c` writes the

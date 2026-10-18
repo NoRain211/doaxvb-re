@@ -314,8 +314,19 @@ bool recomp_input_host_mouse_drag(float *dx, float *dy)
     *dx = *dy = 0.0f;
     if (focused()) {
 #ifdef _WIN32
+        /* GetAsyncKeyState reads physical buttons; swapped buttons put the
+           logical right one on the left. */
+        const int right = GetSystemMetrics(SM_SWAPBUTTON) ? VK_LBUTTON : VK_RBUTTON;
         POINT point = {0, 0};
-        held = pressed(VK_RBUTTON) && GetCursorPos(&point);
+        held = pressed(right) && GetCursorPos(&point);
+        if (held && !dragging) {
+            /* A drag starts only over the game's client area. */
+            HWND window = GetForegroundWindow();
+            POINT client = point;
+            RECT area;
+            held = ScreenToClient(window, &client) && GetClientRect(window, &area) &&
+                PtInRect(&area, client);
+        }
         x = (float)point.x;
         y = (float)point.y;
 #else

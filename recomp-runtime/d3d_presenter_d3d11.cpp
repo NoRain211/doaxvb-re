@@ -764,7 +764,9 @@ LRESULT CALLBACK presenterWindowProc(
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
-    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30))) {
+    // Shift+F12 is the screenshot key (screenshot.h).
+    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30)) &&
+        (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
         auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
             GetWindowLongPtrW(window, GWLP_USERDATA));
         if (presenter && presenter->replacements.enabled()) {
@@ -4338,6 +4340,9 @@ RecompD3dPresenterError submitPresent(
         context->Draw(3u, 0u);
         context->ClearState();
     }
+    // A held frame updates the front buffer the game reads back, but the
+    // window keeps the last picture presented.
+    if (present.hold) return RECOMP_D3D_PRESENTER_OK;
     {
         if (recomp_screenshot_take_request()) saveScreenshot(presenter);
         // The runtime's overlay text goes on the window's back buffer, after

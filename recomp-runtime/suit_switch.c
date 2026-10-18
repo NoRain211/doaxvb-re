@@ -14,9 +14,13 @@ bool recomp_suit_switch_begin(RecompSuitSwitch *state, uint32_t slot,
 }
 
 RecompSuitAction recomp_suit_switch_camera_built(RecompSuitSwitch *state,
-    uint32_t frame)
+    uint32_t frame, bool ready)
 {
     if (state->phase != RECOMP_SUIT_WAITING) return RECOMP_SUIT_ACTION_NONE;
+    if (!ready) {
+        state->phase = RECOMP_SUIT_IDLE;
+        return RECOMP_SUIT_ACTION_NONE;
+    }
     state->phase = RECOMP_SUIT_LOADING;
     state->since = frame;
     return RECOMP_SUIT_ACTION_LOAD;
