@@ -802,24 +802,22 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         }
     }
     recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
-    const bool suits = recomp_suit_switch_allowed();
     if (state.controller_hints > 0) {
-        snprintf(hint, sizeof hint, viewer
+        recomp_overlay_set_hint(text, viewer
             ? "R3 leave  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
               "Left stick move  |  LT RT down/up  |  Right stick look\n"
-              "D-pad left/right animation%s"
+              "D-pad left/right animation  |  D-pad up/down swimsuit"
             : "R3 off  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
               "Left stick move  |  LT RT down/up  |  Right stick look  |  L3 next girl\n"
-              "D-pad left/right animation%s", suits ? "  |  D-pad up/down swimsuit" : "");
-        recomp_overlay_set_hint(text, hint);
+              "D-pad left/right animation  |  D-pad up/down swimsuit");
     } else {
         snprintf(hint, sizeof hint, viewer
             ? "F1 leave  |  P freeze  |  . step  |  H clean view  |  %s screenshot  |  R reset\n"
               "WASD QE move  |  arrows / right-drag look  |  Z X zoom\n"
-              "[ ] animation%s"
+              "[ ] animation  |  - = swimsuit"
             : "F1 off  |  P freeze  |  . step  |  H clean view  |  %s screenshot  |  R reset\n"
               "WASD QE move  |  arrows / right-drag look  |  Z X zoom  |  \\ next girl\n"
-              "[ ] animation%s", shot, suits ? "  |  - = swimsuit" : "");
+              "[ ] animation  |  - = swimsuit", shot);
         recomp_overlay_set_hint(text, hint);
     }
 }

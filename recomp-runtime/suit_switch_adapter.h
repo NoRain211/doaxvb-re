@@ -8,9 +8,6 @@
 extern "C" {
 #endif
 
-/* Swimsuits change only in an Exhibition match, so a vacation keeps the
-   suits the game gave. */
-bool recomp_suit_switch_allowed(void);
 /* Puts the next (step > 0) or previous swimsuit the character can wear on
    character `actor`, live. True when a switch began. */
 bool recomp_suit_switch_step(uint32_t actor, int step);
