@@ -724,6 +724,11 @@ void recomp_free_camera_set_active(bool active)
     if (enabled()) set_active(active);
 }
 
+bool recomp_free_camera_enabled(void)
+{
+    return enabled();
+}
+
 bool recomp_free_camera_active(void)
 {
     return state.active;
@@ -816,6 +821,11 @@ RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
 void recomp_free_camera_set_active(bool active)
 {
     (void)active;
+}
+
+bool recomp_free_camera_enabled(void)
+{
+    return false;
 }
 
 bool recomp_free_camera_active(void)
