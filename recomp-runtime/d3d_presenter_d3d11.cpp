@@ -808,7 +808,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->ClearState();
         presenter->context->Flush();
     }
+    // Keep the opt-in across the hardware-to-WARP retry; sunCreate failure still disables it.
+    const bool sun_enabled = presenter->sun.enabled;
     sunRelease(presenter->sun);
+    presenter->sun.enabled = sun_enabled;
     presenter->gbuffer.release();
     for (auto &timer : presenter->gpu_timers) {
         releaseCom(timer.disjoint);
@@ -2994,12 +2997,15 @@ RecompD3dPresenterError submitDraw(
     }
 
     if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
-        // The shadow map replaces its darkening; keep its stencil writes.
-        ++presenter->sun.game_shadows;
         presenter->sun.seen_alpha = (std::max)(presenter->sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
-        auto stencil_only = draw;
-        stencil_only.blend.color_write_mask = 0;
-        return submitDraw(presenter, stencil_only);
+        // The shadow map replaces the darkening only where its receivers draw; keep the stencil writes.
+        if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch &&
+            sunSameCamera(presenter->sun, draw)) {
+            ++presenter->sun.game_shadows;
+            auto stencil_only = draw;
+            stencil_only.blend.color_write_mask = 0;
+            return submitDraw(presenter, stencil_only);
+        }
     }
     if (presenter->sun.valid && !presenter->sun.casting && sunOverlayDraw(draw)) {
         SunOverlay shadow = SunOverlay::None;

@@ -3781,7 +3781,26 @@ static bool testSunShadow(unsigned samples)
         presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
         passed = passed && submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
             pixels("no game shadow, no receiver", unshadowed);
+        // Until a frame records the game's opacity, the game keeps drawing its own shadow.
+        auto game_shadow = receiver;
+        game_shadow.has_texture = game_shadow.directional.enabled = false;
+        game_shadow.use_texture_factor = true; game_shadow.texture_factor = 0x82000000u;
+        game_shadow.depth.depth_write_enable = false; game_shadow.depth.stencil_enable = true;
+        game_shadow.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+        game_shadow.depth.stencil_ref = 1; game_shadow.depth.stencil_read_mask = 3;
+        game_shadow.depth.stencil_pass = RECOMP_D3D_STENCIL_ZERO;
+        game_shadow.depth.stencil_fail = game_shadow.depth.stencil_zfail = RECOMP_D3D_STENCIL_KEEP;
+        game_shadow.blend.blend_enable = true;
+        game_shadow.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        game_shadow.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        const unsigned hidden = presenter.sun.game_shadows;
+        presenter.sun.seen_alpha = 0;
+        passed = passed && sunGameShadow(game_shadow) &&
+            submitDraw(&presenter, game_shadow) == RECOMP_D3D_PRESENTER_OK &&
+            presenter.sun.game_shadows == hidden && presenter.sun.seen_alpha > 0.5f;
         presenter.sun.game_alpha = 0.75f;
+        passed = passed && submitDraw(&presenter, game_shadow) == RECOMP_D3D_PRESENTER_OK &&
+            presenter.sun.game_shadows == hidden + 1;
     }
     {
         struct CutoutVertex { float position[3]; uint32_t color; float uv[2]; } cutout[4]{};
@@ -3898,7 +3917,8 @@ static bool testSunShadow(unsigned samples)
     passed = passed && d3d11_backend_shadow_begin(&presenter, false) &&
         !presenter.sun.valid && !presenter.sun.triangles && !d3d11_backend_shadow_begin(&presenter, true);
     releaseCom(readback); releaseCom(color); releaseCom(resolved); releaseGraphics(&presenter);
-    passed = passed && !presenter.sun.texture && !presenter.sun.depth && !presenter.sun.view &&
+    // releaseGraphics also runs before the WARP retry, which must keep the opt-in.
+    passed = passed && presenter.sun.enabled && !presenter.sun.texture && !presenter.sun.depth && !presenter.sun.view &&
         !presenter.sun.constants && !presenter.sun.sampler && !presenter.sun.rasterizer;
     if (!passed) std::fprintf(stderr, "FAIL sun shadow selection, visibility or lifecycle\n");
     return passed;
