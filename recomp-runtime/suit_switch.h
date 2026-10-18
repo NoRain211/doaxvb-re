@@ -55,9 +55,11 @@ typedef struct RecompSuitSwitch {
 /* Starts a switch of `slot` to `suit`. False while another is under way. */
 bool recomp_suit_switch_begin(RecompSuitSwitch *state, uint32_t slot,
     uint16_t suit, uint32_t frame);
-/* The game builds a camera in frame `frame`: what to do there. */
+/* The game builds a camera in frame `frame`: what to do there. A waiting
+   switch is dropped unless `ready`: the slot still holds a girl and the
+   game's request record for it is idle. */
 RecompSuitAction recomp_suit_switch_camera_built(RecompSuitSwitch *state,
-    uint32_t frame);
+    uint32_t frame, bool ready);
 /* Between task turns in frame `frame`; `loaded` when the loader reports
    the slot's suit read and bound. */
 RecompSuitAction recomp_suit_switch_tick(RecompSuitSwitch *state,

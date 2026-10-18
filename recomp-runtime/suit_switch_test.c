@@ -38,13 +38,17 @@ int main(void)
 
     RecompSuitSwitch state = {0};
     check(recomp_suit_switch_tick(&state, 10u, true) == RECOMP_SUIT_ACTION_NONE, "idle does nothing");
-    check(recomp_suit_switch_camera_built(&state, 10u) == RECOMP_SUIT_ACTION_NONE, "idle loads nothing");
+    check(recomp_suit_switch_camera_built(&state, 10u, true) == RECOMP_SUIT_ACTION_NONE, "idle loads nothing");
+    check(recomp_suit_switch_begin(&state, 1u, 42u, 50u), "begins before the slot changes");
+    check(recomp_suit_switch_camera_built(&state, 51u, false) == RECOMP_SUIT_ACTION_NONE,
+        "loads nothing once the slot is not ready");
+    check(state.phase == RECOMP_SUIT_IDLE, "dropped");
     check(recomp_suit_switch_begin(&state, 1u, 42u, 100u), "begins");
     check(!recomp_suit_switch_begin(&state, 0u, 7u, 100u), "one switch at a time");
     check(recomp_suit_switch_tick(&state, 100u, true) == RECOMP_SUIT_ACTION_NONE, "waits for a camera build");
     check(state.phase == RECOMP_SUIT_WAITING, "still waiting: a load not asked for does not count");
-    check(recomp_suit_switch_camera_built(&state, 101u) == RECOMP_SUIT_ACTION_LOAD, "loads at the camera build");
-    check(recomp_suit_switch_camera_built(&state, 101u) == RECOMP_SUIT_ACTION_NONE, "once");
+    check(recomp_suit_switch_camera_built(&state, 101u, true) == RECOMP_SUIT_ACTION_LOAD, "loads at the camera build");
+    check(recomp_suit_switch_camera_built(&state, 101u, true) == RECOMP_SUIT_ACTION_NONE, "once");
     check(recomp_suit_switch_tick(&state, 102u, false) == RECOMP_SUIT_ACTION_NONE, "loading");
     check(recomp_suit_switch_tick(&state, 104u, true) == RECOMP_SUIT_ACTION_NONE, "bound");
     check(state.phase == RECOMP_SUIT_SETTLING, "settling");
@@ -56,7 +60,7 @@ int main(void)
     check(recomp_suit_switch_tick(&state, 200u + RECOMP_SUIT_SWITCH_LIMIT, false) ==
         RECOMP_SUIT_ACTION_GIVE_UP, "gives up without a camera build");
     check(recomp_suit_switch_begin(&state, 0u, 7u, 300u), "and again");
-    check(recomp_suit_switch_camera_built(&state, 301u) == RECOMP_SUIT_ACTION_LOAD, "loads");
+    check(recomp_suit_switch_camera_built(&state, 301u, true) == RECOMP_SUIT_ACTION_LOAD, "loads");
     check(recomp_suit_switch_tick(&state, 301u + RECOMP_SUIT_SWITCH_LIMIT, false) ==
         RECOMP_SUIT_ACTION_GIVE_UP, "gives up on a load that never binds");
     check(state.phase == RECOMP_SUIT_IDLE, "idle after giving up");
