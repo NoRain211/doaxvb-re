@@ -90,7 +90,9 @@ the byte at `0x9D9F6D`, is on One Player.
 The match loads as usual, but its opening, which shows every player, is
 never seen: from the match's first frame the other three are hidden and Swap
 holds the last picture, as it does over Exhibition's first screen, which the
-viewer confirms itself (`recomp_d3d_frame_adapter_hold_present`). The ball
+viewer confirms itself (`recomp_d3d_frame_adapter_hold_present`). Held frames
+still run on the presenter, which keeps the window's last picture. Once the
+setup screen's cursor leaves One Player, the screen shows again. The ball
 is hidden by leaving out every draw from the vertex buffers of the model the
 loader keeps at `0x4D9440`, the match ball's (`recomp_d3d_draw_set_hidden_buffers`);
 some of her poses otherwise leave it in her hands. While the others pick,
@@ -99,7 +101,7 @@ it one by one.
 
 After the match has run 240 frames the viewer chooses the
 first player for the animation controls, hides the other three, turns on
-and frames the free camera, freezes the scene and hides the overlay. A
+and frames the free camera and hides the overlay; the scene keeps running. A
 character is hidden by moving her skeleton 100 units below the ground after
 it is built (`0x000B01E0`), and at once when hiding starts, since a frozen
 scene builds no skeletons. The camera is placed 2.5 units in front of her
@@ -119,7 +121,8 @@ Confirming it led to Exhibition's setup and character select; after Player
 1's girl (the third one) and swimsuit were picked, the other three picks were
 made by themselves and court select came up.
 After the match started the viewer showed only Player 1's girl, from the
-front, frozen, with no overlay. Switching the free camera off quit the match
+front, with no overlay; that build also froze the scene at the take-over,
+which the viewer no longer does. Switching the free camera off quit the match
 and the game came back to the main menu.
 
 The third girl, Hitomi, was also chosen and framed the same way.
