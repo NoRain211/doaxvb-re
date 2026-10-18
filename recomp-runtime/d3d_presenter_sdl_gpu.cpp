@@ -2018,10 +2018,10 @@ void flushSegment(RecompD3dPresenter *presenter)
 }
 
 /* Returns the host texture behind a guest offscreen color target, creating it
-   on first use. A depthless target of 512x512 or more that takes a copy of
-   the frame (the held picture of a scene change) is sized like the main
-   target, so an upscaled frame survives the round trip. Guest coordinates and
-   normalised UVs address either size alike.
+   on first use. A new depthless target of 512x512 or more that takes a copy
+   of the front buffer (the held picture of a scene change) is sized like the
+   main target, so an upscaled frame survives the round trip. Guest
+   coordinates and normalised UVs address either size alike.
    ponytail: size heuristic; key on the consumer if a smaller target blurs. */
 RenderTargetEntry *acquireRenderTarget(
     RecompD3dPresenter *presenter,
@@ -2032,11 +2032,11 @@ RenderTargetEntry *acquireRenderTarget(
     RenderTargetEntry *entry = findRenderTarget(presenter, desc);
     uint32_t width = entry ? entry->width : desc.width;
     uint32_t height = entry ? entry->height : desc.height;
-    if (!target.no_depth) {
-        // Depth belongs to guest-sized storage.
+    if (!target.no_depth && target.custom_depth) {
+        // Custom depth belongs to guest-sized storage; offscreen targets bind no other depth.
         width = desc.width;
         height = desc.height;
-    } else if (frame_copy && presenter->scale != 1.0f &&
+    } else if (!entry && target.no_depth && frame_copy && presenter->scale != 1.0f &&
                desc.width >= 512u && desc.height >= 512u) {
         width = std::max(width, mainWidth(presenter));
         height = std::max(height, mainHeight(presenter));
