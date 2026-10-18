@@ -218,6 +218,10 @@ Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archive
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
 
+Release packaging keeps one top-level readme: the player setup guide
+`README.txt`. Omit the repository's `README.md`, `CODE_OF_CONDUCT.md` and
+`SECURITY.md` from the packaged ZIP. Keep licenses and third-party notices.
+
 ### Optional hardware ray-tracing smoke test
 
 The standalone DXR/DX11 test requires Windows, a recent Windows SDK, and DXC on

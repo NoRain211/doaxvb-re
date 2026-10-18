@@ -111,6 +111,10 @@ into this repository.
 
 ## Tool routing
 
+- GhidrAssistMCP: pass `program_name="/default.xbe-2d7eab"` on every
+  program-scoped call for DOAXBV. Before analysis, call `list_binaries` and
+  verify the target's Project Path and executable identity. If renamed or
+  reimported, resolve its new path; never rely on the active tab.
 - Static addresses, xrefs, or function bounds: use one bounded Ghidra query and
   record the binary identity.
 - Real kernel or hardware behavior: use xemu as a live oracle.
