@@ -286,7 +286,7 @@ match the character's name is read from the game: character `n` is player
 ## Screenshots
 
 F12 saves the game's frame, without the runtime's panel, as a PNG in
-`Pictures/DOAXBV` in your home folder, or in `RECOMP_SCREENSHOT_DIR` when it
+`DOAXBV` in your Pictures folder, or in `RECOMP_SCREENSHOT_DIR` when it
 is set; the log names the file. H first hides the game's own overlay too.
 The presenter takes the request when it presents: the SDL GPU one downloads
 the frame it rendered, and the D3D11 one copies the window's back buffer

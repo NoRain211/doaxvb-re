@@ -4,6 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#include <wchar.h>
+#include <windows.h>
+#endif
+
 static int failures;
 
 static void check(bool condition, const char *what)
@@ -50,6 +56,24 @@ int main(int argc, char **argv)
     check(head[24] == 8 && head[25] == 2, "8-bit RGB");
     check(size > (long)(W * 3 + 1) * H, "the image data is all there");
     if (argc <= 1) remove(path);
+
+#ifdef _WIN32
+    /* A folder outside the ANSI code page, as a non-English user name gives. */
+    static const wchar_t folder[] = L"screenshot_test_\u00e9\u4e16";
+    _wputenv_s(L"RECOMP_SCREENSHOT_DIR", folder);
+    char shot[1200] = {0};
+    wchar_t wide[1200] = {0};
+    check(recomp_screenshot_path(shot, sizeof shot), "a path under a Unicode folder");
+    check(recomp_screenshot_write_png(shot, bgra, W, H, PITCH), "a PNG under a Unicode folder");
+    MultiByteToWideChar(CP_UTF8, 0, shot, -1, wide, 1200);
+    check(wcsstr(wide, folder) == wide, "the path is the folder's, in UTF-8");
+    FILE *unicode = _wfopen(wide, L"rb");
+    check(unicode != NULL, "the PNG is under the Unicode folder");
+    if (unicode != NULL) fclose(unicode);
+    _wremove(wide);
+    _wrmdir(folder);
+    _wputenv_s(L"RECOMP_SCREENSHOT_DIR", L"");
+#endif
 
     if (failures == 0) printf("screenshot test passed\n");
     return failures == 0 ? 0 : 1;
