@@ -2613,7 +2613,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             target_w = static_cast<float>(color_w);
             target_h = static_cast<float>(color_h);
             const bool frame_copy = draw.has_texture && layout.pretransformed && !draw.four_tap_filter &&
-                (draw.texture_is_backbuffer || draw.texture_is_frontbuffer);
+                draw.texture_is_frontbuffer;
             RenderTargetEntry *rt = acquireRenderTarget(presenter, draw.target, frame_copy);
             if (rt && rt->texture) {
                 target_color = rt->texture;
