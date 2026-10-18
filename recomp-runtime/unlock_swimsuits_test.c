@@ -22,26 +22,15 @@ uint16_t *recomp_memory_u16(uint32_t address) { return (uint16_t *)recomp_memory
 
 enum {
     TEST_ITEMS = 0x00400000u,
-    TEST_INVENTORY = 0x00500000u,
-    TEST_COLLECTION = 0x009D8DCEu,
-    OTHER_GIRL_SUIT = 5,
-    OWN_SUIT = 1,
-    KEPT_SUIT = 7,
-    LENT_SUIT = 2,
-    SPLIT_SUIT = 4,
-    RELOADED_SUIT = 6,
-    ACCESSORY = 0x258
+    VACATION_TABLE = 0x009D8DCEu, /* stands in for the saved ownership table */
+    OTHER_GIRL_SUIT = 5
 };
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "Unlock line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
-static uint16_t *owned(uint16_t id) { return recomp_memory_u16(TEST_COLLECTION + id * 2u); }
-static uint16_t *slot(unsigned index) { return recomp_memory_u16(TEST_INVENTORY + index * SLOT_SIZE); }
-
 int main(void)
 {
-    static const uint8_t characters[GIRL_COUNT] = {1, 5, 7, 12, 13, 14, 15, 20};
-    uint8_t before[GIRL_COUNT * SLOT_COUNT * SLOT_SIZE];
+    uint8_t vacation[SWIMSUIT_END * 2u];
 
 #ifdef _WIN32
     _putenv_s("RECOMP_UNLOCK_SWIMSUITS", "1");
@@ -56,109 +45,24 @@ int main(void)
         memcpy(definition + ITEM_WEAR_MASK, &wear, sizeof wear);
         *recomp_memory_u32(ITEM_TABLE + id * 4u) = TEST_ITEMS + id * ITEM_SIZE;
     }
-    memcpy(recomp_memory(CHARACTER_IDS, GIRL_COUNT), characters, GIRL_COUNT);
-    *recomp_memory(PLAYER_CHARACTER, 1u) = characters[0];
-    *recomp_memory(SCENE, 1u) = SCENE_VACATION;
-    *recomp_memory_u32(COLLECTION_POINTER) = TEST_COLLECTION;
-    *recomp_memory_u32(INVENTORY_POINTER) = TEST_INVENTORY;
-    memset(recomp_memory(TEST_INVENTORY, sizeof before), 0xFF, sizeof before);
-    *slot(0) = OWN_SUIT;
-    *slot(1) = ACCESSORY;
-    *owned(OWN_SUIT) = HAD;
-    *owned(KEPT_SUIT) = HAD | IN_COLLECTION;
+    for (unsigned i = 0; i < sizeof vacation; ++i) {
+        vacation[i] = (uint8_t)(i * 7u);
+    }
+    memcpy(recomp_memory(VACATION_TABLE, sizeof vacation), vacation, sizeof vacation);
+    /* Girl 0 has had the other girl's suit in a save; that bit stays. */
+    *recomp_memory_u16(GALLERY + OTHER_GIRL_SUIT * 2u) = HAD;
 
-    /* Lending marks the played girl's wearable suits and nobody else's. */
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(LENT_SUIT) == (HAD | IN_COLLECTION));
-    CHECK(*owned(OTHER_GIRL_SUIT) == 0u);
-    CHECK(*owned(OWN_SUIT) == HAD); /* held in the inventory */
-    CHECK(*owned(KEPT_SUIT) == (HAD | IN_COLLECTION));
-    CHECK((*recomp_memory_u16(GALLERY + OTHER_GIRL_SUIT * 2u)) == ((HAD | IN_COLLECTION) << 2));
-    CHECK(*recomp_memory_u16(GALLERY_COUNTS) == SWIMSUIT_END - 2);
-    CHECK(*recomp_memory_u16(GALLERY_COUNTS + 2u) == SWIMSUIT_END - 1);
-
-    /* Hashing a save image takes the lent bits back and only those. */
-    memcpy(before, recomp_memory(TEST_INVENTORY, sizeof before), sizeof before);
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE - 1u);
-    CHECK(*owned(LENT_SUIT) == (HAD | IN_COLLECTION));
-    recomp_unlock_swimsuits_saving(true);
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK(*owned(LENT_SUIT) == 0u);
-    CHECK(*owned(OWN_SUIT) == HAD);
-    CHECK(*owned(KEPT_SUIT) == (HAD | IN_COLLECTION));
-    recomp_unlock_swimsuits_frame(); /* nothing is lent while saving */
-    CHECK(*owned(LENT_SUIT) == 0u);
-    recomp_unlock_swimsuits_saving(false);
-    CHECK(memcmp(before, recomp_memory(TEST_INVENTORY, sizeof before), sizeof before) == 0);
-
-    /* Take out: the game clears the Collection bit and fills a slot. The
-       suit is the player's from then on and is not lent again. */
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(LENT_SUIT) == (HAD | IN_COLLECTION));
-    *owned(LENT_SUIT) &= (uint16_t)~IN_COLLECTION;
-    *slot(2) = LENT_SUIT;
-    recomp_unlock_swimsuits_frame();
-    CHECK((*owned(LENT_SUIT) & IN_COLLECTION) == 0u);
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK(*slot(2) == LENT_SUIT);
-    CHECK(*owned(LENT_SUIT) == HAD);
-    CHECK(*owned(3) == 0u);
-
-    /* Keep: the game empties the slot and sets the bit, which is now real. */
-    recomp_unlock_swimsuits_frame();
-    *slot(2) = EMPTY_ID;
-    *owned(LENT_SUIT) |= IN_COLLECTION;
-    recomp_unlock_swimsuits_frame();
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK(*owned(LENT_SUIT) == (HAD | IN_COLLECTION));
-    CHECK(*owned(3) == 0u);
-
-    /* Take out over two frames: the bit clears a frame before the slot fills.
-       The suit is not lent in between, so only the had bit is saved. */
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(SPLIT_SUIT) == (HAD | IN_COLLECTION));
-    *owned(SPLIT_SUIT) &= (uint16_t)~IN_COLLECTION;
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(SPLIT_SUIT) == HAD);
-    *slot(3) = SPLIT_SUIT;
-    recomp_unlock_swimsuits_frame();
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK(*slot(3) == SPLIT_SUIT);
-    CHECK(*owned(SPLIT_SUIT) == HAD);
-
-    /* Keep over two frames: the slot empties a frame before the bit is set.
-       The suit is not lent in between, so the game's bit is saved. */
-    recomp_unlock_swimsuits_frame();
-    *slot(3) = EMPTY_ID;
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(SPLIT_SUIT) == HAD);
-    *owned(SPLIT_SUIT) |= IN_COLLECTION;
-    recomp_unlock_swimsuits_frame();
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK(*owned(SPLIT_SUIT) == (HAD | IN_COLLECTION));
-
-    /* A table reloaded from a save where a lent suit was had keeps that bit. */
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(RELOADED_SUIT) == (HAD | IN_COLLECTION));
-    *owned(RELOADED_SUIT) = HAD;
-    recomp_unlock_swimsuits_frame();
-    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
-    CHECK(*owned(RELOADED_SUIT) == HAD);
-
-    /* A region save nested in the profile save does not resume lending. */
-    recomp_unlock_swimsuits_saving(true);
-    recomp_unlock_swimsuits_saving(true);
-    recomp_unlock_swimsuits_saving(false);
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(3) == 0u);
-    recomp_unlock_swimsuits_saving(false);
-
-    /* Outside a vacation the Collection is left as the game has it. */
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(3) != 0u);
-    *recomp_memory(SCENE, 1u) = 0;
-    recomp_unlock_swimsuits_frame();
-    CHECK(*owned(3) == 0u);
-    CHECK(*owned(KEPT_SUIT) == (HAD | IN_COLLECTION));
+    for (unsigned frame = 0; frame < 2; ++frame) {
+        recomp_unlock_swimsuits_frame();
+        CHECK(*recomp_memory_u16(GALLERY + 1u * 2u) == 0xFFFFu);
+        CHECK(*recomp_memory_u16(GALLERY + (SWIMSUIT_END - 1u) * 2u) == 0xFFFFu);
+        CHECK(*recomp_memory_u16(GALLERY + OTHER_GIRL_SUIT * 2u) == (HAD | ((HAD | IN_COLLECTION) << 2)));
+        CHECK(*recomp_memory_u16(GALLERY_COUNTS) == SWIMSUIT_END - 2);
+        CHECK(*recomp_memory_u16(GALLERY_COUNTS + 2u) == SWIMSUIT_END - 1);
+        CHECK(*recomp_memory_u16(GALLERY_COUNTS + 14u) == SWIMSUIT_END - 2);
+        /* Vacation ownership and saves are never touched. */
+        CHECK(memcmp(recomp_memory(VACATION_TABLE, sizeof vacation), vacation, sizeof vacation) == 0);
+    }
+    puts("PASS Exhibition swimsuit unlock");
     return 0;
 }
