@@ -89,6 +89,8 @@ enum {
     LANGUAGE_ENGLISH = 1u,
     LANGUAGE_COUNT = 6u,
     NAME_LIMIT = 64u,
+    SCENE = 0x005DECE0u,
+    SCENE_MATCH = 0u,
 };
 
 static RecompSuitSwitch state;
@@ -256,9 +258,15 @@ void recomp_suit_switch_forget(void)
     if (state.phase == RECOMP_SUIT_WAITING) state.phase = RECOMP_SUIT_IDLE;
 }
 
+bool recomp_suit_switch_allowed(void)
+{
+    return *recomp_memory(SCENE, 1u) == SCENE_MATCH;
+}
+
 bool recomp_suit_switch_step(uint32_t actor, int step)
 {
-    if (actor >= SLOT_COUNT || step == 0 || state.phase != RECOMP_SUIT_IDLE) return false;
+    if (!recomp_suit_switch_allowed() || actor >= SLOT_COUNT || step == 0 ||
+        state.phase != RECOMP_SUIT_IDLE) return false;
     if (*recomp_memory(ACTOR_ACTIVE + actor, 1u) == 0u) return false;
     uint32_t character = *recomp_memory(root(actor) + ROOT_CHARACTER, 1u);
     if ((character_bit(character) & GIRL_BITS) == 0u) return false;
@@ -278,7 +286,7 @@ static bool girl(uint32_t actor, uint32_t *character)
 bool recomp_suit_switch_browse(uint32_t actor, int step)
 {
     uint32_t character;
-    if (step == 0 || !girl(actor, &character)) return false;
+    if (step == 0 || !recomp_suit_switch_allowed() || !girl(actor, &character)) return false;
     if (!browsing || browse_actor != actor) {
         browse_suit = state.phase != RECOMP_SUIT_IDLE && state.slot == actor ? state.suit :
             *recomp_memory_u16(root(actor) + ROOT_SUIT);
@@ -297,7 +305,7 @@ bool recomp_suit_switch_wear_browsed(void)
 {
     if (!browsing) return false;
     browsing = false;
-    if (state.phase != RECOMP_SUIT_IDLE) return false;
+    if (!recomp_suit_switch_allowed() || state.phase != RECOMP_SUIT_IDLE) return false;
     if (*recomp_memory_u16(root(browse_actor) + ROOT_SUIT) == browse_suit) return false;
     return begin(browse_actor, browse_suit);
 }
@@ -358,6 +366,11 @@ void recomp_suit_switch_name(uint16_t suit, char *name, uint32_t size)
 }
 
 #else
+bool recomp_suit_switch_allowed(void)
+{
+    return false;
+}
+
 bool recomp_suit_switch_step(uint32_t actor, int step)
 {
     (void)actor;
