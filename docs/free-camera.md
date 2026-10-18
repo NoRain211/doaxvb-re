@@ -27,7 +27,7 @@ you freeze it.
 | Clean view: hide the panel and the game's overlay | H | Left shoulder |
 | Advance one frame while frozen; hold to keep stepping, every frame after 1.5 s | . (period) | Right shoulder |
 | Previous / next animation; hold to scroll, faster the longer held, and let go to play | [ / ] | D-pad left / right |
-| Previous / next swimsuit on the chosen character; hold to scroll, and the suit loads when let go | - / = | D-pad down / up |
+| Previous / next swimsuit on the chosen character, in an Exhibition match; hold to scroll, and the suit loads when let go | - / = | D-pad down / up |
 | Screenshot (anywhere; the controller while flying) | F12, or Shift+F12 with [texture replacement](texture-replacement.md) on | Back + A |
 | Next character to animate (the camera turns to her; not in the model viewer) | `\` (backslash) | Left stick click |
 
@@ -190,6 +190,11 @@ character's previous or next swimsuit on her, in a running or frozen scene.
 The picture holds for the few frames the load takes, then the scene goes on
 with her in the new suit and the panel names it.
 
+Swimsuits change only in an Exhibition match (scene byte `0x5DECE0` is 0),
+which includes the model viewer and CPU Exhibition. In a vacation, the pool
+or the attract sequence the keys do nothing and the panel leaves them out of
+its key list, so the girls keep the suits the game gave them.
+
 The game loads characters through a loader task, `0x000A0530`. `0x000A2060`
 asks it for a suit (EAX the suit, EBX the character number at `+1` of her
 root block, the slot on the stack) and `0x000A2260` lets a slot's suit go.
@@ -264,7 +269,6 @@ hotel room, where no character is active. A scripted debug setting,
 suit at those frames.
 
 Not yet verified: freezing in the pool scene (no save reaches it in scripted runs), mouse look, freezing, animation select and swimsuit changes in a play test,
-swimsuit changes in vacation scenes with a character in them (the beach, the pool),
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
 hotel, the shops, the pool), and Windows and Linux builds.
 
