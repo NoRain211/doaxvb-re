@@ -21,7 +21,10 @@
    swimsuit (ids 1..0x148) her wear mask allows and she holds in neither
    place. `lent` remembers which bits are ours. A suit she takes out is hers
    from then on: the game clears the bit and fills an inventory slot, and
-   nothing is lent, or remembered as lent, for a suit she holds.
+   nothing is lent, or remembered as lent, for a suit she holds. `held`
+   marks each suit seen in her inventory or taken out, and a held suit is not
+   lent again until the vacation ends or another girl is played: Keep and
+   Take out may move a suit between the two places over two frames.
 
    The table is part of the save image at 0x9D77E8. Whenever the game hashes
    an image of that size, to sign a save or to check one it has read, the
@@ -61,6 +64,7 @@ enum {
 
 static uint16_t wear_mask[SWIMSUIT_END];
 static uint16_t lent[SWIMSUIT_END];
+static bool held[SWIMSUIT_END];
 static unsigned lent_girl;
 static unsigned saving;
 
@@ -160,6 +164,7 @@ void recomp_unlock_swimsuits_frame(void)
     }
     if (*recomp_memory(SCENE, 1u) != SCENE_VACATION) {
         withdraw();
+        memset(held, 0, sizeof held);
         return;
     }
     inventory = *recomp_memory_u32(INVENTORY_POINTER);
@@ -170,6 +175,7 @@ void recomp_unlock_swimsuits_frame(void)
     }
     if (girl != lent_girl) {
         withdraw();
+        memset(held, 0, sizeof held);
         lent_girl = girl;
     }
     slots = recomp_memory(inventory + girl * SLOT_COUNT * SLOT_SIZE, SLOT_COUNT * SLOT_SIZE);
@@ -198,11 +204,15 @@ void recomp_unlock_swimsuits_frame(void)
         if (in_bag[id]) {
             /* Hers now, whether bought or taken out. */
             lent[id] &= (uint16_t)~(in_collection | had);
+            held[id] = true;
         }
         if ((*owned & in_collection) == 0u) {
-            /* Taken out, or the table was reloaded: the bit is no longer ours. */
-            lent[id] &= (uint16_t)~in_collection;
-            if (!in_bag[id]) {
+            if ((lent[id] & in_collection) != 0u) {
+                /* Taken out, or the table was reloaded: the bit is no longer ours. */
+                lent[id] &= (uint16_t)~in_collection;
+                held[id] = true;
+            }
+            if (!held[id]) {
                 lent[id] |= in_collection | (uint16_t)(~*owned & had);
                 *owned |= in_collection | had;
             }

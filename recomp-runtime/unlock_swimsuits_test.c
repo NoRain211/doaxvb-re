@@ -28,6 +28,7 @@ enum {
     OWN_SUIT = 1,
     KEPT_SUIT = 7,
     LENT_SUIT = 2,
+    SPLIT_SUIT = 4,
     ACCESSORY = 0x258
 };
 
@@ -110,6 +111,30 @@ int main(void)
     recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
     CHECK(*owned(LENT_SUIT) == (HAD | IN_COLLECTION));
     CHECK(*owned(3) == 0u);
+
+    /* Take out over two frames: the bit clears a frame before the slot fills.
+       The suit is not lent in between, so only the had bit is saved. */
+    recomp_unlock_swimsuits_frame();
+    CHECK(*owned(SPLIT_SUIT) == (HAD | IN_COLLECTION));
+    *owned(SPLIT_SUIT) &= (uint16_t)~IN_COLLECTION;
+    recomp_unlock_swimsuits_frame();
+    CHECK(*owned(SPLIT_SUIT) == HAD);
+    *slot(3) = SPLIT_SUIT;
+    recomp_unlock_swimsuits_frame();
+    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
+    CHECK(*slot(3) == SPLIT_SUIT);
+    CHECK(*owned(SPLIT_SUIT) == HAD);
+
+    /* Keep over two frames: the slot empties a frame before the bit is set.
+       The suit is not lent in between, so the game's bit is saved. */
+    recomp_unlock_swimsuits_frame();
+    *slot(3) = EMPTY_ID;
+    recomp_unlock_swimsuits_frame();
+    CHECK(*owned(SPLIT_SUIT) == HAD);
+    *owned(SPLIT_SUIT) |= IN_COLLECTION;
+    recomp_unlock_swimsuits_frame();
+    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
+    CHECK(*owned(SPLIT_SUIT) == (HAD | IN_COLLECTION));
 
     /* A region save nested in the profile save does not resume lending. */
     recomp_unlock_swimsuits_saving(true);
