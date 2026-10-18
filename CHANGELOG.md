@@ -36,10 +36,12 @@
   `docs/model-viewer.md`.
 - **Screenshots**. With Free camera on, F12 (or Back + A while flying) saves
   the game's frame, without the overlay panel, as a PNG in Pictures/DOAXBV.
+  With texture replacement on, F12 stays its key and Shift+F12 takes the
+  screenshot.
 - **Overlay panel**. While the free camera flies, a small panel drawn with
   Dear ImGui (D3D11 on Windows, SDL GPU elsewhere) names the chosen character, shows her
   animation and freeze state and lists the controls; H hides it with the
-  game's overlay for a clean view. See `docs/free-camera.md`. Off by default. See `docs/free-camera.md`.
+  game's overlay for a clean view. Off by default. See `docs/free-camera.md`.
 
 ### Changed
 

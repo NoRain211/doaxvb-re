@@ -9,11 +9,49 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <windows.h>
-#define make_folder(path) _mkdir(path)
+#include <knownfolders.h>
+#include <shlobj.h>
 #else
 #include <stdatomic.h>
 #include <sys/stat.h>
 #define make_folder(path) mkdir(path, 0755)
+#define open_file(path, mode) fopen(path, mode)
+#define remove_file(path) remove(path)
+#endif
+
+#ifdef _WIN32
+/* Paths are UTF-8 here; Windows gets them as UTF-16 so any user name works. */
+static bool widen(const char *text, wchar_t *wide, int size)
+{
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, size) > 0;
+}
+
+static bool narrow(const wchar_t *wide, char *text, size_t size)
+{
+    return WideCharToMultiByte(CP_UTF8, 0, wide, -1, text, (int)size, NULL, NULL) > 0;
+}
+
+static int make_folder(const char *path)
+{
+    wchar_t wide[1200];
+    if (!widen(path, wide, 1200)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return _wmkdir(wide);
+}
+
+static FILE *open_file(const char *path, const char *mode)
+{
+    wchar_t wide[1200], wide_mode[8];
+    return widen(path, wide, 1200) && widen(mode, wide_mode, 8) ? _wfopen(wide, wide_mode) : NULL;
+}
+
+static void remove_file(const char *path)
+{
+    wchar_t wide[1200];
+    if (widen(path, wide, 1200)) _wremove(wide);
+}
 #endif
 
 #ifdef _WIN32
@@ -128,7 +166,7 @@ bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
     put32(zlib + at, (b << 16) | a);
     at += 4u;
 
-    FILE *file = fopen(path, "wb");
+    FILE *file = open_file(path, "wb");
     if (file == NULL) goto done;
     static const uint8_t signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
     uint8_t header[13];
@@ -142,31 +180,45 @@ bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
         write_chunk(file, "IDAT", zlib, (uint32_t)at) &&
         write_chunk(file, "IEND", NULL, 0u);
     if (fclose(file) != 0) written = false;
-    if (!written) remove(path);
+    if (!written) remove_file(path);
 done:
     free(raw);
     free(zlib);
     return written;
 }
 
+/* RECOMP_SCREENSHOT_DIR, or DOAXBV in the user's Pictures folder. */
+static bool screenshot_folder(char *folder, size_t size)
+{
+    char pictures[1024];
+#ifdef _WIN32
+    const wchar_t *chosen = _wgetenv(L"RECOMP_SCREENSHOT_DIR");
+    if (chosen != NULL && chosen[0] != L'\0') return narrow(chosen, folder, size);
+    /* The known folder follows a relocated or OneDrive-backed Pictures. */
+    PWSTR known = NULL;
+    bool found = SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_Pictures, KF_FLAG_CREATE, NULL, &known)) &&
+        narrow(known, pictures, sizeof pictures);
+    CoTaskMemFree(known);
+    if (!found) return false;
+#else
+    const char *chosen = getenv("RECOMP_SCREENSHOT_DIR");
+    if (chosen != NULL && chosen[0] != '\0') {
+        snprintf(folder, size, "%s", chosen);
+        return true;
+    }
+    const char *home = getenv("HOME");
+    if (home == NULL || home[0] == '\0') return false;
+    snprintf(pictures, sizeof pictures, "%s/Pictures", home);
+    if (make_folder(pictures) != 0 && errno != EEXIST) return false;
+#endif
+    snprintf(folder, size, "%s/DOAXBV", pictures);
+    return true;
+}
+
 bool recomp_screenshot_path(char *path, size_t size)
 {
     char folder[1024];
-    const char *chosen = getenv("RECOMP_SCREENSHOT_DIR");
-    if (chosen != NULL && chosen[0] != '\0') {
-        snprintf(folder, sizeof folder, "%s", chosen);
-    } else {
-#ifdef _WIN32
-        const char *home = getenv("USERPROFILE");
-#else
-        const char *home = getenv("HOME");
-#endif
-        if (home == NULL || home[0] == '\0') return false;
-        char pictures[1024];
-        snprintf(pictures, sizeof pictures, "%s/Pictures", home);
-        if (make_folder(pictures) != 0 && errno != EEXIST) return false;
-        snprintf(folder, sizeof folder, "%s/DOAXBV", pictures);
-    }
+    if (!screenshot_folder(folder, sizeof folder)) return false;
     if (make_folder(folder) != 0 && errno != EEXIST) return false;
 
     time_t now = time(NULL);
@@ -181,7 +233,7 @@ bool recomp_screenshot_path(char *path, size_t size)
     for (unsigned n = 0u; n < 100u; ++n) {
         if (n == 0u) snprintf(path, size, "%s/DOAXBV-%s.png", folder, stamp);
         else snprintf(path, size, "%s/DOAXBV-%s-%u.png", folder, stamp, n);
-        FILE *existing = fopen(path, "rb");
+        FILE *existing = open_file(path, "rb");
         if (existing == NULL) return true;
         fclose(existing);
     }

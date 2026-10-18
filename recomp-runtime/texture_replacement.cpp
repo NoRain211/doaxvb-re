@@ -1,4 +1,5 @@
 #include "texture_replacement.h"
+#include "screenshot.h"
 #include "../xbe/sha.h"
 #include <d3dcompiler.h>
 #include <wincodec.h>
@@ -292,7 +293,7 @@ TextureReplacements::TextureReplacements()
     const char *dump = std::getenv("RECOMP_TEXTURE_DUMP");
     const char *directory = std::getenv("RECOMP_TEXTURES");
     dump_ = dump && std::strcmp(dump, "1") == 0;
-    enabled_ = dump_ || (directory && *directory);
+    enabled_ = recomp_texture_keys_enabled(dump, directory);
     const char *root = std::getenv("RECOMP_TEXTURE_DUMP_DIR");
     root_ = root && *root ? fs::path(root) : fs::path("private/textures");
     directory_ = directory && *directory && std::strcmp(directory, "1") != 0
