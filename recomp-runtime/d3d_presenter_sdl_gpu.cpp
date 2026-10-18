@@ -2791,8 +2791,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
         // 2 also smooths the stage-1 color: the depth-of-field composite
         // magnifies its 256x256 blur target far more on an upscaled frame.
+        const RenderTargetEntry *blur = draw.has_alpha_mask ? findRenderTarget(presenter, draw.texture) : nullptr;
         const bool smooth_magnify = draw.has_alpha_mask && presenter->scale != 1.0f &&
-            !draw.target.offscreen && findRenderTarget(presenter, draw.texture) != nullptr;
+            !draw.target.offscreen && blur != nullptr && blur->width < mainWidth(presenter);
         constants[83] = smooth_magnify ? 2.0f : draw.has_alpha_mask ? 1.0f : 0.0f;
 
         if (draw.has_reflection) {
