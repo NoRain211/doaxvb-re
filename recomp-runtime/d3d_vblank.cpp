@@ -79,6 +79,7 @@ void sleepUntil(Clock::time_point deadline)
 #endif
 }
 
+#ifdef _WIN32
 // A key press this frame, only while one of this process's windows has focus.
 bool tapped(int key)
 {
@@ -121,6 +122,10 @@ bool pollHotkeys()
     }
     return step;
 }
+#else
+// The tuning hotkeys read Win32 key state and retitle the D3D11 window.
+bool pollHotkeys() { return false; }
+#endif
 }
 
 void recomp_d3d_vblank_reset(void)
