@@ -14,6 +14,7 @@ bool ready;
 bool failed;
 SDL_GPUDevice *owner;
 Uint64 last_ticks;
+Uint32 styled_height;
 
 bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
 {
@@ -22,6 +23,7 @@ bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     recomp_overlay_imgui_style(static_cast<float>(height));
+    styled_height = height;
 
     ImGui_ImplSDLGPU3_InitInfo info{};
     info.Device = device;
@@ -39,6 +41,19 @@ bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
     return true;
 }
 
+// The window is resizable: size the panel for the new height. The style and
+// font start over so the scale is not applied twice; the backend rebuilds
+// the font texture on the next frame.
+void restyle(Uint32 height)
+{
+    if (height == styled_height) return;
+    styled_height = height;
+    ImGui::GetStyle() = ImGuiStyle();
+    ImGui::GetIO().Fonts->Clear();
+    recomp_overlay_imgui_style(static_cast<float>(height));
+    ImGui_ImplSDLGPU3_DestroyFontsTexture();
+}
+
 }  // namespace
 
 void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
@@ -50,6 +65,7 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
         return;
     }
     if (!start(device, window, height)) return;
+    restyle(height);
 
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
