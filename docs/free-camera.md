@@ -252,7 +252,11 @@ the hips were kept only through the root they drifted to the edge. Choosing
 her with the left stick click, after the second character, turned the
 camera back to her.
 
-The Windows drawer has been built with llvm-mingw but not yet run.
+On Windows, an MSVC build drew the panel with D3D11 over the demo's beach
+scene, naming Christie, her animation and her swimsuit above the controller
+hints. With an Xbox One controller, R3 switched the camera, Start froze the
+scene, and animation select and swimsuit changes worked there too. The
+llvm-mingw build has not been run.
 
 Swimsuit changes were checked in a CPU Exhibition match, where the first
 player's suit changed twice while the match played on, and in the model
@@ -263,10 +267,10 @@ hotel room, where no character is active. A scripted debug setting,
 `RECOMP_SUIT_SWITCH_AT=<frame>[,<frame>...]`, changes the first character's
 suit at those frames.
 
-Not yet verified: freezing in the pool scene (no save reaches it in scripted runs), mouse look, freezing, animation select and swimsuit changes in a play test,
+Not yet verified: freezing in the pool scene (no save reaches it in scripted runs), mouse look,
 swimsuit changes in vacation scenes with a character in them (the beach, the pool),
 animation select outside the demo, physical controller flight, scenes beyond the demo, the island map and Exhibition matches (the
-hotel, the shops, the pool), and Windows and Linux builds.
+hotel, the shops, the pool), the keyboard on Windows, and Linux builds.
 
 ## The overlay
 
@@ -295,8 +299,9 @@ The presenter takes the request when it presents: the SDL GPU one downloads
 the frame it rendered, and the D3D11 one copies the window's back buffer
 before the panel is drawn on it. `recomp-runtime/screenshot.c` writes the
 PNG itself, uncompressed, so no image library is needed (tested by
-`screenshot_test.c`). A 720p screenshot is about 2.7 MB. The Windows path
-is built but not yet run.
+`screenshot_test.c`). A 720p screenshot is about 2.7 MB. The D3D11 path has
+not yet saved a screenshot: in the Windows run no F12, Shift+F12 or Back + A
+press reached the game.
 
 ## Debugging
 
