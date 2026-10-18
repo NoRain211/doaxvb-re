@@ -749,7 +749,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->ClearState();
         presenter->context->Flush();
     }
+    // Keep the opt-in across the hardware-to-WARP retry; sunCreate failure still disables it.
+    const bool sun_enabled = presenter->sun.enabled;
     sunRelease(presenter->sun);
+    presenter->sun.enabled = sun_enabled;
     releaseCom(presenter->present_target_view);
     releaseCom(presenter->vrr_target_view);
     releaseCom(presenter->vrr_source);
@@ -2664,12 +2667,14 @@ RecompD3dPresenterError submitDraw(
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
-        // The shadow map replaces its darkening; keep its stencil writes.
-        ++presenter->sun.game_shadows;
         presenter->sun.seen_alpha = (std::max)(presenter->sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
-        auto stencil_only = draw;
-        stencil_only.blend.color_write_mask = 0;
-        return submitDraw(presenter, stencil_only);
+        // The shadow map replaces the darkening only where its receivers draw; keep the stencil writes.
+        if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch) {
+            ++presenter->sun.game_shadows;
+            auto stencil_only = draw;
+            stencil_only.blend.color_write_mask = 0;
+            return submitDraw(presenter, stencil_only);
+        }
     }
 
     RecompD3dVertexLayout layout;
