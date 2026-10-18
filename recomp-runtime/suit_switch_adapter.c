@@ -348,7 +348,7 @@ void recomp_suit_switch_name(uint16_t suit, char *name, uint32_t size)
     if (source == NULL || source[0] == '\0') return;
     uint32_t used = 0u;
     for (uint32_t i = 0u; i < NAME_LIMIT && source[i] != '\0' && used + 1u < size; ++i) {
-        if (source[i] == '@' && source[i + 1u] == '|') {
+        if (source[i] == '@' && i + 1u < NAME_LIMIT && source[i + 1u] == '|') {
             ++i;
             continue;
         }
