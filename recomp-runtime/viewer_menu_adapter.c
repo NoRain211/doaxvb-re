@@ -381,7 +381,10 @@ static bool holding(void)
     if (session != VIEWER_WAITING) return false;
     uint8_t scene = *recomp_memory(SCENE, 1u);
     if (scene == SCENE_MATCH) return match_frames < SETTLE_FRAMES;
-    return scene == SCENE_MENU && *recomp_memory(MENU_SCREEN, 1u) == SCREEN_EXHIBITION_SETUP;
+    /* Only while the viewer confirms it (recomp_viewer_input): once the
+       player moves the cursor off One Player, the screen is theirs. */
+    return scene == SCENE_MENU && *recomp_memory(MENU_SCREEN, 1u) == SCREEN_EXHIBITION_SETUP &&
+        *recomp_memory(SETUP_CURSOR, 1u) == 0u;
 }
 
 static void viewer_tick(uint32_t frame)
