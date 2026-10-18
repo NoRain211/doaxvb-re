@@ -2669,7 +2669,8 @@ RecompD3dPresenterError submitDraw(
     if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
         presenter->sun.seen_alpha = (std::max)(presenter->sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
         // The shadow map replaces the darkening only where its receivers draw; keep the stencil writes.
-        if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch) {
+        if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch &&
+            sunSameCamera(presenter->sun, draw)) {
             ++presenter->sun.game_shadows;
             auto stencil_only = draw;
             stencil_only.blend.color_write_mask = 0;
