@@ -2020,10 +2020,10 @@ void flushSegment(RecompD3dPresenter *presenter)
 }
 
 /* Returns the host texture behind a guest offscreen color target, creating it
-   on first use. A depthless target of 512x512 or more that takes a copy of
-   the frame (the held picture of a scene change) is sized like the main
-   target, so an upscaled frame survives the round trip. Guest coordinates and
-   normalised UVs address either size alike.
+   on first use. A new depthless target of 512x512 or more that takes a copy
+   of the front buffer (the held picture of a scene change) is sized like the
+   main target, so an upscaled frame survives the round trip. Guest
+   coordinates and normalised UVs address either size alike.
    ponytail: size heuristic; key on the consumer if a smaller target blurs. */
 RenderTargetEntry *acquireRenderTarget(
     RecompD3dPresenter *presenter,
@@ -2034,11 +2034,11 @@ RenderTargetEntry *acquireRenderTarget(
     RenderTargetEntry *entry = findRenderTarget(presenter, desc);
     uint32_t width = entry ? entry->width : desc.width;
     uint32_t height = entry ? entry->height : desc.height;
-    if (!target.no_depth) {
-        // Depth belongs to guest-sized storage.
+    if (!target.no_depth && target.custom_depth) {
+        // Custom depth belongs to guest-sized storage; offscreen targets bind no other depth.
         width = desc.width;
         height = desc.height;
-    } else if (frame_copy && presenter->scale != 1.0f &&
+    } else if (!entry && target.no_depth && frame_copy && presenter->scale != 1.0f &&
                desc.width >= 512u && desc.height >= 512u) {
         width = std::max(width, mainWidth(presenter));
         height = std::max(height, mainHeight(presenter));
@@ -2506,6 +2506,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             RenderTargetEntry *rt = acquireRenderTarget(presenter, clear.target, false);
             if (!rt) return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             target_color = rt->texture;
+            color_w = rt->width;
+            color_h = rt->height;
         }
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, clear.target, color_w, color_h);
 
@@ -2641,6 +2643,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         uint32_t target_color_data = 0;
         uint32_t color_w = mainWidth(presenter);
         uint32_t color_h = mainHeight(presenter);
+        uint32_t host_w = color_w;
+        uint32_t host_h = color_h;
 
         float target_w = static_cast<float>(color_w);
         float target_h = static_cast<float>(color_h);
@@ -2651,16 +2655,18 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             target_w = static_cast<float>(color_w);
             target_h = static_cast<float>(color_h);
             const bool frame_copy = draw.has_texture && layout.pretransformed && !draw.four_tap_filter &&
-                (draw.texture_is_backbuffer || draw.texture_is_frontbuffer);
+                draw.texture_is_frontbuffer;
             RenderTargetEntry *rt = acquireRenderTarget(presenter, draw.target, frame_copy);
             if (rt && rt->texture) {
                 target_color = rt->texture;
+                host_w = rt->width;
+                host_h = rt->height;
                 target_w = static_cast<float>(rt->width);
                 target_h = static_cast<float>(rt->height);
             }
         }
 
-        SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, color_w, color_h);
+        SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, host_w, host_h);
 
         // Target switch or sampling current render target requires flushing active segment
         if (presenter->segment.target_color != target_color ||
@@ -2829,8 +2835,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         constants[82] = draw.four_tap_filter ? 1.0f : 0.0f;
         // 2 also smooths the stage-1 color: the depth-of-field composite
         // magnifies its 256x256 blur target far more on an upscaled frame.
+        const RenderTargetEntry *blur = draw.has_alpha_mask ? findRenderTarget(presenter, draw.texture) : nullptr;
         const bool smooth_magnify = draw.has_alpha_mask && presenter->scale != 1.0f &&
-            !draw.target.offscreen && findRenderTarget(presenter, draw.texture) != nullptr;
+            !draw.target.offscreen && blur != nullptr && blur->width < mainWidth(presenter);
         constants[83] = smooth_magnify ? 2.0f : draw.has_alpha_mask ? 1.0f : 0.0f;
 
         if (draw.has_reflection) {
