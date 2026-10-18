@@ -34,6 +34,8 @@
     "docs/gbuffer.md",
     "docs/title-idle.md",
     "docs/swimsuit-unlock.md",
+    "docs/free-camera.md",
+    "docs/model-viewer.md",
     "docs/custom-soundtracks.md",
     "docs/native-audio.md",
     "docs/public-status.md",
@@ -192,6 +194,10 @@
     {
       "sha256": "1fd70597174fc34bb05d94289897f5fa88a739fe22cbf41c1ac89e805c410e9d",
       "reason": "Guest lighting record input field offsets mirrored by game_environment_test.c."
+    },
+    {
+      "sha256": "af5bd80569c76220c8521cc23779c31ae23373b35fb9d78b612743508c44f859",
+      "reason": "The PNG file signature from the PNG specification, written and checked by screenshot.c and screenshot_test.c."
     }
   ]
 }

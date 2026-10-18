@@ -17,6 +17,12 @@ void recomp_fiber_adapter_report(void);
 void recomp_fiber_adapter_checkpoint(void);
 void recomp_fiber_adapter_rollback(void);
 
+/* Consulted on every SwitchToFiber with the running fiber and the target.
+   Returning true declines the switch: the call returns at once, as if the
+   target had run and switched straight back. */
+typedef bool (*RecompFiberSwitchHook)(uint32_t outgoing_handle, uint32_t target_handle);
+void recomp_fiber_set_switch_hook(RecompFiberSwitchHook hook);
+
 #ifdef __cplusplus
 }
 #endif

@@ -411,6 +411,13 @@ static void create_fiber_adapter(void)
     finish(entry_esp, 3u, guest_handle);
 }
 
+static RecompFiberSwitchHook switch_hook;
+
+void recomp_fiber_set_switch_hook(RecompFiberSwitchHook hook)
+{
+    switch_hook = hook;
+}
+
 static void switch_to_fiber_adapter(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -424,6 +431,10 @@ static void switch_to_fiber_adapter(void)
     if (outgoing == NULL || target == NULL || outgoing_host == NULL ||
         target_host == NULL) {
         fail_fiber("unknown-switch", target_handle);
+    }
+    if (switch_hook != NULL && switch_hook(outgoing->guest_handle, target_handle)) {
+        finish(entry_esp, 1u, result);
+        return;
     }
     /* Round 119 probe. Screen 7 (the island map) reaches a cooperative wait in
        guest sub_000DEC50 at loc_000DED70 that yields here every iteration and

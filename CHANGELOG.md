@@ -25,6 +25,28 @@
   entries are not written to the save; a suit taken out of the Collection is
   kept for good. Off by default, and with it off nothing changes. See
   `docs/swimsuit-unlock.md`.
+- **Free camera**. A **Free camera** launcher option, or
+  `RECOMP_FREE_CAMERA=1`, lets F1 (or a click of the right stick) take
+  over the game's camera and fly it with the keyboard or a controller. While
+  it flies, Start freezes the scene (P pauses the game anywhere, with or
+  without the camera), H or the left shoulder hides the
+  2D overlay and . or the right shoulder steps one frame, for screenshots.
+  [ and ] or the d-pad's left and right play another of the scene's animation
+  clips on a character and hold it, and `\` or the left stick's click picks the
+  character.
+- **Model viewer**. With Free camera on, the main menu has a MODEL VIEWER
+  item. It goes through Exhibition's own character and court select; once
+  the match starts, the free camera comes on in front of Player 1's girl,
+  the scene freezes and the other players and the overlay are hidden.
+  Putting the camera away returns to the main menu. On court select, [ ] or
+  LT/RT choose the time of day (day, sunset or dusk). See
+  `docs/model-viewer.md`.
+- **Screenshots**. With Free camera on, F12 (or Back + A while flying) saves
+  the game's frame, without the overlay panel, as a PNG in Pictures/DOAXBV.
+- **Overlay panel**. While the free camera flies, a small panel drawn with
+  Dear ImGui (D3D11 on Windows, SDL GPU elsewhere) names the chosen character, shows her
+  animation and freeze state and lists the controls; H hides it with the
+  game's overlay for a clean view. See `docs/free-camera.md`. Off by default. See `docs/free-camera.md`.
 
 ### Changed
 

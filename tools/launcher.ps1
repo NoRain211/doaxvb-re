@@ -14,7 +14,7 @@ $idleValues = 'default', 'no-cutscene', 'cpu-exhibition'
 $idleNames = [string[]]('Default', 'No cutscene', 'CPU Exhibition')
 $settings = [pscustomobject]@{
     height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; volume = 100; shuffle = $false; title_idle = 'default'; demo_cut_hold = $false
-    sun_shadows = $false; unlock_swimsuits = $false
+    sun_shadows = $false; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
 }
 try {
@@ -165,8 +165,9 @@ $summaryKeys.Width = 110
 $summary = New-Object Windows.Forms.Label -Property @{ Left = 120; Top = 44; Width = 326; Height = 80; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent }
 $pages[0].Controls.AddRange(@($ready, $summary))
 $idle = Add-Row $pages[0] 'Title screen idle' 140 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
-$demoCut = New-Toggle $pages[0] 'Shorter demo cuts' 176 $settings.demo_cut_hold
-$unlock = New-Toggle $pages[0] 'Unlock swimsuits' 204 $settings.unlock_swimsuits
+$demoCut = New-Toggle $pages[0] 'Shorter demo cuts' 172 $settings.demo_cut_hold
+$unlock = New-Toggle $pages[0] 'Unlock swimsuits' 196 $settings.unlock_swimsuits
+$freeCamera = New-Toggle $pages[0] 'Free camera' 220 $settings.free_camera
 
 $heightNames = [string[]]($heights | ForEach-Object { if ($_ -eq 480) { '480p (windowed)' } else { "$($_)p" } })
 $nearest = @($heights | Where-Object { $_ -le [int]$settings.height }).Count - 1
@@ -219,7 +220,7 @@ New-Note $pages[4] "Textures`n    F12    Dump textures in view`n    Ctrl+F12    
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" })
     $render = 'Direct3D 11' + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Checked) { "$($dot)VRR" }) + $(if ($sun.Checked) { "$($dot)Sun shadows" })
-    $extras = @($(if ($textures.Checked) { 'Texture pack' }), $(if ($textureDump.Checked) { 'Texture dump' }), $(if ($unlock.Checked) { 'Swimsuits unlocked' })) | Where-Object { $_ }
+    $extras = @($(if ($textures.Checked) { 'Texture pack' }), $(if ($textureDump.Checked) { 'Texture dump' }), $(if ($unlock.Checked) { 'Swimsuits unlocked' }), $(if ($freeCamera.Checked) { 'Free camera' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
 
@@ -278,7 +279,7 @@ $percent = $volumes[$volume.SelectedIndex]
 [pscustomobject]@{
     height = $height; msaa = $count; smaa = $smaa.Checked; volume = $percent; shuffle = $shuffle.Checked; title_idle = $idleValues[$idle.SelectedIndex]; demo_cut_hold = $demoCut.Checked
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
-    sun_shadows = $sun.Checked; unlock_swimsuits = $unlock.Checked
+    sun_shadows = $sun.Checked; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -296,4 +297,6 @@ $env:RECOMP_D3D_FOG = if ($fog.Checked) { '1' } else { '0' }
 $env:RECOMP_TEXTURES = if ($textures.Checked) { $textureFolder.Text } else { $null }
 $env:RECOMP_TEXTURE_DUMP = if ($textureDump.Checked) { '1' } else { '0' }
 $env:RECOMP_TEXTURE_DUMP_DIR = Join-Path $root 'private\textures'
+# F1 then flies the game's camera; see docs/free-camera.md.
+$env:RECOMP_FREE_CAMERA = if ($freeCamera.Checked) { '1' } else { $null }
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root
