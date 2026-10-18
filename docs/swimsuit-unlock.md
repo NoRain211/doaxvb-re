@@ -50,8 +50,9 @@ inventory slot starts with the item id, `0xFFFF` when empty.
 `unlock_swimsuits.c` sets both bits for every wearable swimsuit the girl holds
 in neither place and remembers which bits it set. A lent Collection bit that
 turns up clear was either taken out or lost to a reloaded table. Either way
-the bit is forgotten. A suit found in the inventory has both its bits
-forgotten, so they are saved, and the slot the game filled is left as it is.
+both its bits are forgotten, so a had bit the save holds is kept. A suit found
+in the inventory has both its bits forgotten, so they are saved, and the slot
+the game filled is left as it is.
 Both cases mark the suit held, and a held suit is not lent again until the
 vacation ends or another girl is played. Keep and Take out can move a suit
 between the inventory and the Collection over two frames, and a suit lent in

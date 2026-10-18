@@ -208,8 +208,9 @@ void recomp_unlock_swimsuits_frame(void)
         }
         if ((*owned & in_collection) == 0u) {
             if ((lent[id] & in_collection) != 0u) {
-                /* Taken out, or the table was reloaded: the bit is no longer ours. */
-                lent[id] &= (uint16_t)~in_collection;
+                /* Taken out, or the table was reloaded: neither bit is ours
+                   now, and a reloaded had bit may be real. */
+                lent[id] &= (uint16_t)~(in_collection | had);
                 held[id] = true;
             }
             if (!held[id]) {

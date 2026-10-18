@@ -29,6 +29,7 @@ enum {
     KEPT_SUIT = 7,
     LENT_SUIT = 2,
     SPLIT_SUIT = 4,
+    RELOADED_SUIT = 6,
     ACCESSORY = 0x258
 };
 
@@ -135,6 +136,14 @@ int main(void)
     recomp_unlock_swimsuits_frame();
     recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
     CHECK(*owned(SPLIT_SUIT) == (HAD | IN_COLLECTION));
+
+    /* A table reloaded from a save where a lent suit was had keeps that bit. */
+    recomp_unlock_swimsuits_frame();
+    CHECK(*owned(RELOADED_SUIT) == (HAD | IN_COLLECTION));
+    *owned(RELOADED_SUIT) = HAD;
+    recomp_unlock_swimsuits_frame();
+    recomp_unlock_swimsuits_hash(RECOMP_SAVE_STATE_SIZE);
+    CHECK(*owned(RELOADED_SUIT) == HAD);
 
     /* A region save nested in the profile save does not resume lending. */
     recomp_unlock_swimsuits_saving(true);
