@@ -20,8 +20,9 @@ it is on stays in the save for good, also after the option is turned off.
   offers every girl all the suits she can wear.
 - In a vacation only the girl being played is affected. Partners keep their
   own Collections, so they do not start wearing suits nobody gave them.
-- A suit she holds in her inventory is not lent while it is there, so the
-  game still lets a bought suit be kept.
+- A suit she has held in her inventory is not lent again until the vacation
+  ends or another girl is played, so the game still lets a bought suit be
+  kept.
 - The shops report a lent suit as already in the Collection.
 
 ## Guest contract
@@ -49,8 +50,13 @@ inventory slot starts with the item id, `0xFFFF` when empty.
 `unlock_swimsuits.c` sets both bits for every wearable swimsuit the girl holds
 in neither place and remembers which bits it set. A lent Collection bit that
 turns up clear was either taken out or lost to a reloaded table. Either way
-the bit is forgotten. A suit found in the inventory has both its bits
-forgotten, so they are saved, and the slot the game filled is left as it is.
+both its bits are forgotten, so a had bit the save holds is kept. A suit found
+in the inventory has both its bits forgotten, so they are saved, and the slot
+the game filled is left as it is.
+Both cases mark the suit held, and a held suit is not lent again until the
+vacation ends or another girl is played. Keep and Take out can move a suit
+between the inventory and the Collection over two frames, and a suit lent in
+between would be saved in the wrong place.
 
 Exhibition reads a second table that `0x000F82F0` fills from the default
 suits and all three save files. It is not part of any save, so the unlock
