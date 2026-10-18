@@ -2476,6 +2476,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             RenderTargetEntry *rt = acquireRenderTarget(presenter, clear.target, false);
             if (!rt) return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             target_color = rt->texture;
+            color_w = rt->width;
+            color_h = rt->height;
         }
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, clear.target, color_w, color_h);
 
@@ -2603,6 +2605,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         uint32_t target_color_data = 0;
         uint32_t color_w = mainWidth(presenter);
         uint32_t color_h = mainHeight(presenter);
+        uint32_t host_w = color_w;
+        uint32_t host_h = color_h;
 
         float target_w = static_cast<float>(color_w);
         float target_h = static_cast<float>(color_h);
@@ -2617,12 +2621,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             RenderTargetEntry *rt = acquireRenderTarget(presenter, draw.target, frame_copy);
             if (rt && rt->texture) {
                 target_color = rt->texture;
+                host_w = rt->width;
+                host_h = rt->height;
                 target_w = static_cast<float>(rt->width);
                 target_h = static_cast<float>(rt->height);
             }
         }
 
-        SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, color_w, color_h);
+        SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, host_w, host_h);
 
         // Target switch or sampling current render target requires flushing active segment
         if (presenter->segment.target_color != target_color ||
