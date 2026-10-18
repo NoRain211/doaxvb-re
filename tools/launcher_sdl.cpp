@@ -194,7 +194,7 @@ struct Launcher {
             text(button.x + (button.w - label.size() * 16) / 2, button.y + (button.h - 16) / 2,
                  label, active && item == PLAY ? kBackground : kText, 2);
         }
-        centered(kHeight - 28, "A select   B quit   D-pad or stick move   left/right change", kMuted);
+        centered(kHeight - 16, "A select   B quit   D-pad or stick move   left/right change", kMuted);
         SDL_RenderPresent(renderer);
     }
 
