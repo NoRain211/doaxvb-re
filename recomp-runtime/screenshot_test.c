@@ -37,6 +37,15 @@ int main(int argc, char **argv)
     check(recomp_screenshot_take_request(), "a request is taken");
     check(!recomp_screenshot_take_request(), "a request is taken once");
 
+    check(!recomp_texture_keys_enabled(NULL, NULL), "textures are off by default");
+    check(!recomp_texture_keys_enabled("0", ""), "an empty texture folder and dump=0 leave F12 free");
+    check(recomp_texture_keys_enabled("1", NULL), "a texture dump takes F12");
+    check(recomp_texture_keys_enabled(NULL, "1"), "a texture folder takes F12");
+    check(recomp_screenshot_key(true, false, false), "F12 takes a screenshot without textures");
+    check(!recomp_screenshot_key(true, false, true), "F12 is the texture dump's beside textures");
+    check(recomp_screenshot_key(true, true, true), "Shift+F12 takes a screenshot beside textures");
+    check(!recomp_screenshot_key(false, true, false), "Shift alone takes none");
+
     check(!recomp_screenshot_write_png(path, bgra, W, H, W * 3), "a pitch shorter than a row is refused");
     check(recomp_screenshot_write_png(path, bgra, W, H, PITCH), "a PNG is written");
 

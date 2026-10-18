@@ -703,7 +703,9 @@ LRESULT CALLBACK presenterWindowProc(
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
-    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30))) {
+    // Shift+F12 is the screenshot key (screenshot.h).
+    if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30)) &&
+        (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
         auto *presenter = reinterpret_cast<RecompD3dPresenter *>(
             GetWindowLongPtrW(window, GWLP_USERDATA));
         if (presenter && presenter->replacements.enabled()) {

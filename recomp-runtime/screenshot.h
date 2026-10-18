@@ -4,10 +4,25 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* F12 is shared. On Windows, texture replacement (texture_replacement.cpp)
+   dumps on F12 and reloads on Ctrl+F12 while RECOMP_TEXTURES is set or
+   RECOMP_TEXTURE_DUMP=1; it leaves Shift+F12 alone. */
+static inline bool recomp_texture_keys_enabled(const char *dump, const char *textures)
+{
+    return (dump != NULL && strcmp(dump, "1") == 0) || (textures != NULL && textures[0] != '\0');
+}
+
+/* Shift+F12 always takes a screenshot; F12 does while textures leave it free. */
+static inline bool recomp_screenshot_key(bool f12, bool shift, bool texture_keys)
+{
+    return f12 && (shift || !texture_keys);
+}
 
 /* Screenshots of the game's own frame, without the runtime's overlay. The
    game side asks for one; a presenter, on whatever thread, takes the request

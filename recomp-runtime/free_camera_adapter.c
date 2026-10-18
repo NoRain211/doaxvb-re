@@ -213,6 +213,19 @@ static bool tracing(uint32_t frame)
     return frame >= (uint32_t)strtoul(from, NULL, 10);
 }
 
+/* True when texture replacement keeps plain F12 for itself (screenshot.h).
+   Only the Windows presenter has it. */
+static bool texture_keys(void)
+{
+#ifdef _WIN32
+    static int on = -1;
+    if (on < 0) on = recomp_texture_keys_enabled(getenv("RECOMP_TEXTURE_DUMP"), getenv("RECOMP_TEXTURES"));
+    return on != 0;
+#else
+    return false;
+#endif
+}
+
 static void set_active(bool active)
 {
     if (state.active == active) return;
@@ -318,8 +331,10 @@ static bool take_sample(const RecompInputGamepad *raw)
     if (toggle && !state.toggle_held) set_active(!state.active);
     state.toggle_held = toggle;
 
-    /* F12 saves a screenshot anywhere, Back with A while flying. */
-    bool shot = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_F12) ||
+    /* F12, or Shift+F12 beside texture replacement, saves a screenshot
+       anywhere; Back with A while flying. */
+    bool shot = recomp_screenshot_key(recomp_input_host_key(RECOMP_INPUT_HOST_KEY_F12),
+                    recomp_input_host_key(RECOMP_INPUT_HOST_KEY_SHIFT), texture_keys()) ||
         (state.active && (gamepad->buttons & XBOX_BACK) != 0u &&
          gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED);
     if (shot && !state.shot_held) recomp_screenshot_request();
@@ -747,14 +762,16 @@ void recomp_free_camera_frame_character(void)
 
 static void fill_overlay(RecompOverlayText *text, bool viewer)
 {
+    const char *shot = texture_keys() ? "Shift+F12" : "F12";
+    char hint[RECOMP_OVERLAY_HINT_SIZE];
     recomp_overlay_clear(text);
     if (state.panel_hidden) return;
     if (!state.active) {
         if (!recomp_scene_freeze_active()) return;
         recomp_overlay_set_title(text, "PAUSED");
-        recomp_overlay_set_hint(text, state.controller_hints > 0
-            ? "P resume  |  R3 free camera"
-            : "P resume  |  . step  |  H clean view  |  F12 screenshot  |  F1 free camera");
+        snprintf(hint, sizeof hint,
+            "P resume  |  . step  |  H clean view  |  %s screenshot  |  F1 free camera", shot);
+        recomp_overlay_set_hint(text, state.controller_hints > 0 ? "P resume  |  R3 free camera" : hint);
         return;
     }
 
@@ -794,13 +811,14 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
               "Left stick move  |  LT RT down/up  |  Right stick look  |  L3 next girl\n"
               "D-pad left/right animation  |  D-pad up/down swimsuit");
     } else {
-        recomp_overlay_set_hint(text, viewer
-            ? "F1 leave  |  P freeze  |  . step  |  H clean view  |  F12 screenshot  |  R reset\n"
+        snprintf(hint, sizeof hint, viewer
+            ? "F1 leave  |  P freeze  |  . step  |  H clean view  |  %s screenshot  |  R reset\n"
               "WASD QE move  |  arrows / right-drag look  |  Z X zoom\n"
               "[ ] animation  |  - = swimsuit"
-            : "F1 off  |  P freeze  |  . step  |  H clean view  |  F12 screenshot  |  R reset\n"
+            : "F1 off  |  P freeze  |  . step  |  H clean view  |  %s screenshot  |  R reset\n"
               "WASD QE move  |  arrows / right-drag look  |  Z X zoom  |  \\ next girl\n"
-              "[ ] animation  |  - = swimsuit");
+              "[ ] animation  |  - = swimsuit", shot);
+        recomp_overlay_set_hint(text, hint);
     }
 }
 
