@@ -108,6 +108,15 @@ class ExtractionTests(unittest.TestCase):
                 (root / "private/launcher.json").write_text(json.dumps(saved))
                 self.assertEqual(saved_launcher_settings(root)["RECOMP_TITLE_IDLE"], expected)
 
+    def test_saved_demo_cut_hold_setting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            for saved, expected in (({}, None), ({"demo_cut_hold": False}, None),
+                                    ({"demo_cut_hold": True}, "12"), ({"demo_cut_hold": "yes"}, None)):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                self.assertEqual(saved_launcher_settings(root).get("RECOMP_DEMO_CUT_HOLD"), expected)
+
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -73,6 +73,8 @@ def launch(root, receipt_path=None, settings=False):
 
 # What the game does when its title screen is left idle; see docs/title-idle.md.
 TITLE_IDLE = ("default", "no-cutscene", "cpu-exhibition")
+# Frames a demo scene cut holds when the launcher's "Shorter demo cuts" is on.
+DEMO_CUT_HOLD_SHORT = "12"
 
 
 def saved_launcher_settings(root):
@@ -85,7 +87,9 @@ def saved_launcher_settings(root):
                 "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
                 "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
                 "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0",
-                "RECOMP_TITLE_IDLE": idle if idle in TITLE_IDLE else "default"}
+                "RECOMP_TITLE_IDLE": idle if idle in TITLE_IDLE else "default",
+                **({"RECOMP_DEMO_CUT_HOLD": DEMO_CUT_HOLD_SHORT}
+                   if settings.get("demo_cut_hold") is True else {})}
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         return {}
 
