@@ -242,6 +242,8 @@ add_executable(recomp_runtime_test
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
     program_manual.c
+    music_player.c
+    music_player_test.c
     animation_track.c
     animation_track_adapter.c
     animation_probe.c
@@ -541,6 +543,7 @@ if(RECOMP_PROGRAM_DIR)
         program_adapters.c
         xapi_time_adapter.cpp
         program_manual.c
+        music_player.c
         animation_track.c
         animation_track_adapter.c
         animation_probe.c

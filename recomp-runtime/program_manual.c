@@ -21,6 +21,7 @@
 #include "dsound_service_adapter.h"
 #include "fiber_adapter.h"
 #include "input_adapter.h"
+#include "music_player.h"
 #include "save_adapter.h"
 #include "soundtrack_adapter.h"
 #include "xapi_time_adapter.h"
@@ -131,7 +132,6 @@ static void recomp_view_entry_adapter(void)
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0001B340(void);
 void sub_000E8100(void);
-void sub_000B8F70(void);
 void sub_000B9790(void);
 
 static void restore_controller_settings(void)
@@ -157,12 +157,13 @@ static void update_controller_settings(void)
     }
 }
 
-/* Radio shuffle. The game's music player starts the playlist song at
-   0x000B8F70 and runs each frame at 0x000B9790 (EAX is the player). Both
-   leave the playlist's next index one past the playing song, wrapping at the
-   end; the game has no random mode. With RECOMP_MUSIC_SHUFFLE=1 that step is
-   replaced by a random entry allowed at the current location. The host
-   random source leaves the game's own rand sequence untouched. */
+/* Radio shuffle. The game's music player starts songs in Music_Play
+   (0x000B8F70, hand-written in music_player.c) and runs each frame at
+   0x000B9790 (EAX is the player). Both leave the playlist's next index one
+   past the playing song, wrapping at the end; the game has no random mode.
+   With RECOMP_MUSIC_SHUFFLE=1 that step is replaced by a random entry
+   allowed at the current location. The host random source leaves the game's
+   own rand sequence untouched. */
 enum {
     PLAYER_PLAYLIST = 0x658u,
     PLAYER_LOCATION = 0x6e0u,
@@ -230,7 +231,7 @@ static void music_shuffle_after(uint32_t player, uint32_t list_before, uint32_t 
     }
 }
 
-static void music_shuffle_call(void (*original)(void))
+static void music_shuffle_call(void (*player_function)(void))
 {
     uint32_t player = recomp_runtime.registers.eax;
     uint32_t list = 0u, next = 0u;
@@ -239,7 +240,7 @@ static void music_shuffle_call(void (*original)(void))
         list = *recomp_memory_u32(player + PLAYER_PLAYLIST);
         next = list != 0u ? *recomp_memory_u32(list + PLAYLIST_NEXT) : 0u;
     }
-    original();
+    player_function();
     if (music_shuffle_enabled()) {
         music_shuffle_after(player, list, next);
     }
@@ -247,7 +248,7 @@ static void music_shuffle_call(void (*original)(void))
 
 static void music_start_song(void)
 {
-    music_shuffle_call(sub_000B8F70);
+    music_shuffle_call(recomp_music_play);
 }
 
 static void music_update(void)

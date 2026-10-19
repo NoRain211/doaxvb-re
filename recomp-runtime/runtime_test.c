@@ -27,6 +27,7 @@ int recomp_cri_service_adapter_test(void);
 int recomp_crt_format_adapter_test(void);
 int recomp_crt_string_adapter_test(void);
 int recomp_animation_track_adapter_test(void);
+int recomp_music_player_test(void);
 int recomp_fiber_adapter_test(void);
 int recomp_fiber_model_test(void);
 int recomp_flag_macro_test(void);
@@ -911,6 +912,7 @@ int main(int argc, char **argv)
     }
     passed &= run_cached_ram_alias();
     passed &= run_music_shuffle_pick();
+    passed &= recomp_music_player_test();
     passed &= run_physical_ram_alias();
     passed &= recomp_xapi_time_adapter_test();
     passed &= recomp_device_model_test();

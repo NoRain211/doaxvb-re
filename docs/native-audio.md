@@ -84,13 +84,15 @@ skips songs not allowed where the player is.
 With the launcher's **Shuffle music** checkbox, or `RECOMP_MUSIC_SHUFFLE=1`
 for a runner started directly, the runtime wraps the two player functions
 that start songs (`0x000B8F70`, which starts the playlist song, and
-`0x000B9790`, the per-frame update; EAX is the player). Each runs
-unchanged. When it leaves the playlist's next position at the game's
-sequential step, the wrapper replaces it with a random entry allowed at the
-current location, never the playing song, and logs `[music-shuffle] next=N
-of M`. The recipe routes the direct calls to both functions through manual
-dispatch. The host random source is used, so the game's own `rand`
-sequence is unchanged. Saved playlists and their order are unchanged.
+`0x000B9790`, the per-frame update; EAX is the player). The first is
+hand-written in `recomp-runtime/music_player.c` with the original's behavior;
+the second is still generated. When either leaves the playlist's next
+position at the game's sequential step, the wrapper replaces it with a random
+entry allowed at the current location, never the playing song, and logs
+`[music-shuffle] next=N of M`. The recipe routes the direct calls to both
+functions through manual dispatch. The host random source is used, so the
+game's own `rand` sequence is unchanged. Saved playlists and their order are
+unchanged.
 
 "Previous" still steps back one entry from the shuffled next song. The goal
 is an option in the game's own PC settings screen (#77, #22) that replaces
