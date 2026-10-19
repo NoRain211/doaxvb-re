@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter
 import csv
+import filecmp
 import html
 import json
 import math
@@ -13,6 +14,7 @@ import shutil
 import struct
 import zlib
 
+from afs_extract import private_output
 from model_format import companion_draws, read_mesh
 from texture_rip import texture_key, texture_payloads
 
@@ -743,7 +745,7 @@ def link_texture(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         if os.path.samefile(source, destination):
-            return "hard link" if source.stat().st_ino == destination.stat().st_ino else "copy"
+            return "hard link"
         raise FileExistsError(f"refusing to replace existing output: {destination}")
     try:
         os.link(source, destination)
@@ -754,11 +756,12 @@ def link_texture(source, destination):
 
 
 def remove_previous_links(output, texture_root):
-    """Remove earlier sorted links to ripped textures, then prune emptied folders."""
+    """Remove earlier sorted links or fallback copies of ripped textures, then prune emptied folders."""
     for destination in sorted(output.rglob("*.png")):
         source = texture_root / destination.name
         if (KEY_PATTERN.fullmatch(destination.stem) and source.is_file()
-                and os.path.samefile(source, destination)):
+                and (os.path.samefile(source, destination)
+                     or filecmp.cmp(source, destination, shallow=False))):
             destination.unlink()
     for folder in sorted((path for path in output.rglob("*") if path.is_dir()),
                          key=lambda path: len(path.parts), reverse=True):
@@ -817,14 +820,11 @@ search.addEventListener('input',filter);category.addEventListener('change',filte
 
 def sort_textures(rip_root, output=None, frame_roots=()):
     rip_root = Path(rip_root).resolve()
-    project_root = rip_root.parent.parent
-    private_root = project_root / "private"
-    output = Path(output or rip_root / "sorted").resolve()
-    try:
-        output.relative_to(private_root.resolve())
-    except ValueError as error:
-        raise ValueError("sorted output must remain under the repository private directory") from error
+    output = private_output(output or rip_root / "sorted")
     texture_root = rip_root / "textures"
+    # Re-runs unlink sorted PNGs that match a ripped source, so the two must never overlap.
+    if texture_root.is_relative_to(output) or output.is_relative_to(texture_root):
+        raise ValueError("sorted output must not contain or sit inside the ripped textures")
     manifest = load_json(texture_root / "manifest.json", {})
     manifest_textures = manifest.get("textures", [])
     asset_metadata = {
@@ -963,10 +963,8 @@ def sort_textures(rip_root, output=None, frame_roots=()):
 
 
 def default_frames(project_root):
-    candidates = [project_root / "private" / "textures"]
-    if len(project_root.parents) > 1:
-        candidates.append(project_root.parents[1] / "texrep" / "doaxbv-re" / "private" / "textures")
-    return [path for path in candidates if path.is_dir()]
+    frames = project_root / "private" / "textures"
+    return [frames] if frames.is_dir() else []
 
 
 def main(argv=None):

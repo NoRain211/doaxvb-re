@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from texture_rip import png
 from test_model_export import triangle_model
@@ -60,7 +61,7 @@ class TextureSortTests(unittest.TestCase):
                           "outfits/sw01/shared/swimsuit"])
 
     def test_synthetic_archive_model_frame_and_gallery(self):
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, patch("afs_extract.ROOT", Path(temporary)):
             project = Path(temporary)
             rip = project / "private" / "rip"
             textures = rip / "textures"
@@ -141,6 +142,19 @@ class TextureSortTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertIn("record@0x64", rows[0]["XPR records"])
             self.assertIn(keys[0], (output / "index.html").read_text(encoding="utf-8"))
+
+            # Without hard links the sorter copies; a later run must replace those copies.
+            with patch("os.link", side_effect=OSError):
+                sort_textures(rip, output, [frame_root])
+                sort_textures(rip, output, [frame_root])
+            for key in keys:
+                self.assertTrue(list(output.rglob(f"{key}.png")))
+            # An output holding the ripped textures would unlink them on the next run.
+            for overlapping in (rip, textures, textures / "sorted"):
+                with self.assertRaises(ValueError):
+                    sort_textures(rip, overlapping, [frame_root])
+            for key in keys:
+                self.assertTrue((textures / f"{key}.png").is_file())
 
 
 if __name__ == "__main__":
