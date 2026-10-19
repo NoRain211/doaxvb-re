@@ -113,6 +113,16 @@ enum {
 /* No screen to go to, and no exit code stored. */
 static const uint32_t MENU_NONE = 0xFFFFFFFFu;
 
+/* RECOMP_CPU_EXHIBITION_COURT=0..9 pins the court for repeatable test runs;
+   any other value leaves it random. */
+static int pinned_court(void)
+{
+    const char *value = getenv("RECOMP_CPU_EXHIBITION_COURT");
+
+    return value != NULL && value[0] >= '0' && value[0] <= '9' && value[1] == '\0' ?
+        value[0] - '0' : -1;
+}
+
 /* Private xorshift32 state, so no shared C runtime rand state is touched. */
 static uint32_t random_below(uint32_t count)
 {
@@ -120,7 +130,7 @@ static uint32_t random_below(uint32_t count)
 
     if (state == 0u) {
         /* A pinned court is a test run: the same cast every time. */
-        state = getenv("RECOMP_CPU_EXHIBITION_COURT") != NULL ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
+        state = pinned_court() >= 0 ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
     }
     state ^= state << 13;
     state ^= state >> 17;
@@ -210,10 +220,8 @@ static void leave_mode(uint8_t scene)
 static bool cast_match(void)
 {
     unsigned girls[GIRL_COUNT];
-    /* RECOMP_CPU_EXHIBITION_COURT=0..9 pins the court, for repeatable test runs. */
-    const char *pinned = getenv("RECOMP_CPU_EXHIBITION_COURT");
-    const unsigned court = pinned != NULL && pinned[0] >= '0' && pinned[0] <= '9' && pinned[1] == 0 ?
-        (unsigned)(pinned[0] - '0') : random_below(COURT_COUNT);
+    const int pinned = pinned_court();
+    const unsigned court = pinned >= 0 ? (unsigned)pinned : random_below(COURT_COUNT);
 
     for (unsigned i = 0; i < GIRL_COUNT; ++i) {
         girls[i] = i;
