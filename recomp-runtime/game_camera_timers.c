@@ -28,7 +28,8 @@ static void camera_script(void)
     const uint32_t saved_edi = recomp_runtime.registers.edi;
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
     const unsigned index = (camera - 0x0041a800u) / 0xae0u;
-    unsigned *phase = &script_phase[index];
+    unsigned scratch_phase = 0;
+    unsigned *phase = index < 5 ? &script_phase[index] : &scratch_phase;
     if (steps == 1) *phase = 0;
     push(inherited_frame);
     const uint32_t frame = recomp_runtime.registers.esp;
@@ -97,7 +98,9 @@ static void camera_command_queue(void)
     const uint32_t saved_esi = recomp_runtime.registers.esi;
     const uint32_t saved_edi = recomp_runtime.registers.edi;
     const unsigned steps = recomp_game_scheduler_hz() / 60u;
-    unsigned *phase = &queue_phase[(camera - 0x0041a800u) / 0xae0u];
+    const unsigned index = (camera - 0x0041a800u) / 0xae0u;
+    unsigned scratch_phase = 0;
+    unsigned *phase = index < 5 ? &queue_phase[index] : &scratch_phase;
     if (steps == 1) *phase = 0;
     recomp_runtime.registers.esp -= 0x184u;
     push(frame); push(saved_ebx); push(saved_edi); push(saved_esi);
