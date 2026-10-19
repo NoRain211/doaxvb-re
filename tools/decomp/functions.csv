@@ -1,0 +1,105 @@
+address,name,status,source,note
+0x0001ADB0,save_profile_region,wrapped,recomp-runtime/save_adapter.c,Save transaction around the original region save
+0x0001B340,restore_controller_settings,wrapped,recomp-runtime/program_manual.c,Loads the PC control-mode preference after the original
+0x00023B10,build_camera,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x000636D0,build_palette,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x0006AFD0,recomp_start_consumer_adapter,wrapped,recomp-runtime/program_manual.c,Input probe
+0x000696D0,demo_cut_hold,wrapped,recomp-runtime/title_idle.c,Shortens the demo cut hold
+0x0006B290,title_update,wrapped,recomp-runtime/title_idle.c,Starts CPU Exhibition after idling at the title
+0x000AEA60,hermite,optional,recomp-runtime/animation_track_adapter.c,RECOMP_ANIMATION_TRACKS
+0x000AEB50,linear,optional,recomp-runtime/animation_track_adapter.c,RECOMP_ANIMATION_TRACKS
+0x000AEBC0,quadratic,optional,recomp-runtime/animation_track_adapter.c,RECOMP_ANIMATION_TRACKS
+0x000AEC50,constant,optional,recomp-runtime/animation_track_adapter.c,RECOMP_ANIMATION_TRACKS
+0x000AEEF0,fractional_sample,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x000AF050,integer_sample,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x000AF5C0,blend_pose,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x000B01E0,build_skeleton,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x000B8F70,Music_Play,wrapped,recomp-runtime/program_manual.c,Radio shuffle
+0x000B9790,Music_Update,wrapped,recomp-runtime/program_manual.c,Radio shuffle
+0x000C9CC0,enter_collection_screen,replaced,recomp-runtime/program_manual.c,View Collection task init (#64)
+0x000E0410,save_profile,wrapped,recomp-runtime/save_adapter.c,Save transaction around the original profile save
+0x000E8100,update_controller_settings,wrapped,recomp-runtime/program_manual.c,Saves the PC control-mode preference
+0x0011F250,recomp_view_entry_adapter,wrapped,recomp-runtime/program_manual.c,Camera view probe
+0x0017D520,draw_rigid,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x0017D670,draw_object,optional,recomp-runtime/animation_probe.c,Animation diagnostics only
+0x0018145F,XFindClose (soundtrack),wrapped,recomp-runtime/soundtrack_adapter.c,
+0x00182411,XFindNextSoundtrack,replaced,recomp-runtime/soundtrack_adapter.c,
+0x00182430,XFindFirstSoundtrack,replaced,recomp-runtime/soundtrack_adapter.c,
+0x001824DF,XGetSoundtrackSongInfo,replaced,recomp-runtime/soundtrack_adapter.c,
+0x00182708,XOpenSoundtrackSong,replaced,recomp-runtime/soundtrack_adapter.c,
+0x00182FBB,CreateFiber,replaced,recomp-runtime/fiber_adapter.c,
+0x00183047,DeleteFiber,replaced,recomp-runtime/fiber_adapter.c,
+0x0018305A,SwitchToFiber,replaced,recomp-runtime/fiber_adapter.c,
+0x00183099,ConvertThreadToFiber,replaced,recomp-runtime/fiber_adapter.c,
+0x001830CF,QueryPerformanceCounter,replaced,recomp-runtime/xapi_time_adapter.cpp,
+0x001830E0,QueryPerformanceFrequency,replaced,recomp-runtime/xapi_time_adapter.cpp,
+0x0018322D,recomp_program_thread_start,replaced,recomp-runtime/program_adapters.c,Game thread entry
+0x001877D0,ADXF_GetStat,wrapped,recomp-runtime/cri_service_adapter.c,CRI seam
+0x00187B30,ADXF_GetPtStat,wrapped,recomp-runtime/cri_service_adapter.c,CRI seam
+0x00187E40,ADXF_Open,wrapped,recomp-runtime/cri_service_adapter.c,CRI seam
+0x001880D0,soundtrack service_decoder,wrapped,recomp-runtime/soundtrack_adapter.c,CRI seam
+0x00188210,soundtrack start_song,wrapped,recomp-runtime/soundtrack_adapter.c,CRI seam
+0x00188590,ADXT_GetStat,wrapped,recomp-runtime/cri_service_adapter.c,CRI seam
+0x00189CB0,CRI sync callback,replaced,recomp-runtime/cri_service_adapter.c,
+0x0018D270,soundtrack stop_decoder,wrapped,recomp-runtime/soundtrack_adapter.c,CRI seam
+0x00198320,MWP frame status,wrapped,recomp-runtime/cri_service_adapter.c,CRI seam
+0x001A8A70,MWP color convert,replaced,recomp-runtime/cri_service_adapter.c,
+0x001BA67C,vsprintf,replaced,recomp-runtime/crt_format_adapter.c,
+0x001BB539,wcscmp,replaced,recomp-runtime/crt_string_adapter.c,
+0x001E3640,D3DDevice_SetGammaRamp,replaced,recomp-runtime/d3d_frame_adapter.c,
+0x001E3B00,D3DDevice_Reset,replaced,recomp-runtime/d3d_creation_adapter.c,
+0x001E43F0,D3DDevice_SetTexture,replaced,recomp-runtime/d3d_texture_adapter.c,
+0x001E4930,D3DDevice_SetTile,replaced,recomp-runtime/d3d_tile_adapter.c,
+0x001E4AE0,D3DDevice_PersistDisplay,replaced,recomp-runtime/d3d_creation_adapter.c,
+0x001E4D80,D3DDevice_SetRenderState_Simple,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E5080,D3DDevice_SetRenderState_EdgeAntiAlias,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E5150,D3DDevice_SetRenderState_CullMode,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E5200,D3DDevice_SetRenderState_NormalizeNormals,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E5240,D3DDevice_SetRenderState_TextureFactor,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E5470,D3DDevice_SetRenderState_FillMode,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E6190,D3DDevice_SetRenderState_ZEnable,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E6220,D3DDevice_SetRenderState_StencilEnable,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E62B0,D3DDevice_SetRenderState_StencilFail,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E6510,D3DDevice_SetRenderState_MultiSampleAntiAlias,replaced,recomp-runtime/d3d_render_state_adapter.c,
+0x001E7170,D3DDevice_SetVertexShader,replaced,recomp-runtime/d3d_vertex_shader_adapter.c,
+0x001E72D0,D3DDevice_Clear,replaced,recomp-runtime/d3d_frame_adapter.c,
+0x001E7750,D3DDevice_DrawVerticesUP,wrapped,recomp-runtime/d3d_draw_adapter.c,D3D seam
+0x001E78B0,D3DDevice_DrawIndexedVertices,wrapped,recomp-runtime/d3d_draw_adapter.c,D3D seam
+0x001E8090,D3DTexture_LockRect,wrapped,recomp-runtime/d3d_texture_adapter.c,D3D seam
+0x001E8F30,D3DDevice_Swap,replaced,recomp-runtime/d3d_frame_adapter.c,
+0x001E9100,Direct3D_CreateDevice,replaced,recomp-runtime/d3d_creation_adapter.c,
+0x001E9EB0,CDevice_KickOff,replaced,recomp-runtime/d3d_creation_adapter.c,
+0x001EA190,D3D_MakeRequestedSpace,replaced,recomp-runtime/d3d_creation_adapter.c,
+0x001F84B0,IDirectSoundBuffer_Release,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F8F21,IDirectSound_DownloadEffectsImage,replaced,recomp-runtime/dsound_service_adapter.c,
+0x001F8F48,IDirectSound_SetMixBinHeadroom,replaced,recomp-runtime/dsound_service_adapter.c,
+0x001F8FD8,IDirectSoundBuffer_Play,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F8FFC,IDirectSoundBuffer_Stop,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F9014,IDirectSoundBuffer_StopEx,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F9058,IDirectSoundBuffer_GetStatus,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F9074,IDirectSoundBuffer_GetCurrentPosition,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F9094,IDirectSoundBuffer_SetCurrentPosition,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F90E0,DirectSoundDoWork,replaced,recomp-runtime/dsound_service_adapter.c,
+0x001F974F,IDirectSound_CommitDeferredSettings,replaced,recomp-runtime/dsound_service_adapter.c,
+0x001F9767,IDirectSoundBuffer_SetFrequency,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001F9DD4,IDirectSound_SetPosition,replaced,recomp-runtime/dsound_service_adapter.c,
+0x001F9E09,IDirectSound_SetVelocity,replaced,recomp-runtime/dsound_service_adapter.c,
+0x001F9E5E,IDirectSoundBuffer_SetBufferData,wrapped,recomp-runtime/dsound_service_adapter.c,DirectSound seam
+0x001FA27C,DirectSoundCreate,replaced,recomp-runtime/dsound_service_adapter.c,
+0x00218F16,WMA XMO Flush,replaced,recomp-runtime/soundtrack_adapter.c,
+0x0021924C,WMA XMO GetInfo,replaced,recomp-runtime/soundtrack_adapter.c,
+0x0021926C,WMA XMO Discontinuity,replaced,recomp-runtime/soundtrack_adapter.c,
+0x00219271,WMA XMO GetStatus,replaced,recomp-runtime/soundtrack_adapter.c,
+0x0021945D,WMA XMO AddRef,replaced,recomp-runtime/soundtrack_adapter.c,
+0x002194B0,WMA XMO Process,replaced,recomp-runtime/soundtrack_adapter.c,
+0x0021965A,WMA XMO Release,replaced,recomp-runtime/soundtrack_adapter.c,
+0x0021972A,WmaCreateDecoder,replaced,recomp-runtime/soundtrack_adapter.c,
+0x002320E0,XInitDevices,replaced,recomp-runtime/input_adapter.c,
+0x00232DBB,XInitDevices (thunk),replaced,recomp-runtime/input_adapter.c,
+0x00232DC0,XGetDevices,replaced,recomp-runtime/input_adapter.c,
+0x00232DE2,XGetDeviceChanges,replaced,recomp-runtime/input_adapter.c,
+0x00232E4F,XInputOpen,replaced,recomp-runtime/input_adapter.c,
+0x00232EA5,XInputClose,replaced,recomp-runtime/input_adapter.c,
+0x00232EB1,XInputGetCapabilities,replaced,recomp-runtime/input_adapter.c,
+0x0023308F,XInputGetState,replaced,recomp-runtime/input_adapter.c,
+0x002330FB,XInputSetState,replaced,recomp-runtime/input_adapter.c,

@@ -50,6 +50,8 @@ and original lighting and camera fidelity, remain open in #16.
 The public tree proves that the tracked runtime, model, and adapter tests build
 without private game input. It does not prove that the game boots, reaches a
 menu, renders correctly, or is playable.
+[Decompilation progress](decomp-progress.md) reports how much of the program
+runs hand-written source in place of generated code.
 
 The active implementation includes:
 

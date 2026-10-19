@@ -1,0 +1,13 @@
+[
+  {"name": "game", "kind": "game", "start": "0x00011000", "end": "0x00180000",
+   "note": "Game code in .text. It ends where 16-byte function alignment stops and XDK library code starts."},
+  {"name": "xdk-text", "kind": "library", "start": "0x00180000", "end": "0x001E3620",
+   "note": "XAPI, C runtime and CRI middleware linked into .text. May still hold some game code, such as the stream players near 0x001C5250."},
+  {"name": "D3D", "kind": "library", "start": "0x001E3620", "end": "0x001F5DA0"},
+  {"name": "D3DX", "kind": "library", "start": "0x001F5DA0", "end": "0x001F8030"},
+  {"name": "XGRPH", "kind": "library", "start": "0x001F8040", "end": "0x001F8374"},
+  {"name": "DSOUND", "kind": "library", "start": "0x001F8380", "end": "0x002148BC"},
+  {"name": "PSGSFD", "kind": "library", "start": "0x002148C0", "end": "0x00218EF0"},
+  {"name": "WMADEC", "kind": "library", "start": "0x00218F00", "end": "0x00231E20"},
+  {"name": "XPP", "kind": "library", "start": "0x00231E20", "end": "0x0023960C"}
+]
