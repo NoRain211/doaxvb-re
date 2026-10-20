@@ -117,6 +117,15 @@ class ExtractionTests(unittest.TestCase):
                 (root / "private/launcher.json").write_text(json.dumps(saved))
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_DEMO_CUT_HOLD"), expected)
 
+    def test_saved_free_camera_setting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            for saved, expected in (({}, None), ({"free_camera": False}, None),
+                                    ({"free_camera": True}, "1"), ({"free_camera": "yes"}, None)):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                self.assertEqual(saved_launcher_settings(root).get("RECOMP_FREE_CAMERA"), expected)
+
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

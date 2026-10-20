@@ -1,0 +1,33 @@
+#ifndef DOAXBV_RECOMP_FREE_CAMERA_ADAPTER_H
+#define DOAXBV_RECOMP_FREE_CAMERA_ADAPTER_H
+
+#include "input_adapter.h"
+#include "runtime.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* The free camera's input stage: hand it the source the game would have
+   read, and install recomp_free_camera_sample in its place. While the free
+   camera flies, the game reads a neutral pad on port 0. */
+void recomp_free_camera_set_source(RecompInputSampleSource source);
+bool recomp_free_camera_sample(uint32_t port, RecompInputGamepad *gamepad);
+RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address);
+/* Switches the free camera on or off as its toggle does. */
+void recomp_free_camera_set_active(bool active);
+/* True when RECOMP_FREE_CAMERA turns the feature on for this run. */
+bool recomp_free_camera_enabled(void);
+bool recomp_free_camera_active(void);
+/* Turns the camera to the chosen character at its next build. */
+void recomp_free_camera_face_character(void);
+/* Moves the camera close to the chosen character at its next build. */
+void recomp_free_camera_frame_character(void);
+/* Once a frame: fills the runtime overlay while the camera flies. */
+void recomp_free_camera_overlay(bool viewer);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

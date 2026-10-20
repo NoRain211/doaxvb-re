@@ -14,6 +14,9 @@ each distinct original texture to `private/textures/dump/<key>.png`.
    files load when their textures are next used. Remove a file and reload
    to restore the original.
 
+With the free camera on, **Shift+F12** takes a screenshot instead; see
+[`free-camera.md`](free-camera.md).
+
 Keys contain the original format, dimensions, mip count, and SHA-256 of
 every mip payload plus the P8 palette. Guest addresses are excluded, so
 identical textures share a replacement, including on different objects.

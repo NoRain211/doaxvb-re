@@ -3,6 +3,8 @@
 #include "game_scene.h"
 #include "animation_track_adapter.h"
 #include "title_idle.h"
+#include "free_camera_adapter.h"
+#include "viewer_menu_adapter.h"
 #include "controller_settings.h"
 #include "kernel_abi.h"
 #include <string.h>
@@ -339,6 +341,16 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
 
     if (function == NULL) {
         function = recomp_game_scene_lookup_manual(guest_address);
+    }
+
+    /* Ahead of the animation lookups: the free camera chains to the probe's
+       observer of the same camera build. */
+    if (function == NULL) {
+        function = recomp_free_camera_lookup_manual(guest_address);
+    }
+
+    if (function == NULL) {
+        function = recomp_viewer_menu_lookup_manual(guest_address);
     }
 
     if (function == NULL) {

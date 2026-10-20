@@ -12,7 +12,7 @@ $volumes = 100, 75, 50, 25, 0
 # What the game does when its title screen is left idle; see docs/title-idle.md.
 $idleValues = 'default', 'no-cutscene', 'cpu-exhibition'
 $idleNames = [string[]]('Default', 'No cutscene', 'CPU Exhibition')
-$settings = [pscustomobject]@{ height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; sun_shadows = $false; volume = 100; shuffle = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false }
+$settings = [pscustomobject]@{ height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; sun_shadows = $false; volume = 100; shuffle = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false }
 try { $settings = Get-Content $settingsPath -Raw -ErrorAction Stop | ConvertFrom-Json } catch {}
 
 $form = New-Object Windows.Forms.Form
@@ -20,7 +20,7 @@ $form.Text = 'DOAXBV'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = New-Object Drawing.Size 240, 322
+$form.ClientSize = New-Object Drawing.Size 240, 346
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
 
@@ -49,13 +49,14 @@ $shuffle = New-Object Windows.Forms.CheckBox -Property @{ Text = 'Shuffle music'
 # Settings saved before this option have no unlock_swimsuits; $null casts to off.
 $unlock = New-Object Windows.Forms.CheckBox -Property @{ Text = 'Unlock swimsuits'; Left = 100; Top = 180; Width = 126; Checked = [bool]$settings.unlock_swimsuits }
 $demoCut = New-Object Windows.Forms.CheckBox -Property @{ Text = 'Shorter demo cuts'; Left = 100; Top = 204; Width = 126; Checked = [bool]$settings.demo_cut_hold }
+$freeCamera = New-Object Windows.Forms.CheckBox -Property @{ Text = 'Free camera'; Left = 100; Top = 228; Width = 126; Checked = [bool]$settings.free_camera }
 # Settings saved before this option have no title_idle; IndexOf gives -1, Default.
-$idleLabel = New-Object Windows.Forms.Label -Property @{ Text = 'Title screen idle behavior'; Left = 12; Top = 236; Width = 214 }
-$idle = New-Object Windows.Forms.ComboBox -Property @{ Left = 12; Top = 254; Width = 214; DropDownStyle = 'DropDownList' }
+$idleLabel = New-Object Windows.Forms.Label -Property @{ Text = 'Title screen idle behavior'; Left = 12; Top = 260; Width = 214 }
+$idle = New-Object Windows.Forms.ComboBox -Property @{ Left = 12; Top = 278; Width = 214; DropDownStyle = 'DropDownList' }
 $idle.Items.AddRange($idleNames)
 $idle.SelectedIndex = [Math]::Max(0, [Array]::IndexOf($idleValues, [string]$settings.title_idle))
-$play = New-Object Windows.Forms.Button -Property @{ Text = 'Play'; Left = 151; Top = 286; DialogResult = 'OK' }
-$music = New-Object Windows.Forms.Button -Property @{ Text = 'Music folder'; Left = 12; Top = 286; Width = 90 }
+$play = New-Object Windows.Forms.Button -Property @{ Text = 'Play'; Left = 151; Top = 310; DialogResult = 'OK' }
+$music = New-Object Windows.Forms.Button -Property @{ Text = 'Music folder'; Left = 12; Top = 310; Width = 90 }
 $music.Add_Click({
     # Report here; the script-wide trap would close the launcher.
     try {
@@ -66,14 +67,14 @@ $music.Add_Click({
         [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
     }
 })
-$form.Controls.AddRange(@($smaa, $sun, $shuffle, $unlock, $demoCut, $idleLabel, $idle, $music, $play))
+$form.Controls.AddRange(@($smaa, $sun, $shuffle, $unlock, $demoCut, $freeCamera, $idleLabel, $idle, $music, $play))
 $form.AcceptButton = $play
 if ($form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]
 $count = $samples[$msaa.SelectedIndex]
 $percent = $volumes[$volume.SelectedIndex]
-[pscustomobject]@{ height = $height; msaa = $count; smaa = $smaa.Checked; sun_shadows = $sun.Checked; volume = $percent; shuffle = $shuffle.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked } |
+[pscustomobject]@{ height = $height; msaa = $count; smaa = $smaa.Checked; sun_shadows = $sun.Checked; volume = $percent; shuffle = $shuffle.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked } |
     ConvertTo-Json | Set-Content $settingsPath -Encoding ASCII
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -86,4 +87,6 @@ $env:RECOMP_TITLE_IDLE = $idleValues[$idle.SelectedIndex]
 $env:RECOMP_UNLOCK_SWIMSUITS = if ($unlock.Checked) { '1' } else { '0' }
 # Unset leaves the game's own one-second freeze; see docs/title-idle.md.
 $env:RECOMP_DEMO_CUT_HOLD = if ($demoCut.Checked) { '12' } else { $null }
+# F1 then flies the game's camera; see docs/free-camera.md.
+$env:RECOMP_FREE_CAMERA = if ($freeCamera.Checked) { '1' } else { $null }
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root

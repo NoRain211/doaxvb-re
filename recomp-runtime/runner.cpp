@@ -9,6 +9,9 @@
 #include "d3d_frame_adapter.h"
 #include "fiber_adapter.h"
 #include "input_adapter.h"
+#include "free_camera_adapter.h"
+#include "viewer_menu_adapter.h"
+#include "scene_freeze_adapter.h"
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
 #endif
@@ -873,7 +876,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
                 &inputPulseSource, analogPulse.poll, analogPulse.index,
                 analogPulse.value);
         }
-        recomp_input_adapter_set_source(sampleInputPulse);
+        recomp_free_camera_set_source(sampleInputPulse);
+        recomp_input_adapter_set_source(recomp_free_camera_sample);
         std::cerr << "recomp input: deterministic START pulse poll=";
         for (std::size_t i = 0u; i < inputStartPulsePolls.size(); ++i) {
             std::cerr << (i == 0u ? "" : ",") << inputStartPulsePolls[i];
@@ -898,8 +902,15 @@ std::vector<AnalogPulse> inputAnalogPulses;
         }
         std::cerr << '\n';
     } else {
-        recomp_input_adapter_set_source(recomp_input_host_sample);
+        recomp_free_camera_set_source(recomp_input_host_sample);
+        recomp_input_adapter_set_source(recomp_free_camera_sample);
     }
+    /* The scene freeze, the viewer and the suit switch all run behind the
+       free camera; off, task switches go unhooked. */
+    if (recomp_free_camera_enabled()) {
+        recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
+    }
+    recomp_viewer_install();
 #endif
 #ifndef RECOMP_FULL_PROGRAM
     recomp_imports_reset();

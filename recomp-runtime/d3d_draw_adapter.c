@@ -1603,6 +1603,38 @@ static bool attach_vertex_program(uint32_t handle, uint32_t device,
     return true;
 }
 
+static uint32_t hidden_buffers_first, hidden_buffers_end;
+
+static RecompD3dDrawViewObserver view_observer;
+
+void recomp_d3d_draw_set_view_observer(RecompD3dDrawViewObserver observer)
+{
+    view_observer = observer;
+}
+
+bool recomp_d3d_draw_replace_view(const float old_view[16], const float view[16],
+    const float projection[16])
+{
+    uint32_t device = *recomp_memory_u32(D3D_DEVICE_GLOBAL);
+    float current[16];
+    if (device == 0u || !read_transform(device, D3D_TRANSFORM_VIEW, current)) return false;
+    for (unsigned i = 0u; i < 16u; ++i) {
+        float size = fabsf(old_view[i]) > 1.0f ? fabsf(old_view[i]) : 1.0f;
+        if (fabsf(current[i] - old_view[i]) > 1e-4f * size) return false;
+    }
+    recomp_guest_store(device + D3D_TRANSFORM_BASE_OFFSET + D3D_TRANSFORM_VIEW * D3D_TRANSFORM_STRIDE,
+        view, 64u);
+    recomp_guest_store(device + D3D_TRANSFORM_BASE_OFFSET + D3D_TRANSFORM_PROJECTION * D3D_TRANSFORM_STRIDE,
+        projection, 64u);
+    return true;
+}
+
+void recomp_d3d_draw_set_hidden_buffers(uint32_t first, uint32_t end)
+{
+    hidden_buffers_first = first;
+    hidden_buffers_end = end > first ? end : first;
+}
+
 static void recomp_d3d_draw_indexed_vertices_adapter(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -1636,6 +1668,9 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
 
     draw_state.stream0.stride = *recomp_memory_u32(D3D_STREAM0_STRIDE);
     vertex_buffer = *recomp_memory_u32(D3D_STREAM0_BUFFER);
+    /* A vertex buffer the runtime hides is left out of the host draw; the
+       guest's own bookkeeping above has already run. */
+    if (vertex_buffer >= hidden_buffers_first && vertex_buffer < hidden_buffers_end) return;
     if (vertex_buffer != 0u &&
         guest_span(vertex_buffer, 8u) != NULL &&
         (*recomp_memory_u32(vertex_buffer) & D3D_RESOURCE_TYPE_MASK) ==
@@ -2157,6 +2192,10 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     ++draw_submitted;
     if (draw_observer) draw_observer(&command);
     record_fvf(result.plan.fvf);
+    if (view_observer != NULL) {
+        float view[16];
+        if (read_transform(device, D3D_TRANSFORM_VIEW, view)) view_observer(view);
+    }
 finished:
     if (decline != NULL) report_decline(decline);
     capture_draw(device, primitive_type, index_count, index_data, &result,
@@ -2247,6 +2286,42 @@ static void capture_up(uint32_t device, uint32_t fvf, uint32_t stride, uint32_t 
     fputs("]}\n", draw_capture.file);
 }
 
+static float screen_mask[RECOMP_D3D_SCREEN_MASKS][4];
+static uint32_t screen_mask_count;
+
+void recomp_d3d_draw_set_screen_mask(const float rects[][4], uint32_t count)
+{
+    if (rects == NULL || count > RECOMP_D3D_SCREEN_MASKS) count = 0u;
+    for (uint32_t i = 0u; i < count; ++i) memcpy(screen_mask[i], rects[i], sizeof screen_mask[i]);
+    screen_mask_count = count;
+}
+
+/* True when a quad drawn to the back buffer lies wholly inside the mask. */
+static bool screen_masked(uint32_t device, const uint8_t *vertex_bytes, uint32_t stride)
+{
+    if (screen_mask_count == 0u ||
+        *recomp_memory_u32(device + D3D_CURRENT_RENDER_TARGET_OFFSET) !=
+        *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET)) {
+        return false;
+    }
+    float box[4] = {INFINITY, INFINITY, -INFINITY, -INFINITY};
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        float position[2];
+        memcpy(position, vertex_bytes + i * stride, sizeof position);
+        box[0] = fminf(box[0], position[0]);
+        box[1] = fminf(box[1], position[1]);
+        box[2] = fmaxf(box[2], position[0]);
+        box[3] = fmaxf(box[3], position[1]);
+    }
+    for (uint32_t i = 0u; i < screen_mask_count; ++i) {
+        if (box[0] >= screen_mask[i][0] && box[1] >= screen_mask[i][1] &&
+            box[2] <= screen_mask[i][2] && box[3] <= screen_mask[i][3]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void recomp_d3d_draw_vertices_up_adapter(void)
 {
     const uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -2296,6 +2371,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             goto finished;
         }
     }
+    if (screen_masked(device, vertex_bytes, stride)) goto finished;
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     command.data.draw.primitive_type = primitive;
     command.data.draw.index_count = 4u;

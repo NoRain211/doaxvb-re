@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "d3d_presenter.h"
+#include "overlay_sdl_gpu.h"
+#include "screenshot.h"
 #include "d3d_draw_model.h"
 #include "d3d_texture_model.h"
 #include "d3d_vertex_program.h"
@@ -2094,6 +2096,34 @@ RenderTargetEntry *acquireRenderTarget(
 
 } // namespace
 
+// Saves the game's frame, without the overlay drawn on the window, and
+// submits the command buffer. The download waits for the GPU, so only a
+// requested screenshot pays for it.
+static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf) {
+    const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
+    SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4u, 0};
+    SDL_GPUTransferBuffer *buffer = SDL_CreateGPUTransferBuffer(presenter->device, &info);
+    if (buffer == nullptr) {
+        SDL_SubmitGPUCommandBuffer(cmdbuf);
+        return;
+    }
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmdbuf);
+    SDL_GPUTextureRegion source{presenter->backbuffer_resolve, 0, 0, 0, 0, 0, w, h, 1};
+    SDL_GPUTextureTransferInfo destination{buffer, 0, w, h};
+    SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    SDL_EndGPUCopyPass(copy);
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
+    if (fence != nullptr) {
+        SDL_WaitForGPUFences(presenter->device, true, &fence, 1);
+        SDL_ReleaseGPUFence(presenter->device, fence);
+        if (void *pixels = SDL_MapGPUTransferBuffer(presenter->device, buffer, false)) {
+            recomp_screenshot_save(static_cast<const uint8_t *>(pixels), w, h, w * 4u);
+            SDL_UnmapGPUTransferBuffer(presenter->device, buffer);
+        }
+    }
+    SDL_ReleaseGPUTransferBuffer(presenter->device, buffer);
+}
+
 extern "C" {
 
 RecompD3dPresenterError recomp_d3d_presenter_create(
@@ -2534,7 +2564,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUTexture *swapchain_tex = nullptr;
         Uint32 swap_w = 0, swap_h = 0;
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(
+        // A held frame updates the front buffer copy, but the window keeps
+        // the last picture presented.
+        if (!present.hold && SDL_WaitAndAcquireGPUSwapchainTexture(
                 cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
                 SDL_GPUBlitInfo blit{};
@@ -2562,6 +2594,13 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 blit.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
                 blit.filter = SDL_GPU_FILTER_LINEAR;
                 SDL_BlitGPUTexture(cmdbuf, &blit);
+                // The runtime's overlay text goes on the window, not the
+                // game's back buffer, which the game reads back as its front
+                // buffer.
+                RecompOverlayText overlay;
+                recomp_overlay_take(&overlay);
+                recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
+                    swapchain_tex, swap_w, swap_h, &overlay);
             }
         }
 
@@ -2575,8 +2614,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        SDL_SubmitGPUCommandBuffer(cmdbuf);
+        if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf);
+        else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
+        if (present.hold) return RECOMP_D3D_PRESENTER_OK;
         ++presenter->present_count;
 
         if (presenter->performance_counter) reportPerformance(presenter);
@@ -2930,6 +2971,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
         SDL_SubmitGPUCommandBuffer(p->current_command_buffer);
         p->current_command_buffer = nullptr;
     }
+    recomp_overlay_sdl_gpu_shutdown();
 
     // Release cached textures
     for (uint32_t i = 0u; i < p->texture_count; ++i) {
