@@ -495,6 +495,7 @@ struct TextureEntry {
     uint32_t mip_levels;
     uint8_t palette[kPaletteBytes];
     uint64_t fingerprint;
+    SunOverlay sun_overlay = SunOverlay::None;
     TextureIdentity identity;
     ID3D11ShaderResourceView *view;
 };
@@ -533,6 +534,7 @@ struct RenderTargetEntry {
     ID3D11ShaderResourceView *sample_view;
     float scale = 1.0f;  // host texels per guest texel
     uint64_t bytes = 0u;
+    SunPalmTarget sun_palm;
 };
 
 /* Depth belongs to its guest storage, which can serve several color targets. */
@@ -1543,6 +1545,9 @@ RecompD3dPresenterError submitClear(
     if (clear.clear_color) {
         presenter->context->ClearRenderTargetView(
             color_view, color);
+        if (presenter->sun.enabled && clear.target.offscreen)
+            if (auto *entry = findRenderTarget(presenter, clear.target.color))
+                entry->sun_palm.clear(clear.color);
     }
     UINT depth_stencil_flags = 0u;
     if (clear.clear_depth) {
@@ -2549,8 +2554,10 @@ void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 
 ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
-    const RecompD3dPresenterDrawCommand &draw)
+    const RecompD3dPresenterDrawCommand &draw,
+    SunOverlay *sun_overlay = nullptr)
 {
+    if (sun_overlay) *sun_overlay = SunOverlay::None;
     const RecompD3dTextureDesc &desc = draw.texture;
     const bool palettized = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8;
     const bool linear_bgra = desc.format_byte == 0x12u;
@@ -2573,6 +2580,7 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     if (RenderTargetEntry *entry = findRenderTarget(presenter, desc)) {
+        if (sun_overlay) *sun_overlay = sunPalmTexture(desc) && entry->sun_palm.valid() ? SunOverlay::Palm : SunOverlay::None;
         return entry->sample_view;
     }
     if (linear_bgra && (!desc.linear || desc.depth ||
@@ -2617,6 +2625,7 @@ ID3D11ShaderResourceView *lookupTexture(
                     resource, 0u, nullptr, draw.texture_bytes, desc.pitch, 0u);
                 releaseCom(resource);
             }
+            if (sun_overlay) *sun_overlay = entry.sun_overlay;
             return replaceable ? presenter->replacements.lookup(entry.identity.key, entry.view) : entry.view;
         }
     }
@@ -2625,6 +2634,16 @@ ID3D11ShaderResourceView *lookupTexture(
     if (format == DXGI_FORMAT_UNKNOWN || draw.texture_bytes == nullptr ||
         draw.texture_byte_count == 0u || (desc.linear && !linear_bgra)) {
         return nullptr;
+    }
+    SunOverlay overlay = presenter->sun.enabled &&
+        desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5 &&
+        draw.texture_byte_count == recomp_d3d_texture_compressed_mip_span(&desc) ?
+        sunStaticOverlay(desc, sunPropPayloadHash(draw.texture_bytes, draw.texture_byte_count)) : SunOverlay::None;
+    if (presenter->sun.enabled && overlay == SunOverlay::None &&
+        sunShadowTexels(desc, static_cast<const uint8_t *>(draw.texture_bytes), draw.texture_byte_count)) {
+        overlay = SunOverlay::Palm;
+        std::fprintf(stderr, "recomp sun shadow: legacy tree overlay data=0x%08X size=%ux%u mips=%u\n",
+            desc.data, desc.width, desc.height, levels);
     }
 
     D3D11_TEXTURE2D_DESC texture_desc{};
@@ -2672,9 +2691,15 @@ ID3D11ShaderResourceView *lookupTexture(
         }
     } else {
         const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
+        const auto *bytes = static_cast<const uint8_t *>(draw.texture_bytes);
+        if (overlay == SunOverlay::NetPost) {
+            mip_pixels[0].assign(bytes, bytes + draw.texture_byte_count);
+            sunKeepNetLine(desc, mip_pixels[0].data(), levels);
+            bytes = mip_pixels[0].data();
+        }
         uint32_t width = desc.width, height = desc.height, offset = 0u;
         for (uint32_t level = 0; level < levels; ++level) {
-            subresources[level].pSysMem = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            subresources[level].pSysMem = bytes + offset;
             subresources[level].SysMemPitch = ((width + 3u) / 4u) * block_bytes;
             offset += subresources[level].SysMemPitch * ((height + 3u) / 4u);
             width = width > 1u ? width / 2u : 1u;
@@ -2714,6 +2739,8 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
     entry.fingerprint = fingerprint;
+    entry.sun_overlay = overlay;
+    if (sun_overlay) *sun_overlay = entry.sun_overlay;
     presenter->texture_identity_bytes -= entry.identity.bytes.size();
     entry.identity = {};
     if (replaceable && presenter->texture_identity_bytes + draw.texture_byte_count +
@@ -2925,12 +2952,22 @@ RecompD3dPresenterError submitDraw(
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+
     if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
         presenter->sun.seen_alpha = (std::max)(presenter->sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
         // The shadow map replaces the darkening only where its receivers draw; keep the stencil writes.
         if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch &&
             sunSameCamera(presenter->sun, draw)) {
             ++presenter->sun.game_shadows;
+            auto stencil_only = draw;
+            stencil_only.blend.color_write_mask = 0;
+            return submitDraw(presenter, stencil_only);
+        }
+    }
+    if (presenter->sun.valid && !presenter->sun.casting && sunOverlayDraw(draw)) {
+        SunOverlay shadow = SunOverlay::None;
+        if (lookupTexture(presenter, draw, &shadow) && shadow == SunOverlay::Palm) {
+            ++presenter->sun.prop_shadows;
             auto stencil_only = draw;
             stencil_only.blend.color_write_mask = 0;
             return submitDraw(presenter, stencil_only);
@@ -3297,19 +3334,26 @@ RecompD3dPresenterError submitDraw(
     }
     auto &sun = presenter->sun;
     if (sun.enabled && sun.constants) {
-        float constants[20]{};
+        float constants[36]{};
         std::memcpy(constants, sun.projection, sizeof sun.projection);
         // Ground darkens only where the game draws its own shadow, by that shadow's opacity, so scenes
         // without one (hotel, menus) stay untouched. Models keep the game's shading; self-shadowing blotched them.
         // shortcut: models never receive; add a dedicated character map if self-shadowing is wanted.
         const size_t index = sun.draw_index - 1;
         const bool model = draw.blend_weight_count || (index < sun.compact.size() && sun.compact[index]);
+        const bool lit_ground = layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
+            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled;
+        // Grass and its sand fringe are unlit with baked vertex colors; shadows must cross onto them too.
+        const bool unlit_ground = !draw.directional.enabled && draw.depth.depth_write_enable &&
+            (!draw.blend.blend_enable || (draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+             draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA));
         constants[16] = !sun.casting && sun.valid && sun.epoch == sun.camera_epoch &&
             !draw.target.offscreen && !draw.target.no_depth && !draw.program_count &&
-            !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
-            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled && !model &&
+            !layout.pretransformed && (lit_ground || unlit_ground) && !model &&
             sun.game_alpha > 0 && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
         constants[17] = sun.game_alpha;
+        constants[18] = sun.casting ? 1.0f : 0.0f;
+        std::memcpy(constants + 20, draw.world[0], sizeof draw.world[0]);
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -3328,6 +3372,8 @@ RecompD3dPresenterError submitDraw(
     }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
     if (sun.casting) return RECOMP_D3D_PRESENTER_OK;
+    if (sun.enabled && draw.target.offscreen && sunPalmTexture(draw.target.color))
+        if (auto *entry = findRenderTarget(presenter, draw.target.color)) entry->sun_palm.draw(draw);
 #ifdef RECOMP_RTGI
     /* Render-target and backbuffer views change within a frame, so their
        draws trace as opaque. */
@@ -4568,13 +4614,17 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
     if (command->type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) return;
     const auto &draw = command->data.draw;
     if (!sun.casting) { sunSelectCamera(sun, draw); return; }
-    float extent;
+    float size[3];
     sun.compact.push_back(0);
-    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, extent)) return;
-    sun.compact.back() = !draw.blend_weight_count && extent <= 4;
-    if (!draw.directional.enabled || draw.blend.blend_enable ||
-        (!draw.blend_weight_count && extent > 4)) return;
-    // shortcut: compact rigid normal-bearing draws include the ball and small props; add identity if needed.
+    bool net = false;
+    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, size, &net)) return;
+    // A terrain-following shadow decal can pass the scenery bounds test.
+    SunOverlay overlay = SunOverlay::None;
+    if (sunOverlayDraw(draw)) lookupTexture(presenter, draw, &overlay);
+    const bool casts = overlay == SunOverlay::None && !net && sunCaster(draw, size);
+    sun.compact.back() = !draw.blend_weight_count &&
+        (casts || (std::max)({size[0], size[1], size[2]}) <= 4);
+    if (!casts) return;
     RecompD3dPresenterDrawCommand caster = draw;
     for (unsigned b = 0; b <= draw.blend_weight_count; ++b) {
         float *out = b ? caster.blend_transforms[b-1] : caster.transform;
@@ -4584,6 +4634,13 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
         }
     }
     caster.directional.enabled = false;
+    caster.has_combiner = caster.has_reflection = false;
+    caster.depth.depth_write_enable = true;
+    if (draw.blend.blend_enable) {
+        caster.depth.alpha_test_enable = true;
+        caster.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+        caster.depth.alpha_ref = 127;
+    }
     caster.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
     caster.depth.stencil_enable = false;
     if (submitDraw(presenter, caster) == RECOMP_D3D_PRESENTER_OK) ++sun.casters;
@@ -4598,9 +4655,11 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
     presenter->context->OMSetRenderTargets(0, nullptr, nullptr);
     // game_shadows counts the previous frame's hidden darkening passes (false-match audit).
     if (presenter->performance_counter && presenter->present_count % 120 == 0 && sun.valid)
-        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u direction=%.4f,%.4f,%.4f\n",
-            presenter->present_count, sun.casters, sun.game_shadows, sun.direction[0], sun.direction[1], sun.direction[2]);
+        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u prop_shadows=%u direction=%.4f,%.4f,%.4f\n",
+            presenter->present_count, sun.casters, sun.game_shadows, sun.prop_shadows,
+            sun.direction[0], sun.direction[1], sun.direction[2]);
     sun.game_shadows = 0;
+    sun.prop_shadows = 0;
     sun.game_alpha = sun.seen_alpha;
     sun.seen_alpha = 0;
     sun.draw_index = 0;

@@ -103,7 +103,8 @@ static bool checkPixels(
     ID3D11Texture2D *color,
     ID3D11Texture2D *readback,
     const char *label,
-    const uint32_t expected[4])
+    const uint32_t expected[4],
+    int tolerance = 1)
 {
     presenter->context->CopyResource(readback, color);
     D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -120,7 +121,7 @@ static bool checkPixels(
             // Opaque main-target RGB may round to the adjacent byte after dithering.
             bool matches = (row[x] >> 24) == (expected[x] >> 24);
             for (unsigned shift : {0u, 8u, 16u})
-                matches &= std::abs(int((row[x] >> shift) & 255) - int((expected[x] >> shift) & 255)) <= 1;
+                matches &= std::abs(int((row[x] >> shift) & 255) - int((expected[x] >> shift) & 255)) <= tolerance;
             if (!matches) {
                 std::fprintf(stderr,
                     "FAIL %s pixel=(%u,%u) got=%08x expected=%08x\n",
@@ -3084,6 +3085,251 @@ static bool testPacingPolicies()
 }
 
 
+static bool testSunPropShadows(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x112; draw.vertex_stride = 32;
+    float vertices[4][8]{};
+    const uint16_t indices[] = {0,1,2,3};
+    const uint32_t white = 0xffffffffu;
+    for (unsigned i = 0; i < 4; ++i) {
+        vertices[i][0] = i&1 ? 1.0f : -1.0f;
+        vertices[i][1] = i&2 ? -1.0f : 1.0f;
+        vertices[i][2] = 0.5f;
+        draw.transform[i*5] = 1;
+    }
+    draw.vertex_count = draw.index_count = 4; draw.triangle_count = 2;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.vertex_bytes = vertices; draw.index_bytes = indices;
+    draw.has_transform = draw.has_texture = true;
+    draw.texture_factor = white;
+    draw.texture = {RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8,32,false,false,false,1,1,0,0x600000,1};
+    draw.texture_bytes = &white; draw.texture_byte_count = 4;
+    draw.blend.color_write_mask = 15;
+    draw.directional.enabled = draw.zero_diffuse_rgb = true;
+    draw.depth.alpha_test_enable = true; draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+    draw.depth.alpha_ref = 1;
+    draw.target.offscreen = draw.target.no_depth = true;
+    draw.target.color = draw.texture;
+    draw.target.color.width = 512; draw.target.color.height = 256;
+    draw.target.color.data = 0x610000;
+    RecompD3dPresenterClearCommand clear{};
+    clear.target = draw.target; clear.clear_color = true;
+    presenter->sun.enabled = true;
+    bool passed = submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK &&
+        submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK;
+    auto *target = findRenderTarget(presenter, draw.target.color);
+    passed &= target && target->sun_palm.valid();
+    auto receiver = draw;
+    receiver.target = {}; receiver.texture = draw.target.color;
+    receiver.texture_bytes = nullptr; receiver.texture_byte_count = 0;
+    receiver.directional.enabled = receiver.zero_diffuse_rgb = false;
+    receiver.depth.depth_test_enable = receiver.depth.depth_write_enable = true;
+    receiver.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    receiver.depth.stencil_enable = true; receiver.depth.stencil_func = RECOMP_D3D_COMPARE_ALWAYS;
+    receiver.depth.stencil_ref = 254; receiver.depth.stencil_read_mask = receiver.depth.stencil_write_mask = 255;
+    receiver.depth.stencil_pass = RECOMP_D3D_STENCIL_REPLACE;
+    receiver.blend.blend_enable = true;
+    receiver.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+    receiver.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+    passed &= sunPropShadow(receiver);
+    {
+        auto lit = receiver; // the dusk form: lit, projected, material alpha
+        lit.directional.enabled = true; lit.use_texture_factor = true;
+        passed &= !sunPropShadow(lit) && sunOverlayDraw(lit);
+        lit.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+        passed &= !sunOverlayDraw(lit);
+        lit = receiver; lit.directional.enabled = true;
+        lit.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT5;
+        passed &= !sunOverlayDraw(lit);
+    }
+    for (unsigned variant = 0; variant < 12; ++variant) {
+        auto other = receiver;
+        switch (variant) {
+        case 0: other.target.offscreen = true; break;
+        case 1: other.directional.enabled = true; break;
+        case 2: other.depth.stencil_ref = 1; break;
+        case 3: other.depth.stencil_write_mask = 3; break;
+        case 4: other.depth.stencil_pass = RECOMP_D3D_STENCIL_ZERO; break;
+        case 5: other.depth.alpha_ref = 2; break;
+        case 6: other.depth.depth_func = RECOMP_D3D_COMPARE_ALWAYS; break;
+        case 7: other.blend.dst_factor = RECOMP_D3D_BLEND_ONE; break;
+        case 8: other.blend.color_write_mask = 0; break;
+        case 9: other.has_combiner = true; break;
+        case 10: other.texture_is_backbuffer = true; break;
+        case 11: other.use_texture_factor = true; break;
+        }
+        passed &= !sunPropShadow(other);
+    }
+    auto diffuse = receiver; diffuse.fvf = 0x142; diffuse.depth.stencil_ref = 0;
+    passed &= sunPropShadow(diffuse);
+    diffuse.has_combiner = true;
+    const uint32_t stages[2][8] = {{2,0,2,1,4,0,2,0}, {4,0,3,1,4,0,3,1}};
+    std::memcpy(diffuse.combiner, stages, sizeof stages);
+    passed &= sunPropShadow(diffuse);
+    auto leaves = draw;
+    leaves.has_combiner = true;
+    std::memcpy(leaves.combiner, stages, sizeof stages);
+    leaves.combiner[0][0] = 4; leaves.combiner[0][3] = 0;
+    passed &= sunPalmProducer(leaves);
+    passed &= !sunPalmProducer(diffuse);
+    leaves.combiner[0][0] = 2; leaves.combiner[0][3] = 1;
+    passed &= !sunPalmProducer(leaves);
+    leaves.combiner[0][0] = 4; leaves.combiner[0][3] = 0;
+    leaves.combiner[1][2] = 2;
+    passed &= !sunPalmProducer(leaves);
+    const uint32_t unchanged[] = {white,white,white,white};
+    const uint32_t black[] = {0xff000000u,0xff000000u,0xff000000u,0xff000000u};
+    const uint32_t red[] = {0xffff0000u,0xffff0000u,0xffff0000u,0xffff0000u};
+    RecompD3dPresenterClearCommand main{};
+    main.clear_color = main.clear_depth = main.clear_stencil = true;
+    main.color = white; main.z = 1;
+    for (unsigned mode = 0; passed && mode < 4; ++mode) {
+        presenter->sun.enabled = mode != 0;
+        presenter->sun.valid = mode != 0;
+        receiver.depth.depth_write_enable = mode != 2;
+        if (mode == 3) {
+            auto unrelated = draw; unrelated.zero_diffuse_rgb = false;
+            passed &= submitDraw(presenter, unrelated) == RECOMP_D3D_PRESENTER_OK && !target->sun_palm.valid();
+        }
+        passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter, color, readback, "prop shadow color", mode == 0 || mode == 3 ? black : unchanged);
+        if (mode == 1) {
+            auto lit = receiver; lit.directional.enabled = true;
+            passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+                submitDraw(presenter, lit) == RECOMP_D3D_PRESENTER_OK &&
+                checkPixels(presenter, color, readback, "lit palm shadow color", unchanged);
+        }
+        if (mode == 0 || mode == 3) continue;
+        auto probe = receiver;
+        probe.has_texture = false; probe.use_texture_factor = true; probe.texture_factor = red[0];
+        probe.blend.blend_enable = false; probe.depth.alpha_test_enable = false;
+        probe.depth.depth_func = probe.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+        probe.depth.depth_write_enable = false; probe.depth.stencil_write_mask = 0;
+        probe.depth.stencil_pass = RECOMP_D3D_STENCIL_KEEP;
+        for (auto &v : vertices) v[2] = mode == 2 ? 1.0f : 0.5f;
+        passed &= submitDraw(presenter, probe) == RECOMP_D3D_PRESENTER_OK &&
+            checkPixels(presenter, color, readback, "hidden prop keeps depth/stencil", red);
+        for (auto &v : vertices) v[2] = 0.5f;
+    }
+    passed &= presenter->sun.prop_shadows == 3; // two prop draws and the lit dusk form
+    passed &= submitClear(presenter, clear) == RECOMP_D3D_PRESENTER_OK && !target->sun_palm.valid();
+    passed &= submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_OK && target->sun_palm.valid();
+    SunPalmTarget fresh;
+    fresh.draw(draw);
+    passed &= !fresh.valid();
+    fresh.clear(0xff000000u); fresh.draw(draw);
+    passed &= !fresh.valid();
+    auto desc = receiver.texture;
+    desc.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT5;
+    desc.width = 512; desc.height = 128;
+    passed &= sunStaticOverlay(desc, 0x945549f88c8cfe40ull) == SunOverlay::NetPost;
+    desc.data += 0x1000;
+    passed &= sunStaticOverlay(desc, 0x945549f88c8cfe40ull) == SunOverlay::NetPost &&
+        sunStaticOverlay(desc, 0x945549f88c8cfe41ull) == SunOverlay::None;
+    desc.height = 256;
+    passed &= sunStaticOverlay(desc, 0x945549f88c8cfe40ull) == SunOverlay::None;
+    desc.width = desc.height = 256;
+    passed &= sunStaticOverlay(desc, 0xbc0a582f6161a6e7ull) == SunOverlay::None;
+    {
+        // 8x4: one clear block, one black block at alpha 120.
+        uint8_t blocks[64] = {};
+        blocks[16] = 120; blocks[17] = 0;
+        auto pair = desc; pair.width = 8; pair.height = 4;
+        passed &= sunShadowTexels(pair, blocks, 32) && !sunShadowTexels(pair, blocks, 31);
+        blocks[0] = 120;
+        passed &= !sunShadowTexels(pair, blocks, 32); // dense canopy shade
+        blocks[0] = 0;
+        blocks[16] = 255;
+        passed &= !sunShadowTexels(pair, blocks, 32); // opaque foliage mask
+        blocks[16] = 0; blocks[17] = 120; std::memset(blocks + 18, 0xff, 6);
+        passed &= !sunShadowTexels(pair, blocks, 32); // six-alpha mode index 7 is 255
+        std::memset(blocks + 18, 0, 6); blocks[16] = 120; blocks[17] = 0;
+        passed &= sunShadowTexels(pair, blocks, 32);
+        blocks[24] = 0xe0; blocks[25] = 0x07;
+        passed &= !sunShadowTexels(pair, blocks, 32); // green texels
+        std::memset(blocks, 0, 32);
+        passed &= !sunShadowTexels(pair, blocks, 32); // fully transparent
+        blocks[16] = 120; pair.width = 16; pair.height = 4;
+        passed &= !sunShadowTexels(pair, blocks, 64); // sea reflection strip
+    }
+    desc.width = 256; desc.height = 128; desc.mip_levels = 8;
+    passed &= sunStaticOverlay(desc, 0xd99af6253b620e05ull) == SunOverlay::NetPost;
+    desc.width = 512; desc.height = 64; desc.mip_levels = 7;
+    passed &= sunStaticOverlay(desc, 0x7135e45fe936c958ull) == SunOverlay::NetPost;
+    passed &= sunPropPayloadHash("abc", 3) == 0xe71fa2190541574bull;
+    SunOverlay tagged = SunOverlay::Palm;
+    auto *view = lookupTexture(presenter, draw, &tagged);
+    passed &= view && tagged == SunOverlay::None;
+    auto cached = std::find_if(presenter->textures.begin(), presenter->textures.end(),
+        [view](const TextureEntry &entry) { return entry.used && entry.view == view; });
+    if (cached != presenter->textures.end()) {
+        cached->sun_overlay = SunOverlay::Palm;
+        passed &= lookupTexture(presenter, draw, &tagged) == view && tagged == SunOverlay::Palm;
+        auto overlay = receiver;
+        overlay.texture = draw.texture; overlay.texture_bytes = draw.texture_bytes;
+        overlay.texture_byte_count = draw.texture_byte_count;
+        const auto hidden = presenter->sun.prop_shadows;
+        passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, overlay) == RECOMP_D3D_PRESENTER_OK &&
+            presenter->sun.prop_shadows == hidden + 1;
+        cached->sun_overlay = SunOverlay::NetPost;
+        passed &= submitClear(presenter, main) == RECOMP_D3D_PRESENTER_OK &&
+            submitDraw(presenter, overlay) == RECOMP_D3D_PRESENTER_OK &&
+            presenter->sun.prop_shadows == hidden + 1;
+        const uint32_t changed = 0xff112233u;
+        auto rewrite = draw; rewrite.texture_bytes = &changed;
+        passed &= lookupTexture(presenter, rewrite, &tagged) && tagged == SunOverlay::None;
+    } else passed = false;
+    auto *previous = active_presenter;
+    active_presenter = presenter;
+    passed &= d3d11_backend_release_memory(presenter, draw.target.color.data, 1) == RECOMP_D3D_PRESENTER_OK &&
+        !findRenderTarget(presenter, draw.target.color);
+    ID3D11RenderTargetView *color_view;
+    ID3D11DepthStencilView *depth_view;
+    passed &= bindTarget(presenter, draw.target, color_view, depth_view) == RECOMP_D3D_PRESENTER_OK &&
+        !findRenderTarget(presenter, draw.target.color)->sun_palm.valid();
+    active_presenter = previous;
+    presenter->sun = {};
+    if (!passed) std::fprintf(stderr, "FAIL sun prop identity, producer or depth/stencil preservation\n");
+    return passed;
+}
+
+static bool testSunParticleCasters()
+{
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x142;
+    draw.has_texture = true;
+    draw.blend.color_write_mask = 15;
+    draw.blend.blend_enable = true;
+    draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+    draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+    draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+    draw.depth.depth_test_enable = true;
+    draw.depth.alpha_test_enable = true;
+    draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+    draw.depth.alpha_ref = 1;
+    const float billboard[] = {1, 1, 0};
+    for (unsigned alpha : {255u, 242u, 0u}) {
+        draw.texture_factor = (alpha << 24) | 0xffffffu;
+        if (sunCaster(draw, billboard)) {
+            std::fprintf(stderr, "FAIL fading particle casts at alpha=%u\n", alpha);
+            return false;
+        }
+    }
+    // The same dimensions alone cannot distinguish a particle from a solid cutout.
+    draw.depth.depth_write_enable = true;
+    const float net[] = {5, 0.8f, 0.02f};
+    if (!sunCaster(draw, billboard) || sunCaster(draw, net)) return false;
+    draw.depth.depth_write_enable = false;
+    draw.directional.enabled = true;
+    draw.fvf = 0x112;
+    const float frond[] = {1.6f, 0.7f, 1.4f};
+    return sunCaster(draw, frond) && !sunCaster(draw, net);
+}
+
 static bool testSunShadow(unsigned samples)
 {
     _putenv_s("RECOMP_D3D_SUN_SHADOW", "");
@@ -3107,9 +3353,9 @@ static bool testSunShadow(unsigned samples)
         color->GetDesc(&desc); desc.SampleDesc.Count = 1;
         passed = SUCCEEDED(presenter.device->CreateTexture2D(&desc, nullptr, &resolved));
     }
-    auto pixels = [&](const char *label, const uint32_t expected[4]) {
+    auto pixels = [&](const char *label, const uint32_t expected[4], int tolerance = 1) {
         if (resolved) presenter.context->ResolveSubresource(resolved, 0, color, 0, DXGI_FORMAT_B8G8R8A8_UNORM);
-        return checkPixels(&presenter, resolved ? resolved : color, readback, label, expected);
+        return checkPixels(&presenter, resolved ? resolved : color, readback, label, expected, tolerance);
     };
     if (!passed) { releaseCom(readback); releaseCom(color); releaseCom(resolved); releaseGraphics(&presenter); return false; }
     D3D11_TEXTURE2D_DESC main_depth{};
@@ -3164,6 +3410,65 @@ static bool testSunShadow(unsigned samples)
         other = draw; other.sun[1] = other.directional.directions[0][1] = -0.6f;
         passed = passed && sunDirection(other, direction) < 0; // light below the horizon
     }
+    {
+        auto prop = draw;
+        prop.directional.enabled = false;
+        auto net_post = prop;
+        net_post.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+        net_post.texture.width = 64; net_post.texture.height = 128;
+        const float low[] = {-2.4f, 1.2f, 0}, high[] = {2.4f, 2, 0.05f};
+        passed &= sunNetPart(net_post, low, high);
+        net_post.world[0][12] = 1;
+        passed &= !sunNetPart(net_post, low, high);
+        net_post.world[0][12] = 0;
+        const float away[] = {2.4f, 2, 2};
+        passed &= !sunNetPart(net_post, low, away);
+        net_post.blend_weight_count = 1;
+        passed &= !sunNetPart(net_post, low, high);
+        net_post.blend_weight_count = 0;
+        const float post_low[] = {2.7f, -0.2f, -0.3f}, post_high[] = {3.5f, 3.9f, 0.3f};
+        passed &= !sunNetPart(net_post, post_low, post_high); // posts cast into the sun map
+        RecompD3dTextureDesc overlay{};
+        overlay.width = 512; overlay.height = 128;
+        std::vector<uint8_t> blocks(128u/4u * 512u/4u * 16u, 0xff);
+        sunKeepNetLine(overlay, blocks.data(), 1);
+        const auto alpha = [&](unsigned x, unsigned y) { return blocks[((y/4)*128u + x/4)*16u]; };
+        passed &= alpha(300, 64) == 0xff && alpha(116, 80) == 0xff && // net line, side tape
+            alpha(40, 110) == 0 && alpha(470, 100) == 0 && blocks[((100u/4)*128u + 40u/4)*16u + 8] == 0xff;
+        const float post[] = {0.7f, 7, 0.6f}, tape[] = {6, 0.06f, 0.05f};
+        const float sand[] = {80, 0.2f, 80}, rock[] = {20, 14, 20};
+        const float trees[] = {90, 12, 90}, net[] = {6, 0.8f, 0.1f};
+        passed = passed && sunCaster(prop, post) && sunCaster(prop, tape) &&
+            !sunCaster(prop, sand) && !sunCaster(prop, rock);
+        prop.depth.alpha_test_enable = true;
+        prop.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+        prop.depth.alpha_ref = 192;
+        passed = passed && sunCaster(prop, trees) && !sunCaster(prop, sand);
+        prop.depth.depth_write_enable = false;
+        prop.directional.enabled = true;
+        prop.blend.blend_enable = true;
+        prop.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        prop.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        prop.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+        passed = passed && sunCaster(prop, trees) && !sunCaster(prop, net) && !sunCaster(prop, sand);
+        prop.blend.dst_factor = RECOMP_D3D_BLEND_ONE;
+        passed = passed && !sunCaster(prop, trees);
+        prop.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        prop.texture.render_target = true;
+        passed = passed && !sunCaster(prop, trees);
+        prop = draw;
+        float bounds[3], unused[5][8]{};
+        std::memcpy(unused, vertices, sizeof vertices);
+        unused[4][0] = NAN;
+        prop.vertex_bytes = unused; prop.vertex_count = 5;
+        passed = passed && sunSceneDraw(prop, bounds) && bounds[0] == 2 && bounds[1] == 2;
+        const uint16_t bad[] = {0,1,2,5};
+        prop.index_bytes = bad;
+        passed = passed && !sunSceneDraw(prop, bounds);
+        prop.index_bytes = indices; unused[0][0] = NAN;
+        passed = passed && !sunSceneDraw(prop, bounds);
+        if (!passed) std::fprintf(stderr, "FAIL sun caster filters or referenced bounds\n");
+    }
     _putenv_s("RECOMP_D3D_SUN_DIR", "1,-2,3");
     passed = passed && sunDirection(draw, direction) == 0 && direction[0] > 0 && direction[1] < 0;
     for (const char *invalid : {"0,0,0", "nan,1,0", "1,2,3junk"}) {
@@ -3215,6 +3520,37 @@ static bool testSunShadow(unsigned samples)
     // An identity light projection makes the synthetic occluder's coverage exact.
     std::memcpy(presenter.sun.projection, draw.view_projection, sizeof draw.view_projection);
     auto receiver = draw;
+    {
+        // Uneven-ground shadow decals satisfy the old scenery height/width test.
+        draw.directional.enabled = false;
+        draw.texture_factor = 0xffffffffu;
+        draw.depth.alpha_test_enable = true;
+        draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER; draw.depth.alpha_ref = 1;
+        draw.depth.stencil_enable = true; draw.depth.stencil_func = RECOMP_D3D_COMPARE_ALWAYS;
+        draw.depth.stencil_read_mask = draw.depth.stencil_write_mask = 255;
+        draw.depth.stencil_pass = RECOMP_D3D_STENCIL_REPLACE;
+        draw.blend.blend_enable = true; draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        auto *view = lookupTexture(&presenter, draw);
+        auto entry = std::find_if(presenter.textures.begin(), presenter.textures.end(),
+            [view](const TextureEntry &e) { return e.used && e.view == view; });
+        float bounds[3];
+        passed &= entry != presenter.textures.end() && sunPropShadow(draw) &&
+            sunSceneDraw(draw, bounds) && sunCaster(draw, bounds);
+        if (entry != presenter.textures.end()) {
+            for (auto kind : {SunOverlay::Palm, SunOverlay::NetPost, SunOverlay::None}) {
+                entry->sun_overlay = kind;
+                const auto before = presenter.sun.casters;
+                d3d11_backend_shadow_command(&presenter, &command);
+                const auto expected = before + (kind == SunOverlay::None ? 1u : 0u);
+                if (presenter.sun.casters != expected) {
+                    std::fprintf(stderr, "FAIL legacy overlay entered sun map kind=%d\n", int(kind));
+                    passed = false;
+                }
+            }
+        }
+        draw = receiver;
+    }
     for (unsigned weights = 0; passed && weights <= 3; ++weights) {
         draw = receiver;
         draw.blend_weight_count = weights;
@@ -3278,6 +3614,107 @@ static bool testSunShadow(unsigned samples)
         presenter.sun.game_alpha = 0.75f;
         passed = passed && submitDraw(&presenter, game_shadow) == RECOMP_D3D_PRESENTER_OK &&
             presenter.sun.game_shadows == hidden + 1;
+    }
+    {
+        struct CutoutVertex { float position[3]; uint32_t color; float uv[2]; } cutout[4]{};
+        float frond[4][8];
+        std::memcpy(frond, vertices, sizeof frond);
+        for (unsigned i = 0; i < 4; ++i) {
+            cutout[i].position[0] = vertices[i][0];
+            cutout[i].position[1] = vertices[i][1];
+            cutout[i].position[2] = 0.25f;
+            cutout[i].color = 0x10ffffff;
+            cutout[i].uv[0] = i&1 ? 1.0f : 0.0f;
+            cutout[i].uv[1] = i&2 ? 1.0f : 0.0f;
+            frond[i][2] = 0.25f;
+            frond[i][6] = cutout[i].uv[0]; frond[i][7] = cutout[i].uv[1];
+        }
+        const uint32_t alpha[] = {0x00ffffff, white, 0x40ffffff, 0x80ffffff};
+        const uint32_t minified[] = {white, white, white, white, 0, 0, 0};
+        for (unsigned mode = 0; mode < 3; ++mode) {
+            const bool blended = mode == 1;
+            draw = receiver;
+            draw.fvf = 0x142; draw.vertex_stride = sizeof(CutoutVertex);
+            draw.vertex_bytes = cutout; draw.directional.enabled = false;
+            if (blended) {
+                draw.fvf = 0x112; draw.vertex_stride = sizeof frond[0];
+                draw.vertex_bytes = frond; draw.directional.enabled = true;
+            }
+            draw.texture.data += 0x100;
+            draw.texture.width = 4; draw.texture.height = 1;
+            draw.address_u = draw.address_v = 5;
+            draw.texture_bytes = alpha; draw.texture_byte_count = sizeof alpha;
+            if (mode == 2) {
+                draw.texture.mip_levels = 3;
+                draw.texture_bytes = minified; draw.texture_byte_count = sizeof minified;
+                for (auto &v : cutout) v.uv[0] *= 4096;
+            }
+            draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
+            draw.material_alpha = 0.1f;
+            draw.depth.alpha_test_enable = true;
+            draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+            draw.depth.alpha_ref = blended ? 1 : 192;
+            draw.depth.depth_write_enable = !blended;
+            draw.blend.blend_enable = blended;
+            draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+            draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+            draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+            presenter.sun.casting = true;
+            presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+            ID3D11ShaderResourceView *empty = nullptr;
+            presenter.context->PSSetShaderResources(2, 1, &empty);
+            presenter.context->ClearDepthStencilView(presenter.sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
+            const unsigned before = presenter.sun.casters;
+            d3d11_backend_shadow_command(&presenter, &command);
+            d3d11_backend_shadow_end(&presenter);
+            presenter.sun.game_alpha = 0.75f;
+            presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+            presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+            const uint32_t tested[] = {white, 0xff404040, white, white};
+            const uint32_t foliage[] = {white, 0xff404040, white, 0xff404040};
+            const uint32_t wires[] = {0xff404040, 0xff404040, 0xff404040, 0xff404040};
+            passed = passed && presenter.sun.casters == before + 1 &&
+                submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+                pixels(mode == 2 ? "thin wires survive mip averaging" : blended ? "blended cutout shadow" : "alpha-tested cutout shadow",
+                    mode == 2 ? wires : blended ? foliage : tested);
+        }
+    }
+    {
+        // A minified one-texel wire repeated every four texels has 25% coverage.
+        // Sliding its phase must not pulse between dark and light bands on the sand.
+        std::vector<float> wire_depth(kSunMapSize*kSunMapSize, 1.0f);
+        for (unsigned y = 0; y < kSunMapSize; ++y)
+            for (unsigned x = 0; x < kSunMapSize; x += 4)
+                wire_depth[y*kSunMapSize+x] = 0.25f;
+        presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11ShaderResourceView *empty = nullptr;
+        presenter.context->PSSetShaderResources(2, 1, &empty);
+        presenter.context->UpdateSubresource(presenter.sun.texture, 0, nullptr,
+            wire_depth.data(), kSunMapSize*sizeof(float), 0);
+        presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+        presenter.sun.projection[0] = 16.0f/kSunMapSize;
+        const uint32_t expected[] = {0xffcfcfcf,0xffcfcfcf,0xffcfcfcf,0xffcfcfcf};
+        for (unsigned phase = 0; phase < 4; ++phase) {
+            presenter.sun.projection[12] = phase*1.0f/kSunMapSize;
+            presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+            passed = submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+                pixels("minified net shadow keeps average coverage", expected, 3) && passed;
+        }
+        // A wider footprint must compare against the receiver plane, not one center depth.
+        for (unsigned y = 0; y < kSunMapSize; ++y)
+            for (unsigned x = 0; x < kSunMapSize; ++x)
+                wire_depth[y*kSunMapSize+x] = 0.718f+(x+0.5f-kSunMapSize/2)*0.00025f;
+        presenter.context->OMSetRenderTargets(0, nullptr, nullptr);
+        presenter.context->PSSetShaderResources(2, 1, &empty);
+        presenter.context->UpdateSubresource(presenter.sun.texture, 0, nullptr,
+            wire_depth.data(), kSunMapSize*sizeof(float), 0);
+        presenter.sun.projection[12] = 0;
+        presenter.sun.projection[2] = 0.002f;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t unshadowed[] = {white,white,white,white};
+        passed = submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("wide shadow filter preserves sloped receivers", unshadowed) && passed;
+        std::memcpy(presenter.sun.projection, receiver.view_projection, sizeof receiver.view_projection);
     }
     // Non-host-lit draws and a different scene-depth epoch must bypass the map.
     draw = receiver;
@@ -3450,6 +3887,7 @@ int main()
 #endif
     _putenv_s("RECOMP_D3D_FOG", "");
     _putenv_s("RECOMP_D3D_FOG_FACTOR", "");
+    if (!testSunParticleCasters()) return 1;
     if (!testSunShadow(1) || !testSunShadow(8)) return 1;
     if (!testReplacementFormats()) return 1;
     if (!testTextureAntialiasing()) return 82;
@@ -3546,6 +3984,7 @@ int main()
     if (status == 0 && !testSupersampledBackBuffer(&presenter)) status = 84;
     if (status == 0 && !testCombiner(&presenter, color, readback)) status = 99;
     if (status == 0 && !testAddressSamplers(&presenter)) status = 83;
+    if (status == 0 && !testSunPropShadows(&presenter, color, readback)) status = 100;
     if (status == 0 && !testWindowClose(&presenter)) status = 86;
     releaseCom(readback);
     releaseCom(color);
