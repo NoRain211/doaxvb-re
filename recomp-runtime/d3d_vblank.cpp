@@ -1,5 +1,6 @@
 #include "d3d_vblank.h"
 #include "d3d_tuning.h"
+#include "game_pacing.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -8,9 +9,12 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 namespace {
@@ -20,9 +24,17 @@ Clock::time_point last_vblank;
 thread_local std::unique_ptr<void, decltype(&CloseHandle)>
     high_resolution_timer(nullptr, &CloseHandle);
 #endif
-// ponytail: the supported progressive NTSC mode; other video modes need their rate.
-constexpr auto interval = std::chrono::nanoseconds(1000000000 / 60);
+// The rate override is a timing experiment, not a gameplay-speed correction.
+std::chrono::nanoseconds interval(1000000000 / 60);
+Clock::time_point probe_start;
+unsigned probe_waits;
+bool probe_enabled;
+bool keep_debt;
+std::chrono::nanoseconds waited{0};
 constexpr auto spin_window = std::chrono::microseconds(500);
+std::atomic<unsigned> pass_counts[3];
+std::atomic<uint32_t> frame_cost_ns{0};
+std::atomic<unsigned> display_rate{60};
 
 void sleepUntil(Clock::time_point deadline)
 {
@@ -116,20 +128,71 @@ bool pollHotkeys() { return false; }
 
 void recomp_d3d_vblank_reset(void)
 {
+    const char *rate = std::getenv("RECOMP_GUEST_VBLANK_HZ");
+    if (rate == nullptr) rate = std::getenv("RECOMP_GAME_HZ");
+    char *end = nullptr;
+    const unsigned long requested = rate != nullptr ? std::strtoul(rate, &end, 10) : 0;
+    probe_enabled = end != rate && end != nullptr && *end == '\0' &&
+        requested >= 60 && requested <= 360;
+    const unsigned hz = probe_enabled ? static_cast<unsigned>(requested) : 60;
+    keep_debt = std::getenv("RECOMP_GAME_HZ") != nullptr && hz > 60;
+    interval = std::chrono::nanoseconds(1000000000 / hz);
     last_vblank = Clock::now();
+    probe_start = last_vblank;
+    probe_waits = 0;
+    if (probe_enabled) {
+        std::fprintf(stderr, "recomp vblank probe: hz=%u; elapsed starts at reset\n", hz);
+    } else if (rate != nullptr) {
+        std::fprintf(stderr, "recomp vblank probe: expected 60 to 360; using 60 Hz\n");
+    }
 }
+
+uint64_t recomp_d3d_vblank_waited_ns(void)
+{
+    return static_cast<uint64_t>(waited.count());
+}
+
+void recomp_d3d_count_passes(unsigned ticks, unsigned displays, unsigned dropped)
+{
+    pass_counts[0] += ticks;
+    pass_counts[1] += displays;
+    pass_counts[2] += dropped;
+}
+
+void recomp_d3d_take_passes(unsigned counts[3])
+{
+    for (unsigned i = 0; i < 3; ++i) counts[i] = pass_counts[i].exchange(0);
+}
+
+void recomp_d3d_set_frame_cost_ns(uint32_t ns) { frame_cost_ns = ns; }
+uint32_t recomp_d3d_frame_cost_ns(void) { return frame_cost_ns; }
+void recomp_d3d_set_display_rate(unsigned hz) { display_rate = hz; }
+unsigned recomp_d3d_display_rate(void) { return display_rate; }
 
 void recomp_d3d_wait_vblank(void)
 {
+    if (probe_enabled && (++probe_waits == 1 || probe_waits % 300 == 0)) {
+        const double elapsed = std::chrono::duration<double>(
+            Clock::now() - probe_start).count();
+        std::fprintf(stderr, "recomp vblank probe: wait=%u elapsed_s=%.6f\n",
+            probe_waits, elapsed);
+    }
     // Pausing holds the game here; the render worker keeps the window responsive.
     if (pollHotkeys()) recomp_tuning.paused = true;
     else while (recomp_tuning.paused) {
         sleepUntil(Clock::now() + interval);
         if (pollHotkeys()) break;
     }
-    // Late frames discard timing debt instead of running catch-up updates.
-    last_vblank = std::max(last_vblank + interval, Clock::now());
+    // Whole-game passes keep up to one refresh of debt: a tick pass that
+    // overruns its refresh is made up by the display pass after it, so both
+    // fit in one tick. Longer stalls (loads) are dropped, not replayed.
+    const auto now = Clock::now();
+    const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        last_vblank - now).count();
+    const int64_t delay = recomp_game_pacing_delay_ns(remaining, interval.count(), keep_debt);
+    last_vblank = now + std::chrono::nanoseconds(std::max<int64_t>(delay, -interval.count()));
     sleepUntil(last_vblank);
+    waited += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - now);
 }
 
 void recomp_d3d_sleep_until(long long steady_ns)

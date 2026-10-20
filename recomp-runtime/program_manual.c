@@ -1,4 +1,6 @@
 #include "program_manual.h"
+#include "game_scheduler.h"
+#include "game_scene.h"
 #include "animation_track_adapter.h"
 #include "title_idle.h"
 #include "controller_settings.h"
@@ -287,7 +289,15 @@ static void enter_collection_screen(void)
 
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
 {
-    RecompFunction function = recomp_animation_track_lookup_manual(guest_address);
+    RecompFunction function = recomp_game_scheduler_lookup_manual(guest_address);
+
+    if (function == NULL) {
+        function = recomp_game_scene_lookup_manual(guest_address);
+    }
+
+    if (function == NULL) {
+        function = recomp_animation_track_lookup_manual(guest_address);
+    }
 
     if (function == NULL) {
         function = recomp_cri_service_lookup_manual(guest_address);

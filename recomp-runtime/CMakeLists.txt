@@ -278,6 +278,31 @@ add_executable(recomp_runtime_test
     symbolic_link_model.c
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
+    game_scheduler.c
+    game_display.c
+    game_rollback.c
+    game_frame_replay.c
+    game_scene.c
+    game_world.c
+    game_world_timers.c
+    game_world_motion.c
+    game_world_wave.c
+    game_actor.c
+    game_secondary.c
+    game_actor_transition.c
+    game_scene_test.c
+    game_actor_test.c
+    game_world_test.c
+    game_camera.c
+    game_camera_smoothing.c
+    game_camera_timers.c
+    game_camera_script.c
+    game_camera_test.c
+    game_environment.c
+    game_environment_test.c
+    game_input.c
+    game_input_test.c
+    game_scheduler_test.c
     program_manual.c
     animation_track.c
     animation_track_adapter.c
@@ -577,6 +602,24 @@ if(RECOMP_PROGRAM_DIR)
         controller_settings.cpp
         program_adapters.c
         xapi_time_adapter.cpp
+        game_scheduler.c
+        game_display.c
+    game_rollback.c
+        game_frame_replay.c
+        game_scene.c
+        game_world.c
+        game_world_timers.c
+        game_world_motion.c
+        game_world_wave.c
+        game_actor.c
+        game_secondary.c
+        game_actor_transition.c
+        game_camera.c
+        game_camera_smoothing.c
+        game_camera_timers.c
+        game_camera_script.c
+        game_environment.c
+        game_input.c
         program_manual.c
         animation_track.c
         animation_track_adapter.c

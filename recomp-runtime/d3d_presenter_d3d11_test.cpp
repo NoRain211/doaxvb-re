@@ -3007,6 +3007,9 @@ static bool testPacingPolicies()
     for (const auto &rate : rates) {
         if (fixedRefreshInterval(rate[0]) != rate[1]) return false;
     }
+    // Whole-game 120 Hz holds each frame for refresh/120.
+    if (fixedRefreshInterval(240u, 120u) != 2u || fixedRefreshInterval(120u, 120u) != 1u ||
+        fixedRefreshInterval(144u, 120u) != 1u) return false;
     RecompD3dPresenter stats_presenter{};
     DXGI_FRAME_STATISTICS stats{};
     stats.PresentCount = 10u; stats.PresentRefreshCount = 100u;
