@@ -20,8 +20,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#define Sleep(ms) ((void)0)
-#define YieldProcessor() ((void)0)
+#include <sched.h>
+#include <time.h>
+static void Sleep(unsigned ms)
+{
+    const struct timespec delay = {(time_t)(ms / 1000u), (long)(ms % 1000u) * 1000000L};
+    nanosleep(&delay, NULL);
+}
+#define YieldProcessor() ((void)sched_yield())
 #endif
 
 enum {
