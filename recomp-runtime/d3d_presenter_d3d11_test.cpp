@@ -3719,6 +3719,7 @@ static bool testSunShadow(unsigned samples)
                 }
             }
         }
+        d3d11_backend_shadow_end(&presenter); // each pass below binds the sun map anew
         draw = receiver;
     }
     for (unsigned weights = 0; passed && weights <= 3; ++weights) {
@@ -3801,6 +3802,31 @@ static bool testSunShadow(unsigned samples)
         presenter.sun.game_alpha = 0.75f;
         passed = passed && submitDraw(&presenter, game_shadow) == RECOMP_D3D_PRESENTER_OK &&
             presenter.sun.game_shadows == hidden + 1;
+    }
+    {
+        // Between depth-only casters, a fan takes the shared shader; the moved caster after it must rebind.
+        draw = receiver;
+        float left[4][8];
+        std::memcpy(left, vertices, sizeof left);
+        for (unsigned i = 0; i < 4; ++i) { left[i][0] = i&1 ? 0.0f : -1.0f; left[i][2] = 0.25f; }
+        const uint16_t fan[] = {0,1,3,2};
+        presenter.sun.casting = true;
+        presenter.context->ClearDepthStencilView(presenter.sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
+        const unsigned before = presenter.sun.casters;
+        draw.vertex_bytes = left;
+        d3d11_backend_shadow_command(&presenter, &command);
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLEFAN; draw.index_bytes = fan;
+        d3d11_backend_shadow_command(&presenter, &command);
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP; draw.index_bytes = indices; draw.world[0][12] = 1;
+        d3d11_backend_shadow_command(&presenter, &command);
+        d3d11_backend_shadow_end(&presenter);
+        presenter.sun.game_alpha = 0.75f;
+        presenter.sun.compact.clear(); presenter.sun.draw_index = 0;
+        presenter.context->ClearDepthStencilView(presenter.depth_view, D3D11_CLEAR_DEPTH, 1, 0);
+        const uint32_t both[] = {0xff404040,0xff404040,0xff404040,0xff404040};
+        passed = passed && presenter.sun.casters == before + 3 &&
+            submitDraw(&presenter, receiver) == RECOMP_D3D_PRESENTER_OK &&
+            pixels("fallback caster, then depth-only caster", both);
     }
     {
         struct CutoutVertex { float position[3]; uint32_t color; float uv[2]; } cutout[4]{};

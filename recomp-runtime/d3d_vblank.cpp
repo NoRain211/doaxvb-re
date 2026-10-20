@@ -35,6 +35,7 @@ constexpr auto spin_window = std::chrono::microseconds(500);
 std::atomic<unsigned> pass_counts[3];
 std::atomic<uint32_t> frame_cost_ns{0};
 std::atomic<unsigned> display_rate{60};
+std::atomic<uint64_t> queue_waited{0};
 
 void sleepUntil(Clock::time_point deadline)
 {
@@ -153,6 +154,9 @@ uint64_t recomp_d3d_vblank_waited_ns(void)
 {
     return static_cast<uint64_t>(waited.count());
 }
+
+uint64_t recomp_d3d_queue_waited_ns(void) { return queue_waited; }
+void recomp_d3d_add_queue_wait_ns(uint64_t ns) { queue_waited += ns; }
 
 void recomp_d3d_count_passes(unsigned ticks, unsigned displays, unsigned dropped)
 {

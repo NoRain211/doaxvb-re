@@ -1,6 +1,7 @@
 #include "d3d_presenter_capture.h"
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_pose_replay.h"
+#include "d3d_vblank.h"
 #include "d3d_split_pose.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -555,13 +556,15 @@ void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_m
 
 RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
 {
-    const double wait_start_ms = thread.pacing ? clock_ms() : 0.0;
+    const double wait_start_ms = clock_ms();
     std::unique_lock<std::mutex> lock(thread.mutex);
     thread.changed.wait(lock, [&] {
         return thread.pending < 2 ||
             (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK);
     });
-    if (thread.pacing) notePacing(thread, wait_start_ms, clock_ms());
+    const double wait_end_ms = clock_ms();
+    recomp_d3d_add_queue_wait_ns(static_cast<uint64_t>((wait_end_ms - wait_start_ms) * 1e6));
+    if (thread.pacing) notePacing(thread, wait_start_ms, wait_end_ms);
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
     auto &packet = thread.packets[thread.open];
     if (thread.pacing) {

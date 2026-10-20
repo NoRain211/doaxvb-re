@@ -8,6 +8,13 @@ namespace {
 constexpr unsigned kSunMapSize = 4096;
 constexpr float kSunBox = 64, kSunAhead = 20, kSunDepth = 120;
 
+struct SunCasterLayout {
+    uint32_t fvf;
+    unsigned weights;
+    ID3D11InputLayout *input;
+    ID3D11VertexShader *shader;
+};
+
 struct SunShadow {
     bool enabled = false, valid = false, casting = false;
     unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
@@ -25,6 +32,11 @@ struct SunShadow {
     ID3D11Buffer *constants = nullptr;
     ID3D11SamplerState *sampler = nullptr;
     ID3D11RasterizerState *rasterizer = nullptr;
+    // Depth-only caster pipeline, built on first use; pass state binds once per pass.
+    ID3D11Buffer *caster_constants = nullptr;
+    ID3D11PixelShader *caster_alpha = nullptr;
+    std::vector<SunCasterLayout> caster_layouts;
+    bool caster_failed = false, caster_bound = false;
 };
 
 bool sunShadowRequested()
@@ -428,6 +440,12 @@ bool sunFit(SunShadow &sun)
 
 void sunRelease(SunShadow &sun)
 {
+    for (auto &caster : sun.caster_layouts) {
+        if (caster.input) caster.input->Release();
+        if (caster.shader) caster.shader->Release();
+    }
+    if (sun.caster_alpha) sun.caster_alpha->Release();
+    if (sun.caster_constants) sun.caster_constants->Release();
     if (sun.rasterizer) sun.rasterizer->Release();
     if (sun.sampler) sun.sampler->Release();
     if (sun.constants) sun.constants->Release();

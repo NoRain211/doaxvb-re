@@ -4647,11 +4647,200 @@ uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *presenter, const Recomp
     return bytes;
 }
 
+/* Sun caster depth: blend bones already multiplied by the sun projection, and for
+   cutouts the base texture's level-0 alpha against the draw's alpha test. */
+constexpr char kSunCasterShader[] = R"(
+cbuffer SunCaster : register(b0) {
+    row_major float4x4 caster_bones[4];
+    float4 caster_alpha; // xy: linear texture scale, z: compare function, w: reference
+};
+Texture2D caster_texture : register(t0);
+SamplerState caster_sampler : register(s0);
+struct VSIn {
+    float3 position : POSITION;
+#if WEIGHTS
+    float3 weights : BLENDWEIGHT;
+#endif
+#if TEXCOORD
+    float2 texcoord : TEXCOORD0;
+#endif
+};
+struct VSOut {
+    float4 position : SV_POSITION;
+    float2 texcoord : TEXCOORD0;
+};
+VSOut vs_main(VSIn input) {
+    VSOut output;
+    output.position = mul(float4(input.position, 1), caster_bones[0]);
+#if WEIGHTS
+    output.position = 0;
+    float remainder = 1;
+    [unroll] for (uint i = 0; i < WEIGHTS; ++i) {
+        output.position += input.weights[i] * mul(float4(input.position, 1), caster_bones[i]);
+        remainder -= input.weights[i];
+    }
+    output.position += remainder * mul(float4(input.position, 1), caster_bones[WEIGHTS]);
+#endif
+#if TEXCOORD
+    output.texcoord = input.texcoord;
+#else
+    output.texcoord = 0;
+#endif
+    return output;
+}
+// Mip averages erase thin net wires before the cutoff, so test level 0 as visible draws compare.
+void ps_main(VSOut input) {
+    float alpha = round(saturate(caster_texture.SampleLevel(caster_sampler, input.texcoord * caster_alpha.xy, 0).a) * 255.0f);
+    float ref = caster_alpha.w;
+    int func = (int)caster_alpha.z;
+    bool alpha_pass = func == 7 ||
+        (func == 1 && alpha < ref) ||
+        (func == 2 && alpha == ref) ||
+        (func == 3 && alpha <= ref) ||
+        (func == 4 && alpha > ref) ||
+        (func == 5 && alpha != ref) ||
+        (func == 6 && alpha >= ref);
+    if (!alpha_pass) discard;
+}
+)";
+
+std::string sunCasterSource(unsigned weights, bool texcoord)
+{
+    return "#define WEIGHTS " + std::to_string(weights) + "\n#define TEXCOORD " +
+        (texcoord ? "1" : "0") + "\n" + kSunCasterShader;
+}
+
+/* The vertex shader and input layout for one FVF and bone count, built on first use;
+   a failure is remembered so the draw keeps taking submitDraw. */
+const SunCasterLayout *lookupSunCaster(RecompD3dPresenter *presenter,
+    const RecompD3dPresenterDrawCommand &draw, const RecompD3dVertexLayout &layout)
+{
+    auto &sun = presenter->sun;
+    if (!sun.caster_constants && !sun.caster_failed) {
+        sun.caster_failed = true;
+        D3D11_BUFFER_DESC desc{};
+        desc.ByteWidth = 68*sizeof(float);
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        ID3DBlob *blob = nullptr;
+        const std::string source = sunCasterSource(0, true);
+        if (compileDrawShader(source.c_str(), "ps_main", "ps_4_0", &blob) &&
+            SUCCEEDED(presenter->device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+                nullptr, &sun.caster_alpha)) &&
+            SUCCEEDED(presenter->device->CreateBuffer(&desc, nullptr, &sun.caster_constants)))
+            sun.caster_failed = false;
+        releaseCom(blob);
+        if (sun.caster_failed) { releaseCom(sun.caster_alpha); releaseCom(sun.caster_constants); }
+    }
+    if (sun.caster_failed) return nullptr;
+    for (const auto &caster : sun.caster_layouts)
+        if (caster.fvf == draw.fvf && caster.weights == draw.blend_weight_count)
+            return caster.input ? &caster : nullptr;
+    SunCasterLayout created{draw.fvf, draw.blend_weight_count, nullptr, nullptr};
+    const bool texcoord = layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
+    D3D11_INPUT_ELEMENT_DESC elements[3]{};
+    UINT count = 0u;
+    elements[count++] = {"POSITION", 0u, DXGI_FORMAT_R32G32B32_FLOAT, 0u,
+        layout.position_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+    if (draw.blend_weight_count) {
+        const DXGI_FORMAT formats[] = {DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT};
+        elements[count++] = {"BLENDWEIGHT", 0u, formats[draw.blend_weight_count - 1u], 0u,
+            12u, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+    }
+    if (texcoord) elements[count++] = {"TEXCOORD", 0u, DXGI_FORMAT_R32G32_FLOAT, 0u,
+        layout.texcoord_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
+    ID3DBlob *blob = nullptr;
+    const std::string source = sunCasterSource(draw.blend_weight_count, texcoord);
+    if (!compileDrawShader(source.c_str(), "vs_main", "vs_4_0", &blob) ||
+        FAILED(presenter->device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+            nullptr, &created.shader)) ||
+        FAILED(presenter->device->CreateInputLayout(elements, count, blob->GetBufferPointer(),
+            blob->GetBufferSize(), &created.input))) {
+        releaseCom(created.input);
+        releaseCom(created.shader);
+    }
+    releaseCom(blob);
+    sun.caster_layouts.push_back(created);
+    return created.input ? &sun.caster_layouts.back() : nullptr;
+}
+
+/* Draws one caster into the sun map with the depth-only pipeline. UNSUPPORTED leaves
+   the draw to submitDraw: fans need its index expansion, and alpha masks, four-tap or
+   framebuffer textures and alpha tests without a sampled texture need its shader. */
+RecompD3dPresenterError submitSunCaster(RecompD3dPresenter *presenter,
+    const RecompD3dPresenterDrawCommand &draw, const float bones[4][16])
+{
+    auto &sun = presenter->sun;
+    // Blended casters cut out at half alpha.
+    const bool blended = draw.blend.blend_enable;
+    const RecompD3dCompareFunc func = blended ? RECOMP_D3D_COMPARE_GREATER : draw.depth.alpha_func;
+    const bool alpha_test = (blended || draw.depth.alpha_test_enable) && func != RECOMP_D3D_COMPARE_ALWAYS;
+    RecompD3dVertexLayout layout;
+    if ((draw.primitive_type != 5u && draw.primitive_type != 6u) || draw.has_alpha_mask ||
+        draw.four_tap_filter || draw.texture_is_backbuffer || draw.texture_is_frontbuffer ||
+        (alpha_test && !draw.has_texture) || !recomp_d3d_fvf_layout(draw.fvf, &layout) ||
+        (alpha_test && layout.texcoord_offset == RECOMP_D3D_FVF_ABSENT) || !ensureSharedDrawState(presenter))
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    const SunCasterLayout *caster = lookupSunCaster(presenter, draw, layout);
+    ID3D11ShaderResourceView *texture = caster && alpha_test ? lookupTexture(presenter, draw) : nullptr;
+    if (!caster || (alpha_test && !texture)) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    float constants[68]{};
+    std::memcpy(constants, bones, 64*sizeof(float));
+    constants[64] = draw.texture.linear && draw.texture.width ? 1.0f/draw.texture.width : 1.0f;
+    constants[65] = draw.texture.linear && draw.texture.height ? 1.0f/draw.texture.height : 1.0f;
+    constants[66] = static_cast<float>(func);
+    constants[67] = blended ? 127.0f : static_cast<float>(draw.depth.alpha_ref);
+    UINT vertex_offset = 0u, index_offset = 0u;
+    if (!uploadRing(presenter, &presenter->draw_vertex_buffer, presenter->draw_vertex_capacity,
+            presenter->draw_vertex_used, draw.vertex_bytes, draw.vertex_stride*draw.vertex_count,
+            D3D11_BIND_VERTEX_BUFFER, vertex_offset) ||
+        !uploadRing(presenter, &presenter->draw_index_buffer, presenter->draw_index_capacity,
+            presenter->draw_index_used, draw.index_bytes, draw.index_count*2u,
+            D3D11_BIND_INDEX_BUFFER, index_offset) ||
+        !uploadBuffer(presenter, sun.caster_constants, constants, sizeof constants))
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    auto *context = presenter->context;
+    if (!sun.caster_bound) {
+        RecompD3dDepthState depth{};
+        depth.depth_test_enable = depth.depth_write_enable = true;
+        depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+        ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, depth);
+        if (depth_state == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        context->OMSetRenderTargets(0, nullptr, sun.depth);
+        const D3D11_VIEWPORT viewport = {0, 0, float(kSunMapSize), float(kSunMapSize), 0, 1};
+        context->RSSetViewports(1, &viewport);
+        context->RSSetState(sun.rasterizer);
+        context->OMSetDepthStencilState(depth_state, 0);
+        context->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
+        context->VSSetConstantBuffers(0, 1, &sun.caster_constants);
+        context->PSSetConstantBuffers(0, 1, &sun.caster_constants);
+        sun.caster_bound = true;
+    }
+    const UINT stride = draw.vertex_stride;
+    context->IASetInputLayout(caster->input);
+    context->IASetVertexBuffers(0, 1, &presenter->draw_vertex_buffer, &stride, &vertex_offset);
+    context->IASetIndexBuffer(presenter->draw_index_buffer, DXGI_FORMAT_R16_UINT, index_offset);
+    context->IASetPrimitiveTopology(draw.primitive_type == 6u ?
+        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(caster->shader, nullptr, 0);
+    context->PSSetShader(alpha_test ? sun.caster_alpha : nullptr, nullptr, 0);
+    if (alpha_test) {
+        ID3D11SamplerState *sampler = lookupDrawSampler(presenter, draw.address_u, draw.address_v);
+        context->PSSetShaderResources(0, 1, &texture);
+        context->PSSetSamplers(0, 1, &sampler);
+    }
+    context->DrawIndexed(draw.index_count, 0, 0);
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
 // Two worker prepasses use the exact same pose replay as visible draws.
 bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
 {
     auto &sun = presenter->sun;
     if (!sun.enabled) return false;
+    // The caster prepass is part of this frame's render cost.
+    if (!presenter->frame_timing) beginFrameCost(presenter);
     sun.epoch = 0;
     sun.casting = casting;
     if (!casting) {
@@ -4691,14 +4880,17 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
     sun.compact.back() = !draw.blend_weight_count &&
         (casts || (std::max)({size[0], size[1], size[2]}) <= 4);
     if (!casts) return;
+    float bones[4][16]{};
+    for (unsigned b = 0; b <= draw.blend_weight_count; ++b)
+        for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c)
+            for (unsigned k = 0; k < 4; ++k) bones[b][r*4+c] += draw.world[b][r*4+k]*sun.projection[k*4+c];
+    RecompD3dPresenterError result = submitSunCaster(presenter, draw, bones);
+    if (result == RECOMP_D3D_PRESENTER_OK) ++sun.casters;
+    if (result != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return;
+    // Fallback through the shared draw shader for what submitSunCaster leaves out.
     RecompD3dPresenterDrawCommand caster = draw;
-    for (unsigned b = 0; b <= draw.blend_weight_count; ++b) {
-        float *out = b ? caster.blend_transforms[b-1] : caster.transform;
-        for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c) {
-            out[r*4+c] = 0;
-            for (unsigned k = 0; k < 4; ++k) out[r*4+c] += draw.world[b][r*4+k]*sun.projection[k*4+c];
-        }
-    }
+    std::memcpy(caster.transform, bones[0], sizeof caster.transform);
+    std::memcpy(caster.blend_transforms, bones[1], sizeof caster.blend_transforms);
     caster.directional.enabled = false;
     caster.has_combiner = caster.has_reflection = false;
     caster.depth.depth_write_enable = true;
@@ -4709,6 +4901,7 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
     }
     caster.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
     caster.depth.stencil_enable = false;
+    sun.caster_bound = false;
     if (submitDraw(presenter, caster) == RECOMP_D3D_PRESENTER_OK) ++sun.casters;
 }
 
@@ -4716,6 +4909,7 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
 {
     auto &sun = presenter->sun;
     sun.casting = false;
+    sun.caster_bound = false;
     sun.epoch = 0;
     sun.valid = sun.valid && sun.casters != 0;
     presenter->context->OMSetRenderTargets(0, nullptr, nullptr);

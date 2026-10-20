@@ -43,6 +43,7 @@ void d3d11_backend_shadow_end(RecompD3dPresenter *) {}
 void d3d11_backend_set_immediate_present(bool) {}
 void d3d11_backend_set_split_presentation(bool) {}
 void d3d11_backend_report_draw_textures() {}
+void recomp_d3d_add_queue_wait_ns(uint64_t) {}
 void d3d11_backend_verify_replay(RecompD3dPresenter *, uint32_t, bool) {}
 uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *, const RecompD3dPresenterCommand *) { return 1; }
 void d3d11_backend_prepare(RecompD3dPresenter *, const RecompD3dPresenterCommand *)
