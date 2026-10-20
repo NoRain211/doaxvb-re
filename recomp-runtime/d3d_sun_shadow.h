@@ -278,7 +278,9 @@ float sunVisibility(float3 p) {
         "\n    float3 sun_world : TEXCOORD8;\n");
     source.insert(source.find("    VSOut output;")+std::strlen("    VSOut output;"),
         "\n    output.sun_world=0;\n");
-    const auto lit = source.find("        output.color.rgb=saturate(rgb);");
+    const char *anchor = "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
+    auto lit = source.find(anchor);
+    if (lit != std::string::npos) lit += std::strlen(anchor);
     // Normal offset (~2.5 texels) keeps grazing surfaces from shadowing themselves at a low sun.
     if (lit != std::string::npos)
         source.insert(lit, "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04;\n");

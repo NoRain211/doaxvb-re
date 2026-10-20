@@ -314,8 +314,24 @@ screen.
 Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
 supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.
+Set `RECOMP_D3D_PIXEL_LIGHTING=1` before launch to evaluate the admitted
+fixed-function directional/point diffuse and ambient lighting per pixel.
+The default remains per vertex. This smooths interpolated normals without
+changing the light or material values; point attenuation and RGB clamping also
+move to the pixel. Unlit, pretransformed, vertex-color and vertex-program draws
+keep their existing paths. Specular and vertex-color lighting remain unsupported.
+
 Set `RECOMP_SPLIT_RATE=auto`, or to your display's refresh rate such as 120 or
 144, to present smoother motion than the game's 60 Hz while gameplay keeps its
 original timing. Use it with `--vsync`. The picture runs one 60 Hz tick
 behind, and some objects such as water still move at 60 Hz. See
 [the split-rate notes](wayfinder/research/high-frame-rate-split.md#current-state).
+Set `RECOMP_D3D_SMOOTH_NORMALS=1` to rebuild area-weighted normals on lit
+indexed fixed-function triangles before upload. Positions within 0.0001 guest
+units share contributions when their original normals are within 60 degrees
+and their skin weights match. UV seams can smooth within a draw; separate
+draws and hard edges stay separate. Incomplete mesh boundaries retain authored
+normals to avoid new seams between draw calls. The option is independent of pixel
+lighting and defaults off. A 32 MiB contents cache invalidates on vertex or
+index changes, including CPU animation. `RECOMP_PERF_COUNTER=1` reports cache
+hits, rebuilds and CPU time at shutdown. Vertex programs retain their inputs.
