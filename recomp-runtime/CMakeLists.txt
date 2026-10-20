@@ -712,6 +712,8 @@ if(RECOMP_PROGRAM_DIR)
         $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
         $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
         $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<BOOL:${NINTENDO_SWITCH}>>>:d3d_presenter_sdl_gpu.cpp>
+        $<$<BOOL:${NINTENDO_SWITCH}>:d3d_presenter_gl.cpp>
+        $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_glsl_shader.cpp>
         $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<BOOL:${NINTENDO_SWITCH}>>>:audio_output_sdl.cpp>
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
@@ -788,6 +790,10 @@ if(RECOMP_PROGRAM_DIR)
             # switch_runner.c supplies main and calls the runner's.
             set_property(SOURCE runner.cpp APPEND PROPERTY
                 COMPILE_DEFINITIONS main=recomp_runner_main)
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(SWITCH_EGL REQUIRED IMPORTED_TARGET egl)
+            # libglad.pc uses a Makefile-style prefix CMake cannot expand.
+            target_link_libraries(recomp_program_runner PRIVATE glad PkgConfig::SWITCH_EGL)
             nx_create_nro(recomp_program_runner)
         else()
             recomp_use_sdl3(recomp_program_runner)
@@ -908,6 +914,7 @@ if(WIN32)
 else()
     add_executable(recomp_d3d_presenter_sdl_gpu_test
         d3d_presenter_sdl_gpu.cpp
+        d3d_glsl_shader.cpp
         d3d_presenter_sdl_gpu_test.cpp
         d3d_vertex_program.cpp
         d3d_draw_model.c

@@ -113,10 +113,9 @@ on the attempt, and its rollback leaves file times to the index.
 ## Game build
 
 `recomp_program_runner` also builds as an NRO from a locally generated
-program, with `switch_runner.c` standing in for graphics, audio and
-controllers: the presenter draws nothing and paces PRESENT to 60 Hz, audio is
-silent, and no controller is connected. Configure as for the PC build, adding
-the toolchain file:
+program. `d3d_presenter_gl.cpp` draws with OpenGL 4.3 through devkitPro's
+Mesa, and `switch_runner.c` supplies silent audio and no controller.
+Configure as for the PC build, adding the toolchain file:
 
 ```powershell
 docker run --rm -v "${PWD}:/src" -w /src devkitpro/devkita64 bash -c "cmake -S recomp-runtime -B build/switch-game -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release -DRECOMP_PROGRAM_DIR=<generated> -DRECOMP_PROGRAM_MANIFEST_SHA256=<sha> -DRECOMP_PROGRAM_EBP_EXPECTED=<count> && cmake --build build/switch-game --target recomp_program_runner_nro -- -j3"
@@ -139,11 +138,29 @@ attract movie at swap 1848, as it does on PC. No cache copy happened before
 the title. libnx cannot detach a thread, so `host_diagnostics.cpp` skips
 its stderr flusher on the Switch.
 
+### Graphics
+
+The GL presenter is a port of the SDL GPU presenter. Both build their GLSL
+with `d3d_glsl_shader.cpp`; the GL presenter drops the Vulkan `set =`
+qualifiers and keeps D3D clip space with `glClipControl`, which devkitPro's
+GL 4.3 glad does not load, so it comes from `eglGetProcAddress`. Mesa
+reports `NV120 | 4.3 (Core Profile) Mesa 20.1.0-rc3` in Eden.
+
+Eden 0.2.1 shows no frame once a draw or a blit has written Mesa's EGL
+window surface; a clear alone presents. The presenter therefore runs a
+surfaceless context, scales the backbuffer into a 1280x720 texture and
+copies it with `glReadPixels` into a libnx framebuffer. With that, the
+title screen renders upright at about 15 fps with about 1,200 draws per
+frame (`RECOMP_PERF_COUNTER=1`). Not yet compared with the PC build: the
+sea behind the island on the title screen is black. Gamma, fog and MSAA are
+not applied, as in the SDL presenter.
+
 ## Open work for a Switch target
 
 1. A libnx platform layer for files, threads, time, audio output and
    controllers, including the file-time record above.
-2. A presentation backend for the D3D8 replacement on the Switch.
+2. Checking the GL presenter against the PC build frame by frame, frame
+   rate, and whether an EGL window surface works on real hardware.
 3. Checking our thread scheduling against Horizon's: which guest threads
    spin, and which host priority and core each one runs on.
 4. Getting past the title screen headless, then real hardware with title
