@@ -10,6 +10,7 @@ struct RecompTuning {
     std::atomic<bool> rtgi_split{false};
     std::atomic<bool> rtgi_off{false};
     std::atomic<bool> paused{false};
+    std::atomic<unsigned> gbuffer_cycles{0}; // F11 presses: game, normal, depth view
 };
 inline RecompTuning recomp_tuning;
 

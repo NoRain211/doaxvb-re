@@ -31,6 +31,7 @@
     "docs/texture-replacement.md",
     "docs/fog.md",
     "docs/sun-shadow.md",
+    "docs/gbuffer.md",
     "docs/title-idle.md",
     "docs/custom-soundtracks.md",
     "docs/native-audio.md",
