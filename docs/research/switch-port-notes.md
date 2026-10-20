@@ -150,11 +150,19 @@ reports `NV120 | 4.3 (Core Profile) Mesa 20.1.0-rc3` in Eden.
 Eden 0.2.1 shows no frame once a draw or a blit has written Mesa's EGL
 window surface; a clear alone presents. The presenter therefore runs a
 surfaceless context, scales the backbuffer into a 1280x720 texture and
-copies it with `glReadPixels` into a libnx framebuffer. With that, the
-title screen renders upright at about 15 fps with about 1,200 draws per
-frame (`RECOMP_PERF_COUNTER=1`). Not yet compared with the PC build: the
-sea behind the island on the title screen is black. Gamma, fog and MSAA are
-not applied, as in the SDL presenter.
+reads it back through two pixel-pack buffers in turn, so each frame copies
+the previous one into a libnx framebuffer. Gamma, fog, MSAA and the generic
+texture combiner are not applied, as in the SDL presenter.
+
+`glClipControl(GL_UPPER_LEFT, ...)` keeps the guest's winding, so culling
+clockwise keeps counter-clockwise faces, as in the other presenters. With
+the opposite mapping the sky, sea and one-sided ground disappeared.
+
+`RECOMP_PERF_COUNTER=1` splits each frame. On the title screen in Eden
+(about 1,200 draws) a frame takes about 80 ms: about 27 ms of presenter work,
+21 ms in the readback and copy to the window, and the rest in the game. A
+lighter scene of about 200 draws runs at 25 fps. `RECOMP_GL_DEBUG=1` logs
+Mesa's errors and warnings; the title screen raises none.
 
 ### Sound
 
