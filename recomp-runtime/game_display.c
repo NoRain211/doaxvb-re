@@ -1,5 +1,6 @@
 #include "game_display.h"
 #include "game_scheduler.h"
+#include "d3d_split_pose.h"
 #include "stop_report.h"
 #include <math.h>
 #include <stdio.h>
@@ -10,7 +11,7 @@
    remain at the completed tick. The main loop rolls every display write back. */
 /* ANGLES are 16-bit angles in 32-bit words; WORDS are signed or wrapping
    32-bit integers such as foliage sway offsets and decorative counters. */
-enum { FLOATS, ANGLES, WORDS, MAX_SAMPLES = 8192 };
+enum { FLOATS, ANGLES, WORDS, MATRIX, MAX_SAMPLES = 8192 };
 typedef struct Sample {
     uint32_t address, kind, count;
     uint32_t before[16], after[16];
@@ -118,9 +119,7 @@ void recomp_game_display_commit(void)
         sample(0x004d700cu + actor * 0xbcu, 3, FLOATS);
         sample(0x004d7004u + actor * 0xbcu, 1, ANGLES);
         for (unsigned bone = 0; bone < 32; ++bone) {
-            /* Blend bone matrices linearly: points two bones share at a joint
-               stay together, where a per-bone slerp opened cracks. */
-            sample(0x004d3650u + actor * 0x800u + bone * 64u, 16, FLOATS);
+            sample(0x004d3650u + actor * 0x800u + bone * 64u, 16, MATRIX);
             sample(0x004d5700u + actor * 0x400u + bone * 32u, 8, FLOATS);
             sample(0x004d6700u + actor * 0x200u + bone * 16u, 4, FLOATS);
         }
@@ -202,6 +201,10 @@ void recomp_game_display_apply(float alpha)
         uint32_t out[16];
         if (memcmp(s->before, s->after, s->count * 4u) == 0) {
             memcpy(out, s->after, s->count * 4u);
+        } else if (s->kind == MATRIX) {
+            if (!recomp_split_rigid_matrix((const float *)s->before,
+                    (const float *)s->after, display_alpha, (float *)out))
+                memcpy(out, s->after, sizeof out);
         } else for (unsigned i = 0; i < s->count; ++i) {
             if (s->kind == ANGLES)
                 out[i] = recomp_game_display_angle(s->before[i], s->after[i], display_alpha);
