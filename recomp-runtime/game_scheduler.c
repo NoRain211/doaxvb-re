@@ -369,6 +369,9 @@ bool recomp_game_tick_hidden(void)
 }
 static int64_t next_tick_ns, pass_start_ns, tick_pass_ns, display_pass_ns, render_ns;
 static uint64_t pass_start_waited_ns;
+/* Vblank waits stretch every pass to a refresh, and presenter-queue waits are
+   render cost (render_ns); neither is game work. */
+static uint64_t waited_ns(void) { return recomp_d3d_vblank_waited_ns() + recomp_d3d_queue_waited_ns(); }
 /* Display passes per tick: all the rate asks for and those run since the
    last tick. pacing.passes is how many currently fit. */
 static unsigned display_steps = 1, display_done;
@@ -384,9 +387,7 @@ static bool next_pass_is_tick(void)
     const int64_t interval = 1000000000 / game_hz;
     int64_t now = now_ns();
     if (pass_start_ns != 0) {
-        /* Work only: vblank waits stretch every pass to a refresh. */
-        const int64_t last = now - pass_start_ns -
-            (int64_t)(recomp_d3d_vblank_waited_ns() - pass_start_waited_ns);
+        const int64_t last = now - pass_start_ns - (int64_t)(waited_ns() - pass_start_waited_ns);
         int64_t *average = timing_tick_pass ? &tick_pass_ns : &display_pass_ns;
         *average = *average ? (*average * 7 + last) / 8 : last;
     }
@@ -400,7 +401,7 @@ static bool next_pass_is_tick(void)
         ++display_done;
         recomp_d3d_count_passes(0, 1, 0);
         pass_start_ns = now;
-        pass_start_waited_ns = recomp_d3d_vblank_waited_ns();
+        pass_start_waited_ns = waited_ns();
         timing_tick_pass = false;
         return false;
     }
@@ -410,7 +411,7 @@ static bool next_pass_is_tick(void)
         else YieldProcessor();
     }
     pass_start_ns = now;
-    pass_start_waited_ns = recomp_d3d_vblank_waited_ns();
+    pass_start_waited_ns = waited_ns();
     timing_tick_pass = true;
     /* ponytail: a stall longer than four ticks (a load) is not caught up. */
     if (now - next_tick_ns > 4 * (int64_t)TICK_NS) next_tick_ns = now;

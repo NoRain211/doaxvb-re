@@ -4652,6 +4652,8 @@ bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
 {
     auto &sun = presenter->sun;
     if (!sun.enabled) return false;
+    // The caster prepass is part of this frame's render cost.
+    if (!presenter->frame_timing) beginFrameCost(presenter);
     sun.epoch = 0;
     sun.casting = casting;
     if (!casting) {

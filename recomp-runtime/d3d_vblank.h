@@ -14,6 +14,10 @@ void recomp_d3d_sleep_until(long long steady_ns);
 /* Total time spent waiting for guest vblanks, so pass pacing can tell work
    from waiting. */
 uint64_t recomp_d3d_vblank_waited_ns(void);
+/* Game-thread time blocked on a full presenter queue. That is render cost,
+   measured separately, so pass pacing counts it as waiting too. */
+uint64_t recomp_d3d_queue_waited_ns(void);
+void recomp_d3d_add_queue_wait_ns(uint64_t ns);
 
 /* Whole-game pacing shared by the game thread and the render worker. */
 void recomp_d3d_count_passes(unsigned ticks, unsigned displays, unsigned dropped);
