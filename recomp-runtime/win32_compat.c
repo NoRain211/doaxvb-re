@@ -783,7 +783,7 @@ BOOL FindNextFileA(
         lpFindFileData->nFileSizeLow = (DWORD)((uint64_t)st.st_size & 0xffffffffu);
         return TRUE;
     }
-    last_error = 18; // ERROR_NO_MORE_FILES
+    last_error = ERROR_NO_MORE_FILES;
     return FALSE;
 }
 
