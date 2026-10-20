@@ -323,6 +323,8 @@ struct RecompD3dPresenter {
     bool window_ready = false;
     GLuint window_texture = 0;
     GLuint window_framebuffer = 0;
+    GLuint readback[2]{}; // pixel-pack buffers, used in turn
+    uint32_t readback_frames = 0;
 #endif
 
     GLuint backbuffer_color = 0;
@@ -377,6 +379,8 @@ struct RecompD3dPresenter {
     std::chrono::steady_clock::time_point second_start{}, last_present{};
     uint32_t second_presents = 0u;
     double second_max_ms = 0.0;
+    double second_submit_ms = 0.0; // inside submit, including the swap
+    double second_swap_ms = 0.0;
 
     float scale = 1.0f;
     bool widescreen = true;
@@ -451,6 +455,12 @@ bool hostCreate(RecompD3dPresenter *p)
     glGenFramebuffers(1, &p->window_framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, p->window_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p->window_texture, 0);
+    glGenBuffers(2, p->readback);
+    for (GLuint buffer : p->readback) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer);
+        glBufferData(GL_PIXEL_PACK_BUFFER, kWindowWidth * kWindowHeight * 4, nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     return true;
 }
 
@@ -461,6 +471,7 @@ void hostDestroy(RecompD3dPresenter *p)
     if (p->display == EGL_NO_DISPLAY) return;
     glDeleteFramebuffers(1, &p->window_framebuffer);
     glDeleteTextures(1, &p->window_texture);
+    glDeleteBuffers(2, p->readback);
     eglMakeCurrent(p->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (p->context != EGL_NO_CONTEXT) eglDestroyContext(p->display, p->context);
     eglTerminate(p->display);
@@ -482,17 +493,35 @@ GLuint hostWindowTarget(RecompD3dPresenter *p, int *width, int *height)
     return p->window_framebuffer;
 }
 
+// Each frame is read into one pixel-pack buffer while the previous frame's
+// buffer, finished by now, goes to the screen: the CPU never waits for the
+// GPU to finish the frame it just submitted, at one frame of extra latency.
 // framebufferEnd queues the frame and waits for a free buffer, which paces
 // presents to the display.
 // shortcut: ignores recomp_d3d_presenter_set_immediate_present.
 void hostSwap(RecompD3dPresenter *p)
 {
-    u32 stride = 0;
-    void *pixels = framebufferBegin(&p->window, &stride);
+    constexpr size_t kRowBytes = kWindowWidth * 4;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, p->window_framebuffer);
-    glPixelStorei(GL_PACK_ROW_LENGTH, static_cast<GLint>(stride / 4u));
-    glReadPixels(0, 0, kWindowWidth, kWindowHeight, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, p->readback[p->readback_frames & 1u]);
+    glReadPixels(0, 0, kWindowWidth, kWindowHeight, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glFlush();
+    if (p->readback_frames++ == 0u) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        return;
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, p->readback[p->readback_frames & 1u]);
+    const auto *source = static_cast<const uint8_t *>(
+        glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, kRowBytes * kWindowHeight, GL_MAP_READ_BIT));
+    u32 stride = 0;
+    auto *pixels = static_cast<uint8_t *>(framebufferBegin(&p->window, &stride));
+    if (source) {
+        for (int y = 0; y < kWindowHeight; ++y) {
+            std::memcpy(pixels + static_cast<size_t>(y) * stride, source + y * kRowBytes, kRowBytes);
+        }
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     framebufferEnd(&p->window);
 }
 
@@ -513,13 +542,30 @@ void reportPerformance(RecompD3dPresenter *presenter)
     const double elapsed_ms = std::chrono::duration<double, std::milli>(now - presenter->second_start).count();
     if (elapsed_ms < 1000.0) return;
     const uint32_t frames = presenter->second_presents - 1u;
-    std::fprintf(stderr, "recomp performance: present=%u fps=%.2f frame_ms=%.3f max_ms=%.1f draws=%u\n",
+    std::fprintf(stderr, "recomp performance: present=%u fps=%.2f frame_ms=%.3f max_ms=%.1f draws=%u"
+        " presenter_ms=%.1f swap_ms=%.1f\n",
         presenter->present_count, frames * 1000.0 / elapsed_ms, elapsed_ms / frames,
-        presenter->second_max_ms, presenter->draw_count / frames);
+        presenter->second_max_ms, presenter->draw_count / frames,
+        (presenter->second_submit_ms - presenter->second_swap_ms) / frames,
+        presenter->second_swap_ms / frames);
     presenter->second_presents = 1u;
     presenter->second_start = now;
     presenter->second_max_ms = 0.0;
+    presenter->second_submit_ms = 0.0;
+    presenter->second_swap_ms = 0.0;
     presenter->draw_count = 0u;
+}
+
+// RECOMP_GL_DEBUG=1: Mesa's error and warning messages, each id once.
+void APIENTRY reportGlMessage(GLenum source, GLenum type, GLuint id, GLenum severity,
+    GLsizei, const GLchar *message, const void *)
+{
+    static std::vector<GLuint> seen;
+    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION || seen.size() >= 256u ||
+        std::find(seen.begin(), seen.end(), id) != seen.end()) return;
+    seen.push_back(id);
+    std::fprintf(stderr, "[presenter] GL debug source=0x%x type=0x%x id=%u severity=0x%x: %s\n",
+        source, type, id, severity, message);
 }
 
 void flushSegment(RecompD3dPresenter *presenter);
@@ -1070,9 +1116,10 @@ void applyDrawState(const DrawState &s)
     } else {
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-        // UPPER_LEFT clip control negates the facing area, so GL winding is
-        // judged with Y up: the guest's on-screen clockwise is GL_CCW.
-        glFrontFace(s.cull_mode == RECOMP_D3D_CULL_CLOCKWISE ? GL_CW : GL_CCW);
+        // UPPER_LEFT clip control negates the facing area, which cancels its
+        // Y flip: GL winding equals the guest's, as in the SDL and D3D11
+        // presenters, so culling clockwise keeps counter-clockwise faces.
+        glFrontFace(s.cull_mode == RECOMP_D3D_CULL_CLOCKWISE ? GL_CCW : GL_CW);
     }
 
     if (s.depth_test_enable) glEnable(GL_DEPTH_TEST);
@@ -1200,6 +1247,11 @@ bool createGlResources(RecompD3dPresenter *p)
         return false;
     }
     clip_control(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
+    if (std::getenv("RECOMP_GL_DEBUG")) {
+        glEnable(GL_DEBUG_OUTPUT);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        glDebugMessageCallback(reportGlMessage, nullptr);
+    }
     glDisable(GL_DITHER);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
@@ -1383,6 +1435,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     if (command == nullptr) {
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
+    struct SubmitTimer {
+        RecompD3dPresenter *p;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~SubmitTimer() {
+            if (p) p->second_submit_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+        }
+    } timer{presenter->performance_counter ? presenter : nullptr};
 
     switch (command->type) {
     case RECOMP_D3D_PRESENTER_COMMAND_CLEAR: {
@@ -1491,7 +1551,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         glCopyImageSubData(presenter->backbuffer_color, GL_TEXTURE_2D, 0, 0, 0, 0,
                            presenter->frontbuffer_copy, GL_TEXTURE_2D, 0, 0, 0, 0, main_w, main_h, 1);
 
+        const auto swap_start = std::chrono::steady_clock::now();
         hostSwap(presenter);
+        presenter->second_swap_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - swap_start).count();
         ++presenter->present_count;
 
         if (presenter->performance_counter) reportPerformance(presenter);
