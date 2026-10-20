@@ -32,6 +32,7 @@ bool recomp_d3d_pose_replay_draw(const RecompD3dPresenterDrawCommand *source,
         for (unsigned j = 0; j < 16; ++j)
             if (!isfinite(pose->palettes[phase][i][j])) return false;
     multiply(pose->view, pose->projection, view_projection);
+    memcpy(result.view_projection, view_projection, sizeof view_projection);
     multiply(pose->palettes[phase][0], pose->view, world_view);
     multiply(world_view, pose->projection, result.transform);
     for (unsigned i = 0; i < pose->count; ++i) {
@@ -42,6 +43,7 @@ bool recomp_d3d_pose_replay_draw(const RecompD3dPresenterDrawCommand *source,
         }
         memcpy(result.directional.world_transforms[i], pose->palettes[phase][i],
             sizeof result.directional.world_transforms[i]);
+        memcpy(result.world[i], pose->palettes[phase][i], sizeof result.world[i]);
         if (result.fog.enabled && result.fog.mode && result.fog.range)
             multiply(pose->palettes[phase][i], pose->view, result.fog_world_view[i]);
         if (result.directional.enabled && !recomp_d3d_normal_transform(

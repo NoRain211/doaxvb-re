@@ -3,14 +3,9 @@
 
 #include <stdio.h>
 
-/* The draw adapter delegates to the guest's generated driver body. The unit
-   test links the adapter for its lookup entry point only, so this stub
-   stands in for that body and simply retires the call. */
-void sub_001E78B0(void)
-{
-    recomp_runtime.registers.esp += 16u;
-}
-
+/* The DrawVerticesUP adapter delegates to the guest's generated driver body.
+   The unit test links the adapter for its lookup entry point only, so this
+   stub stands in for that body and simply retires the call. */
 void sub_001E7750(void)
 {
     recomp_runtime.registers.esp += 20u;

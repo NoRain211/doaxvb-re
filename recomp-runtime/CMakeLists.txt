@@ -105,6 +105,43 @@ if(EXISTS "${_smaa_dir}/SMAA.hlsl")
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR};${_smaa_dir}/Textures")
 endif()
 
+option(RECOMP_ENABLE_RTGI "Build optional hardware ray-traced GI" ON)
+# shortcut: llvm-mingw ships a stub DirectXMath, so RTGI builds with MSVC only; port its math to plain floats to ship it to players.
+if(MSVC AND RECOMP_ENABLE_RTGI)
+    file(GLOB _rtgi_sdk_bins "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64")
+    list(SORT _rtgi_sdk_bins COMPARE NATURAL ORDER DESCENDING)
+    find_program(RECOMP_DXC_EXECUTABLE NAMES dxc HINTS ${_rtgi_sdk_bins})
+    if(RECOMP_DXC_EXECUTABLE)
+        set(_rtgi_enabled TRUE)
+        foreach(_stage IN ITEMS trace temporal spatial)
+            set(_header "${CMAKE_CURRENT_BINARY_DIR}/rtgi_${_stage}_shader.h")
+            string(SUBSTRING "${_stage}" 0 1 _initial)
+            string(TOUPPER "${_initial}" _initial)
+            string(SUBSTRING "${_stage}" 1 -1 _rest)
+            add_custom_command(OUTPUT "${_header}"
+                COMMAND "${RECOMP_DXC_EXECUTABLE}" -T cs_6_5 -E ${_stage}Main -WX -O3
+                    -Fh "${_header}" -Vn kRtgi${_initial}${_rest}Shader
+                    -Fo "${CMAKE_CURRENT_BINARY_DIR}/rtgi_${_stage}_shader.dxil"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/d3d_rtgi.hlsl"
+                DEPENDS d3d_rtgi.hlsl "${RECOMP_DXC_EXECUTABLE}"
+                VERBATIM)
+            list(APPEND _rtgi_headers "${_header}")
+        endforeach()
+        add_custom_target(recomp_rtgi_shaders DEPENDS ${_rtgi_headers})
+        # The presenter test includes the presenter source directly.
+        set_property(SOURCE d3d_presenter_d3d11.cpp d3d_presenter_d3d11_test.cpp
+            d3d_rtgi.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_RTGI)
+    else()
+        message(STATUS "RTGI disabled: DXC was not found")
+    endif()
+elseif(NOT WIN32)
+    message(STATUS "RTGI disabled: Windows is required")
+elseif(NOT MSVC)
+    message(STATUS "RTGI disabled: an MSVC build is required")
+else()
+    message(STATUS "RTGI disabled: RECOMP_ENABLE_RTGI is OFF")
+endif()
+
 set(RECOMP_FUNCTION_SOURCE "" CACHE FILEPATH
     "Authenticated generated function source to compile")
 set(RECOMP_FUNCTION_SHA256 "" CACHE STRING
@@ -241,6 +278,31 @@ add_executable(recomp_runtime_test
     symbolic_link_model.c
     symbolic_link_model_test.c
     xapi_time_adapter.cpp
+    game_scheduler.c
+    game_display.c
+    game_rollback.c
+    game_frame_replay.c
+    game_scene.c
+    game_world.c
+    game_world_timers.c
+    game_world_motion.c
+    game_world_wave.c
+    game_actor.c
+    game_secondary.c
+    game_actor_transition.c
+    game_scene_test.c
+    game_actor_test.c
+    game_world_test.c
+    game_camera.c
+    game_camera_smoothing.c
+    game_camera_timers.c
+    game_camera_script.c
+    game_camera_test.c
+    game_environment.c
+    game_environment_test.c
+    game_input.c
+    game_input_test.c
+    game_scheduler_test.c
     program_manual.c
     animation_track.c
     animation_track_adapter.c
@@ -540,6 +602,24 @@ if(RECOMP_PROGRAM_DIR)
         controller_settings.cpp
         program_adapters.c
         xapi_time_adapter.cpp
+        game_scheduler.c
+        game_display.c
+    game_rollback.c
+        game_frame_replay.c
+        game_scene.c
+        game_world.c
+        game_world_timers.c
+        game_world_motion.c
+        game_world_wave.c
+        game_actor.c
+        game_secondary.c
+        game_actor_transition.c
+        game_camera.c
+        game_camera_smoothing.c
+        game_camera_timers.c
+        game_camera_script.c
+        game_environment.c
+        game_input.c
         program_manual.c
         animation_track.c
         animation_track_adapter.c
@@ -571,6 +651,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_render_state_model.c
         d3d_render_state_adapter.c
         d3d_texture_model.c
@@ -661,6 +742,33 @@ if(RECOMP_PROGRAM_DIR)
     endif()
 endif()
 
+option(RECOMP_BUILD_DXR_SMOKE_TEST "Build the hardware DXR 1.1 smoke test" OFF)
+if(RECOMP_BUILD_DXR_SMOKE_TEST)
+    if(NOT WIN32)
+        message(FATAL_ERROR "The DXR smoke test requires Windows")
+    endif()
+    if(NOT RECOMP_DXC_EXECUTABLE)
+        find_program(RECOMP_DXC_EXECUTABLE NAMES dxc REQUIRED)
+    endif()
+    set(_dxr_shader "${CMAKE_CURRENT_BINARY_DIR}/dxr_smoke_shader.h")
+    set(_dxr_image_shader "${CMAKE_CURRENT_BINARY_DIR}/dxr_image_shader.h")
+    add_custom_command(OUTPUT "${_dxr_shader}" "${_dxr_image_shader}"
+        COMMAND "${RECOMP_DXC_EXECUTABLE}" -T cs_6_5 -E main -WX -O3
+            -Fh "${_dxr_shader}" -Vn kDxrSmokeShader
+            -Fo "${CMAKE_CURRENT_BINARY_DIR}/dxr_smoke_shader.dxil"
+            "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_dxr_smoke_test.hlsl"
+        COMMAND "${RECOMP_DXC_EXECUTABLE}" -T cs_6_5 -E imageMain -WX -O3
+            -Fh "${_dxr_image_shader}" -Vn kDxrImageShader
+            -Fo "${CMAKE_CURRENT_BINARY_DIR}/dxr_image_shader.dxil"
+            "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_dxr_smoke_test.hlsl"
+        DEPENDS d3d12_dxr_smoke_test.hlsl "${RECOMP_DXC_EXECUTABLE}"
+        VERBATIM)
+    add_executable(recomp_dxr_smoke_test d3d12_dxr_smoke_test.cpp
+        "${_dxr_shader}" "${_dxr_image_shader}")
+    target_include_directories(recomp_dxr_smoke_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(recomp_dxr_smoke_test PRIVATE d3d11 d3d12 d3dcompiler dxgi)
+endif()
+
 if(WIN32)
     add_executable(recomp_texture_replacement_test
         texture_replacement_test.cpp d3d_presenter_capture.cpp
@@ -674,6 +782,7 @@ if(WIN32)
         ../xbe/sha.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_draw_model.c
         d3d_render_state_model.c
         d3d_texture_model.c)
@@ -696,6 +805,7 @@ if(WIN32)
         texture_replacement.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
+        d3d_smooth_normals.cpp
         d3d_draw_model.c
         d3d_render_state_model.c
         d3d_texture_model.c)
@@ -740,6 +850,8 @@ if(WIN32)
     target_link_libraries(recomp_sha_test PRIVATE bcrypt)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
+add_executable(recomp_d3d_smooth_normals_test
+    d3d_smooth_normals.cpp d3d_smooth_normals_test.cpp)
 
 add_executable(recomp_d3d_presenter_capture_test
     d3d_presenter_capture.cpp d3d_presenter_capture_test.cpp)
@@ -767,6 +879,21 @@ if(NOT MSVC)
     target_link_libraries(recomp_animation_pose_test PRIVATE m)
     target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
 endif()
+if(_rtgi_enabled)
+    foreach(_target IN ITEMS recomp_program_runner recomp_d3d_presenter_thread_test
+            recomp_d3d_presenter_d3d11_test)
+        if(TARGET ${_target})
+            target_sources(${_target} PRIVATE d3d_rtgi.cpp)
+            add_dependencies(${_target} recomp_rtgi_shaders)
+            target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+            target_link_libraries(${_target} PRIVATE d3d12)
+        endif()
+    endforeach()
+    add_executable(recomp_rtgi_test d3d_rtgi_test.cpp d3d_rtgi.cpp d3d_draw_model.c)
+    add_dependencies(recomp_rtgi_test recomp_rtgi_shaders)
+    target_include_directories(recomp_rtgi_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(recomp_rtgi_test PRIVATE d3d11 d3d12 d3dcompiler dxgi)
+endif()
 
 include(CTest)
 add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test)
@@ -775,11 +902,27 @@ add_test(NAME recomp-runtime-cpu-exhibition COMMAND recomp_cpu_exhibition_test)
 add_test(NAME recomp-runtime-title-idle COMMAND recomp_title_idle_test)
 add_test(NAME recomp-runtime-title-idle-unexpected-table COMMAND recomp_title_idle_test --unexpected-table)
 add_test(NAME recomp-runtime-title-idle-cpu-exhibition COMMAND recomp_title_idle_test --cpu-exhibition)
+add_test(NAME recomp-runtime-title-idle-cut-hold COMMAND recomp_title_idle_test --cut-hold)
 add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
 add_test(NAME recomp-runtime-animation-pose COMMAND recomp_animation_pose_test)
 add_test(NAME recomp-runtime-pose-replay COMMAND recomp_d3d_pose_replay_test)
+add_test(NAME recomp-runtime-smooth-normals COMMAND recomp_d3d_smooth_normals_test)
 add_test(NAME recomp-runtime-custom-music COMMAND recomp_runtime_test --custom-music)
 set_tests_properties(recomp-runtime-custom-music PROPERTIES SKIP_RETURN_CODE 77)
+if(TARGET recomp_rtgi_test)
+    add_test(NAME recomp-runtime-rtgi COMMAND recomp_rtgi_test)
+    set_tests_properties(recomp-runtime-rtgi PROPERTIES
+        LABELS "gpu;dxr" TIMEOUT 60 SKIP_RETURN_CODE 77)
+endif()
+if(TARGET recomp_dxr_smoke_test)
+    add_test(NAME recomp-runtime-dxr-smoke COMMAND recomp_dxr_smoke_test)
+    add_test(NAME recomp-runtime-dx11-fallback COMMAND recomp_dxr_smoke_test --dx11-only)
+    add_test(NAME recomp-runtime-dx11-warp-fallback COMMAND recomp_dxr_smoke_test --dx11-warp)
+    set_tests_properties(recomp-runtime-dxr-smoke PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 30 LABELS "gpu;dxr")
+    set_tests_properties(recomp-runtime-dx11-fallback recomp-runtime-dx11-warp-fallback
+        PROPERTIES TIMEOUT 30 LABELS "gpu;dx11")
+endif()
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)

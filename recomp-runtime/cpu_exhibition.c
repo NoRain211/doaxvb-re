@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -112,13 +113,24 @@ enum {
 /* No screen to go to, and no exit code stored. */
 static const uint32_t MENU_NONE = 0xFFFFFFFFu;
 
+/* RECOMP_CPU_EXHIBITION_COURT=0..9 pins the court for repeatable test runs;
+   any other value leaves it random. */
+static int pinned_court(void)
+{
+    const char *value = getenv("RECOMP_CPU_EXHIBITION_COURT");
+
+    return value != NULL && value[0] >= '0' && value[0] <= '9' && value[1] == '\0' ?
+        value[0] - '0' : -1;
+}
+
 /* Private xorshift32 state, so no shared C runtime rand state is touched. */
 static uint32_t random_below(uint32_t count)
 {
     static uint32_t state;
 
     if (state == 0u) {
-        state = (uint32_t)time(NULL) | 1u;
+        /* A pinned court is a test run: the same cast every time. */
+        state = pinned_court() >= 0 ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
     }
     state ^= state << 13;
     state ^= state >> 17;
@@ -208,7 +220,8 @@ static void leave_mode(uint8_t scene)
 static bool cast_match(void)
 {
     unsigned girls[GIRL_COUNT];
-    const unsigned court = random_below(COURT_COUNT);
+    const int pinned = pinned_court();
+    const unsigned court = pinned >= 0 ? (unsigned)pinned : random_below(COURT_COUNT);
 
     for (unsigned i = 0; i < GIRL_COUNT; ++i) {
         girls[i] = i;

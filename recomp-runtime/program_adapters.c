@@ -252,10 +252,26 @@ RecompFunction recomp_kernel_startup(uint32_t ordinal)
 
 RecompFunction recomp_program_lookup(uint32_t guest_address)
 {
+    /* Every indirect call resolves here, and the manual chain is long. Manual
+       and generated results are fixed once their environment reads are done.
+       Kernel thunks stay uncached: one is time-dependent and the kernel
+       lookup records each call. */
+    static _Thread_local struct {
+        uint32_t address;
+        RecompFunction function;
+    } cache[4096];
+    const bool kernel = (guest_address & 0xffff0000u) == 0x80000000u;
+    const size_t slot = (guest_address >> 2 ^ guest_address >> 14) & 4095u;
+    if (!kernel && cache[slot].function != NULL && cache[slot].address == guest_address)
+        return cache[slot].function;
     RecompFunction function = recomp_lookup_manual(guest_address);
 
     if (function == NULL) {
         function = recomp_lookup(guest_address);
+    }
+    if (function != NULL && !kernel) {
+        cache[slot].address = guest_address;
+        cache[slot].function = function;
     }
     if (function == NULL) {
         function = recomp_lookup_kernel(guest_address);

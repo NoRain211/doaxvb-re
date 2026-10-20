@@ -129,6 +129,10 @@ into this repository.
   pass. Recent PRs land as GitHub merge commits.
 - Release notes and `CHANGELOG.md` name each real fix with its issue or PR.
   Update `docs/public-status.md` with what the release proves.
+- When project status, host targets, toolchain or supported original release
+  changes, update root `.recomp.json` in the same change. Keep its claims
+  consistent with `docs/public-status.md` and `docs/building.md`, and validate
+  it against the schema named in its `$schema` field.
 - The `readme-media` release hosts the README images. Keep it.
 
 ## Agent skills
