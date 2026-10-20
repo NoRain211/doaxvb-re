@@ -1,3 +1,4 @@
+#include "game_scheduler.h"
 #include "d3d_frame_adapter.h"
 #include "cri_service_adapter.h"
 #include "d3d_draw_adapter.h"
@@ -226,9 +227,14 @@ void recomp_d3d_clear_adapter(void)
     if (!recomp_d3d_frame_adapter_target(&result.command.data.clear.target)) {
         recomp_stop(2, "d3d-clear:render-target");
     }
-    presenter_error = recomp_d3d_presenter_submit(
-        presenter, &result.command);
+    /* A hidden tick's backbuffer is redrawn by the next display pass. */
+    presenter_error = recomp_game_tick_hidden() &&
+            !result.command.data.clear.target.offscreen
+        ? RECOMP_D3D_PRESENTER_OK
+        : recomp_d3d_presenter_submit(presenter, &result.command);
     recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
+    /* A recorded UI owner's depth clear must replay before its 3D draws. */
+    if (presenter_error == RECOMP_D3D_PRESENTER_OK) recomp_d3d_draw_adapter_notify(&result.command);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,
@@ -277,6 +283,12 @@ void recomp_d3d_swap_adapter(void)
         if (tick_count != NULL) {
             *tick_count += MILLISECONDS_PER_SWAP;
         }
+    }
+
+    if (recomp_game_tick_hidden()) {
+        recomp_runtime.registers.eax = result.command.data.present.swap_counter;
+        recomp_runtime.registers.esp = entry_esp + 8u;
+        return;
     }
 
     /* Round 27. Rounds 22-26 measured every guest selector the scene and

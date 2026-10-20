@@ -44,6 +44,9 @@ again. The title screen stays for 30 seconds.
   game's 328, whether or not a save owns it. The court is one of the ten
   Exhibition courts, chosen at random.
 - A match is a full 7 point match, the Exhibition default.
+- `RECOMP_CPU_EXHIBITION_COURT=0`..`9` pins the court for test runs and fixes
+  the cast's random seed. Observed courts: 2 Zack Island dusk, 5 Private Beach
+  dusk.
 - When a match ends, its results stay up for five seconds and the next match
   loads with a new cast, court and swimsuits.
 - START on any controller ends the matches and shows the title screen, and

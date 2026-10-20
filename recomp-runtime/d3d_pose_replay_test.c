@@ -46,6 +46,9 @@ int main(void)
         for (unsigned i = 0; i < pose.count; ++i)
             CHECK(memcmp(result.directional.world_transforms[i],
                 pose.palettes[phase][i], sizeof pose.palettes[phase][i]) == 0);
+        for (unsigned i = 0; i < pose.count; ++i)
+            CHECK(memcmp(result.world[i], pose.palettes[phase][i], sizeof result.world[i]) == 0);
+        CHECK(result.view_projection[0] == 2 && result.view_projection[13] == 3);
         CHECK(result.reflection_normal[10] == 1);
         CHECK(result.vertex_bytes == vertices);
         CHECK(memcmp(&source, &before, sizeof source) == 0);
