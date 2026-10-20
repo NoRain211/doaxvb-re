@@ -10,7 +10,31 @@
 #include <fnmatch.h>
 #include <sys/file.h>
 #include <sys/time.h>
+#ifdef __SWITCH__
+#include <sys/types.h>
+/* shortcut: Horizon's filesystem has no extended attributes, so only the
+   read-only bit survives; keep the rest in a sidecar if the game needs it. */
+static ssize_t getxattr(const char *path, const char *name, void *value, size_t size)
+{
+    (void)path; (void)name; (void)value; (void)size;
+    errno = ENOTSUP;
+    return -1;
+}
+static int setxattr(const char *path, const char *name, const void *value, size_t size, int flags)
+{
+    (void)path; (void)name; (void)value; (void)size; (void)flags;
+    errno = ENOTSUP;
+    return -1;
+}
+static int fsetxattr(int fd, const char *name, const void *value, size_t size, int flags)
+{
+    (void)fd; (void)name; (void)value; (void)size; (void)flags;
+    errno = ENOTSUP;
+    return -1;
+}
+#else
 #include <sys/xattr.h>
+#endif
 
 typedef struct RecompWin32FileLock {
     uint64_t offset;
@@ -968,7 +992,13 @@ BOOL SetFileInformationByHandle(
                 tv[1].tv_sec = STAT_MTIME(st).tv_sec;
                 tv[1].tv_usec = (suseconds_t)(STAT_MTIME(st).tv_nsec / 1000);
             }
+#ifdef __SWITCH__
+            /* shortcut: Horizon's filesystem cannot set file times, so they are
+               dropped; record them in a sidecar before the game's cache check needs them. */
+            (void)tv;
+#else
             futimes(h->fd, tv);
+#endif
         }
         return TRUE;
     }

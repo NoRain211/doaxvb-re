@@ -409,6 +409,14 @@ endif()
 target_compile_definitions(recomp_runtime_test PRIVATE
     RECOMP_D3D_FRAME_ENABLED RECOMP_DSOUND_TEST_CLOCK)
 
+if(NINTENDO_SWITCH)
+    # An NRO has no command line; switch_test_main.c runs the default suite.
+    set_property(SOURCE runtime_test.c APPEND PROPERTY
+        COMPILE_DEFINITIONS main=recomp_runtime_test_main)
+    target_sources(recomp_runtime_test PRIVATE switch_test_main.c)
+    nx_create_nro(recomp_runtime_test)
+endif()
+
 if(_recomp_test_uses_public_fixture)
     target_compile_definitions(recomp_runtime_test PRIVATE
         RECOMP_PUBLIC_LEAF_FIXTURE)
