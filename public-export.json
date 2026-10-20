@@ -87,6 +87,7 @@
     "tools/xboxrecomp-patches/**",
     "xbe/**",
     "docs/research/rollback-engine-audit.md",
+    "docs/research/switch-port-notes.md",
     "tools/check-rollback-seal-span.c",
     "tools/recomp-net-patches/README.md",
     "tools/recomp-net-patches/rollback-seals.patch",
