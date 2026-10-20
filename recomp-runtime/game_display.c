@@ -123,6 +123,10 @@ void recomp_game_display_commit(void)
             sample(0x004d5700u + actor * 0x400u + bone * 32u, 8, FLOATS);
             sample(0x004d6700u + actor * 0x200u + bone * 16u, 4, FLOATS);
         }
+        /* The second bank, derived from the first at 0x000AE3F0, feeds joint
+           deformation; left at the tick's pose it cracked joints open. */
+        for (unsigned bone = 0; bone < 32; ++bone)
+            sample(0x004d72f0u + actor * 0x800u + bone * 64u, 16, MATRIX);
         if (active != actor_active[actor] || type != actor_type[actor] ||
             recomp_game_display_jump((const float *)samples[first].before,
                 (const float *)samples[first].after, 0.5f)) snap(first, cursor);
