@@ -307,9 +307,16 @@ bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float size[3], bool
         layout.stride > draw.vertex_stride || draw.blend_weight_count > 3 ||
         (draw.blend_weight_count && draw.blend_weight_count != layout.blend_weight_count)) return false;
     float minimum[3] = {INFINITY, INFINITY, INFINITY}, maximum[3] = {-INFINITY, -INFINITY, -INFINITY};
+    // Indexed lists repeat most vertices; transform each referenced one once.
+    thread_local std::vector<uint32_t> seen;
+    thread_local uint32_t stamp;
+    if (seen.size() < draw.vertex_count) seen.resize(draw.vertex_count);
+    if (++stamp == 0) { std::fill(seen.begin(), seen.end(), 0u); stamp = 1; }
     for (unsigned i = 0; i < draw.index_count; ++i) {
         const unsigned v = static_cast<const uint16_t *>(draw.index_bytes)[i];
         if (v >= draw.vertex_count) return false;
+        if (seen[v] == stamp) continue;
+        seen[v] = stamp;
         float vertex[6]{};
         std::memcpy(vertex, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v)*draw.vertex_stride,
             (3+draw.blend_weight_count)*sizeof(float));
