@@ -691,6 +691,7 @@ if(RECOMP_PROGRAM_DIR)
         suit_switch.c
         suit_switch_adapter.c
         overlay_text.c
+        unlock_swimsuits.c
         d3d_creation_model.c
         d3d_creation_adapter.c
         d3d_draw_model.c
@@ -944,6 +945,7 @@ if(WIN32)
 endif()
 add_executable(recomp_viewer_scene_test viewer_scene.c viewer_scene_test.c)
 add_executable(recomp_suit_switch_test suit_switch.c suit_switch_test.c)
+add_executable(recomp_unlock_swimsuits_test unlock_swimsuits_test.c)
 add_executable(recomp_animation_skeleton_test animation_skeleton_test.c)
 add_executable(recomp_animation_pose_test animation_pose.c animation_skeleton.c animation_pose_test.c)
 add_executable(recomp_d3d_pose_replay_test d3d_pose_replay.c d3d_pose_replay_test.c d3d_draw_model.c)
@@ -983,6 +985,7 @@ add_test(NAME recomp-runtime-viewer-scene COMMAND recomp_viewer_scene_test)
 add_test(NAME recomp-runtime-suit-switch COMMAND recomp_suit_switch_test)
 add_test(NAME recomp-runtime-title-idle-unexpected-table COMMAND recomp_title_idle_test --unexpected-table)
 add_test(NAME recomp-runtime-title-idle-cpu-exhibition COMMAND recomp_title_idle_test --cpu-exhibition)
+add_test(NAME recomp-runtime-unlock-swimsuits COMMAND recomp_unlock_swimsuits_test)
 add_test(NAME recomp-runtime-title-idle-cut-hold COMMAND recomp_title_idle_test --cut-hold)
 add_test(NAME recomp-runtime-animation-skeleton COMMAND recomp_animation_skeleton_test)
 add_test(NAME recomp-runtime-animation-pose COMMAND recomp_animation_pose_test)

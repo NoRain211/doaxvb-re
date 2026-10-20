@@ -19,8 +19,8 @@ namespace {
 // Everything is laid out on a 640x400 canvas and scaled by whole numbers,
 // so SDL's 8x8 debug font stays sharp: 2x on the Steam Deck's 1280x800.
 constexpr int kWidth = 640, kHeight = 400;
-constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 112, kRowGap = 32;
-constexpr float kButtonY = kFirstRowY + 7 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
+constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 100, kRowGap = 28;
+constexpr float kButtonY = kFirstRowY + 8 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
 
 const int kHeights[] = {480, 720, 1080, 1440, 2160};
 const int kSamples[] = {1, 2, 4, 8};
@@ -29,13 +29,14 @@ const int kVolumes[] = {100, 75, 50, 25, 0};
 const char *const kIdleValues[] = {"default", "no-cutscene", "cpu-exhibition"};
 const char *const kIdleNames[] = {"Default", "No cutscene", "CPU Exhibition"};
 
-enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, DEMO_CUT, FREE_CAMERA, IDLE, PLAY, QUIT, ITEM_COUNT };
+enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, PLAY, QUIT, ITEM_COUNT };
 
 struct Settings {
     int height = 0;
     int msaa = 1;
     int volume = 100;
     bool shuffle = false;
+    bool unlock_swimsuits = false;
     bool demo_cut = false;
     bool free_camera = false;
     int idle = 0;
@@ -69,6 +70,7 @@ Settings loadSettings(const std::string &path)
     if (jsonValue(text, "msaa", value)) settings.msaa = std::atoi(value.c_str());
     if (jsonValue(text, "volume", value)) settings.volume = std::atoi(value.c_str());
     if (jsonValue(text, "shuffle", value)) settings.shuffle = value == "true";
+    if (jsonValue(text, "unlock_swimsuits", value)) settings.unlock_swimsuits = value == "true";
     if (jsonValue(text, "demo_cut_hold", value)) settings.demo_cut = value == "true";
     if (jsonValue(text, "free_camera", value)) settings.free_camera = value == "true";
     if (jsonValue(text, "title_idle", value)) {
@@ -85,6 +87,7 @@ bool saveSettings(const std::string &path, const Settings &settings)
     file << "{\n  \"height\": " << settings.height << ",\n  \"msaa\": " << settings.msaa
          << ",\n  \"smaa\": false,\n  \"volume\": " << settings.volume
          << ",\n  \"shuffle\": " << (settings.shuffle ? "true" : "false")
+         << ",\n  \"unlock_swimsuits\": " << (settings.unlock_swimsuits ? "true" : "false")
          << ",\n  \"demo_cut_hold\": " << (settings.demo_cut ? "true" : "false")
          << ",\n  \"free_camera\": " << (settings.free_camera ? "true" : "false")
          << ",\n  \"title_idle\": \"" << kIdleValues[settings.idle] << "\"\n}\n";
@@ -107,7 +110,7 @@ SDL_FRect itemRect(int item)
 
 struct Launcher {
     SDL_Renderer *renderer = nullptr;
-    int choice[7] = {};
+    int choice[8] = {};
     int selected = PLAY;
 
     std::string valueText(int item) const
@@ -127,7 +130,7 @@ struct Launcher {
     void change(int item, int step)
     {
         static const int counts[] = {static_cast<int>(std::size(kHeights)),
-            static_cast<int>(std::size(kSamples)), static_cast<int>(std::size(kVolumes)), 2, 2, 2,
+            static_cast<int>(std::size(kSamples)), static_cast<int>(std::size(kVolumes)), 2, 2, 2, 2,
             static_cast<int>(std::size(kIdleValues))};
         if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
@@ -175,7 +178,7 @@ struct Launcher {
         centered(82, "Native port settings", kMuted);
 
         static const char *labels[] = {"Resolution", "Anti-aliasing", "Volume", "Shuffle music",
-            "Shorter demo cuts", "Free camera", "Title screen idle"};
+            "Unlock swimsuits", "Shorter demo cuts", "Free camera", "Title screen idle"};
         for (int item = RESOLUTION; item < PLAY; ++item) {
             const SDL_FRect row = itemRect(item);
             const bool active = item == selected;
@@ -267,6 +270,7 @@ int main(int argc, char **argv)
     launcher.choice[MSAA] = indexOf(kSamples, settings.msaa, 0);
     launcher.choice[VOLUME] = indexOf(kVolumes, settings.volume, 0);
     launcher.choice[SHUFFLE] = settings.shuffle ? 1 : 0;
+    launcher.choice[UNLOCK] = settings.unlock_swimsuits ? 1 : 0;
     launcher.choice[DEMO_CUT] = settings.demo_cut ? 1 : 0;
     launcher.choice[FREE_CAMERA] = settings.free_camera ? 1 : 0;
     launcher.choice[IDLE] = settings.idle;
@@ -356,6 +360,7 @@ int main(int argc, char **argv)
         settings.msaa = kSamples[launcher.choice[MSAA]];
         settings.volume = kVolumes[launcher.choice[VOLUME]];
         settings.shuffle = launcher.choice[SHUFFLE] != 0;
+        settings.unlock_swimsuits = launcher.choice[UNLOCK] != 0;
         settings.demo_cut = launcher.choice[DEMO_CUT] != 0;
         settings.free_camera = launcher.choice[FREE_CAMERA] != 0;
         settings.idle = launcher.choice[IDLE];

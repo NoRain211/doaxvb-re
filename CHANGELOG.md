@@ -14,6 +14,11 @@
   random girls in random swimsuits on a random court, one match after
   another until START is pressed. With Default nothing changes. See
   `docs/title-idle.md`.
+- **Unlock swimsuits** (#112). An opt-in launcher option, or
+  `RECOMP_UNLOCK_SWIMSUITS=1`, offers every girl in Exhibition every
+  swimsuit she can wear, 307 of the game's 328. Vacations and saves are left
+  untouched. Off by default, and with it off nothing changes. See
+  `docs/swimsuit-unlock.md`.
 - **Demo cut hold**. A **Shorter demo cuts** launcher option, or
   `RECOMP_DEMO_CUT_HOLD` (1 to 59 frames), shortens the one-second freeze
   between the scenes of the real-time demo. Off by default; the game keeps its

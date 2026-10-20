@@ -76,6 +76,7 @@ running; so far only the startup thread entry has been rewritten.
 | Radio Station shuffle (launcher checkbox) | Added in 0.5.3 |
 | Title screen idle behavior: attract sequence without the movies, or CPU Exhibition matches (launcher choice) | Opt-in; see [`docs/title-idle.md`](docs/title-idle.md) |
 | Free camera, pause anywhere, screenshots, and a MODEL VIEWER main-menu mode: pick a girl, court and time of day, change her animation and swimsuit live (launcher checkbox) | Opt-in; see [`docs/free-camera.md`](docs/free-camera.md) and [`docs/model-viewer.md`](docs/model-viewer.md) |
+| Unlock swimsuits: every swimsuit a girl can wear, in Exhibition (launcher option) | Opt-in; see [`docs/swimsuit-unlock.md`](docs/swimsuit-unlock.md) |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
