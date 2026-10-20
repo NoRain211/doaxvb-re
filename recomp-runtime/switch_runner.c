@@ -1,11 +1,10 @@
-/* Switch host for recomp_program_runner, first boot stage: the game runs
-   with a presenter that draws nothing, silent audio and no controllers, and
-   its log is shown on screen and copied to /doaxbv/log.txt on the SD card.
-   shortcut: no graphics, audio or input yet; replace each with a libnx or
-   deko3d backend behind the same interface. */
+/* Switch host for recomp_program_runner: d3d_presenter_gl.cpp draws, audio
+   is silent and no controller is connected. The log is shown on screen until
+   the presenter takes the window, and is always copied to /doaxbv/log.txt.
+   shortcut: no audio or input yet; replace each with a libnx backend behind
+   the same interface. */
 #define _POSIX_C_SOURCE 200809L /* setenv under the strict C11 build */
 #include "audio_output.h"
-#include "d3d_presenter.h"
 #include "input_host_win32.h"
 
 #include <signal.h>
@@ -13,75 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/iosupport.h>
-#include <time.h>
 #include <unwind.h>
 #include <switch.h>
 
-static void refresh_screen(void);
-
-/* ── Presenter: accepts every command and paces PRESENT to 60 Hz ── */
-
-struct RecompD3dPresenter {
-    struct timespec next_present;
-};
-
-RecompD3dPresenterError recomp_d3d_presenter_create(
-    const RecompD3dPresenterConfig *config, RecompD3dPresenter **presenter)
-{
-    if (config == NULL || presenter == NULL || *presenter != NULL) {
-        return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
-    }
-    *presenter = (RecompD3dPresenter *)calloc(1, sizeof **presenter);
-    if (*presenter == NULL) return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
-    clock_gettime(CLOCK_MONOTONIC, &(*presenter)->next_present);
-    return RECOMP_D3D_PRESENTER_OK;
-}
-
-RecompD3dPresenterError recomp_d3d_presenter_submit(
-    RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command)
-{
-    if (presenter == NULL || command == NULL) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
-    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT) {
-        /* Stands in for vsync, and lets other threads run: Horizon does not
-           time-slice threads of equal priority. */
-        struct timespec *next = &presenter->next_present, now;
-        next->tv_nsec += 16666667L;
-        if (next->tv_nsec >= 1000000000L) {
-            next->tv_nsec -= 1000000000L;
-            next->tv_sec += 1;
-        }
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec > next->tv_sec ||
-            (now.tv_sec == next->tv_sec && now.tv_nsec >= next->tv_nsec)) {
-            *next = now; /* behind: do not burst to catch up */
-        } else {
-            svcSleepThread((next->tv_sec - now.tv_sec) * 1000000000LL +
-                (next->tv_nsec - now.tv_nsec));
-        }
-        refresh_screen();
-    }
-    return RECOMP_D3D_PRESENTER_OK;
-}
-
-RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presenter)
-{
-    if (presenter == NULL || *presenter == NULL) return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
-    free(*presenter);
-    *presenter = NULL;
-    return RECOMP_D3D_PRESENTER_OK;
-}
-
-RecompD3dPresenterError recomp_d3d_presenter_release_memory(
-    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
-{
-    (void)base;
-    (void)size;
-    return presenter != NULL ? RECOMP_D3D_PRESENTER_OK : RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
-}
-
-void recomp_d3d_presenter_set_immediate_present(bool enabled) { (void)enabled; }
-bool recomp_d3d_presenter_split_enabled(void) { return false; }
-void recomp_d3d_presenter_report_draw_textures(void) {}
+void recomp_switch_console_exit(void);
 
 /* ── Audio: no device, so guest audio timing stays as it is ── */
 
@@ -129,13 +63,23 @@ static devoptab_t g_tee;
 static PadState g_pad;
 static Handle g_main_thread;
 static u64 g_last_refresh;
+static bool g_console_active;
+
+/* The GL presenter takes over the window the text console draws into; from
+   then on the log goes only to the SD card. */
+void recomp_switch_console_exit(void)
+{
+    if (!g_console_active) return;
+    g_console_active = false;
+    consoleExit(NULL);
+}
 
 /* libnx aborts if another thread presents the console, so only the thread
    that runs the game refreshes it, at most ten times a second. */
 static void refresh_screen(void)
 {
     u64 now = armGetSystemTick();
-    if (threadGetCurHandle() != g_main_thread ||
+    if (!g_console_active || threadGetCurHandle() != g_main_thread ||
         armTicksToNs(now - g_last_refresh) < 100000000ULL) {
         return;
     }
@@ -145,7 +89,7 @@ static void refresh_screen(void)
 
 static ssize_t tee_write(struct _reent *r, void *fd, const char *ptr, size_t len)
 {
-    ssize_t written = g_console->write_r(r, fd, ptr, len);
+    ssize_t written = g_console_active ? g_console->write_r(r, fd, ptr, len) : (ssize_t)len;
     if (g_log != NULL) {
         fwrite(ptr, 1, len, g_log);
         fflush(g_log);
@@ -157,6 +101,11 @@ static ssize_t tee_write(struct _reent *r, void *fd, const char *ptr, size_t len
 /* Keeps the last lines readable after the runner stops. */
 static void hold_until_plus(void)
 {
+    if (!g_console_active) { /* nothing left on screen to read */
+        if (g_log != NULL) fclose(g_log);
+        g_log = NULL;
+        return;
+    }
     printf("\nRunner stopped. Press + to quit.\n");
     fflush(stdout);
     while (appletMainLoop()) {
@@ -224,6 +173,7 @@ int main(void)
 
     g_main_thread = threadGetCurHandle();
     consoleInit(NULL);
+    g_console_active = true;
     consoleDebugInit(debugDevice_CONSOLE); /* stderr goes nowhere by default */
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&g_pad);
