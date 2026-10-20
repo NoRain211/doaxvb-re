@@ -65,6 +65,8 @@ The active implementation includes:
 - paired monotonic movie timing, color conversion and native SSE helpers;
 - readable source for the per-frame bend of the girls' joint pieces, checked
   against the generated code call by call (see [body joints](body-joints.md));
+- readable source for the blend of the girls' morphing parts (hand gestures,
+  face, chest), checked the same way (see [body morph](body-morph.md));
 - XBE parsing and hashing for authenticated local runners.
 
 Generated game source, private execution receipts, frozen internal reference

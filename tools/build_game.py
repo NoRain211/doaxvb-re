@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
 LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
 LIFTER_REVISION = "7adaf210a89814c5ca4444e4876fccb51b938878"
-RECIPE_SHA256 = "5cecbfb677a7bf7b2eda2cff9e51e341b0f10122d13f03b99315a20c6d76a9a4"
+RECIPE_SHA256 = "132ce89226ec913b95bec03b04c1170b051c6f768b6b8272f350dfbaadabfc3f"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
