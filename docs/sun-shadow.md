@@ -19,11 +19,20 @@ depth interval and matching camera receive shadows.
 
 A single 4096-square D32 shadow map covers a 64-unit box centered 20 units
 along the camera's near ray, with 120 units of light-space depth. The XY fit
-snaps to shadow texels and shadows fade over the outer tenth of the box.
-Receivers offset their lookup 0.04 units along the vertex normal, and the
-compare bias is 0.0002 of light depth, so grazing ground under a low sun does
-not shadow itself. Skinned draws and rigid casters (the ball and scene props) do
-not receive, so models keep the game's shading. Other receivers darken by the
+snaps to shadow texels and shadows fade over the outer tenth of the box. The
+caster pass clamps depth instead of clipping it, so fronds nearer the sun than
+the box still occlude.
+Lit receivers offset their lookup along the per-pixel normal, 0.04 units facing
+the sun and up to 0.07 at grazing angles, and the compare bias is 0.0002 of
+light depth, so grazing ground under a low sun does not shadow itself. Lit
+models (character pieces, skinned or rigid, the ball and posts) receive
+occluder shadows only: they look up from 0.5 units toward the sun, with a
+six-texel (about 40 cm) filter, no normal term and no receiver-plane depth
+correction, which swings near curved silhouettes and left streaky blotches. That lookup moves only the compare
+depth, so palm and post shadows land where they should while nothing within
+half a unit, including the model's own body, shadows it. A normal-faded
+receiver banded at every joint, because limbs are separately lit pieces whose
+normals disagree at the seams. All receivers darken by the
 game's own shadow opacity, taken from last frame's hidden darkening pass,
 because many stages light the sand with a separate rig or mostly baked light.
 When the game drew no shadow last frame (hotel, menus), nothing receives.
@@ -133,10 +142,13 @@ The net keeps its original textured shadow; the posts, poles and vines cast
 into the sun map. The game bakes posts and net into one overlay texture, so on
 upload the three verified overlays keep alpha only in 4x4 blocks near
 hand-measured net lines (top line and side tapes). Every other block gets zero
-alpha. The sun caster pass excludes static, untransformed draws thinner than
-0.15 units across within the net assembly bounds (world X +/-3.6, Z +/-0.4,
-Y -0.5 through 4): the mesh, tapes and ropes. Posts and vine bundles are
-thicker and cast normally. The baked net line follows the game's fixed light,
+alpha. The sun caster pass excludes static, untransformed draws within the
+net assembly bounds (world X +/-3.6, Z +/-0.4, Y -0.5 through 4) that are
+thinner than 0.15 units across, or at least 1 unit wide, at most 1.5 tall and
+under 0.3 deep: the mesh, tapes and ropes. The mesh and top tape sway between
+0.1 and 0.2 deep, so a thickness cutoff alone flipped them into the map on
+some frames. Posts are narrow and vine bundles are taller and 0.4 deep; both
+cast normally. The baked net line follows the game's fixed light,
 so its ends need not meet the posts' sun shadows. The bounds rule needs
 revision if a court moves or rotates the net assembly.
 

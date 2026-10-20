@@ -288,8 +288,10 @@ bool sunNetPart(const RecompD3dPresenterDrawCommand &draw, const float minimum[3
     for (unsigned i = 0; i < 16; ++i)
         if (!std::isfinite(draw.world[0][i]) ||
             std::fabs(draw.world[0][i] - (i%5 == 0 ? 1.0f : 0.0f)) > 1e-5f) return false;
-    // Mesh, tape, side tapes and ropes are under 0.07 units thick; posts and vine bundles exceed 0.2.
-    const bool thin = (std::min)(maximum[0] - minimum[0], maximum[2] - minimum[2]) < 0.15f;
+    // Side tapes and ropes are under 0.15 thick; the mesh and tape sway between 0.1 and 0.2 deep,
+    // so also take wide, short, shallow parts. Posts are narrow; vine bundles are tall and 0.4 deep.
+    const float dx = maximum[0] - minimum[0], dy = maximum[1] - minimum[1], dz = maximum[2] - minimum[2];
+    const bool thin = (std::min)(dx, dz) < 0.15f || (dz < 0.3f && dx >= 1 && dy <= 1.5f);
     return thin && minimum[0] >= -3.6f && maximum[0] <= 3.6f &&
         minimum[1] >= -0.5f && maximum[1] <= 4 && minimum[2] >= -0.4f && maximum[2] <= 0.4f;
 }
@@ -445,7 +447,7 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
     view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     view.Texture2D.MipLevels = 1;
     D3D11_BUFFER_DESC constants{};
-    constants.ByteWidth = 36*sizeof(float);
+    constants.ByteWidth = 40*sizeof(float);
     constants.Usage = D3D11_USAGE_DYNAMIC;
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -458,7 +460,8 @@ bool sunCreate(SunShadow &sun, ID3D11Device *device)
     D3D11_RASTERIZER_DESC rasterizer{};
     rasterizer.FillMode = D3D11_FILL_SOLID;
     rasterizer.CullMode = D3D11_CULL_NONE;
-    rasterizer.DepthClipEnable = TRUE;
+    // Clamp instead of clip: fronds nearer the sun than the box still occlude.
+    rasterizer.DepthClipEnable = FALSE;
     rasterizer.DepthBias = 100;
     rasterizer.SlopeScaledDepthBias = 2;
     if (FAILED(device->CreateTexture2D(&texture, nullptr, &sun.texture)) ||
@@ -482,11 +485,12 @@ cbuffer SunShadow : register(b1) {
     row_major float4x4 sun_projection;
     float4 sun_flags;
     row_major float4x4 sun_object; // world matrix; unlit receivers have no lighting position
+    float4 sun_light; // xyz: unit vector toward the sun
 };
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
-float sunVisibility(float3 p) {
+float sunVisibility(float3 p, float soft, bool plane) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
     float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
     float2 dx = ddx(uv), dy = ddy(uv);
@@ -495,9 +499,10 @@ float sunVisibility(float3 p) {
     if (any(abs(q.xy) >= 1) || q.z <= 0 || q.z >= 1) return 1;
     // One kernel at every distance: taps stay within two texels of each other so a
     // thin distant line cannot fall between them, and near shadows stay sharp.
-    float2 spacing = clamp(footprint/5, 0.6*sun_texel, 2*sun_texel);
+    float2 spacing = clamp(footprint/5, soft*sun_texel, max(soft,2)*sun_texel);
     float determinant = dx.x*dy.y-dx.y*dy.x;
-    float2 slope = abs(determinant) > 1e-12 ?
+    // Receiver-plane depth only suits flat ground; on curved models it swings near silhouettes.
+    float2 slope = plane && abs(determinant) > 1e-12 ?
         float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
     // Each tap blends neighbouring texels, so sloped ground needs one texel of slope as bias.
     float bias = 0.0002 + dot(abs(slope), sun_texel);
@@ -513,21 +518,32 @@ float sunVisibility(float3 p) {
 }
 )");
     source.insert(source.find("struct VSOut {")+std::strlen("struct VSOut {"),
-        "\n    float3 sun_world : TEXCOORD8;\n");
+        "\n    float3 sun_world : TEXCOORD8;\n    float3 sun_normal : TEXCOORD14;\n");
     source.insert(source.find("    VSOut output;")+std::strlen("    VSOut output;"),
-        "\n    output.sun_world=mul(float4(input.position.xyz,1),sun_object).xyz;\n");
+        "\n    output.sun_world=mul(float4(input.position.xyz,1),sun_object).xyz;\n    output.sun_normal=0;\n");
     const char *anchor = "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
     auto lit = source.find(anchor);
     if (lit != std::string::npos) lit += std::strlen(anchor);
-    // Normal offset (~2.5 texels) keeps grazing surfaces from shadowing themselves at a low sun.
     if (lit != std::string::npos)
-        source.insert(lit, "        output.sun_world=world_pos+(dot(n,n)>0 ? n*rsqrt(dot(n,n)) : 0)*0.04;\n");
+        source.insert(lit, "        output.sun_world=world_pos; output.sun_normal=n;\n");
     // Mip averages erase thin net wires before the alpha cutoff.
     source.insert(source.find("    if (draw_flags.y > 0.5f) {"),
         "    if (sun_flags.z > 0 && draw_flags.x > 0.5f)\n"
         "        shaded.a = guest_texture.SampleLevel(guest_sampler, input.texcoord * texture_flags.xy, 0).a;\n");
     source.insert(source.find("    float4 shaded = input.color;"),
-        "    if (sun_flags.x > 0) input.color.rgb *= 1 - sun_flags.y*(1-sunVisibility(input.sun_world));\n");
+        "    if (sun_flags.x > 0) {\n"
+        "        float3 sn = input.sun_normal;\n"
+        "        sn *= dot(sn,sn) > 0 ? rsqrt(dot(sn,sn)) : 0;\n"
+        "        float ndl = dot(sn, sun_light.xyz);\n"
+        // Per-pixel normal offset: ~2.5 texels facing the sun, ~4.5 at grazing angles.
+        "        float visibility = sun_flags.w > 0 ?\n"
+        // Models: look up from half a unit toward the sun, so their own body (under half a
+        // unit thick) never shadows them while palms and posts still do, and skip any normal
+        // term because limb normals break at the joints. A ~40 cm filter keeps frond shade soft.
+        "            sunVisibility(input.sun_world + sun_light.xyz*0.5, 6, false) :\n"
+        "            sunVisibility(input.sun_world + sn*(0.04+0.03*(1-saturate(ndl))), 0.6, true);\n"
+        "        input.color.rgb *= 1 - sun_flags.y*(1-visibility);\n"
+        "    }\n");
 }
 
 } // namespace
