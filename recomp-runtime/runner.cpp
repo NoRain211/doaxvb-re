@@ -41,9 +41,9 @@
 #include <windows.h>
 #endif
 
-namespace {
-
 extern "C" const char *recomp_disc_root_path;
+
+namespace {
 
 #if defined(_WIN32) && defined(RECOMP_FULL_PROGRAM)
 BOOL WINAPI handleConsoleControl(DWORD event)
@@ -453,6 +453,11 @@ const char *importName(RecompImportKind kind)
 #endif
 
 } // namespace
+
+#ifdef __SWITCH__
+/* The build renames main; switch_runner.c owns main and calls this one. */
+extern "C" int main(int argc, char **argv);
+#endif
 
 int main(int argc, char **argv)
 {

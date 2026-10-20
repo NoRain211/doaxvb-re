@@ -1,7 +1,8 @@
 # Switch port notes
 
 Collected 2026-10-20 to help decide whether a Nintendo Switch target is worth
-building. Nothing here has been tried with this runtime.
+building. The sections up to Presentation were written before any Switch
+build; Testing and Game build record what has since run in Eden.
 
 The source is [goon-nx](https://github.com/danfromtico/goon-nx) at commit
 `49c1a00` (2026-10-02), a separate DOAXBV recompilation for the Switch. On
@@ -109,6 +110,35 @@ The test entry creates `sdmc:/tmp`, the default temp directory. The save
 journal's `sync_to_disk` skips directories on the Switch, where Eden crashed
 on the attempt, and its rollback leaves file times to the index.
 
+## Game build
+
+`recomp_program_runner` also builds as an NRO from a locally generated
+program, with `switch_runner.c` standing in for graphics, audio and
+controllers: the presenter draws nothing and paces PRESENT to 60 Hz, audio is
+silent, and no controller is connected. Configure as for the PC build, adding
+the toolchain file:
+
+```powershell
+docker run --rm -v "${PWD}:/src" -w /src devkitpro/devkita64 bash -c "cmake -S recomp-runtime -B build/switch-game -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release -DRECOMP_PROGRAM_DIR=<generated> -DRECOMP_PROGRAM_MANIFEST_SHA256=<sha> -DRECOMP_PROGRAM_EBP_EXPECTED=<count> && cmake --build build/switch-game --target recomp_program_runner_nro -- -j3"
+```
+
+A full build takes about six minutes; Docker with 6 GB of memory manages
+three jobs. The NRO reads the disc from `sdmc:/doaxbv/game/default.xbe`.
+Each line of `sdmc:/doaxbv/args.txt` is one more runner argument, and
+`KEY=VALUE` lines set environment variables. The log is shown on screen and
+written to `sdmc:/doaxbv/log.txt`; when the runner stops, the screen holds
+until + is pressed. An `abort()` prints a backtrace there; subtract
+`main`'s run-time address minus its `.elf` address before passing the
+frames to `aarch64-none-elf-addr2line`.
+
+In Eden 0.2.1 (2026-10-20) the game boots, creates its save folders, plays
+the intro movie and reaches the title screen. With
+`--input-start-pulse-at 6` and `--input-start-pulse-at 8` it skips the
+movie to the title (scene 4 at swap 43), idles there and returns to the
+attract movie at swap 1848, as it does on PC. No cache copy happened before
+the title. libnx cannot detach a thread, so `host_diagnostics.cpp` skips
+its stderr flusher on the Switch.
+
 ## Open work for a Switch target
 
 1. A libnx platform layer for files, threads, time, audio output and
@@ -116,7 +146,5 @@ on the attempt, and its rollback leaves file times to the index.
 2. A presentation backend for the D3D8 replacement on the Switch.
 3. Checking our thread scheduling against Horizon's: which guest threads
    spin, and which host priority and core each one runs on.
-4. A devkitPro AArch64 build. The first target is `recomp_runtime_test` as an
-   NRO in Eden, which needs no game data or renderer. goon-nx builds its NRO
-   in the `ghcr.io/autorunhq/switch-dev` container, about 15 minutes per
-   build.
+4. Getting past the title screen headless, then real hardware with title
+   takeover.
