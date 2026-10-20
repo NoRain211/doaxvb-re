@@ -114,8 +114,8 @@ on the attempt, and its rollback leaves file times to the index.
 
 `recomp_program_runner` also builds as an NRO from a locally generated
 program. `d3d_presenter_gl.cpp` draws with OpenGL 4.3 through devkitPro's
-Mesa, `audio_output_switch.cpp` plays sound, and `switch_runner.c` supplies
-no controller.
+Mesa, `audio_output_switch.cpp` plays sound, and `switch_runner.c` reads
+the controllers.
 Configure as for the PC build, adding the toolchain file:
 
 ```powershell
@@ -166,12 +166,21 @@ sets `RECOMP_AUDIO_GAIN=1` unless `args.txt` sets it. In Eden the device
 opens, the game's first voices submit audible PCM and no buffer is dropped.
 Custom soundtracks stay off: they decode with Windows Media Foundation.
 
+### Controllers
+
+Player N drives guest port N, and port 0 also takes handheld mode. Buttons
+map by label, so A confirms and B goes back as on the Xbox: A, B, X, Y to
+A, B, X, Y; L and R to Black and White; ZL and ZR to the triggers; + and -
+to Start and Back; stick clicks to the thumb buttons. Face buttons and
+triggers are digital (0 or 255). Rumble sends the left motor as the low band
+and the right motor as the high band of HD rumble on Pro Controller,
+Joy-Con pair and handheld styles. Remove `--input-start-pulse-at` from
+`args.txt` to play: scripted pulses replace the controller.
+
 ## Open work for a Switch target
 
-1. Controller input through libnx.
-2. Checking the GL presenter against the PC build frame by frame, frame
+1. Checking the GL presenter against the PC build frame by frame, frame
    rate, and whether an EGL window surface works on real hardware.
-3. Checking our thread scheduling against Horizon's: which guest threads
+2. Checking our thread scheduling against Horizon's: which guest threads
    spin, and which host priority and core each one runs on.
-4. Getting past the title screen headless, then real hardware with title
-   takeover.
+3. Real hardware with title takeover.

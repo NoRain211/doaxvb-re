@@ -1,11 +1,10 @@
 /* Switch host for recomp_program_runner: d3d_presenter_gl.cpp draws,
-   audio_output_switch.cpp plays sound, and no controller is connected. The
-   log is shown on screen until the presenter takes the window, and is always
-   copied to /doaxbv/log.txt.
-   shortcut: no input yet; replace it with a libnx backend behind the same
-   interface. */
+   audio_output_switch.cpp plays sound, and this file reads the controllers.
+   The log is shown on screen until the presenter takes the window, and is
+   always copied to /doaxbv/log.txt. */
 #define _POSIX_C_SOURCE 200809L /* setenv under the strict C11 build */
 #include "input_host_win32.h"
+#include "input_pulse_source.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -17,21 +16,109 @@
 
 void recomp_switch_console_exit(void);
 
-/* ── Input: no controller connected ── */
+/* ── Input: player N drives guest port N; port 0 also takes handheld mode ── */
+
+enum {
+    XBOX_DPAD_UP = 0x0001u,
+    XBOX_DPAD_DOWN = 0x0002u,
+    XBOX_DPAD_LEFT = 0x0004u,
+    XBOX_DPAD_RIGHT = 0x0008u,
+    XBOX_START = 0x0010u,
+    XBOX_BACK = 0x0020u,
+    XBOX_LEFT_THUMB = 0x0040u,
+    XBOX_RIGHT_THUMB = 0x0080u,
+};
+
+static PadState g_pads[RECOMP_INPUT_PORT_COUNT];
+
+static void initialize_pads(void)
+{
+    padConfigureInput(RECOMP_INPUT_PORT_COUNT, HidNpadStyleSet_NpadStandard);
+    padInitializeDefault(&g_pads[0]);
+    for (uint32_t port = 1u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
+        padInitialize(&g_pads[port], (HidNpadIdType)(HidNpadIdType_No1 + port));
+    }
+}
 
 bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
 {
-    (void)port;
-    (void)gamepad;
-    return false;
+    /* Buttons map by label, so A confirms and B goes back as on the Xbox. */
+    static const struct { u64 button; uint16_t mask; } digital[] = {
+        {HidNpadButton_Up, XBOX_DPAD_UP},
+        {HidNpadButton_Down, XBOX_DPAD_DOWN},
+        {HidNpadButton_Left, XBOX_DPAD_LEFT},
+        {HidNpadButton_Right, XBOX_DPAD_RIGHT},
+        {HidNpadButton_Plus, XBOX_START},
+        {HidNpadButton_Minus, XBOX_BACK},
+        {HidNpadButton_StickL, XBOX_LEFT_THUMB},
+        {HidNpadButton_StickR, XBOX_RIGHT_THUMB},
+    };
+    static const struct { u64 button; unsigned index; } pressure[] = {
+        {HidNpadButton_A, RECOMP_INPUT_ANALOG_A},
+        {HidNpadButton_B, RECOMP_INPUT_ANALOG_B},
+        {HidNpadButton_X, RECOMP_INPUT_ANALOG_X},
+        {HidNpadButton_Y, RECOMP_INPUT_ANALOG_Y},
+        {HidNpadButton_L, RECOMP_INPUT_ANALOG_BLACK},
+        {HidNpadButton_R, RECOMP_INPUT_ANALOG_WHITE},
+        {HidNpadButton_ZL, RECOMP_INPUT_ANALOG_LTRIG},
+        {HidNpadButton_ZR, RECOMP_INPUT_ANALOG_RTRIG},
+    };
+    if (gamepad == NULL || port >= RECOMP_INPUT_PORT_COUNT) return false;
+    memset(gamepad, 0, sizeof *gamepad);
+    PadState *pad = &g_pads[port];
+    padUpdate(pad);
+    if (!padIsConnected(pad)) return false;
+
+    u64 held = padGetButtons(pad);
+    for (size_t i = 0; i < sizeof digital / sizeof digital[0]; ++i) {
+        if (held & digital[i].button) gamepad->buttons |= digital[i].mask;
+    }
+    for (size_t i = 0; i < sizeof pressure / sizeof pressure[0]; ++i) {
+        if (held & pressure[i].button) gamepad->analog_buttons[pressure[i].index] = 0xffu;
+    }
+    /* Both sticks report -32767..32767 with up positive, as XInput does. */
+    HidAnalogStickState left = padGetStickPos(pad, 0), right = padGetStickPos(pad, 1);
+    gamepad->thumb_lx = (int16_t)left.x;
+    gamepad->thumb_ly = (int16_t)left.y;
+    gamepad->thumb_rx = (int16_t)right.x;
+    gamepad->thumb_ry = (int16_t)right.y;
+    return true;
 }
 
+/* The game resends both motors every frame, so each value just replaces
+   the last. Left (heavy) drives the low band, right the high band. */
 void recomp_input_host_set_vibration(uint32_t port, uint16_t left_motor, uint16_t right_motor)
 {
-    (void)port; (void)left_motor; (void)right_motor;
+    static HidVibrationDeviceHandle handles[RECOMP_INPUT_PORT_COUNT][2];
+    static u32 handle_key[RECOMP_INPUT_PORT_COUNT];
+    if (port >= RECOMP_INPUT_PORT_COUNT) return;
+    const PadState *pad = &g_pads[port];
+    u32 styles = padGetStyleSet(pad);
+    HidNpadIdType id = port == 0u && padIsHandheld(pad) ?
+        HidNpadIdType_Handheld : (HidNpadIdType)(HidNpadIdType_No1 + port);
+    HidNpadStyleTag style = id == HidNpadIdType_Handheld ? HidNpadStyleTag_NpadHandheld :
+        (styles & HidNpadStyleTag_NpadFullKey) ? HidNpadStyleTag_NpadFullKey :
+        (styles & HidNpadStyleTag_NpadJoyDual) ? HidNpadStyleTag_NpadJoyDual : 0;
+    if (style == 0) return;
+    u32 key = (u32)id << 16 | (u32)style; /* nonzero once initialized */
+    if (handle_key[port] != key) {
+        if (R_FAILED(hidInitializeVibrationDevices(handles[port], 2, id, style))) return;
+        handle_key[port] = key;
+    }
+    HidVibrationValue value = {
+        .amp_low = left_motor / 65535.0f, .freq_low = 160.0f,
+        .amp_high = right_motor / 65535.0f, .freq_high = 320.0f,
+    };
+    HidVibrationValue values[2] = {value, value};
+    hidSendVibrationValues(handles[port], values, 2);
 }
 
-void recomp_input_host_stop_vibration(void) {}
+void recomp_input_host_stop_vibration(void)
+{
+    for (uint32_t port = 0u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
+        recomp_input_host_set_vibration(port, 0u, 0u);
+    }
+}
 
 /* ── Entry: arguments from a file, log on screen and on the SD card ── */
 
@@ -44,7 +131,6 @@ int recomp_runner_main(int argc, char **argv);
 static FILE *g_log;
 static const devoptab_t *g_console;
 static devoptab_t g_tee;
-static PadState g_pad;
 static Handle g_main_thread;
 static u64 g_last_refresh;
 static bool g_console_active;
@@ -93,8 +179,8 @@ static void hold_until_plus(void)
     printf("\nRunner stopped. Press + to quit.\n");
     fflush(stdout);
     while (appletMainLoop()) {
-        padUpdate(&g_pad);
-        if (padGetButtonsDown(&g_pad) & HidNpadButton_Plus) break;
+        padUpdate(&g_pads[0]);
+        if (padGetButtonsDown(&g_pads[0]) & HidNpadButton_Plus) break;
         refresh_screen();
         svcSleepThread(16000000LL);
     }
@@ -159,8 +245,7 @@ int main(void)
     consoleInit(NULL);
     g_console_active = true;
     consoleDebugInit(debugDevice_CONSOLE); /* stderr goes nowhere by default */
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-    padInitializeDefault(&g_pad);
+    initialize_pads();
     g_log = fopen(SWITCH_ROOT "/log.txt", "w");
     g_console = devoptab_list[STD_OUT];
     g_tee = *g_console;
