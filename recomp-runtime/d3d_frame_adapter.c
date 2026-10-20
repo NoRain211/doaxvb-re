@@ -232,6 +232,8 @@ void recomp_d3d_clear_adapter(void)
         ? RECOMP_D3D_PRESENTER_OK
         : recomp_d3d_presenter_submit(presenter, &result.command);
     recomp_d3d_frame_adapter_exit_if_closed(presenter_error);
+    /* A recorded UI owner's depth clear must replay before its 3D draws. */
+    if (presenter_error == RECOMP_D3D_PRESENTER_OK) recomp_d3d_draw_adapter_notify(&result.command);
     if (presenter_error != RECOMP_D3D_PRESENTER_OK) {
         fprintf(
             stderr,

@@ -137,6 +137,11 @@ void recomp_d3d_draw_adapter_observe(RecompD3dDrawObserver observer)
     draw_observer = observer;
 }
 
+void recomp_d3d_draw_adapter_notify(const RecompD3dPresenterCommand *command)
+{
+    if (draw_observer) draw_observer(command);
+}
+
 /* A hidden authoritative tick still runs every guest draw call, but display
    passes redraw the backbuffer before it is shown. Only host work is skipped;
    offscreen targets and recorded frame-owner draws keep the full path. */
@@ -2150,7 +2155,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         goto finished;
     }
     ++draw_submitted;
-    if (draw_observer) draw_observer(&command.data.draw);
+    if (draw_observer) draw_observer(&command);
     record_fvf(result.plan.fvf);
 finished:
     if (decline != NULL) report_decline(decline);
@@ -2318,7 +2323,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         goto finished;
     }
     ++draw_submitted;
-    if (draw_observer) draw_observer(&command.data.draw);
+    if (draw_observer) draw_observer(&command);
     record_fvf(fvf);
     if (reported < 8u) {
         ++reported;

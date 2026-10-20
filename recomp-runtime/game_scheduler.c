@@ -73,21 +73,19 @@ void recomp_game_pass_begin(bool tick, unsigned steps, unsigned substep)
 }
 static RecompGameFrameReplay frame_owner_draws;
 
-static void record_frame_owner_draw(const struct RecompD3dPresenterDrawCommand *draw)
+static void record_frame_owner_draw(const struct RecompD3dPresenterCommand *command)
 {
-    if (!recomp_game_frame_replay_record(&frame_owner_draws, draw))
+    if (!recomp_game_frame_replay_record(&frame_owner_draws, command))
         recomp_stop(1, "game:frame-replay-allocation");
 }
 
 static void replay_frame_owner_draws(void)
 {
-    RecompD3dPresenterCommand command = {.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW};
     /* As in the draw adapter, a rejected draw (including after close) is a
        decline, not a runtime failure. */
     for (unsigned i = 0; i < frame_owner_draws.count; ++i) {
-        command.data.draw = frame_owner_draws.draws[i];
-        if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command) !=
-            RECOMP_D3D_PRESENTER_OK) break;
+        if (recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(),
+                &frame_owner_draws.commands[i]) != RECOMP_D3D_PRESENTER_OK) break;
     }
 }
 
