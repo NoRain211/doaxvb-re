@@ -462,6 +462,14 @@ static void game_loop(void)
         if (!tick) {
             const float alpha = (float)((now_ns() - completed_tick_ns) / (double)TICK_NS);
             recomp_game_display_apply(alpha);
+            /* Joint deformation reads a second bone bank that 0x000AE3F0 derives
+               from the first; rebuild it from the interpolated bones, or joints crack. */
+            const uint32_t saved_eax = recomp_runtime.registers.eax;
+            for (unsigned actor = 0; actor < 4; ++actor) {
+                recomp_runtime.registers.eax = actor;
+                call(0x000ae3f0u);
+            }
+            recomp_runtime.registers.eax = saved_eax;
             *recomp_memory(0x004d56efu, 1) = 1;
             recomp_game_camera_display();
         }
