@@ -11,26 +11,122 @@
 #include <sys/file.h>
 #include <sys/time.h>
 #ifdef __SWITCH__
-#include <sys/types.h>
-/* shortcut: Horizon's filesystem has no extended attributes, so only the
-   read-only bit survives; keep the rest in a sidecar if the game needs it. */
-static ssize_t getxattr(const char *path, const char *name, void *value, size_t size)
+/* Horizon stores no Win32 attributes and cannot set file times, so each
+   directory keeps them for its entries in an index file hidden from listings.
+   A save rollback restores the index with the rest of the directory. */
+#define META_INDEX ".recomp-attrs"
+
+typedef struct FileMeta {
+    uint32_t attributes;
+    uint64_t creation, access, write, change; /* FILETIME units; 0 uses stat */
+} FileMeta;
+
+static void meta_index_path(const char *path, char *index, size_t size, const char **name)
 {
-    (void)path; (void)name; (void)value; (void)size;
-    errno = ENOTSUP;
-    return -1;
+    const char *slash = strrchr(path, '/');
+    *name = slash ? slash + 1 : path;
+    if (slash) snprintf(index, size, "%.*s/" META_INDEX, (int)(slash - path), path);
+    else snprintf(index, size, "./" META_INDEX);
 }
-static int setxattr(const char *path, const char *name, const void *value, size_t size, int flags)
+
+/* The entry name of an index line, or NULL for a malformed line. */
+static const char *meta_line_name(char *line, FileMeta *meta)
 {
-    (void)path; (void)name; (void)value; (void)size; (void)flags;
-    errno = ENOTSUP;
-    return -1;
+    unsigned attributes;
+    unsigned long long creation, access, write, change;
+    int offset = 0;
+
+    line[strcspn(line, "\n")] = '\0';
+    if (sscanf(line, "%x %llu %llu %llu %llu %n", &attributes, &creation, &access,
+            &write, &change, &offset) != 5 || offset == 0) {
+        return NULL;
+    }
+    *meta = (FileMeta){attributes, creation, access, write, change};
+    return line + offset;
 }
-static int fsetxattr(int fd, const char *name, const void *value, size_t size, int flags)
+
+static bool meta_get(const char *path, FileMeta *meta)
 {
-    (void)fd; (void)name; (void)value; (void)size; (void)flags;
-    errno = ENOTSUP;
-    return -1;
+    char index[PATH_MAX], line[PATH_MAX + 128];
+    const char *name, *entry;
+    bool found = false;
+    FILE *file;
+
+    memset(meta, 0, sizeof *meta);
+    meta_index_path(path, index, sizeof index, &name);
+    if ((file = fopen(index, "r")) == NULL) return false;
+    while (!found && fgets(line, sizeof line, file) != NULL) {
+        FileMeta parsed;
+        entry = meta_line_name(line, &parsed);
+        if (entry != NULL && strcmp(entry, name) == 0) {
+            *meta = parsed;
+            found = true;
+        }
+    }
+    fclose(file);
+    return found;
+}
+
+/* Replaces path's entry, or removes it when meta is NULL. An emptied index is
+   deleted so its directory can be removed.
+   shortcut: the index is rewritten in place, so a crash mid-write can lose
+   attributes; write and rename a copy if that is ever seen. */
+static bool meta_set(const char *path, const FileMeta *meta)
+{
+    char index[PATH_MAX], line[PATH_MAX + 128];
+    const char *name;
+    char *kept = NULL;
+    size_t kept_size = 0;
+    bool found = false, ok;
+    FILE *file;
+
+    meta_index_path(path, index, sizeof index, &name);
+    if ((file = fopen(index, "r")) != NULL) {
+        while (fgets(line, sizeof line, file) != NULL) {
+            FileMeta parsed;
+            const char *entry = meta_line_name(line, &parsed);
+            size_t length = strlen(line);
+            char *grown;
+            if (entry != NULL && strcmp(entry, name) == 0) {
+                found = true;
+                continue;
+            }
+            if ((grown = (char *)realloc(kept, kept_size + length + 1)) == NULL) {
+                free(kept);
+                fclose(file);
+                return false;
+            }
+            kept = grown;
+            memcpy(kept + kept_size, line, length);
+            kept_size += length;
+            kept[kept_size++] = '\n';
+        }
+        fclose(file);
+    }
+    if (meta == NULL && (!found || kept_size == 0)) {
+        free(kept);
+        return !found || unlink(index) == 0;
+    }
+    if ((file = fopen(index, "w")) == NULL) {
+        free(kept);
+        return false;
+    }
+    ok = kept_size == 0 || fwrite(kept, 1, kept_size, file) == kept_size;
+    if (meta != NULL) {
+        ok = fprintf(file, "%08x %llu %llu %llu %llu %s\n", (unsigned)meta->attributes,
+            (unsigned long long)meta->creation, (unsigned long long)meta->access,
+            (unsigned long long)meta->write, (unsigned long long)meta->change, name) > 0 && ok;
+    }
+    ok = fclose(file) == 0 && ok;
+    free(kept);
+    return ok;
+}
+
+static void meta_filetime(uint64_t value, FILETIME *time)
+{
+    if (value == 0u) return;
+    time->dwLowDateTime = (DWORD)value;
+    time->dwHighDateTime = (DWORD)(value >> 32u);
 }
 #else
 #include <sys/xattr.h>
@@ -51,6 +147,7 @@ typedef struct RecompWin32FileHandle {
     ino_t ino;
     DWORD access;
     DWORD share;
+    bool written;
     RecompWin32FileLock *locks;
     struct RecompWin32FileHandle *next;
 } RecompWin32FileHandle;
@@ -246,8 +343,9 @@ HANDLE CreateFileA(
     char norm[PATH_MAX];
     normalize_path(lpFileName, norm, sizeof(norm));
 
-    struct stat existing_st;
-    if (stat(norm, &existing_st) == 0) {
+    struct stat existing_st = {0};
+    const bool existed = stat(norm, &existing_st) == 0;
+    if (existed) {
         bool wants_read = (dwDesiredAccess & (GENERIC_READ | 0x1u /* FILE_READ_DATA */)) != 0;
         bool wants_write = (dwDesiredAccess & (GENERIC_WRITE | 0x2u /* FILE_WRITE_DATA */ | 0x4u /* FILE_APPEND_DATA */)) != 0;
         bool wants_delete = (dwDesiredAccess & DELETE) != 0;
@@ -316,6 +414,17 @@ HANDLE CreateFileA(
     default:
         break;
     }
+#ifdef __SWITCH__
+    /* Horizon cannot mark a file read-only, so refuse what the mode bit would. */
+    if (existed && !S_ISDIR(existing_st.st_mode) &&
+        (write || (flags & O_TRUNC) != 0)) {
+        FileMeta meta;
+        if (meta_get(norm, &meta) && (meta.attributes & FILE_ATTRIBUTE_READONLY) != 0) {
+            last_error = ERROR_ACCESS_DENIED;
+            return INVALID_HANDLE_VALUE;
+        }
+    }
+#endif
 
     int fd = open(norm, flags, 0666);
     if (fd < 0) {
@@ -324,10 +433,19 @@ HANDLE CreateFileA(
             fd = open(norm, O_RDONLY);
         }
     }
-    if (fd < 0) {
+    bool no_descriptor = false;
+#ifdef __SWITCH__
+    /* Horizon cannot open a directory as a file; its handle works by path. */
+    no_descriptor = fd < 0 && existed && S_ISDIR(existing_st.st_mode) &&
+        (dwFlagsAndAttributes & FILE_FLAG_BACKUP_SEMANTICS) != 0;
+#endif
+    if (fd < 0 && !no_descriptor) {
         set_last_error_from_errno();
         return INVALID_HANDLE_VALUE;
     }
+#ifdef __SWITCH__
+    if (!existed) meta_set(norm, NULL); /* A deleted file's entry must not carry over. */
+#endif
 
     RecompWin32FileHandle *h = (RecompWin32FileHandle *)malloc(sizeof(RecompWin32FileHandle));
     if (!h) {
@@ -340,12 +458,13 @@ HANDLE CreateFileA(
     h->path[sizeof(h->path) - 1] = '\0';
     h->flags = dwFlagsAndAttributes;
     
-    struct stat st;
-    h->is_dir = (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode));
+    struct stat st = existing_st;
+    h->is_dir = ((no_descriptor || fstat(fd, &st) == 0) && S_ISDIR(st.st_mode));
     h->dev = st.st_dev;
     h->ino = st.st_ino;
     h->access = dwDesiredAccess;
     h->share = dwShareMode;
+    h->written = false;
     h->locks = NULL;
     h->next = open_file_handles;
     open_file_handles = h;
@@ -460,6 +579,7 @@ BOOL WriteFile(
     if (lpNumberOfBytesWritten) {
         *lpNumberOfBytesWritten = (DWORD)ret;
     }
+    h->written = h->written || ret > 0;
     return TRUE;
 }
 
@@ -478,16 +598,29 @@ BOOL CloseHandle(HANDLE hObject)
         }
         curr = &(*curr)->next;
     }
+    /* Close first: Horizon cannot delete a file that is still open. */
+    if (h->fd >= 0) close(h->fd);
     if ((h->flags & FILE_FLAG_DELETE_ON_CLOSE) != 0) {
         unlink(h->path);
     }
+#ifdef __SWITCH__
+    if ((h->flags & FILE_FLAG_DELETE_ON_CLOSE) != 0) {
+        meta_set(h->path, NULL);
+    } else if (h->written) {
+        /* A write after the times were set moves the write time on, as on Windows. */
+        FileMeta meta;
+        if (meta_get(h->path, &meta) && (meta.write != 0u || meta.change != 0u)) {
+            meta.write = meta.change = 0u;
+            meta_set(h->path, &meta);
+        }
+    }
+#endif
     RecompWin32FileLock *lk = h->locks;
     while (lk) {
         RecompWin32FileLock *next = lk->next;
         free(lk);
         lk = next;
     }
-    close(h->fd);
     free(h);
     return TRUE;
 }
@@ -552,6 +685,7 @@ BOOL SetEndOfFile(HANDLE hFile)
         set_last_error_from_errno();
         return FALSE;
     }
+    h->written = true;
     return TRUE;
 }
 
@@ -591,6 +725,11 @@ DWORD GetFileAttributesA(LPCSTR lpFileName)
     if (getxattr(norm, "user.win32_attrs", &xattr_val, sizeof(xattr_val), 0, 0) == sizeof(xattr_val)) {
         attrs |= xattr_val;
     }
+#elif defined(__SWITCH__)
+    FileMeta meta;
+    if (meta_get(norm, &meta)) {
+        attrs |= meta.attributes;
+    }
 #else
     uint32_t xattr_val = 0;
     if (getxattr(norm, "user.win32_attrs", &xattr_val, sizeof(xattr_val)) == sizeof(xattr_val)) {
@@ -620,6 +759,14 @@ BOOL GetFileAttributesExA(
     timespec_to_filetime(&STAT_MTIME(st), &data->ftLastWriteTime);
     data->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32u);
     data->nFileSizeLow = (DWORD)((uint64_t)st.st_size & 0xffffffffu);
+#ifdef __SWITCH__
+    FileMeta meta;
+    if (meta_get(norm, &meta)) {
+        meta_filetime(meta.creation, &data->ftCreationTime);
+        meta_filetime(meta.access, &data->ftLastAccessTime);
+        meta_filetime(meta.write, &data->ftLastWriteTime);
+    }
+#endif
     return TRUE;
 }
 
@@ -634,6 +781,16 @@ BOOL SetFileAttributesA(
         set_last_error_from_errno();
         return FALSE;
     }
+#ifdef __SWITCH__
+    FileMeta meta;
+    meta_get(norm, &meta);
+    meta.attributes = dwFileAttributes;
+    if (!meta_set(norm, &meta)) {
+        set_last_error_from_errno();
+        return FALSE;
+    }
+    return TRUE;
+#else
     mode_t mode = st.st_mode;
     if ((dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0) {
         mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
@@ -660,6 +817,7 @@ BOOL SetFileAttributesA(
         return FALSE;
     }
     return TRUE;
+#endif
 }
 
 BOOL CreateDirectoryA(
@@ -673,6 +831,9 @@ BOOL CreateDirectoryA(
         set_last_error_from_errno();
         return FALSE;
     }
+#ifdef __SWITCH__
+    meta_set(norm, NULL);
+#endif
     return TRUE;
 }
 
@@ -681,9 +842,31 @@ BOOL RemoveDirectoryA(LPCSTR lpPathName)
     char norm[PATH_MAX];
     normalize_path(lpPathName, norm, sizeof(norm));
     if (rmdir(norm) != 0) {
+#ifdef __SWITCH__
+        /* Its own index keeps an otherwise empty directory from being removed. */
+        char path[PATH_MAX];
+        WIN32_FIND_DATAA data;
+        snprintf(path, sizeof path, "%s/*", norm);
+        HANDLE find = FindFirstFileA(path, &data);
+        if (find != INVALID_HANDLE_VALUE) {
+            FindClose(find);
+            last_error = 145; // ERROR_DIR_NOT_EMPTY
+            return FALSE;
+        }
+        if (GetLastError() != ERROR_NO_MORE_FILES) return FALSE;
+        snprintf(path, sizeof path, "%s/" META_INDEX, norm);
+        if (unlink(path) != 0 || rmdir(norm) != 0) {
+            set_last_error_from_errno();
+            return FALSE;
+        }
+#else
         set_last_error_from_errno();
         return FALSE;
+#endif
     }
+#ifdef __SWITCH__
+    meta_set(norm, NULL);
+#endif
     return TRUE;
 }
 
@@ -699,10 +882,32 @@ BOOL DeleteFileA(LPCSTR lpFileName)
             return FALSE;
         }
     }
+#ifdef __SWITCH__
+    FileMeta meta;
+    if (meta_get(norm, &meta) && (meta.attributes & FILE_ATTRIBUTE_READONLY) != 0) {
+        last_error = ERROR_ACCESS_DENIED;
+        return FALSE;
+    }
+#endif
     if (unlink(norm) != 0) {
+#ifdef __SWITCH__
+        /* Horizon refuses to delete an open file; delete it at its last
+           close, as Windows does. */
+        bool deferred = false;
+        for (RecompWin32FileHandle *cur = open_file_handles; cur != NULL; cur = cur->next) {
+            if (strcmp(cur->path, norm) == 0) {
+                cur->flags |= FILE_FLAG_DELETE_ON_CLOSE;
+                deferred = true;
+            }
+        }
+        if (deferred) return TRUE;
+#endif
         set_last_error_from_errno();
         return FALSE;
     }
+#ifdef __SWITCH__
+    meta_set(norm, NULL);
+#endif
     return TRUE;
 }
 
@@ -760,6 +965,9 @@ BOOL FindNextFileA(
     RecompFindHandle *h = (RecompFindHandle *)hFindFile;
     struct dirent *entry;
     while ((entry = readdir(h->dir)) != NULL) {
+#ifdef __SWITCH__
+        if (strcmp(entry->d_name, META_INDEX) == 0) continue;
+#endif
         if (h->pattern[0] != '\0' && strcmp(h->pattern, "*") != 0) {
             if (fnmatch(h->pattern, entry->d_name, FNM_CASEFOLD) != 0) {
                 continue;
@@ -781,6 +989,14 @@ BOOL FindNextFileA(
         timespec_to_filetime(&STAT_MTIME(st), &lpFindFileData->ftLastWriteTime);
         lpFindFileData->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32u);
         lpFindFileData->nFileSizeLow = (DWORD)((uint64_t)st.st_size & 0xffffffffu);
+#ifdef __SWITCH__
+        FileMeta meta;
+        if (meta_get(full, &meta)) {
+            meta_filetime(meta.creation, &lpFindFileData->ftCreationTime);
+            meta_filetime(meta.access, &lpFindFileData->ftLastAccessTime);
+            meta_filetime(meta.write, &lpFindFileData->ftLastWriteTime);
+        }
+#endif
         return TRUE;
     }
     last_error = ERROR_NO_MORE_FILES;
@@ -911,7 +1127,7 @@ BOOL GetFileInformationByHandleEx(
             return FALSE;
         }
         struct stat st;
-        if (fstat(h->fd, &st) != 0) {
+        if ((h->fd >= 0 ? fstat(h->fd, &st) : stat(h->path, &st)) != 0) {
             set_last_error_from_errno();
             return FALSE;
         }
@@ -925,6 +1141,15 @@ BOOL GetFileInformationByHandleEx(
         info->LastWriteTime.QuadPart = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
         info->ChangeTime.QuadPart = info->LastWriteTime.QuadPart;
         info->FileAttributes = GetFileAttributesA(h->path);
+#ifdef __SWITCH__
+        FileMeta meta;
+        if (meta_get(h->path, &meta)) {
+            if (meta.creation != 0u) info->CreationTime.QuadPart = (int64_t)meta.creation;
+            if (meta.access != 0u) info->LastAccessTime.QuadPart = (int64_t)meta.access;
+            if (meta.write != 0u) info->LastWriteTime.QuadPart = info->ChangeTime.QuadPart = (int64_t)meta.write;
+            if (meta.change != 0u) info->ChangeTime.QuadPart = (int64_t)meta.change;
+        }
+#endif
         return TRUE;
     }
     return FALSE;
@@ -947,6 +1172,27 @@ BOOL SetFileInformationByHandle(
             return FALSE;
         }
         FILE_BASIC_INFO *info = (FILE_BASIC_INFO *)lpFileInformation;
+#ifdef __SWITCH__
+        FileMeta meta;
+        bool changed = false;
+        meta_get(h->path, &meta);
+        /* Zero leaves a field unchanged; negative values ask Windows to stop
+           updating it, which nothing here needs. */
+        if (info->FileAttributes != 0) meta.attributes = info->FileAttributes, changed = true;
+        if (info->CreationTime.QuadPart > 0) meta.creation = (uint64_t)info->CreationTime.QuadPart, changed = true;
+        if (info->LastAccessTime.QuadPart > 0) meta.access = (uint64_t)info->LastAccessTime.QuadPart, changed = true;
+        if (info->LastWriteTime.QuadPart > 0) {
+            meta.write = (uint64_t)info->LastWriteTime.QuadPart;
+            h->written = false;
+            changed = true;
+        }
+        if (info->ChangeTime.QuadPart > 0) meta.change = (uint64_t)info->ChangeTime.QuadPart, changed = true;
+        if (changed && !meta_set(h->path, &meta)) {
+            set_last_error_from_errno();
+            return FALSE;
+        }
+        return TRUE;
+#else
         struct stat st;
         if (fstat(h->fd, &st) != 0) {
             set_last_error_from_errno();
@@ -992,15 +1238,10 @@ BOOL SetFileInformationByHandle(
                 tv[1].tv_sec = STAT_MTIME(st).tv_sec;
                 tv[1].tv_usec = (suseconds_t)(STAT_MTIME(st).tv_nsec / 1000);
             }
-#ifdef __SWITCH__
-            /* shortcut: Horizon's filesystem cannot set file times, so they are
-               dropped; record them in a sidecar before the game's cache check needs them. */
-            (void)tv;
-#else
             futimes(h->fd, tv);
-#endif
         }
         return TRUE;
+#endif
     }
     return FALSE;
 }

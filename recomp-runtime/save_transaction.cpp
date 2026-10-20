@@ -330,8 +330,8 @@ void set_metadata(const Node &node)
     bool closed = CloseHandle(handle) != 0;
     require(copied && closed);
 #elif defined(__SWITCH__)
-    /* shortcut: Horizon cannot set file times, so a rollback keeps the restore
-       time; record times in a sidecar if a guest check needs them. */
+    /* Horizon cannot set file times; win32_compat keeps them in each
+       directory's index file, which the snapshot restores with the files. */
     (void)node;
 #else
     fs::last_write_time(node.path, fs::file_time_type(
