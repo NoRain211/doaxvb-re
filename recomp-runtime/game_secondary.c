@@ -237,10 +237,15 @@ static void actor_frame_prepare(void)
     const uint32_t stack = recomp_runtime.registers.esp;
     const uint32_t frame = *recomp_ebp_register();
     if (!recomp_game_authored_pass()) {
-        /* Display passes reuse the completed tick's scene setup and morph
-           state. A new draw stamp still rebuilds palettes for the shown pose. */
+        /* Display passes reuse the completed tick's scene setup. Joint morphs
+           must follow the interpolated bones, or limbs crack apart at the
+           joints; the pass's pause byte keeps them from advancing, and
+           rollback undoes their writes. A new draw stamp rebuilds palettes. */
         ++*recomp_memory_u32(0x004c9790u);
+        push(1); call(frame, 0x00064220u);
+        recomp_runtime.registers.ecx = word(recomp_runtime.registers.esp);
         recomp_runtime.registers.esp = stack + 4;
+        *recomp_ebp_register() = frame;
         return;
     }
     const uint8_t mode = byte(0x004d56dau);
