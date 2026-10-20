@@ -10,7 +10,9 @@
 #else
 #include "win32_compat.h"
 #include <stdlib.h>
+#ifndef __SWITCH__
 #include <sys/mman.h>
+#endif
 
 void recomp_fiber_switch(void **from_sp, void *to_sp);
 void recomp_fiber_trampoline(void);
@@ -24,6 +26,26 @@ typedef struct RecompNativeFiber {
 static RecompNativeFiber *g_active_native_fiber = NULL;
 
 #define FIBER_FLAG_FLOAT_SWITCH 0x1
+
+static void *fiber_stack_map(size_t size)
+{
+#ifdef __SWITCH__
+    return aligned_alloc(0x1000u, size); /* Horizon has no mmap. */
+#else
+    void *memory = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    return memory == MAP_FAILED ? NULL : memory;
+#endif
+}
+
+static void fiber_stack_unmap(void *memory, size_t size)
+{
+#ifdef __SWITCH__
+    (void)size;
+    free(memory);
+#else
+    munmap(memory, size);
+#endif
+}
 
 static LPVOID ConvertThreadToFiberEx(LPVOID lpParameter, DWORD dwFlags)
 {
@@ -54,14 +76,14 @@ static LPVOID CreateFiberEx(
     (void)dwFlags;
     size_t stack_size = dwStackReserve ? dwStackReserve : 1024 * 1024;
     stack_size = (stack_size + 0xfffu) & ~0xfffu;
-    void *stack_mem = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (stack_mem == MAP_FAILED) {
+    void *stack_mem = fiber_stack_map(stack_size);
+    if (stack_mem == NULL) {
         return NULL;
     }
 
     RecompNativeFiber *fiber = (RecompNativeFiber *)calloc(1, sizeof(RecompNativeFiber));
     if (!fiber) {
-        munmap(stack_mem, stack_size);
+        fiber_stack_unmap(stack_mem, stack_size);
         return NULL;
     }
     fiber->stack_memory = stack_mem;
@@ -108,7 +130,7 @@ static void DeleteFiber(LPVOID lpFiber)
     if (!lpFiber) return;
     RecompNativeFiber *fiber = (RecompNativeFiber *)lpFiber;
     if (fiber->stack_memory) {
-        munmap(fiber->stack_memory, fiber->stack_size);
+        fiber_stack_unmap(fiber->stack_memory, fiber->stack_size);
     }
     if (g_active_native_fiber == fiber) {
         g_active_native_fiber = NULL;

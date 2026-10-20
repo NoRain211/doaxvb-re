@@ -17,6 +17,9 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0 /* newlib on the Switch: no exec, nothing to close. */
+#endif
 #endif
 
 namespace fs = std::filesystem;
@@ -504,7 +507,9 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         if (exists_plain(lock_path)) require(fs::is_regular_file(lock_path));
         journal_lock = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
         require(journal_lock >= 0);
+#ifndef __SWITCH__ /* Horizon runs one application at a time and has no flock. */
         require(flock(journal_lock, LOCK_EX | LOCK_NB) == 0);
+#endif
 #endif
         if (created) {
             write_file(journal / "version", version);

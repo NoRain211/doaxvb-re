@@ -68,6 +68,22 @@ The Eden emulator runs `.nro` homebrew without keys or firmware. An Eden run
 shows the build works; it does not prove real hardware, whose GPU and memory
 behavior can differ.
 
+`recomp_runtime_test` builds as an NRO with devkitPro's Docker image:
+
+```powershell
+docker run --rm -v "${PWD}:/src" -w /src devkitpro/devkita64 bash -c "cmake -S recomp-runtime -B build/switch -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release && cmake --build build/switch --target recomp_runtime_test_nro -j8"
+```
+
+Open `build/switch/recomp_runtime_test.nro` in Eden with File > Load File. It
+runs the default suite, prints PASS or FAIL and writes the exit code to
+`sdmc:/doaxbv-runtime-test.txt`. The ctest cases that pass a command-line
+flag, such as `--invalid-access`, do not run there.
+
+Porting the suite needed only Switch guards: fiber stacks use `aligned_alloc`
+instead of `mmap`, the save journal skips `flock`, the guest clock uses
+`clock_gettime`, and Win32 file attributes beyond read-only and file times
+set by the game are dropped.
+
 ## Open work for a Switch target
 
 1. A libnx platform layer for files, threads, time, audio output and
