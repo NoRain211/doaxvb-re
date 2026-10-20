@@ -8,6 +8,7 @@
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "d3d_frame_adapter.h"
+#include "game_scheduler.h"
 
 /* Swimsuit switch: puts another swimsuit on a character in the scene on
    screen.
@@ -182,6 +183,9 @@ static bool girl(uint32_t actor, uint32_t *character);
 void recomp_suit_switch_camera_build(void)
 {
     if (state.phase != RECOMP_SUIT_WAITING) return;
+    /* Above RECOMP_GAME_HZ=60, a display pass's guest writes are rolled
+       back, so the load waits for a tick's camera build. */
+    if (!recomp_game_authored_pass()) return;
     /* The scene may have moved on since the switch was asked for. */
     uint32_t character;
     bool ready = girl(state.slot, &character) &&

@@ -149,6 +149,7 @@ static struct {
     /* C or X picked the object flown. */
     bool picked;
     uint32_t stepped_frame;
+    double stepped_seconds;
     RecompInputGamepad pad;
     RecompFreeCamera camera;
     uint32_t trace_lines;
@@ -159,6 +160,12 @@ static uint64_t milliseconds(void)
     struct timespec now;
     if (timespec_get(&now, TIME_UTC) == 0) return 0u;
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+static double seconds_now(void)
+{
+    struct timespec now;
+    return timespec_get(&now, TIME_UTC) == 0 ? 0.0 : (double)now.tv_sec + now.tv_nsec / 1e9;
 }
 
 /* How many places to move now (signed), given the direction held (-1, 0 or
@@ -617,13 +624,21 @@ static void build_camera(void)
             recomp_free_camera_begin(&state.camera, eye, target, fov)) {
             state.started = true;
             state.stepped_frame = frame;
+            state.stepped_seconds = seconds_now();
         }
         state.reset_held = reset;
         if (state.started && state.stepped_frame != frame) {
             RecompFreeCameraControls controls;
             read_controls(&controls);
-            recomp_free_camera_step(&state.camera, &controls, FRAME_SECONDS);
+            /* Above RECOMP_GAME_HZ=60, display passes build the camera between
+               ticks, so a step covers the time since the last one; capped so a
+               stall does not jump the camera. */
+            const double now = seconds_now();
+            double seconds = now - state.stepped_seconds;
+            if (!(seconds > 0.0) || seconds > 0.1) seconds = FRAME_SECONDS;
+            recomp_free_camera_step(&state.camera, &controls, (float)seconds);
             state.stepped_frame = frame;
+            state.stepped_seconds = now;
         }
     }
     if (fly && state.started && (state.aim_pending || state.frame_pending)) {
