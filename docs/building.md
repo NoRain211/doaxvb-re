@@ -65,9 +65,19 @@ To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
 stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
-(resolution, MSAA and SMAA, saved in `private/launcher.json`) or `RunGame.cmd`
+(resolution, MSAA, SMAA and sun shadows, saved in `private/launcher.json`) or `RunGame.cmd`
 in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
+
+On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) include
+court posts, palm trunks and leaves, and the volleyball net tape and rope.
+Leaves cast through texture alpha; blended foliage uses a half-alpha cutoff.
+The map keeps its fixed court-area resolution. Verified original post and
+palm shadow overlays retain only depth/stencil writes while a valid sun map
+is available. Static overlays match by texture payload; live palm textures
+must come from silhouette rendering. Unrecognized overlays keep drawing.
+`RECOMP_PERF_COUNTER=1` reports hidden overlays as `prop_shadows` beside the
+caster count. See [sun shadows](sun-shadow.md) for coverage and limits.
 
 The direct PowerShell route accepts an explicit extractor path:
 
@@ -212,6 +222,44 @@ Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archive
 the same project source and recipe but require separately installed tools.
 Neither download includes generated game code or a prebuilt game runner.
 
+### Optional hardware ray-tracing smoke test
+
+The standalone DXR/DX11 test requires Windows, a recent Windows SDK, and DXC on
+`PATH` (or an explicit `-DRECOMP_DXC_EXECUTABLE=...` path to `dxc.exe`). It
+uses only synthetic geometry and does not change the game renderer. DX11
+remains the default renderer; DXR is optional.
+
+```powershell
+cmake -S recomp-runtime -B private/dxr-smoke -G "Visual Studio 17 2022" -A x64 -DRECOMP_BUILD_DXR_SMOKE_TEST=ON
+cmake --build private/dxr-smoke --config Release --target recomp_dxr_smoke_test
+ctest --test-dir private/dxr-smoke -C Release -L "dxr|dx11" -V
+```
+
+The three tests cover:
+
+- `recomp-runtime-dxr-smoke`: selects a hardware adapter with DXR 1.1 and
+  Shader Model 6.5, builds one triangle with two instances, and checks two
+  hits and two misses, including instance IDs and hit distances. It then
+  writes a shared RGBA texture through DXR and samples it in a DX11 pixel
+  shader on the same adapter. Two shared fences coordinate writes and reads.
+- `recomp-runtime-dx11-fallback`: runs the DX11 drawing path with DXR disabled.
+  This mode does not initialize D3D12 or create any D3D12 resources.
+- `recomp-runtime-dx11-warp-fallback`: runs the same DX11-only check using WARP,
+  Microsoft's software renderer.
+
+Each image test queues eight frames at each of two sizes (8x4 and 13x5),
+recreating textures between sizes. It verifies all 776 output pixels, including
+a changing frame marker to detect stale data. The interop handoff stays on the
+GPU; CPU readbacks only check snapshots after the frames complete. Rendering
+is offscreen, so this does not test a window or swap chain.
+
+Both debug layers are enabled when installed, and reported errors fail the
+tests. Each GPU wait is limited to 10 seconds; CTest limits each test to 30
+seconds. Without compatible DXR hardware, the DXR test exits with code 77,
+which CTest reports as skipped. The DX11 checks run independently. Passing
+proves synthetic ray queries, texture sharing, and explicit DX11-only modes;
+it does not establish game RTGI or automatic recovery from DXR device failure.
+
 ## Extract a user-owned ISO
 
 `ExtractIso.cmd` extracts one ISO to `private/imported-disc/disc`. Drop one ISO
@@ -320,8 +368,44 @@ screen.
 Set `RECOMP_D3D_MSAA` to a sample count such as 4 or 8; it uses the highest
 supported power of two up to that count. Set `RECOMP_D3D_SMAA=1` for SMAA when the
 `third_party/smaa` submodule was checked out at build time.
+Set `RECOMP_D3D_PIXEL_LIGHTING=1` before launch to evaluate the admitted
+fixed-function directional/point diffuse and ambient lighting per pixel.
+The default remains per vertex. This smooths interpolated normals without
+changing the light or material values; point attenuation and RGB clamping also
+move to the pixel. Unlit, pretransformed, vertex-color and vertex-program draws
+keep their existing paths. Specular and vertex-color lighting remain unsupported.
+
 Set `RECOMP_SPLIT_RATE=auto`, or to your display's refresh rate such as 120 or
 144, to present smoother motion than the game's 60 Hz while gameplay keeps its
 original timing. Use it with `--vsync`. The picture runs one 60 Hz tick
 behind, and some objects such as water still move at 60 Hz. See
 [the split-rate notes](wayfinder/research/high-frame-rate-split.md#current-state).
+Set `RECOMP_D3D_SMOOTH_NORMALS=1` to rebuild area-weighted normals on lit
+indexed fixed-function triangles before upload. Positions within 0.0001 guest
+units share contributions when their original normals are within 60 degrees
+and their skin weights match. UV seams can smooth within a draw; separate
+draws and hard edges stay separate. Incomplete mesh boundaries retain authored
+normals to avoid new seams between draw calls. The option is independent of pixel
+lighting and defaults off. A 32 MiB contents cache invalidates on vertex or
+index changes, including CPU animation. `RECOMP_PERF_COUNTER=1` reports cache
+hits, rebuilds and CPU time at shutdown. Vertex programs retain their inputs.
+Set `RECOMP_D3D_RTGI=1` for experimental ray-traced global illumination on a
+GPU with DXR 1.1. The build includes it when CMake finds DXC. It traces one
+bounce of diffuse light off the visible scene through a D3D12 device beside the
+D3D11 renderer; `RECOMP_D3D_RTGI_STRENGTH` (0 to 4, default 1) scales it.
+`RECOMP_D3D_RTGI_HITCOLOR=0` disables hit-point texture color (default on),
+retaining the screen-space color and contact fallback.
+Set `RECOMP_D3D_RTGI_SPLIT=1` to leave the left half of the screen unlit for
+comparison. Eligible static textured draws also supply off-screen bounce color;
+supported alpha-tested textures leave holes in the traced geometry.
+`RECOMP_D3D_RTGI_SCALE` (1 to 4, default 2) traces one ray per that many
+pixels across and down; the composite upsamples by depth, so 3 or 4 trades
+softer contact shading for less GPU time at 4K. `RECOMP_D3D_RTGI_HZ` (default
+60) limits traces per second: a frame that starts within three quarters of a
+period of the last traced frame, such as a `RECOMP_GAME_HZ=120` display pass,
+reprojects that frame's light onto its own depth instead of tracing. Set it to
+0 to trace every frame. `RECOMP_PERF_COUNTER=1` appends RTGI costs to the
+per-second `recomp performance:` line: traced, refitted and reused frames,
+triangles per trace, CPU milliseconds per frame, and GPU milliseconds per stage.
+Without DXR support, or in a build without DXC, the runner logs a
+`recomp rtgi:` line and renders with D3D11 alone.

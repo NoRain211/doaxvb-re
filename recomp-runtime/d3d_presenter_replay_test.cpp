@@ -18,18 +18,32 @@ static HANDLE WINAPI regularTimer(LPSECURITY_ATTRIBUTES attributes, BOOL manual,
 #include "animation_pose.h"
 
 static std::vector<char> calls;
-static bool prepare_throws;
+static bool prepare_throws, shadow_enabled;
+static std::vector<float> shadow_worlds;
 RecompD3dPresenterError d3d11_backend_create(const RecompD3dPresenterConfig *, RecompD3dPresenter **backend)
 { *backend=reinterpret_cast<RecompD3dPresenter *>(1); return RECOMP_D3D_PRESENTER_OK; }
-RecompD3dPresenterError d3d11_backend_submit(RecompD3dPresenter *, const RecompD3dPresenterCommand *)
-{ calls.push_back('D'); return RECOMP_D3D_PRESENTER_OK; }
+RecompD3dPresenterError d3d11_backend_submit(RecompD3dPresenter *, const RecompD3dPresenterCommand *command)
+{
+    calls.push_back('D');
+    if (shadow_enabled && command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW)
+        shadow_worlds.push_back(command->data.draw.world[0][12]);
+    return RECOMP_D3D_PRESENTER_OK;
+}
 RecompD3dPresenterError d3d11_backend_release_memory(RecompD3dPresenter *, uint32_t, uint32_t)
 { calls.push_back('R'); return RECOMP_D3D_PRESENTER_OK; }
 RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **backend)
 { *backend=nullptr; return RECOMP_D3D_PRESENTER_OK; }
+bool d3d11_backend_shadow_begin(RecompD3dPresenter *, bool) { return shadow_enabled; }
+void d3d11_backend_shadow_command(RecompD3dPresenter *, const RecompD3dPresenterCommand *command)
+{
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW)
+        shadow_worlds.push_back(command->data.draw.world[0][12]);
+}
+void d3d11_backend_shadow_end(RecompD3dPresenter *) {}
 void d3d11_backend_set_immediate_present(bool) {}
 void d3d11_backend_set_split_presentation(bool) {}
 void d3d11_backend_report_draw_textures() {}
+void recomp_d3d_add_queue_wait_ns(uint64_t) {}
 void d3d11_backend_verify_replay(RecompD3dPresenter *, uint32_t, bool) {}
 uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *, const RecompD3dPresenterCommand *) { return 1; }
 void d3d11_backend_prepare(RecompD3dPresenter *, const RecompD3dPresenterCommand *)
@@ -62,6 +76,42 @@ int main()
         CHECK(calls==std::vector<char>({'D','R','D','D'}));
         CHECK(status(release_thread)==RECOMP_D3D_PRESENTER_OK);
         calls.clear();
+    }
+    {
+        PresenterThread replay_thread;
+        auto *backend = reinterpret_cast<RecompD3dPresenter *>(1);
+        RecompD3dPresenterCommand draw{};
+        draw.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+        draw.data.draw.has_transform = true;
+        RecompSplitDraw split{};
+        split.count = 1; split.ball = 1;
+        for (unsigned i = 0; i < 4; ++i)
+            split.view[i*5] = split.projection[i*5] = split.worlds[0][i*5] = split.ball_base.m[i*5] = 1;
+        split.ball_position[1][0] = 10;
+        draw.data.draw.split_pose = &split; draw.data.draw.split_pose_size = sizeof split;
+        D3dCapturePacket replay_packet;
+        CHECK(replay_packet.add(draw) == RECOMP_D3D_PRESENTER_OK);
+        CHECK(replay_packet.addRelease(0x1000,64) == RECOMP_D3D_PRESENTER_OK);
+        replay_packet.seal(true);
+        shadow_enabled = true;
+        execute(replay_thread, backend, replay_packet, -1, .37f);
+        CHECK(calls == std::vector<char>({'D','R'}) && shadow_worlds.size() == 3);
+        for (float x : shadow_worlds) CHECK(std::fabs(x-3.7f) < 1e-6f);
+        shadow_worlds.clear(); calls.clear(); replay_packet.clear();
+        RecompD3dPoseReplay pose{};
+        pose.count = 1;
+        for (unsigned i = 0; i < 4; ++i) {
+            pose.view[i*5] = pose.projection[i*5] = 1;
+            for (auto &palette : pose.palettes) palette[0][i*5] = 1;
+        }
+        pose.palettes[2][0][12] = 6;
+        draw.data.draw.split_pose = nullptr; draw.data.draw.split_pose_size = 0;
+        draw.data.draw.pose_replay = &pose;
+        CHECK(replay_packet.add(draw) == RECOMP_D3D_PRESENTER_OK);
+        replay_packet.seal(true);
+        execute(replay_thread, backend, replay_packet, 2);
+        CHECK(calls == std::vector<char>({'D'}) && shadow_worlds == std::vector<float>({6,6,6}));
+        shadow_enabled = false; shadow_worlds.clear(); calls.clear();
     }
     PresenterThread thread;
     auto *backend=reinterpret_cast<RecompD3dPresenter *>(1);

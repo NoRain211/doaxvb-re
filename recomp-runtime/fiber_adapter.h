@@ -12,6 +12,10 @@ RecompFunction recomp_fiber_lookup_manual(uint32_t guest_address);
 void recomp_fiber_adapter_reset(void);
 const RecompFiberModel *recomp_fiber_adapter_model(void);
 void recomp_fiber_adapter_report(void);
+/* Saved registers of suspended fibres, for whole-game display passes. A
+   rollback requires the same set of fibres as at the checkpoint. */
+void recomp_fiber_adapter_checkpoint(void);
+void recomp_fiber_adapter_rollback(void);
 
 /* Consulted on every SwitchToFiber with the running fiber and the target.
    Returning true declines the switch: the call returns at once, as if the

@@ -109,12 +109,19 @@ typedef struct RecompD3dPresenterDrawCommand {
     float program_mask_lod_bias;
     RecompD3dDirectionalLighting directional;
     const void *vertex_bytes;
+    /* Guest address of vertex_bytes; identifies the mesh across frames. */
+    uint32_t vertex_address;
     const void *index_bytes;
     /* World-view-projection rows, already composed by the adapter. */
     float transform[16];
     /* Additional world-view-projection matrices for 1..3 explicit weights. */
     float blend_transforms[3][16];
     uint32_t blend_weight_count;
+    /* Scene camera inputs: WORLD0..WORLD[blend_weight_count] and VIEW * PROJECTION. */
+    float world[4][16];
+    float view_projection[16];
+    /* Game's projected-shadow direction, world-space toward-light; w is 1 when valid. */
+    float sun[4];
     bool has_transform;
     /* Depth, stencil, and alpha-test state for this draw, already decoded by
        the render-state model so the presenter never sees a method number. */
@@ -135,6 +142,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool zero_diffuse_rgb;
     /* Exact four-source register-combiner filter; uses all four UV sets. */
     bool four_tap_filter;
+    /* No original pixel shader; stage 0 is texture x diffuse, then at most the
+       texture-factor modulate. RTGI may sample the texture as bounce color. */
+    bool plain_texture_material;
     /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;

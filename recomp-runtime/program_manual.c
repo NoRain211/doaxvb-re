@@ -1,4 +1,6 @@
 #include "program_manual.h"
+#include "game_scheduler.h"
+#include "game_scene.h"
 #include "animation_track_adapter.h"
 #include "title_idle.h"
 #include "free_camera_adapter.h"
@@ -40,6 +42,27 @@ void recomp_program_thread_start(void);
 #ifdef RECOMP_FULL_PROGRAM
 void sub_0011F250(void);
 #endif
+
+int recomp_sun_caster_near(const float sphere[4], const float world[16],
+                           const float view[16])
+{
+    /* The sun map covers a 64-unit box ahead of the camera; tall palms under a
+       low sun cast into it from further away. */
+    const float range = 96.0f + sphere[3];
+    float world_point[3], distance = 0.0f;
+
+    for (int a = 0; a < 3; ++a) {
+        world_point[a] = sphere[0] * world[a] + sphere[1] * world[4 + a] +
+            sphere[2] * world[8 + a] + world[12 + a];
+    }
+    for (int a = 0; a < 3; ++a) {
+        const float view_axis = world_point[0] * view[a] + world_point[1] * view[4 + a] +
+            world_point[2] * view[8 + a] + view[12 + a];
+
+        distance += view_axis * view_axis;
+    }
+    return distance <= range * range;
+}
 
 static int shuffle_allows(const uint16_t *masks, int i, int playing, int location)
 {
@@ -257,6 +280,31 @@ static void music_update(void)
     music_shuffle_call(sub_000B9790);
 }
 
+/* 0x0017D2A0 tests the bounding sphere at EAX against the camera frustum and
+   returns 1 in EAX when it may be visible. Palms and posts behind or beside
+   the camera still cast into view, so with RECOMP_D3D_SUN_SHADOW=1 a rejected
+   sphere near the camera is drawn too and reaches the sun map. The GPU clips
+   whatever falls outside the view. */
+void sub_0017D2A0(void);
+
+static void sphere_visible(void)
+{
+    static int sun_shadow = -1;
+    float sphere[4], world[16], view[16];
+
+    if (sun_shadow < 0) {
+        const char *setting = getenv("RECOMP_D3D_SUN_SHADOW");
+
+        sun_shadow = setting != NULL && strcmp(setting, "1") == 0;
+    }
+    if (sun_shadow) recomp_guest_load(sphere, recomp_runtime.registers.eax, sizeof sphere);
+    sub_0017D2A0();
+    if (!sun_shadow || recomp_runtime.registers.eax != 0u) return;
+    recomp_guest_load(world, 0x00a24190u, sizeof world);
+    recomp_guest_load(view, 0x004d6f20u, sizeof view);
+    if (recomp_sun_caster_near(sphere, world, view)) recomp_runtime.registers.eax = 1u;
+}
+
 /* 0x000C9CC0: init of task 0x13, the hotel room menu's View Collection
    (#64). Only a data store at 0x000DFDED references it, so the lifter never
    found it. It points three UI slots at the task's handlers and hands each
@@ -289,9 +337,17 @@ static void enter_collection_screen(void)
 
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
 {
+    RecompFunction function = recomp_game_scheduler_lookup_manual(guest_address);
+
+    if (function == NULL) {
+        function = recomp_game_scene_lookup_manual(guest_address);
+    }
+
     /* Ahead of the animation lookups: the free camera chains to the probe's
        observer of the same camera build. */
-    RecompFunction function = recomp_free_camera_lookup_manual(guest_address);
+    if (function == NULL) {
+        function = recomp_free_camera_lookup_manual(guest_address);
+    }
 
     if (function == NULL) {
         function = recomp_viewer_menu_lookup_manual(guest_address);
@@ -376,6 +432,9 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
     }
     if (function == NULL && guest_address == 0x000b9790u) {
         function = music_update;
+    }
+    if (function == NULL && guest_address == 0x0017d2a0u) {
+        function = sphere_visible;
     }
 #endif
     if (function == NULL && guest_address == 0x0018322du) {

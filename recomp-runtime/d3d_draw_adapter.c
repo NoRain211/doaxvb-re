@@ -6,6 +6,7 @@
 #include "d3d_pose_replay.h"
 #include "animation_split_adapter.h"
 #include "animation_probe.h"
+#include "game_scheduler.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -44,10 +45,10 @@ enum {
 };
 
 void sub_001E7750(void);
-void sub_001E78B0(void);
 
 static RecompD3dDrawState draw_state;
 static uint32_t draw_submitted;
+static RecompD3dDrawObserver draw_observer;
 static uint32_t draw_declined;
 static uint32_t draw_unbound;
 static uint32_t draw_unsupported_formats[256];
@@ -129,6 +130,26 @@ void recomp_d3d_draw_adapter_reset(void)
 uint32_t recomp_d3d_draw_adapter_submitted(void)
 {
     return draw_submitted;
+}
+
+void recomp_d3d_draw_adapter_observe(RecompD3dDrawObserver observer)
+{
+    draw_observer = observer;
+}
+
+void recomp_d3d_draw_adapter_notify(const RecompD3dPresenterCommand *command)
+{
+    if (draw_observer) draw_observer(command);
+}
+
+/* A hidden authoritative tick still runs every guest draw call, but display
+   passes redraw the backbuffer before it is shown. Only host work is skipped;
+   offscreen targets and recorded frame-owner draws keep the full path. */
+static bool hidden_backbuffer_draw(uint32_t device)
+{
+    return device != 0u && draw_observer == NULL && recomp_game_tick_hidden() &&
+        *recomp_memory_u32(device + D3D_CURRENT_RENDER_TARGET_OFFSET) ==
+            *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET);
 }
 
 uint32_t recomp_d3d_draw_adapter_declined(void)
@@ -314,26 +335,53 @@ slot_trace_done:
 }
 
 /* Xbox blend modes 1/3/5 consume 1/2/3 explicit weights and the
-   remaining weight. The game's matrix table selects WORLD0..WORLD3. */
+   remaining weight. The game's matrix table selects WORLD0..WORLD3. Also
+   records the world and view-projection matrices for host ray tracing. */
 static bool compose_blend_transforms(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dVertexLayout layout;
-    float view[16], projection[16], view_projection[16];
+    float view[16], projection[16];
 
-    if (!recomp_d3d_fvf_layout(draw->fvf, &layout)) return false;
+    if (!recomp_d3d_fvf_layout(draw->fvf, &layout) ||
+        !read_transform(device, D3D_TRANSFORM_WORLD, draw->world[0]) ||
+        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
+    multiply_transform(view, projection, draw->view_projection);
     draw->blend_weight_count = 0u;
     if (layout.blend_weight_count == 0u ||
         *recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) == 0u) return true;
     draw->blend_weight_count = layout.blend_weight_count;
-    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u ||
-        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
-        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
-    multiply_transform(view, projection, view_projection);
+    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u) return false;
     for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
-        float world[16];
-        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, world)) return false;
-        multiply_transform(world, view_projection, draw->blend_transforms[i]);
+        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, draw->world[i + 1u])) return false;
+        multiply_transform(draw->world[i + 1u], draw->view_projection, draw->blend_transforms[i]);
     }
+    return true;
+}
+
+static bool attach_camera(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    float view[16], projection[16];
+
+    /* Game seam: the normalized toward-light direction the game projects its own
+       character and ball shadows along (three floats; scene setters normalize it).
+       Stage key lights differ by up to ~20 degrees and point upward on some stages. */
+    memset(draw->sun, 0, sizeof draw->sun);
+    const uint8_t *shadow = guest_span(0x00333870u, 12u);
+    if (shadow) {
+        float v[3];
+        memcpy(v, shadow, sizeof v);
+        const float length = sqrtf(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+        if (isfinite(length) && length > 1e-6f) {
+            for (int c = 0; c < 3; ++c) draw->sun[c] = v[c] / length;
+            draw->sun[3] = 1.0f;
+        }
+    }
+    if (!read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
+    multiply_transform(view, projection, draw->view_projection);
+    for (uint32_t i = 0u; i <= draw->blend_weight_count; ++i)
+        if (!read_transform(device, D3D_TRANSFORM_WORLD + i, draw->world[i])) return false;
     return true;
 }
 
@@ -962,6 +1010,26 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
     }
     attach_fog(device, draw);
     attach_directional_lighting(device, draw);
+    {
+        const uint8_t *stage0 = guest_span(0x001f29b8u, 16u);
+        const uint8_t *stage1 = guest_span(0x001f2a38u, 4u);
+        const uint8_t *stage2 = guest_span(0x001f2ab8u, 4u);
+        const uint8_t *shader = guest_span(device + 0x370u, 4u);
+        const uint8_t *lighting_state = guest_span(0x001f2d20u, 4u);
+        if (stage0 && stage1 && stage2 && shader && lighting_state) {
+            uint32_t op[4], next, last, pixel_shader, lighting;
+            memcpy(op, stage0, sizeof op);
+            memcpy(&next, stage1, 4u); memcpy(&last, stage2, 4u);
+            memcpy(&pixel_shader, shader, 4u);
+            memcpy(&lighting, lighting_state, 4u);
+            /* Enabled but uncaptured lighting is not a white diffuse term. */
+            const bool known_diffuse = !lighting || draw->directional.enabled || draw->zero_diffuse_rgb;
+            /* Xbox D3DTOP: 1 DISABLE, 4 MODULATE; D3DTA: 0 DIFFUSE, 2 TEXTURE. */
+            draw->plain_texture_material = pixel_shader == 0u && known_diffuse &&
+                op[0] == 4u && op[2] == 2u && op[3] == 0u &&
+                (next == 1u || (draw->modulate_texture_factor && last == 1u));
+        }
+    }
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
     attach_backbuffer_texture(device, draw);
@@ -1588,11 +1656,15 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     const char *decline = NULL;
     const RecompD3dPresenterDrawCommand *capture_command = NULL;
 
-    /* Run the guest's own driver body first so all push-buffer and fence
-       bookkeeping stays byte-identical to the uninterceped run; the host
-       draw is added alongside it, never in place of it. This also leaves
-       ESP adjusted exactly as the generated body leaves it. */
-    sub_001E78B0();
+    /* Seam: D3DDevice_DrawIndexedVertices (0x001E78B0) is hand-owned and
+       never runs its generated body. That body flushed lazy D3D state and
+       copied indices into the push buffer, which the hand KickOff model
+       discards. Only generated D3D8 code reads what it wrote; game state and
+       frames match with or without it. The dirty mask (0x001F2984) now
+       accumulates until a remaining generated D3D8 entry point flushes it.
+       Retire the stdcall frame: return slot plus three arguments. */
+    recomp_runtime.registers.esp += 16u;
+    if (hidden_backbuffer_draw(device)) return;
 
     draw_state.stream0.stride = *recomp_memory_u32(D3D_STREAM0_STRIDE);
     vertex_buffer = *recomp_memory_u32(D3D_STREAM0_BUFFER);
@@ -2061,12 +2133,17 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     command.data.draw.vertex_stride = result.plan.vertex_stride;
     command.data.draw.fvf = result.plan.fvf;
     command.data.draw.vertex_bytes = vertex_bytes;
+    command.data.draw.vertex_address = result.plan.vertex_data;
     command.data.draw.index_bytes = index_bytes;
     command.data.draw.has_transform = true;
     command.data.draw.has_reflection = reflective;
     memcpy(command.data.draw.transform, transform, sizeof transform);
     if (!compose_blend_transforms(device, &command.data.draw)) {
         decline = "vertex-blend";
+        goto finished;
+    }
+    if (!attach_camera(device, &command.data.draw)) {
+        decline = "transform";
         goto finished;
     }
     if (!attach_draw_state(device, &command.data.draw)) {
@@ -2113,6 +2190,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         goto finished;
     }
     ++draw_submitted;
+    if (draw_observer) draw_observer(&command);
     record_fvf(result.plan.fvf);
     if (view_observer != NULL) {
         float view[16];
@@ -2260,6 +2338,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
 
     /* Preserve the driver's UP state, push-buffer/fence work, and RET 0x10. */
     sub_001E7750();
+    if (hidden_backbuffer_draw(*recomp_memory_u32(D3D_DEVICE_GLOBAL))) return;
     if (primitive != RECOMP_D3D_PT_TRIANGLESTRIP || count != 4u) {
         decline = "up-shape";
         goto finished;
@@ -2320,6 +2399,7 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         goto finished;
     }
     ++draw_submitted;
+    if (draw_observer) draw_observer(&command);
     record_fvf(fvf);
     if (reported < 8u) {
         ++reported;
