@@ -10,6 +10,9 @@ namespace {
    the flusher bounds what a hang or hard kill can lose. */
 void bufferStderr()
 {
+#ifdef __SWITCH__
+    return; // libnx cannot detach a thread; switch_runner.c tees stderr unbuffered
+#endif
     setvbuf(stderr, nullptr, _IOFBF, 1 << 16);
     std::thread([] {
         for (;;) {

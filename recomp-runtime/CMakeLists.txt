@@ -711,8 +711,8 @@ if(RECOMP_PROGRAM_DIR)
         $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
         $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
         $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
-        $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
-        $<$<NOT:$<PLATFORM_ID:Windows>>:audio_output_sdl.cpp>
+        $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<BOOL:${NINTENDO_SWITCH}>>>:d3d_presenter_sdl_gpu.cpp>
+        $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<BOOL:${NINTENDO_SWITCH}>>>:audio_output_sdl.cpp>
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
@@ -741,7 +741,7 @@ if(RECOMP_PROGRAM_DIR)
         directory_model.c
         input_model.c
         input_adapter.c
-        input_host_win32.c
+        $<IF:$<BOOL:${NINTENDO_SWITCH}>,switch_runner.c,input_host_win32.c>
         input_pulse_source.c
         symbolic_link_model.c
         kernel_ordinals.c
@@ -784,7 +784,14 @@ if(RECOMP_PROGRAM_DIR)
             enable_language(ASM)
             target_sources(recomp_program_runner PRIVATE ${RECOMP_FIBER_ASM})
         endif()
-        recomp_use_sdl3(recomp_program_runner)
+        if(NINTENDO_SWITCH)
+            # switch_runner.c supplies main and calls the runner's.
+            set_property(SOURCE runner.cpp APPEND PROPERTY
+                COMPILE_DEFINITIONS main=recomp_runner_main)
+            nx_create_nro(recomp_program_runner)
+        else()
+            recomp_use_sdl3(recomp_program_runner)
+        endif()
     endif()
     recomp_use_overlay(recomp_program_runner)
     if(NOT MSVC)
