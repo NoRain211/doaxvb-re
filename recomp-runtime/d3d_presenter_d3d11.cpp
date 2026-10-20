@@ -27,6 +27,8 @@
 #include <vector>
 #include <string>
 
+#include "d3d_sun_shadow.h"
+
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
 #include "SearchTex.h"
@@ -520,6 +522,7 @@ struct DeferredFrameDump {
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
+    SunShadow sun;
     DWORD owner_thread = 0;
     HINSTANCE instance = nullptr;
     bool owns_window_class = false;
@@ -746,6 +749,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->ClearState();
         presenter->context->Flush();
     }
+    // Keep the opt-in across the hardware-to-WARP retry; sunCreate failure still disables it.
+    const bool sun_enabled = presenter->sun.enabled;
+    sunRelease(presenter->sun);
+    presenter->sun.enabled = sun_enabled;
     releaseCom(presenter->present_target_view);
     releaseCom(presenter->vrr_target_view);
     releaseCom(presenter->vrr_source);
@@ -1518,7 +1525,7 @@ bool drawShaderSource(
     uint32_t fvf,
     const DrawPipeline &pipeline,
     RecompD3dVertexLayout &layout,
-    std::string &compiled_source, bool explicit_coverage = true)
+    std::string &compiled_source, bool explicit_coverage = true, bool sun_shadow = false)
 {
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
@@ -1613,6 +1620,7 @@ bool drawShaderSource(
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
 
     }
+    if (sun_shadow && !pipeline.program_count) sunShaderSource(compiled_source);
     if (explicit_coverage) {
         const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
         compiled_source.replace(compiled_source.find(pixel), pixel.size(),
@@ -1630,7 +1638,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
 // ponytail: fixed list; vertex-program shaders and unlisted FVFs still compile on first use.
-void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage)
+void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage, bool sun_shadow = false)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     const ULONGLONG start = GetTickCount64();
@@ -1640,7 +1648,7 @@ void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage
         for (const uint32_t fvf : kBootDrawFvfs) {
             RecompD3dVertexLayout layout;
             std::string source;
-            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage)) continue;
+            if (!drawShaderSource(fvf, no_program, layout, source, explicit_coverage, sun_shadow)) continue;
             for (const char *stage : {"vs", "ps"}) {
                 if (stop->load()) return;
                 ID3DBlob *blob = nullptr;
@@ -1667,7 +1675,7 @@ bool createDrawPipeline(
     RecompD3dVertexLayout layout;
     std::string compiled_source;
     const bool explicit_coverage = presenter->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1;
-    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage)) {
+    if (!drawShaderSource(fvf, pipeline, layout, compiled_source, explicit_coverage, presenter->sun.enabled)) {
         return false;
     }
 
@@ -2658,6 +2666,17 @@ RecompD3dPresenterError submitDraw(
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    if (presenter->sun.valid && !presenter->sun.casting && sunGameShadow(draw)) {
+        presenter->sun.seen_alpha = (std::max)(presenter->sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
+        // The shadow map replaces the darkening only where its receivers draw; keep the stencil writes.
+        if (presenter->sun.game_alpha > 0 && presenter->sun.epoch == presenter->sun.camera_epoch &&
+            sunSameCamera(presenter->sun, draw)) {
+            ++presenter->sun.game_shadows;
+            auto stencil_only = draw;
+            stencil_only.blend.color_write_mask = 0;
+            return submitDraw(presenter, stencil_only);
+        }
+    }
 
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) ||
@@ -2794,7 +2813,7 @@ RecompD3dPresenterError submitDraw(
     if (draw.program_count) dumpProgramTexture(presenter, texture_view, draw.program_alpha_mask);
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
-    recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
+    if (!presenter->sun.casting) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
     float draw_constants[140 + 192 * 4 + 300 + 76 + 16]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
@@ -2878,7 +2897,7 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(fog + 12, draw.fog_world_view, sizeof draw.fog_world_view);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
-    const bool alpha_to_coverage = draw.depth.alpha_test_enable &&
+    const bool alpha_to_coverage = !presenter->sun.casting && draw.depth.alpha_test_enable &&
         (draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER ||
          draw.depth.alpha_func == RECOMP_D3D_COMPARE_GREATER_EQUAL) &&
         !draw.blend.blend_enable && !draw.target.offscreen && presenter->msaa > 1u &&
@@ -3012,7 +3031,39 @@ RecompD3dPresenterError submitDraw(
             blend_factor,
             0xffffffffu);
     }
+    auto &sun = presenter->sun;
+    if (sun.enabled && sun.constants) {
+        float constants[20]{};
+        std::memcpy(constants, sun.projection, sizeof sun.projection);
+        // Ground darkens only where the game draws its own shadow, by that shadow's opacity, so scenes
+        // without one (hotel, menus) stay untouched. Models keep the game's shading; self-shadowing blotched them.
+        // shortcut: models never receive; add a dedicated character map if self-shadowing is wanted.
+        const size_t index = sun.draw_index - 1;
+        const bool model = draw.blend_weight_count || (index < sun.compact.size() && sun.compact[index]);
+        constants[16] = !sun.casting && sun.valid && sun.epoch == sun.camera_epoch &&
+            !draw.target.offscreen && !draw.target.no_depth && !draw.program_count &&
+            !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
+            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled && !model &&
+            sun.game_alpha > 0 && sunSameCamera(sun, draw) ? 1.0f : 0.0f;
+        constants[17] = sun.game_alpha;
+        if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
+            sun.valid = false;
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+        presenter->context->VSSetConstantBuffers(1, 1, &sun.constants);
+        presenter->context->PSSetConstantBuffers(1, 1, &sun.constants);
+        ID3D11ShaderResourceView *view = sun.casting ? nullptr : sun.view;
+        presenter->context->PSSetShaderResources(2, 1, &view);
+        presenter->context->PSSetSamplers(2, 1, &sun.sampler);
+        if (sun.casting) {
+            presenter->context->OMSetRenderTargets(0, nullptr, sun.depth);
+            const D3D11_VIEWPORT viewport = {0, 0, float(kSunMapSize), float(kSunMapSize), 0, 1};
+            presenter->context->RSSetViewports(1, &viewport);
+            presenter->context->RSSetState(sun.rasterizer);
+        }
+    }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
+    if (sun.casting) return RECOMP_D3D_PRESENTER_OK;
     static const char *program_dump = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
     static unsigned program_dump_count = 0;
     if (draw.program_count && program_dump && program_dump_count < 2 &&
@@ -3951,6 +4002,7 @@ RecompD3dPresenterError d3d11_backend_create(
     if (const char *msaa = std::getenv("RECOMP_D3D_MSAA")) {
         created->msaa = std::clamp(std::atoi(msaa), 1, 32);
     }
+    created->sun.enabled = sunShadowRequested();
     const char *smaa = std::getenv("RECOMP_D3D_SMAA");
     created->smaa = smaa != nullptr && std::strcmp(smaa, "0") != 0;
     /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
@@ -3991,7 +4043,7 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     try {
         created->precompile = std::thread(precompileDrawShaders, &created->precompile_stop,
-            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1);
+            created->device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_10_1, created->sun.enabled);
     } catch (const std::system_error &) {
         // Shaders then compile on first use, as before.
     }
@@ -4063,6 +4115,77 @@ uint64_t d3d11_backend_prepare_bytes(RecompD3dPresenter *presenter, const Recomp
     return bytes;
 }
 
+// Two worker prepasses use the exact same pose replay as visible draws.
+bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
+{
+    auto &sun = presenter->sun;
+    if (!sun.enabled) return false;
+    sun.epoch = 0;
+    sun.casting = casting;
+    if (!casting) {
+        sun.valid = false;
+        sun.triangles = sun.casters = 0;
+        return sunCreate(sun, presenter->device);
+    }
+    sun.valid = sun.triangles && sunFit(sun);
+    if (!sun.valid) { sun.casting = false; return false; }
+    sun.compact.clear();
+    ID3D11ShaderResourceView *empty = nullptr;
+    presenter->context->PSSetShaderResources(2, 1, &empty);
+    presenter->context->ClearDepthStencilView(sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
+    return true;
+}
+
+void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
+    const RecompD3dPresenterCommand *command)
+{
+    auto &sun = presenter->sun;
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR && command->data.clear.clear_depth &&
+        !command->data.clear.target.offscreen && !command->data.clear.target.no_depth) {
+        ++sun.epoch;
+        if (!sun.casting) sun.triangles = 0;
+    }
+    if (command->type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) return;
+    const auto &draw = command->data.draw;
+    if (!sun.casting) { sunSelectCamera(sun, draw); return; }
+    float extent;
+    sun.compact.push_back(0);
+    if (sun.epoch != sun.camera_epoch || !sunSameCamera(sun, draw) || !sunSceneDraw(draw, extent)) return;
+    sun.compact.back() = !draw.blend_weight_count && extent <= 4;
+    if (!draw.directional.enabled || draw.blend.blend_enable ||
+        (!draw.blend_weight_count && extent > 4)) return;
+    // shortcut: compact rigid normal-bearing draws include the ball and small props; add identity if needed.
+    RecompD3dPresenterDrawCommand caster = draw;
+    for (unsigned b = 0; b <= draw.blend_weight_count; ++b) {
+        float *out = b ? caster.blend_transforms[b-1] : caster.transform;
+        for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c) {
+            out[r*4+c] = 0;
+            for (unsigned k = 0; k < 4; ++k) out[r*4+c] += draw.world[b][r*4+k]*sun.projection[k*4+c];
+        }
+    }
+    caster.directional.enabled = false;
+    caster.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    caster.depth.stencil_enable = false;
+    if (submitDraw(presenter, caster) == RECOMP_D3D_PRESENTER_OK) ++sun.casters;
+}
+
+void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
+{
+    auto &sun = presenter->sun;
+    sun.casting = false;
+    sun.epoch = 0;
+    sun.valid = sun.valid && sun.casters != 0;
+    presenter->context->OMSetRenderTargets(0, nullptr, nullptr);
+    // game_shadows counts the previous frame's hidden darkening passes (false-match audit).
+    if (presenter->performance_counter && presenter->present_count % 120 == 0 && sun.valid)
+        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u game_shadows=%u direction=%.4f,%.4f,%.4f\n",
+            presenter->present_count, sun.casters, sun.game_shadows, sun.direction[0], sun.direction[1], sun.direction[2]);
+    sun.game_shadows = 0;
+    sun.game_alpha = sun.seen_alpha;
+    sun.seen_alpha = 0;
+    sun.draw_index = 0;
+}
+
 RecompD3dPresenterError d3d11_backend_submit(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterCommand *command)
@@ -4076,13 +4199,19 @@ RecompD3dPresenterError d3d11_backend_submit(
     if (command == nullptr) {
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) ++presenter->sun.draw_index;
 
     switch (command->type) {
     case RECOMP_D3D_PRESENTER_COMMAND_GAMMA:
         return submitGamma(presenter, command->data.gamma);
     case RECOMP_D3D_PRESENTER_COMMAND_CLEAR:
+        if (presenter->sun.enabled && command->data.clear.clear_depth &&
+            !command->data.clear.target.offscreen && !command->data.clear.target.no_depth)
+            ++presenter->sun.epoch;
         return submitClear(presenter, command->data.clear);
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
+        presenter->sun.valid = false;
+        presenter->sun.triangles = presenter->sun.epoch = 0;
         return submitPresent(presenter, command->data.present);
     case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
         return submitDraw(presenter, command->data.draw);

@@ -65,7 +65,7 @@ To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
 stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
-(resolution, MSAA and SMAA, saved in `private/launcher.json`) or `RunGame.cmd`
+(resolution, MSAA, SMAA and sun shadows, saved in `private/launcher.json`) or `RunGame.cmd`
 in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
 

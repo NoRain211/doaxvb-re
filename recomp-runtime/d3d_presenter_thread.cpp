@@ -203,8 +203,19 @@ void pump(PresenterThread &thread)
 }
 
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
-    const D3dCapturePacket &packet, int phase = -1, float fraction = -1, bool apply_releases = true)
+    const D3dCapturePacket &packet, int phase = -1, float fraction = -1, bool apply_releases = true, bool shadow_pass = false)
 {
+    if (!shadow_pass && d3d11_backend_shadow_begin(backend, false)) {
+        execute(thread, backend, packet, phase, fraction, false, true);
+        if (d3d11_backend_shadow_begin(backend, true))
+            execute(thread, backend, packet, phase, fraction, false, true);
+        d3d11_backend_shadow_end(backend);
+    }
+    const auto submit = [&](const RecompD3dPresenterCommand &command) {
+        if (!shadow_pass) return d3d11_backend_submit(backend, &command);
+        d3d11_backend_shadow_command(backend, &command);
+        return RECOMP_D3D_PRESENTER_OK;
+    };
     RecompBoneMatrix sampled[4][32];
     bool sampled_valid[4] = {};
     std::vector<uint8_t> vertex_scratch;
@@ -223,8 +234,8 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                 if (fraction >= 0 && draw && command.data.draw.split_pose) {
                     const auto *split = static_cast<const RecompSplitDraw *>(command.data.draw.split_pose);
                     const double split_start = thread.split_trace ? clock_ms() : 0;
-                    thread.split_camera_draws += split->camera;
-                    thread.split_pose_draws += split->pose;
+                    if (!shadow_pass) thread.split_camera_draws += split->camera;
+                    if (!shadow_pass) thread.split_pose_draws += split->pose;
                     const RecompBoneMatrix *bones = nullptr;
                     const char *split_error = nullptr;
                     if (split->pose) {
@@ -244,7 +255,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                     if (!split_error && !recomp_d3d_split_draw(&command.data.draw, fraction, bones,
                         vertex_scratch.data(), &replay.data.draw))
                         split_error = "draw";
-                    if (thread.split_trace) thread.trace_split_ms += clock_ms()-split_start;
+                    if (!shadow_pass && thread.split_trace) thread.trace_split_ms += clock_ms()-split_start;
                     if (split_error) {
                         const char *strict = std::getenv("RECOMP_SPLIT_STRICT");
                         if (strict != nullptr && std::strcmp(strict, "1") == 0) {
@@ -254,12 +265,12 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                         // Guest data can be degenerate (the island map draws an object whose
                         // world matrix holds NaN). Submit the captured draw unchanged, exactly
                         // as the 60 Hz path does, instead of stopping the presenter.
-                        if (thread.split_fallbacks++ < 16)
+                        if (!shadow_pass && thread.split_fallbacks++ < 16)
                             std::fprintf(stderr, "recomp split: fallback reason=%s camera=%u pose=%u seam=%u ball=%u\n",
                                 split_error, unsigned(split->camera), unsigned(split->pose),
                                 unsigned(split->seam), unsigned(split->ball));
-                        error = d3d11_backend_submit(backend, &command);
-                    } else error = d3d11_backend_submit(backend, &replay);
+                        error = submit(command);
+                    } else error = submit(replay);
                 } else if (phase >= 0 && draw && command.data.draw.pose_replay != nullptr) {
                     RecompD3dPresenterCommand replay;
                     replay.type = command.type;
@@ -288,16 +299,16 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                             std::fabs(point[1]) <= point[3] && point[2] >= 0 && point[2] <= point[3])
                             ++visible_vertices;
                     }
-                    error = d3d11_backend_submit(backend, &replay);
-                } else error = d3d11_backend_submit(backend, &command);
-                thread.trace_records += draw;
+                    error = submit(replay);
+                } else error = submit(command);
+                if (!shadow_pass) thread.trace_records += draw;
                 break;
             }
             case D3dCapturePacket::RELEASE:
                 if (apply_releases) error = d3d11_backend_release_memory(backend, record.base, record.size);
                 break;
             case D3dCapturePacket::REPORT:
-                d3d11_backend_report_draw_textures();
+                if (!shadow_pass) d3d11_backend_report_draw_textures();
                 break;
             }
         } catch (const std::bad_alloc &) {
@@ -312,7 +323,7 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
             fail(thread, error);
         }
     }
-    if (phase >= 0) std::fprintf(stderr,
+    if (!shadow_pass && phase >= 0) std::fprintf(stderr,
         "recomp pose replay coverage: phase=%d vertices=%u inside_clip=%u transform_delta=%.9g\n",
         phase, replay_vertices, visible_vertices, transform_delta);
 }

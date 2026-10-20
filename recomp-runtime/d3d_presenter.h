@@ -112,6 +112,11 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Additional world-view-projection matrices for 1..3 explicit weights. */
     float blend_transforms[3][16];
     uint32_t blend_weight_count;
+    /* Scene camera inputs: WORLD0..WORLD[blend_weight_count] and VIEW * PROJECTION. */
+    float world[4][16];
+    float view_projection[16];
+    /* Game's projected-shadow direction, world-space toward-light; w is 1 when valid. */
+    float sun[4];
     bool has_transform;
     /* Depth, stencil, and alpha-test state for this draw, already decoded by
        the render-state model so the presenter never sees a method number. */
