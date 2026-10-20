@@ -863,7 +863,8 @@ static int host_directory_is_empty(const char *path)
     WIN32_FIND_DATAA data;
     snprintf(pattern, sizeof pattern, "%s\\*", path);
     HANDLE find = FindFirstFileA(pattern, &data);
-    if (find == INVALID_HANDLE_VALUE) return -1;
+    /* Horizon lists no "." or "..", so an empty directory has no first entry. */
+    if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_NO_MORE_FILES ? 1 : -1;
     int empty = 1;
     do {
         if (strcmp(data.cFileName, ".") != 0 &&

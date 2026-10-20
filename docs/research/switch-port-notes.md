@@ -91,14 +91,18 @@ in two places.
 - **`cvtps2pi` rounding (3 checks): an Eden bug.** `FPCR` reads 0
   (round to nearest), yet `lrintf(1.2f)` returns 2: Eden's `frintx` rounds
   up. The macOS CI job passes the same test on Apple Silicon.
-- **Save journal (about 180 checks): open work.** Deleting files that still
-  have open handles, removing directories and journal recovery behave
-  differently on Horizon's filesystem. The game's saves depend on this layer.
+- **Save layer (33 checks): open work.** Horizon stores no Win32 attributes
+  (`chmod` and extended attributes do nothing) and cannot set file times, so
+  read-only files, other attributes and set write times are lost. Most of the
+  failing delete checks follow from that: they mark a file read-only so its
+  delete fails, and on Horizon it succeeds.
 
-Two setup fixes were needed first. The test entry creates `sdmc:/tmp`, the
+Four fixes were needed first. The test entry creates `sdmc:/tmp`, the
 default temp directory. `sync_to_disk` skips directories on the Switch:
 Horizon cannot open a directory as a file, and Eden crashed outright when the
-journal tried.
+journal tried. Journal rollback skips restoring file times, which failed and
+aborted every later save check. An empty directory counts as empty: Horizon
+lists no `.` or `..`, so it has no first entry.
 
 ## Open work for a Switch target
 
