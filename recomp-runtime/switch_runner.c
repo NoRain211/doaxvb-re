@@ -1,10 +1,10 @@
-/* Switch host for recomp_program_runner: d3d_presenter_gl.cpp draws, audio
-   is silent and no controller is connected. The log is shown on screen until
-   the presenter takes the window, and is always copied to /doaxbv/log.txt.
-   shortcut: no audio or input yet; replace each with a libnx backend behind
-   the same interface. */
+/* Switch host for recomp_program_runner: d3d_presenter_gl.cpp draws,
+   audio_output_switch.cpp plays sound, and no controller is connected. The
+   log is shown on screen until the presenter takes the window, and is always
+   copied to /doaxbv/log.txt.
+   shortcut: no input yet; replace it with a libnx backend behind the same
+   interface. */
 #define _POSIX_C_SOURCE 200809L /* setenv under the strict C11 build */
-#include "audio_output.h"
 #include "input_host_win32.h"
 
 #include <signal.h>
@@ -16,22 +16,6 @@
 #include <switch.h>
 
 void recomp_switch_console_exit(void);
-
-/* ── Audio: no device, so guest audio timing stays as it is ── */
-
-void recomp_audio_output_initialize(void) {}
-void recomp_audio_output_shutdown(void) {}
-void recomp_audio_output_reset_voice(uint32_t slot) { (void)slot; }
-int recomp_audio_output_enabled(void) { return 0; }
-
-void recomp_audio_output_submit(
-    uint32_t slot, const uint8_t *pcm, uint32_t bytes,
-    uint32_t sample_rate, uint32_t channels, uint32_t bits_per_sample,
-    int32_t volume_hundredth_db)
-{
-    (void)slot; (void)pcm; (void)bytes; (void)sample_rate;
-    (void)channels; (void)bits_per_sample; (void)volume_hundredth_db;
-}
 
 /* ── Input: no controller connected ── */
 
@@ -186,6 +170,7 @@ int main(void)
     atexit(hold_until_plus);
     signal(SIGABRT, on_abort);
 
+    setenv("RECOMP_AUDIO_GAIN", "1", 0); /* full volume, as run_game.py; args.txt may override */
     argc = read_arguments(argv, 39);
     argv[argc] = NULL;
     printf("DOAXBV Switch runner: %s\n", argv[2]);

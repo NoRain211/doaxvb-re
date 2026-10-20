@@ -114,7 +114,8 @@ on the attempt, and its rollback leaves file times to the index.
 
 `recomp_program_runner` also builds as an NRO from a locally generated
 program. `d3d_presenter_gl.cpp` draws with OpenGL 4.3 through devkitPro's
-Mesa, and `switch_runner.c` supplies silent audio and no controller.
+Mesa, `audio_output_switch.cpp` plays sound, and `switch_runner.c` supplies
+no controller.
 Configure as for the PC build, adding the toolchain file:
 
 ```powershell
@@ -155,10 +156,19 @@ frame (`RECOMP_PERF_COUNTER=1`). Not yet compared with the PC build: the
 sea behind the island on the title screen is black. Gamma, fog and MSAA are
 not applied, as in the SDL presenter.
 
+### Sound
+
+`audio_output_switch.cpp` follows the SDL backend: the same validation,
+50 ms cushion, queue limit and 1% pitch trim. It converts, resamples and
+mixes every guest voice itself, on a libnx thread at priority `0x2B` that
+keeps three 1024-frame buffers queued on audout at 48 kHz stereo. The runner
+sets `RECOMP_AUDIO_GAIN=1` unless `args.txt` sets it. In Eden the device
+opens, the game's first voices submit audible PCM and no buffer is dropped.
+Custom soundtracks stay off: they decode with Windows Media Foundation.
+
 ## Open work for a Switch target
 
-1. A libnx platform layer for files, threads, time, audio output and
-   controllers, including the file-time record above.
+1. Controller input through libnx.
 2. Checking the GL presenter against the PC build frame by frame, frame
    rate, and whether an EGL window surface works on real hardware.
 3. Checking our thread scheduling against Horizon's: which guest threads
