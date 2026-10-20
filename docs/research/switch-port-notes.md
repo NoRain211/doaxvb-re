@@ -80,29 +80,34 @@ lines, so all output also goes to `sdmc:/doaxbv-runtime-test.txt`; Eden writes
 that file when the suite finishes. The ctest cases that pass a command-line
 flag, such as `--invalid-access`, do not run there.
 
-Porting the suite needed only Switch guards: fiber stacks use `aligned_alloc`
-instead of `mmap`, the save journal skips `flock`, the guest clock uses
-`clock_gettime`, and Win32 file attributes beyond read-only and file times
-set by the game are dropped.
+Porting the suite needed Switch guards: fiber stacks use `aligned_alloc`
+instead of `mmap`, the save journal skips `flock`, and the guest clock uses
+`clock_gettime`.
 
-First Eden run (Eden 0.2.1, 2026-10-20): the suite runs to the end and fails
-in two places.
+In Eden 0.2.1 (2026-10-20) every check passes except three `cvtps2pi`
+rounding checks, which are an Eden bug: `FPCR` reads 0 (round to nearest),
+yet `lrintf(1.2f)` returns 2 because Eden's `frintx` rounds up. The macOS CI
+job passes the same test on Apple Silicon. The closing "save recovery failed"
+line is expected: the fixture ends by starting the backend with no root.
 
-- **`cvtps2pi` rounding (3 checks): an Eden bug.** `FPCR` reads 0
-  (round to nearest), yet `lrintf(1.2f)` returns 2: Eden's `frintx` rounds
-  up. The macOS CI job passes the same test on Apple Silicon.
-- **Save layer (33 checks): open work.** Horizon stores no Win32 attributes
-  (`chmod` and extended attributes do nothing) and cannot set file times, so
-  read-only files, other attributes and set write times are lost. Most of the
-  failing delete checks follow from that: they mark a file read-only so its
-  delete fails, and on Horizon it succeeds.
+Horizon's filesystem differs from POSIX in ways the Switch build of
+`win32_compat.c` covers:
 
-Four fixes were needed first. The test entry creates `sdmc:/tmp`, the
-default temp directory. `sync_to_disk` skips directories on the Switch:
-Horizon cannot open a directory as a file, and Eden crashed outright when the
-journal tried. Journal rollback skips restoring file times, which failed and
-aborted every later save check. An empty directory counts as empty: Horizon
-lists no `.` or `..`, so it has no first entry.
+- It stores no Win32 attributes and cannot set file times. Each directory
+  keeps them for its entries in a `.recomp-attrs` index, hidden from listings.
+  Creating or deleting an entry clears its line, a write after setting times
+  drops the stored write time, and read-only is enforced on open and delete.
+  The save journal's snapshot copies the index with the files, so a rollback
+  restores attributes and times.
+- It cannot open a directory as a file, so a directory handle has no
+  descriptor and works by path.
+- It cannot delete an open file, so a delete is deferred to the last close,
+  as on Windows.
+- It lists no `.` or `..`, so an empty directory has no first entry.
+
+The test entry creates `sdmc:/tmp`, the default temp directory. The save
+journal's `sync_to_disk` skips directories on the Switch, where Eden crashed
+on the attempt, and its rollback leaves file times to the index.
 
 ## Open work for a Switch target
 
