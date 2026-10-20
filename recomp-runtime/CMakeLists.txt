@@ -715,6 +715,7 @@ if(RECOMP_PROGRAM_DIR)
         $<$<BOOL:${NINTENDO_SWITCH}>:d3d_presenter_gl.cpp>
         $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_glsl_shader.cpp>
         $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<BOOL:${NINTENDO_SWITCH}>>>:audio_output_sdl.cpp>
+        $<$<BOOL:${NINTENDO_SWITCH}>:audio_output_switch.cpp>
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
         d3d_vertex_program.cpp
