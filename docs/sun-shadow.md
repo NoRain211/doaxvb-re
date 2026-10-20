@@ -59,6 +59,10 @@ vertex alpha, so mip averages do not erase thin leaf edges. Opaque cutouts keep 
 blended cutouts use GREATER 127 and write map depth even when the visible draw
 does not write depth. Render-target textures and additive effects are excluded
 from the added props. The fixed map fit does not expand for larger casters.
+Casters draw depth only: a small vertex shader applies the sun-projected bone
+matrices, cutouts add a base-mip alpha test, and the pass binds the map and its
+states once. Triangle fans, alpha-masked, four-tap or framebuffer-textured
+casters, and alpha tests without a sampled texture use the shared draw shader.
 Vertex blending uses the command's replayed `world[]` palette and the same
 explicit/remainder weights as the visible pass.
 
