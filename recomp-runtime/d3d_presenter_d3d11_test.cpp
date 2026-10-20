@@ -117,7 +117,11 @@ static bool checkPixels(
         const auto *row = reinterpret_cast<const uint32_t *>(
             static_cast<const uint8_t *>(mapped.pData) + y * mapped.RowPitch);
         for (uint32_t x = 0u; x < 4u; ++x) {
-            if (row[x] != expected[x]) {
+            // Opaque main-target RGB may round to the adjacent byte after dithering.
+            bool matches = (row[x] >> 24) == (expected[x] >> 24);
+            for (unsigned shift : {0u, 8u, 16u})
+                matches &= std::abs(int((row[x] >> shift) & 255) - int((expected[x] >> shift) & 255)) <= 1;
+            if (!matches) {
                 std::fprintf(stderr,
                     "FAIL %s pixel=(%u,%u) got=%08x expected=%08x\n",
                     label, x, y, row[x], expected[x]);
@@ -2218,7 +2222,47 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     light.world_transforms[0][14]=-50; light.world_transforms[1][14]=30;
     if (!pixels("point light weighted world position uses remainder matrix",0xff402010)) return false;
     draw.blend_weight_count=0;
-    return pixels("point light disabled blending uses world zero",0xff1a0d06);
+    if (!pixels("point light disabled blending uses world zero",0xff1a0d06)) return false;
+
+    // Half-byte gray must cover both neighboring bytes without changing alpha.
+    const uint32_t gray = 0x80ffffff;
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices;
+    draw.texture.data += 4; draw.texture_bytes=&gray;
+    light={}; light.enabled=true;
+    for (unsigned c=0;c<3;++c) light.ambient_emissive[c]=0.5f;
+    for (unsigned mode=0;mode<3;++mode) {
+        draw.blend.blend_enable=mode==1;
+        draw.blend.src_factor=RECOMP_D3D_BLEND_ONE;
+        draw.blend.dst_factor=RECOMP_D3D_BLEND_ZERO;
+        draw.blend.op=RECOMP_D3D_BLEND_OP_ADD;
+        draw.target.offscreen=draw.target.no_depth=mode==2;
+        draw.target.color=draw.texture;
+        draw.target.color.data += 4;
+        draw.target.color.width=draw.target.color.height=4;
+        if (submitDraw(presenter,draw)!=RECOMP_D3D_PRESENTER_OK) return false;
+        ID3D11RenderTargetView *target=nullptr;
+        ID3D11Resource *resource=nullptr;
+        presenter->context->OMGetRenderTargets(1,&target,nullptr);
+        target->GetResource(&resource);
+        presenter->context->CopyResource(readback,resource);
+        releaseCom(resource); releaseCom(target);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(presenter->context->Map(readback,0,D3D11_MAP_READ,0,&mapped))) return false;
+        unsigned low=0, high=0;
+        for (unsigned y=0;y<4;++y) for (unsigned x=0;x<4;++x) {
+            const auto pixel=reinterpret_cast<const uint32_t *>(
+                static_cast<const uint8_t *>(mapped.pData)+y*mapped.RowPitch)[x];
+            low += pixel==0x807f7f7f;
+            high += pixel==0x80808080;
+        }
+        presenter->context->Unmap(readback,0);
+        if (mode==0 ? low!=8 || high!=8 : high!=16) {
+            std::fprintf(stderr,"FAIL dither mode=%u low=%u high=%u\n",mode,low,high);
+            return false;
+        }
+    }
+    std::puts("PASS half-LSB dither, unchanged alpha, blended/offscreen bypass");
+    return true;
 }
 
 static bool testBackBufferMips(RecompD3dPresenter *presenter)
@@ -3267,20 +3311,112 @@ static bool testNormalCacheSpans()
     draw.fvf=0x112; draw.directional.enabled=true;
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout)) return false;
-    const auto upload = [&] {
-        return static_cast<const uint8_t *>(smoothNormalVertices(&presenter, draw, layout, true));
+    const auto upload = [&] { return smoothNormalVertices(&presenter, draw, layout, true); };
+    const auto span = [&](const VertexUpload &u, UINT skip, const void *expected) {
+        return u.skip==skip && u.size==96 && !std::memcmp(u.bytes, expected, 96);
     };
-    if (std::memcmp(upload()+32, vertices[1], 96)) return false;
+    const VertexUpload smoothed = upload();
+    if (!span(smoothed, 32, vertices[1])) return false;
+    // A ranged upload fills only its span of a full-size ring allocation.
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+            nullptr, 0, D3D11_SDK_VERSION, &presenter.device, nullptr, &presenter.context))) return false;
+    UINT offsets[3]{};
+    const uint8_t fill[160] = {0xAB};
+    bool ranged = uploadRing(&presenter, &presenter.draw_vertex_buffer, presenter.draw_vertex_capacity,
+            presenter.draw_vertex_used, fill, 16, D3D11_BIND_VERTEX_BUFFER, offsets[0]) &&
+        uploadRing(&presenter, &presenter.draw_vertex_buffer, presenter.draw_vertex_capacity,
+            presenter.draw_vertex_used, smoothed.bytes, 160, D3D11_BIND_VERTEX_BUFFER, offsets[1],
+            smoothed.skip, smoothed.size) &&
+        uploadRing(&presenter, &presenter.draw_vertex_buffer, presenter.draw_vertex_capacity,
+            presenter.draw_vertex_used, fill, 16, D3D11_BIND_VERTEX_BUFFER, offsets[2]);
+    ID3D11Buffer *readback = nullptr;
+    D3D11_BUFFER_DESC desc{};
+    if (ranged) {
+        presenter.draw_vertex_buffer->GetDesc(&desc);
+        desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ranged = SUCCEEDED(presenter.device->CreateBuffer(&desc, nullptr, &readback));
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (ranged) {
+        presenter.context->CopyResource(readback, presenter.draw_vertex_buffer);
+        ranged = SUCCEEDED(presenter.context->Map(readback, 0, D3D11_MAP_READ, 0, &mapped));
+    }
+    if (ranged) {
+        const auto *ring = static_cast<const uint8_t *>(mapped.pData);
+        ranged = offsets[1]==16 && offsets[2]==176 && ring[0]==0xAB && ring[176]==0xAB &&
+            !std::memcmp(ring+offsets[1]+32, smoothed.bytes, 96);
+        presenter.context->Unmap(readback, 0);
+    }
+    releaseCom(readback); releaseCom(presenter.draw_vertex_buffer);
+    releaseCom(presenter.context); releaseCom(presenter.device);
+    if (!ranged) return false;
     vertices[0][0]=42; vertices[4][0]=99; // Unreferenced animation cannot invalidate the span.
-    if (std::memcmp(upload()+32, vertices[1], 96) || presenter.smooth_normals.hits!=1) return false;
+    if (!span(upload(), 32, vertices[1]) || presenter.smooth_normals.stats.hits!=1) return false;
     vertices[2][6]=0.75f; // A referenced UV edit must survive a normal-cache lookup.
-    if (std::memcmp(upload()+32, vertices[1], 96) || presenter.smooth_normals.misses!=2) return false;
-    indices[0]=0; indices[1]=1; indices[2]=2; // Unused tail still needs a full upload allocation.
-    const auto *tail = upload();
-    if (tail!=presenter.smooth_vertex_scratch.data() ||
-        presenter.smooth_vertex_scratch.size()<sizeof vertices || std::memcmp(tail, vertices, 96)) return false;
+    if (!span(upload(), 32, vertices[1]) || presenter.smooth_normals.stats.misses!=2) return false;
+    indices[0]=0; indices[1]=1; indices[2]=2; // An unused tail is left out of the span.
+    if (!span(upload(), 0, vertices[0])) return false;
     draw.program_count=1;
-    return upload()==draw.vertex_bytes;
+    const VertexUpload raw = upload();
+    return raw.bytes==draw.vertex_bytes && raw.skip==0 && raw.size==UINT_MAX;
+}
+
+// A 3000-vertex skinned cylinder (stride 40) with a welded UV seam, drawn whole
+// and as the tail of a shared buffer. Hits must repeat the first result.
+static bool testNormalCacheCost()
+{
+    constexpr unsigned columns=51, rows=60, mesh=columns*rows, stride=40;
+    std::vector<uint8_t> buffer(size_t(2*mesh)*stride);
+    for (unsigned y=0; y<rows; ++y) for (unsigned x=0; x<columns; ++x) {
+        const float angle = 6.2831853f*float(x%(columns-1))/float(columns-1);
+        const float v[10] = {std::cos(angle), float(y)*0.1f, std::sin(angle), 0.25f, 0.5f,
+            std::cos(angle), 0, std::sin(angle), float(x)/float(columns-1), float(y)/float(rows)};
+        std::memcpy(buffer.data()+size_t(y*columns+x)*stride, v, sizeof v);
+    }
+    std::memcpy(buffer.data()+size_t(mesh)*stride, buffer.data(), size_t(mesh)*stride);
+    std::vector<uint16_t> whole, tail;
+    for (unsigned y=0; y+1<rows; ++y) for (unsigned x=0; x+1<columns; ++x) {
+        const unsigned a=y*columns+x, quad[6]={a, a+columns, a+1, a+1, a+columns, a+columns+1};
+        for (unsigned i : quad) { whole.push_back(uint16_t(i)); tail.push_back(uint16_t(i+mesh)); }
+    }
+    RecompD3dPresenter presenter{};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.vertex_bytes=buffer.data(); draw.vertex_stride=stride; draw.primitive_type=5;
+    draw.fvf=0x118; draw.directional.enabled=true; draw.index_count=uint32_t(whole.size());
+    RecompD3dVertexLayout layout;
+    if (!recomp_d3d_fvf_layout(draw.fvf, &layout) || layout.stride!=stride) return false;
+    bool passed = true;
+    double hit_us[2]{}, miss_us = 0;
+    constexpr unsigned hits=200, misses=10;
+    for (unsigned shared=0; shared<2; ++shared) {
+        draw.vertex_count = shared ? 2*mesh : mesh;
+        draw.index_bytes = shared ? tail.data() : whole.data();
+        const size_t skip = shared ? size_t(mesh)*stride : 0;
+        const VertexUpload first = smoothNormalVertices(&presenter, draw, layout, true);
+        const auto *bytes = static_cast<const uint8_t *>(first.bytes);
+        const std::vector<uint8_t> expected(bytes, bytes+size_t(mesh)*stride);
+        passed = passed && first.bytes!=draw.vertex_bytes && first.skip==skip && first.size==expected.size();
+        const auto start = std::chrono::steady_clock::now();
+        for (unsigned i=0; i<hits; ++i) {
+            const VertexUpload again = smoothNormalVertices(&presenter, draw, layout, true);
+            passed = passed && again.skip==skip && !std::memcmp(again.bytes, expected.data(), expected.size());
+        }
+        hit_us[shared] = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now()-start).count()/hits;
+    }
+    draw.vertex_count=mesh; draw.index_bytes=whole.data();
+    const uint64_t missed = presenter.smooth_normals.stats.misses;
+    const auto start = std::chrono::steady_clock::now();
+    for (unsigned i=0; i<misses; ++i) {
+        const float uv = float(i+2); // Each UV edit is new content: it must miss and keep the edit.
+        std::memcpy(buffer.data()+32, &uv, 4);
+        const VertexUpload edited = smoothNormalVertices(&presenter, draw, layout, true);
+        passed = passed && !std::memcmp(static_cast<const uint8_t *>(edited.bytes)+32, &uv, 4);
+    }
+    miss_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now()-start).count()/misses;
+    passed = passed && presenter.smooth_normals.stats.misses==missed+misses;
+    std::printf("smooth normals cost: vertices=%u triangles=%zu hit_us=%.1f tail_hit_us=%.1f uv_miss_us=%.1f\n",
+        mesh, whole.size()/3, hit_us[0], hit_us[1], miss_us);
+    return passed;
 }
 
 int main()
@@ -3320,6 +3456,7 @@ int main()
         return 1;
     }
     if (!testNormalCacheSpans()) { std::fprintf(stderr, "FAIL normal cache spans\n"); return 1; }
+    if (!testNormalCacheCost()) { std::fprintf(stderr, "FAIL normal cache cost\n"); return 1; }
     if (!testWidescreenClientWidth()) {
         std::fprintf(stderr, "FAIL widescreen client width\n");
         return 1;

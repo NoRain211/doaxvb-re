@@ -43,6 +43,8 @@
     "docs/wayfinder/research/high-frame-rate-split-review.md",
     "docs/wayfinder/research/model-format.md",
     "docs/wayfinder/research/og-xbox-custom-soundtracks.md",
+    "docs/wayfinder/research/rtgi-general-lighting-plan.md",
+    "docs/wayfinder/research/rtgi-sun-and-radiance-cache.md",
     "docs/wayfinder/research/texture-replacement.md",
     "docs/wayfinder/research/vrr-frame-pacing.md",
     "docs/wayfinder/research/vulkan-renderer-seams.md",

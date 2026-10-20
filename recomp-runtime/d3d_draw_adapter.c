@@ -314,25 +314,26 @@ slot_trace_done:
 }
 
 /* Xbox blend modes 1/3/5 consume 1/2/3 explicit weights and the
-   remaining weight. The game's matrix table selects WORLD0..WORLD3. */
+   remaining weight. The game's matrix table selects WORLD0..WORLD3. Also
+   records the world and view-projection matrices for host ray tracing. */
 static bool compose_blend_transforms(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dVertexLayout layout;
-    float view[16], projection[16], view_projection[16];
+    float view[16], projection[16];
 
-    if (!recomp_d3d_fvf_layout(draw->fvf, &layout)) return false;
+    if (!recomp_d3d_fvf_layout(draw->fvf, &layout) ||
+        !read_transform(device, D3D_TRANSFORM_WORLD, draw->world[0]) ||
+        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
+        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
+    multiply_transform(view, projection, draw->view_projection);
     draw->blend_weight_count = 0u;
     if (layout.blend_weight_count == 0u ||
         *recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) == 0u) return true;
     draw->blend_weight_count = layout.blend_weight_count;
-    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u ||
-        !read_transform(device, D3D_TRANSFORM_VIEW, view) ||
-        !read_transform(device, D3D_TRANSFORM_PROJECTION, projection)) return false;
-    multiply_transform(view, projection, view_projection);
+    if (*recomp_memory_u32(D3D_VERTEX_BLEND_SHADOW) != 2u * layout.blend_weight_count - 1u) return false;
     for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
-        float world[16];
-        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, world)) return false;
-        multiply_transform(world, view_projection, draw->blend_transforms[i]);
+        if (!read_transform(device, D3D_TRANSFORM_WORLD + i + 1u, draw->world[i + 1u])) return false;
+        multiply_transform(draw->world[i + 1u], draw->view_projection, draw->blend_transforms[i]);
     }
     return true;
 }
@@ -988,6 +989,26 @@ static bool attach_draw_state(uint32_t device, RecompD3dPresenterDrawCommand *dr
     }
     attach_fog(device, draw);
     attach_directional_lighting(device, draw);
+    {
+        const uint8_t *stage0 = guest_span(0x001f29b8u, 16u);
+        const uint8_t *stage1 = guest_span(0x001f2a38u, 4u);
+        const uint8_t *stage2 = guest_span(0x001f2ab8u, 4u);
+        const uint8_t *shader = guest_span(device + 0x370u, 4u);
+        const uint8_t *lighting_state = guest_span(0x001f2d20u, 4u);
+        if (stage0 && stage1 && stage2 && shader && lighting_state) {
+            uint32_t op[4], next, last, pixel_shader, lighting;
+            memcpy(op, stage0, sizeof op);
+            memcpy(&next, stage1, 4u); memcpy(&last, stage2, 4u);
+            memcpy(&pixel_shader, shader, 4u);
+            memcpy(&lighting, lighting_state, 4u);
+            /* Enabled but uncaptured lighting is not a white diffuse term. */
+            const bool known_diffuse = !lighting || draw->directional.enabled || draw->zero_diffuse_rgb;
+            /* Xbox D3DTOP: 1 DISABLE, 4 MODULATE; D3DTA: 0 DIFFUSE, 2 TEXTURE. */
+            draw->plain_texture_material = pixel_shader == 0u && known_diffuse &&
+                op[0] == 4u && op[2] == 2u && op[3] == 0u &&
+                (next == 1u || (draw->modulate_texture_factor && last == 1u));
+        }
+    }
     if (!recomp_d3d_frame_adapter_target(&draw->target)) return false;
     attach_texture(0u, draw);
     attach_backbuffer_texture(device, draw);
@@ -2052,6 +2073,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
     command.data.draw.vertex_stride = result.plan.vertex_stride;
     command.data.draw.fvf = result.plan.fvf;
     command.data.draw.vertex_bytes = vertex_bytes;
+    command.data.draw.vertex_address = result.plan.vertex_data;
     command.data.draw.index_bytes = index_bytes;
     command.data.draw.has_transform = true;
     command.data.draw.has_reflection = reflective;
