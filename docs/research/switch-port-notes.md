@@ -75,14 +75,30 @@ docker run --rm -v "${PWD}:/src" -w /src devkitpro/devkita64 bash -c "cmake -S r
 ```
 
 Open `build/switch/recomp_runtime_test.nro` in Eden with File > Load File. It
-runs the default suite, prints PASS or FAIL and writes the exit code to
-`sdmc:/doaxbv-runtime-test.txt`. The ctest cases that pass a command-line
+runs the default suite and prints PASS or FAIL. The screen keeps only the last
+lines, so all output also goes to `sdmc:/doaxbv-runtime-test.txt`; Eden writes
+that file when the suite finishes. The ctest cases that pass a command-line
 flag, such as `--invalid-access`, do not run there.
 
 Porting the suite needed only Switch guards: fiber stacks use `aligned_alloc`
 instead of `mmap`, the save journal skips `flock`, the guest clock uses
 `clock_gettime`, and Win32 file attributes beyond read-only and file times
 set by the game are dropped.
+
+First Eden run (Eden 0.2.1, 2026-10-20): the suite runs to the end and fails
+in two places.
+
+- **`cvtps2pi` rounding (3 checks): an Eden bug.** `FPCR` reads 0
+  (round to nearest), yet `lrintf(1.2f)` returns 2: Eden's `frintx` rounds
+  up. The macOS CI job passes the same test on Apple Silicon.
+- **Save journal (about 180 checks): open work.** Deleting files that still
+  have open handles, removing directories and journal recovery behave
+  differently on Horizon's filesystem. The game's saves depend on this layer.
+
+Two setup fixes were needed first. The test entry creates `sdmc:/tmp`, the
+default temp directory. `sync_to_disk` skips directories on the Switch:
+Horizon cannot open a directory as a file, and Eden crashed outright when the
+journal tried.
 
 ## Open work for a Switch target
 
