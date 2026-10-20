@@ -175,6 +175,9 @@ void sync_to_disk(const fs::path &path)
 {
 #ifndef _WIN32
     for (const fs::path &target : {path, path.parent_path()}) {
+#ifdef __SWITCH__
+        if (fs::is_directory(target)) continue; /* Horizon cannot open a directory as a file. */
+#endif
         const int fd = open(target.c_str(), O_RDONLY | O_CLOEXEC);
         require(fd >= 0);
 #ifdef __APPLE__
