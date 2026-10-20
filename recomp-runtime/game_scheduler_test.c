@@ -141,15 +141,25 @@ int recomp_game_scheduler_test(void)
            reuses its dynamic vertex/index buffers. */
         uint8_t vertices[8] = {1, 2, 3, 4, 5, 6, 7, 8};
         uint16_t indices[3] = {0, 1, 0};
-        RecompD3dPresenterDrawCommand draw = {0};
-        draw.vertex_bytes = vertices; draw.vertex_count = 2; draw.vertex_stride = 4;
-        draw.index_bytes = indices; draw.index_count = 3;
+        RecompD3dPresenterCommand command = {.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        RecompD3dPresenterDrawCommand *draw = &command.data.draw;
+        draw->vertex_bytes = vertices; draw->vertex_count = 2; draw->vertex_stride = 4;
+        draw->index_bytes = indices; draw->index_count = 3;
+        RecompD3dPresenterCommand clear = {.type = RECOMP_D3D_PRESENTER_COMMAND_CLEAR};
+        clear.data.clear.clear_depth = true;
+        clear.data.clear.z = 1.0f;
         RecompGameFrameReplay replay = {0};
+        /* The owner's depth clear sits between its draws and must replay in place. */
         for (unsigned i = 0; i < 70; ++i)
-            expect(recomp_game_frame_replay_record(&replay, &draw), "frame replay record failed");
+            expect(recomp_game_frame_replay_record(&replay, i == 35 ? &clear : &command),
+                   "frame replay record failed");
         memset(vertices, 0, sizeof vertices);
         indices[1] = 9;
-        const RecompD3dPresenterDrawCommand *last = replay.draws + 69;
+        const RecompD3dPresenterDrawCommand *last = &replay.commands[69].data.draw;
+        expect(replay.commands[35].type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR &&
+               replay.commands[35].data.clear.clear_depth && replay.commands[35].data.clear.z == 1.0f &&
+               replay.commands[34].type == RECOMP_D3D_PRESENTER_COMMAND_DRAW,
+               "frame replay lost the owner's clear or its order");
         expect(replay.count == 70 && last->vertex_bytes != vertices &&
                ((const uint8_t *)last->vertex_bytes)[7] == 8 &&
                ((const uint16_t *)last->index_bytes)[1] == 1,
