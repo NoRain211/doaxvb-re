@@ -3,11 +3,6 @@
 #include <stdio.h>
 #include <time.h>
 
-#ifdef __SWITCH__
-/* newlib on the Switch declares timespec_get but does not implement it. */
-#define timespec_get(ts, base) (clock_gettime(CLOCK_REALTIME, (ts)) == 0 ? (base) : 0)
-#endif
-
 enum {
     DISPATCHER_SIGNAL_STATE = 0x04u,
     TIMER_DUE_TIME = 0x10u,

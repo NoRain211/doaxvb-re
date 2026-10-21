@@ -11,6 +11,12 @@
 #include <sys/file.h>
 #include <sys/time.h>
 #ifdef __SWITCH__
+/* newlib on the Switch declares timespec_get but does not implement it. */
+int timespec_get(struct timespec *ts, int base)
+{
+    return base == TIME_UTC && clock_gettime(CLOCK_REALTIME, ts) == 0 ? base : 0;
+}
+
 /* Horizon stores no Win32 attributes and cannot set file times, so each
    directory keeps them for its entries in an index file hidden from listings.
    A save rollback restores the index with the rest of the directory. */

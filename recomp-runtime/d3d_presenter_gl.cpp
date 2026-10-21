@@ -7,6 +7,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_glsl_shader.h"
 #include "d3d_texture_model.h"
+#include "screenshot.h"
 
 #include <glad/glad.h>
 
@@ -1536,7 +1537,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         const GLsizei main_h = static_cast<GLsizei>(mainHeight(presenter));
         int swap_w = 0, swap_h = 0;
         const GLuint window_target = hostWindowTarget(presenter, &swap_w, &swap_h);
-        if (swap_w > 0 && swap_h > 0) {
+        // A held frame updates the front buffer copy, but the window keeps
+        // the last picture presented.
+        // shortcut: the runtime's overlay text is not drawn; add an ImGui GL
+        // drawer if the free camera or model viewer is wanted on the Switch.
+        if (!present.hold && swap_w > 0 && swap_h > 0) {
             glBindFramebuffer(GL_FRAMEBUFFER, window_target);
             glViewport(0, 0, swap_w, swap_h);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -1569,6 +1574,15 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         glCopyImageSubData(presenter->backbuffer_color, GL_TEXTURE_2D, 0, 0, 0, 0,
                            presenter->frontbuffer_copy, GL_TEXTURE_2D, 0, 0, 0, 0, main_w, main_h, 1);
+        if (present.hold) return RECOMP_D3D_PRESENTER_OK;
+
+        if (recomp_screenshot_take_request()) {
+            // Targets hold the top row first, as the PNG writer expects.
+            std::vector<uint8_t> pixels(static_cast<size_t>(main_w) * main_h * 4u);
+            glBindTexture(GL_TEXTURE_2D, presenter->backbuffer_color);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels.data());
+            recomp_screenshot_save(pixels.data(), main_w, main_h, static_cast<uint32_t>(main_w) * 4u);
+        }
 
         const auto swap_start = std::chrono::steady_clock::now();
         hostSwap(presenter);

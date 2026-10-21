@@ -191,6 +191,13 @@ and the right motor as the high band of HD rumble on Pro Controller,
 Joy-Con pair and handheld styles. Remove `--input-start-pulse-at` from
 `args.txt` to play: scripted pulses replace the controller.
 
+### Overlay, screenshots and free camera
+
+The Switch build skips the ImGui overlay, so its text is not drawn. R3
+toggles the free camera, and Minus+A while flying saves a screenshot to
+`sdmc:/doaxbv/screenshots`. Keyboard and mouse host keys do nothing.
+newlib lacks `timespec_get`, so `win32_compat.c` supplies it.
+
 ## Open work for a Switch target
 
 1. Checking the GL presenter against the PC build frame by frame, frame

@@ -95,6 +95,10 @@ function(recomp_use_overlay target)
         target_sources(${target} PRIVATE overlay_d3d11.cpp overlay_imgui_panel.cpp screenshot.c)
         # screenshot.c asks the shell for the Pictures folder.
         target_link_libraries(${target} PRIVATE shell32 ole32 uuid)
+    elseif(NINTENDO_SWITCH)
+        # d3d_presenter_gl.cpp saves screenshots but draws no overlay text.
+        target_sources(${target} PRIVATE screenshot.c)
+        return()
     else()
         target_sources(${target} PRIVATE overlay_sdl_gpu.cpp overlay_imgui_panel.cpp screenshot.c)
     endif()

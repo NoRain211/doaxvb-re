@@ -120,6 +120,19 @@ void recomp_input_host_stop_vibration(void)
     }
 }
 
+/* No keyboard or mouse: the free camera and screenshots use controller combos. */
+bool recomp_input_host_key(RecompInputHostKey key)
+{
+    (void)key;
+    return false;
+}
+
+bool recomp_input_host_mouse_drag(float *dx, float *dy)
+{
+    *dx = *dy = 0.0f;
+    return false;
+}
+
 /* ── Entry: arguments from a file, log on screen and on the SD card ── */
 
 /* A rooted path: the runner's std::filesystem::absolute treats "sdmc:/" as
@@ -256,6 +269,7 @@ int main(void)
     signal(SIGABRT, on_abort);
 
     setenv("RECOMP_AUDIO_GAIN", "1", 0); /* full volume, as run_game.py; args.txt may override */
+    setenv("RECOMP_SCREENSHOT_DIR", SWITCH_ROOT "/screenshots", 0);
     argc = read_arguments(argv, 39);
     argv[argc] = NULL;
     printf("DOAXBV Switch runner: %s\n", argv[2]);
