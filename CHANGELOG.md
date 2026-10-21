@@ -35,7 +35,8 @@
 - **Model viewer**. With Free camera on, the main menu has a MODEL VIEWER
   item. It goes through Exhibition's own character and court select; once
   the match starts, the free camera comes on in front of Player 1's girl,
-  the scene freezes and the other players and the overlay are hidden.
+  the scene keeps running (P or Start pauses it), and the other players,
+  the ball and the overlay are hidden.
   Putting the camera away returns to the main menu. On court select, [ ] or
   LT/RT choose the time of day (day, sunset or dusk). See
   `docs/model-viewer.md`.
