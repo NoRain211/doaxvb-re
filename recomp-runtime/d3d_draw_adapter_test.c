@@ -37,7 +37,12 @@ static int combiner_adapter_test(void)
     REQUIRE(draw.has_combiner && memcmp(draw.combiner, words, sizeof words) == 0);
     REQUIRE(draw.reflection_bytes != NULL && draw.combiner_address_u == 3 && draw.combiner_address_v == 2);
     REQUIRE(draw.combiner_lod_bias == -2.0f);
-    REQUIRE(!draw.combiner_is_backbuffer);
+    REQUIRE(!draw.combiner_is_backbuffer && !draw.combiner_mip_point);
+    // The title sea samples its shimmer with a point mip filter.
+    stages[1][5] = 1; draw.has_combiner = false;
+    attach_combiner(device, &draw);
+    REQUIRE(draw.has_combiner && draw.combiner_mip_point);
+    stages[1][5] = 2;
     *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET) = resource;
     draw.has_combiner = false;
     attach_combiner(device, &draw);
@@ -84,7 +89,7 @@ static int combiner_adapter_test(void)
     const uint32_t rejected[][3] = {
         {0,12,17}, {0,16,17}, {1,12,17}, {1,16,17},
         {0,20,1}, {1,20,1}, {1,28,1}, {1,21,3},
-        {0,11,1}, {1,11,1}, {1,3,1}, {1,4,1}, {1,4,3}, {1,5,1},
+        {0,11,1}, {1,11,1}, {1,3,1}, {1,4,1}, {1,4,3}, {1,5,0}, {1,5,3},
         {1,7,1}, {1,9,1}, {1,10,0x20000000u},
         {2,12,2}, {1,12,25}, {0,14,5}, {0,14,0x40}
     };

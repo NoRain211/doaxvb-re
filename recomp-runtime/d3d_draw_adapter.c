@@ -913,11 +913,13 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
     // Only stage 1 carries a host MipLODBias; stage 0 samples unbiased.
     if (stage0_texture && stage0_bias != 0.0f) return;
     const bool stage1_texture = recomp_d3d_combiner_uses_texture(stages[1] + 12u);
-    // Only the presenter's linear min/mag/mip sampler is implemented here.
+    /* The presenter samples linear min/mag with a linear mip; stage 1 may
+       also take a point mip, which the title sea uses. */
     if ((stage0_texture &&
          (stages[0][3] != 2u || stages[0][4] != 2u || stages[0][5] != 2u)) ||
         (stage1_texture &&
-         (stages[1][3] != 2u || stages[1][4] != 2u || stages[1][5] != 2u))) return;
+         (stages[1][3] != 2u || stages[1][4] != 2u ||
+          (stages[1][5] != 1u && stages[1][5] != 2u)))) return;
     for (uint32_t s = 0u; s < 2u; ++s) {
         if (stages[s][20] != 0u || stages[s][11] != 0u) return;
         if ((s == 0u ? stage0_texture : stage1_texture) &&
@@ -963,6 +965,7 @@ static void attach_combiner(uint32_t device, RecompD3dPresenterDrawCommand *draw
     draw->combiner_is_frontbuffer = texture.texture_is_frontbuffer;
     memcpy(&draw->combiner_lod_bias, &stages[1][6], sizeof draw->combiner_lod_bias);
     if (!isfinite(draw->combiner_lod_bias)) draw->combiner_lod_bias = 0.0f;
+    draw->combiner_mip_point = stage1_texture && stages[1][5] == 1u;
     draw->has_combiner = true;
 }
 
