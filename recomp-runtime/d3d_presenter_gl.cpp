@@ -381,6 +381,7 @@ struct RecompD3dPresenter {
     double second_max_ms = 0.0;
     double second_submit_ms = 0.0; // inside submit, including the swap
     double second_swap_ms = 0.0;
+    double second_flush_ms = 0.0; // issuing queued draws to GL
 
     float scale = 1.0f;
     bool widescreen = true;
@@ -421,7 +422,9 @@ bool immediate_present_setting = false;
 // on real hardware or a newer Eden.
 
 #ifdef __SWITCH__
-constexpr int kWindowWidth = 1280, kWindowHeight = 720; // docked output is scaled by the system
+// 16:9 at the guest's 480 lines; the compositor scales it to the screen, so
+// the per-frame readback and copy move half the bytes of 1280x720.
+constexpr int kWindowWidth = 848, kWindowHeight = 480;
 
 bool hostCreate(RecompD3dPresenter *p)
 {
@@ -543,16 +546,18 @@ void reportPerformance(RecompD3dPresenter *presenter)
     if (elapsed_ms < 1000.0) return;
     const uint32_t frames = presenter->second_presents - 1u;
     std::fprintf(stderr, "recomp performance: present=%u fps=%.2f frame_ms=%.3f max_ms=%.1f draws=%u"
-        " presenter_ms=%.1f swap_ms=%.1f\n",
+        " presenter_ms=%.1f flush_ms=%.1f swap_ms=%.1f\n",
         presenter->present_count, frames * 1000.0 / elapsed_ms, elapsed_ms / frames,
         presenter->second_max_ms, presenter->draw_count / frames,
         (presenter->second_submit_ms - presenter->second_swap_ms) / frames,
+        presenter->second_flush_ms / frames,
         presenter->second_swap_ms / frames);
     presenter->second_presents = 1u;
     presenter->second_start = now;
     presenter->second_max_ms = 0.0;
     presenter->second_submit_ms = 0.0;
     presenter->second_swap_ms = 0.0;
+    presenter->second_flush_ms = 0.0;
     presenter->draw_count = 0u;
 }
 
@@ -1149,6 +1154,16 @@ void flushSegment(RecompD3dPresenter *presenter)
 {
     DrawSegment &seg = presenter->segment;
     if (seg.draws.empty()) return;
+    const auto flush_start = std::chrono::steady_clock::now();
+    struct FlushTimer {
+        RecompD3dPresenter *p;
+        std::chrono::steady_clock::time_point start;
+        ~FlushTimer() {
+            p->second_flush_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+        }
+    } timer{presenter, flush_start};
+    if (seg.draws.empty()) return;
 
     // Every draw binds a whole TransformUniforms block; the tail keeps the
     // last one inside the upload.
@@ -1174,19 +1189,22 @@ void flushSegment(RecompD3dPresenter *presenter)
         uint32_t last_t0 = kUnset, last_s0 = kUnset, last_t1 = kUnset, last_s1 = kUnset;
         bool have_state = false;
         DrawState last_state{};
+        uint32_t last_stride = kUnset;
 
         for (const QueuedDraw &q : seg.draws) {
             if (q.program != last_program) {
                 glUseProgram(q.program);
                 last_program = q.program;
             }
-            if (q.vao != last_vao) {
+            // The binding lives in the vertex array. Vertex offsets are whole
+            // strides from the segment base, so draws reach them by base vertex.
+            if (q.vao != last_vao || q.vertex_stride != last_stride) {
                 glBindVertexArray(q.vao);
+                glBindVertexBuffer(0, presenter->draw_vertex_buffer,
+                    static_cast<GLintptr>(seg_v_base), static_cast<GLsizei>(q.vertex_stride));
                 last_vao = q.vao;
+                last_stride = q.vertex_stride;
             }
-            // The binding lives in the vertex array, so set it for every draw.
-            glBindVertexBuffer(0, presenter->draw_vertex_buffer,
-                static_cast<GLintptr>(seg_v_base + q.vertex_offset), static_cast<GLsizei>(q.vertex_stride));
 
             if (q.uniform_offset != last_uniform_offset) {
                 glBindBufferRange(GL_UNIFORM_BUFFER, 0, presenter->draw_uniform_buffer,
@@ -1228,8 +1246,9 @@ void flushSegment(RecompD3dPresenter *presenter)
                 have_state = true;
             }
 
-            glDrawElements(q.mode, static_cast<GLsizei>(q.index_count), GL_UNSIGNED_SHORT,
-                reinterpret_cast<const void *>(static_cast<uintptr_t>(seg_i_base + q.index_offset)));
+            glDrawElementsBaseVertex(q.mode, static_cast<GLsizei>(q.index_count), GL_UNSIGNED_SHORT,
+                reinterpret_cast<const void *>(static_cast<uintptr_t>(seg_i_base + q.index_offset)),
+                static_cast<GLint>(q.vertex_offset / q.vertex_stride));
         }
     }
 
@@ -1636,8 +1655,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // Append vertex data
         auto &vdata = presenter->segment.vertex_data;
         uint32_t v_offset = static_cast<uint32_t>(vdata.size());
-        if (v_offset % 16u != 0u) {
-            vdata.resize((v_offset + 15u) & ~15u, 0);
+        if (v_offset % draw.vertex_stride != 0u) { // flushSegment draws by base vertex
+            vdata.resize(v_offset + draw.vertex_stride - v_offset % draw.vertex_stride, 0);
             v_offset = static_cast<uint32_t>(vdata.size());
         }
         const uint32_t v_size = draw.vertex_stride * draw.vertex_count;
