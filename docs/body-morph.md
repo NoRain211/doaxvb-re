@@ -82,5 +82,7 @@ entry other than the six known blends runs the generated function.
 
 `RECOMP_BODY_MORPH_VERIFY=1` runs each call twice from the same state:
 first the generated code, then the readable code. It compares the record,
-the locked buffer word, the push buffer's write pointer and the command
-the lock writes there, and every vertex the blend writes.
+the locked buffer word, the lock's own result (the same resource locked
+and the same buffer returned) and every vertex the blend writes. The push
+buffer the lock writes to is not compared: the second lock of a check can
+skip the fence kick the first one made.
