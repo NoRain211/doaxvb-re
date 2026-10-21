@@ -190,7 +190,3 @@ behavior is tracked as such.
 Original code and documentation are licensed under
 [GPL-3.0-or-later](LICENSE); see also [NOTICE](NOTICE). Third-party components
 keep their own licenses. The license grants no rights to the game or its assets.
-
-## Support
-
-If you like this work, consider [buying me a coffee on Ko-fi](https://ko-fi.com/norainsrecomps).
