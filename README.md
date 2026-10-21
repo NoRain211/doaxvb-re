@@ -19,6 +19,8 @@
 [Controls](docs/recomp-controls.md) ·
 [Report a bug](https://github.com/NoRain211/doaxbv-re/issues)
 
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/norainsrecomps)
+
 </div>
 
 > [!IMPORTANT]
