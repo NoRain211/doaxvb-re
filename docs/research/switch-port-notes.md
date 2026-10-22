@@ -170,6 +170,13 @@ by base vertex, so the vertex buffer is bound only when the layout or stride
 changes. `RECOMP_GL_DEBUG=1` logs Mesa's errors and warnings; the title
 screen raises none.
 
+Movies decode on the main thread at 3–5 fps in Eden. Sampling that thread
+during the intro put about half its time in calls to the guest-memory
+helpers, because GCC stops inlining them into the largest generated
+functions. They are now forced inline; in back-to-back Eden runs that lifted
+the intro from about 3.3 to 4.4 fps and left the title screen unchanged. The
+rest is the decoder's own work.
+
 ### Sound
 
 `audio_output_switch.cpp` follows the SDL backend: the same validation,

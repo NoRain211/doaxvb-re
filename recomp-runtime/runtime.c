@@ -846,23 +846,6 @@ uint32_t *recomp_memory_u32_checked(uint32_t guest_address)
         guest_address, sizeof(uint32_t));
 }
 
-uint64_t *recomp_memory_u64(uint32_t guest_address)
-{
-    return (uint64_t *)(void *)recomp_memory(
-        guest_address, sizeof(uint64_t));
-}
-
-uint16_t *recomp_memory_u16(uint32_t guest_address)
-{
-    return (uint16_t *)(void *)recomp_memory(
-        guest_address, sizeof(uint16_t));
-}
-
-int8_t *recomp_memory_i8(uint32_t guest_address)
-{
-    return (int8_t *)(void *)recomp_memory(guest_address, sizeof(int8_t));
-}
-
 void recomp_guest_memcpy(
     uint32_t destination,
     uint32_t source,
@@ -893,30 +876,6 @@ void recomp_guest_memset(
 
     destination_data = recomp_memory(destination, size);
     memset(destination_data, value, size);
-}
-
-void recomp_guest_load(void *destination, uint32_t source, size_t size)
-{
-    const uint8_t *source_data;
-
-    if (size == 0u) {
-        return;
-    }
-
-    source_data = recomp_memory(source, size);
-    memcpy(destination, source_data, size);
-}
-
-void recomp_guest_store(uint32_t destination, const void *source, size_t size)
-{
-    uint8_t *destination_data;
-
-    if (size == 0u) {
-        return;
-    }
-
-    destination_data = recomp_memory(destination, size);
-    memcpy(destination_data, source, size);
 }
 
 uint32_t *recomp_ebp_register(void)

@@ -18,7 +18,6 @@ uint8_t *recomp_memory(uint32_t address, size_t size)
     return memory + address;
 }
 uint32_t *recomp_memory_u32_checked(uint32_t address) { return (uint32_t *)recomp_memory(address, 4); }
-uint16_t *recomp_memory_u16(uint32_t address) { return (uint16_t *)recomp_memory(address, 2); }
 
 enum {
     TEST_ITEMS = 0x00400000u,

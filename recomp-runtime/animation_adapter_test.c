@@ -26,10 +26,6 @@ uint8_t *recomp_memory(uint32_t address, size_t size)
     return memory+address;
 }
 uint32_t *recomp_memory_u32_checked(uint32_t address) { return (uint32_t *)recomp_memory(address,4); }
-uint16_t *recomp_memory_u16(uint32_t address) { return (uint16_t *)recomp_memory(address,2); }
-int8_t *recomp_memory_i8(uint32_t address) { return (int8_t *)recomp_memory(address,1); }
-void recomp_guest_load(void *out, uint32_t address, size_t size) { memcpy(out,recomp_memory(address,size),size); }
-void recomp_guest_store(uint32_t address, const void *in, size_t size) { memcpy(recomp_memory(address,size),in,size); }
 uint32_t *recomp_ebp_register(void) { return &test_ebp; }
 uint32_t recomp_d3d_frame_adapter_swap_counter(void) { return test_frame; }
 bool recomp_d3d_presenter_split_enabled(void) { return split_on; }
