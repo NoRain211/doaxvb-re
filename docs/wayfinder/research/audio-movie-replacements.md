@@ -64,6 +64,9 @@ sample counts, loops, and buffer completion.
 
 ## Sofdec/SFD boundary
 
+The game's SFD files and the player API they need are mapped in
+[sofdec-player-api.md](../../research/sofdec-player-api.md).
+
 Current CRI material describes modern Sofdec products and `.usm` workflows; it
 does not establish legacy Xbox SFD compatibility or grant redistribution rights
 for an old runtime. See CRI's [Video Quick Start](https://www.criware.com/en/products/CRIWARE_Video_Quick_Start.pdf)
