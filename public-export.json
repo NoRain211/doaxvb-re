@@ -88,6 +88,7 @@
     "xbe/**",
     "docs/research/rollback-engine-audit.md",
     "docs/research/switch-port-notes.md",
+    "docs/research/sofdec-player-api.md",
     "tools/check-rollback-seal-span.c",
     "tools/recomp-net-patches/README.md",
     "tools/recomp-net-patches/rollback-seals.patch",
