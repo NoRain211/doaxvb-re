@@ -88,6 +88,18 @@ if(WIN32 OR SDL3_FOUND)
         recomp_use_sdl3(recomp_imgui)
     endif()
 endif()
+# pl_mpeg decodes the game's MPEG-1 movies. pl_mpeg_sofdec.cmake writes the
+# patched header the build uses; see movie_video.c. Set
+# FETCHCONTENT_SOURCE_DIR_PL_MPEG to configure offline.
+include(FetchContent)
+FetchContent_Declare(pl_mpeg
+    URL https://github.com/phoboslab/pl_mpeg/archive/c871f2be022ece7ef4f64230b4fb8e1fb9eb6023.tar.gz
+    URL_HASH SHA256=7caee5a96118afde256146556f3f207b41d85b8c4f55fa5fb6b4759b06470fd1)
+FetchContent_MakeAvailable(pl_mpeg)
+set(PL_MPEG_SOURCE "${pl_mpeg_SOURCE_DIR}/pl_mpeg.h")
+set(PL_MPEG_HEADER "${CMAKE_CURRENT_BINARY_DIR}/pl_mpeg/pl_mpeg.h")
+include(pl_mpeg_sofdec.cmake)
+
 # Adds the presenter's overlay drawer; the text model, overlay_text.c, is
 # added where the game side is.
 function(recomp_use_overlay target)
@@ -953,6 +965,8 @@ add_executable(recomp_save_transaction_test
 add_executable(recomp_xbox_adpcm_test xbox_adpcm.c xbox_adpcm_test.c)
 
 add_executable(recomp_movie_color_test movie_color_model.c movie_color_model_test.c)
+add_executable(recomp_movie_video_test movie_color_model.c movie_video.c movie_video_test.c)
+target_include_directories(recomp_movie_video_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/pl_mpeg")
 
 add_executable(recomp_animation_track_test animation_track.c animation_track_test.c)
 if(NOT MSVC)
@@ -1035,6 +1049,7 @@ if(TARGET recomp_dxr_smoke_test)
         PROPERTIES TIMEOUT 30 LABELS "gpu;dx11")
 endif()
 add_test(NAME recomp-runtime-movie-color COMMAND recomp_movie_color_test)
+add_test(NAME recomp-runtime-movie-video COMMAND recomp_movie_video_test)
 add_test(NAME recomp-runtime-xbox-adpcm COMMAND recomp_xbox_adpcm_test)
 if(TARGET recomp_audio_output_xaudio2_test)
     add_test(NAME recomp-runtime-audio-output COMMAND recomp_audio_output_xaudio2_test)

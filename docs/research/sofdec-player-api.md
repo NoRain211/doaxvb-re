@@ -134,3 +134,25 @@ Replace the library at the calls above:
    format gate in [audio-movie-replacements.md](../wayfinder/research/audio-movie-replacements.md)
    still requires.
 
+## Video decoder
+
+`movie_video.c` decodes the video with [pl_mpeg](https://github.com/phoboslab/pl_mpeg),
+pinned and patched at configure time by `pl_mpeg_sofdec.cmake`. The SFD video
+is MPEG-1 with two encoder extensions that stock pl_mpeg misreads:
+
+- Intra DC is coded at 11-bit precision, as MPEG-2's `intra_dc_precision` 3:
+  DC differentials up to size 11, a predictor reset of 1024 and no scaling.
+  The precision is announced in TMPGEnc user data before the first picture
+  (`IDCPREC`, an 8-digit length, then the value).
+- Later sequence headers load new quantizer matrices, which stock pl_mpeg
+  ignores after the first header.
+
+With both fixes every SFD file on the disc decodes to within IDCT rounding of
+ffmpeg: 48–60 dB luma PSNR on sampled frames. Slow, dark scenes drift to about
+39 dB before the next I-frame. pl_mpeg withholds a stream's last picture, so
+each movie ends one frame early.
+
+Decoding the three largest movies took 3–4 ms per frame on a desktop PC and
+18–23 ms in Eden on one core, against 33 ms per frame at 29.97 fps. The
+slowest frames in Eden took 74–82 ms, so the player should decode ahead.
+

@@ -177,7 +177,10 @@ Install Git, CMake 3.20 or newer, and Visual Studio 2022 or Build Tools with
 Desktop development with C++ and a Windows SDK. On every platform,
 configuration downloads Dear ImGui 1.91.9, which draws the free camera's
 overlay text, and checks its SHA-256; set `FETCHCONTENT_SOURCE_DIR_IMGUI` to
-an unpacked copy to configure offline. In PowerShell, run:
+an unpacked copy to configure offline. It also downloads the pl_mpeg MPEG-1
+decoder (MIT) at a pinned commit, checks its SHA-256 and writes a patched copy
+for the game's movies into the build directory; set
+`FETCHCONTENT_SOURCE_DIR_PL_MPEG` the same way. In PowerShell, run:
 
 ```powershell
 git clone --recurse-submodules https://github.com/NoRain211/doaxbv-re.git

@@ -1,3 +1,5 @@
 # These files are authenticated by byte hashes during ISO setup.
 tools/game-recipe/** text eol=lf
 tools/xboxrecomp-patches/local-parity.patch text eol=lf
+# Its bracket strings must match pl_mpeg.h, which uses LF.
+recomp-runtime/pl_mpeg_sofdec.cmake text eol=lf

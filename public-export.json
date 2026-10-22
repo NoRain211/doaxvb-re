@@ -201,6 +201,10 @@
     {
       "sha256": "1fd70597174fc34bb05d94289897f5fa88a739fe22cbf41c1ac89e805c410e9d",
       "reason": "Guest lighting record input field offsets mirrored by game_environment_test.c."
+    },
+    {
+      "sha256": "bad27d751e09598a9f8e092c7f3d9dd9dda4ad5763ed912a4ffb6b9891baafab",
+      "reason": "Synthetic MPEG-1 pack, system and video packet headers from ISO/IEC 11172-1, built by movie_video_test.c around a hand-coded 16x16 picture."
     }
   ]
 }
