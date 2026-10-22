@@ -312,6 +312,9 @@ add_executable(recomp_runtime_test
     soundtrack_adapter.c
     custom_music_test.cpp
     movie_color_model.c
+    movie_video.c
+    movie_player.c
+    movie_player_test.c
     cri_service_model.c
     cri_service_model_test.c
     cri_service_adapter.c
@@ -402,7 +405,8 @@ if(NOT MSVC)
     target_link_libraries(recomp_runtime_test PRIVATE m)
 endif()
 target_include_directories(recomp_runtime_test PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}")
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}/pl_mpeg")
 if(WIN32)
     # Media Foundation is delay-loaded: Windows N editions and Server without the
     # Media Foundation feature lack it, and custom music then stays disabled.
@@ -750,6 +754,8 @@ if(RECOMP_PROGRAM_DIR)
         custom_music.cpp
         soundtrack_adapter.c
         movie_color_model.c
+        movie_video.c
+        movie_player.c
         cri_service_model.c
         cri_service_adapter.c
         crt_format_model.c
@@ -789,6 +795,7 @@ if(RECOMP_PROGRAM_DIR)
         RECOMP_D3D_FRAME_ENABLED)
     target_include_directories(recomp_program_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/pl_mpeg"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     if(WIN32)

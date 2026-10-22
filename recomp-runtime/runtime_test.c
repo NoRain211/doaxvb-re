@@ -31,6 +31,7 @@ int recomp_dsound_service_adapter_test(void);
 int recomp_custom_music_test(void); /* process exit code; 77 = skipped */
 int recomp_cri_service_model_test(void);
 int recomp_cri_service_adapter_test(void);
+int recomp_movie_player_test(void);
 int recomp_crt_format_adapter_test(void);
 int recomp_crt_string_adapter_test(void);
 int recomp_animation_track_adapter_test(void);
@@ -956,6 +957,7 @@ int main(int argc, char **argv)
     passed &= recomp_dsound_service_adapter_test();
     passed &= recomp_cri_service_model_test();
     passed &= recomp_cri_service_adapter_test();
+    passed &= recomp_movie_player_test();
     passed &= recomp_crt_format_adapter_test();
     passed &= recomp_crt_string_adapter_test();
     passed &= recomp_animation_track_adapter_test();

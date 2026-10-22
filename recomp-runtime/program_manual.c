@@ -9,6 +9,7 @@
 #include "kernel_abi.h"
 #include <string.h>
 #include "cri_service_adapter.h"
+#include "movie_player.h"
 #include "crt_format_adapter.h"
 #include "crt_string_adapter.h"
 #include "d3d_creation_adapter.h"
@@ -359,6 +360,9 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
 
     if (function == NULL) {
         function = recomp_cri_service_lookup_manual(guest_address);
+    }
+    if (function == NULL) {
+        function = recomp_movie_player_lookup_manual(guest_address);
     }
 
     if (function == NULL) {

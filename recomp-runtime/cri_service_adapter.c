@@ -1,5 +1,4 @@
 #include "cri_service_adapter.h"
-#include "movie_color_model.h"
 
 #include "stop_report.h"
 
@@ -15,8 +14,6 @@ enum {
     CRI_SYNC_CALLBACK_ADDRESS = 0x00189cb0u,
     CRI_LANE2_SERVICE_ADDRESS = 0x00193e30u,
     CRI_LANE5_SERVICE_ADDRESS = 0x00193e50u,
-    MWP_FRAME_GET_STATUS_ADDRESS = 0x00198320u,
-    MWP_COLOR_CONVERT_ADDRESS = 0x001a8a70u,
     CRI_SYNC_FLAG_ADDRESS = 0x003b772cu,
     CRI_PARTITION_COUNT_ADDRESS = 0x005e69d0u,
 };
@@ -29,7 +26,6 @@ void sub_00188590(void);
 void sub_00189970(void);
 void sub_00193E30(void);
 void sub_00193E50(void);
-void sub_00198320(void);
 void sub_001E38F0(void);
 
 static const RecompCriServiceHooks default_hooks = {
@@ -40,7 +36,6 @@ static const RecompCriServiceHooks default_hooks = {
     .adxf_get_stat = sub_001877D0,
     .adxf_get_pt_stat = sub_00187B30,
     .adxf_open = sub_00187E40,
-    .mwp_frame_get_status = sub_00198320,
     .adxt_get_stat = sub_00188590,
 };
 #else
@@ -59,9 +54,6 @@ static int reported_lane2;
 static int reported_lane5;
 static int reported_catalog;
 static int reported_adxf_open;
-static uint32_t mwp_status_calls;
-static uint32_t prior_mwp_status;
-static int have_prior_mwp_status;
 static uint32_t adxf_get_stat_calls;
 
 uint32_t recomp_cri_service_adxf_get_stat_calls(void)
@@ -160,20 +152,6 @@ static void require_lane2_service(RecompCriServiceResult result)
             "recomp cri: cooperative lane-2 batch count=%" PRIu32 "\n",
             service_model.lane2_batches);
         reported_lane2 = 1;
-    }
-}
-
-static void require_lane5_service(RecompCriServiceResult result)
-{
-    if (result == RECOMP_CRI_SERVICE_INVALID) {
-        recomp_stop(2, "cri-service:lane-5-unavailable");
-    }
-    if (result == RECOMP_CRI_SERVICE_OK && !reported_lane5) {
-        fprintf(
-            stderr,
-            "recomp cri: cooperative lane-5 batch count=%" PRIu32 "\n",
-            service_model.lane5_handoffs);
-        reported_lane5 = 1;
     }
 }
 
@@ -444,80 +422,6 @@ static void recomp_adxf_open_adapter(void)
     }
 }
 
-static uint8_t *movie_span(uint32_t address, uint64_t bytes)
-{
-    if (bytes == 0u || bytes > UINT32_MAX ||
-        (uint64_t)address + bytes > 0x100000000ull) {
-        recomp_stop(2, "cri-movie:invalid-span");
-    }
-    return recomp_memory(address, (size_t)bytes);
-}
-
-static void recomp_mwp_color_convert_adapter(void)
-{
-    uint32_t entry_esp = recomp_runtime.registers.esp;
-    uint32_t arguments[3], source[6], destination[6];
-    RecompMoviePlane planes[3];
-    int16_t table[RECOMP_MOVIE_COLOR_TABLE_ENTRIES];
-
-    recomp_guest_load(arguments, entry_esp + 4u, sizeof arguments);
-    recomp_guest_load(source, arguments[0], sizeof source);
-    recomp_guest_load(destination, arguments[1], sizeof destination);
-    uint32_t width = destination[1], height = destination[2];
-    uint32_t pitch = destination[3];
-    if (width == 0u || height == 0u ||
-        (uint64_t)width * 4u > pitch || destination[4] != pitch ||
-        (uint64_t)pitch * 2u != destination[5]) {
-        recomp_stop(2, "cri-movie:unsupported-output-layout");
-    }
-    for (unsigned i = 0u; i < 3u; ++i) {
-        uint32_t columns = i == 0u ? width : width / 2u + width % 2u;
-        uint32_t rows = i == 0u ? height : height / 2u + height % 2u;
-        uint32_t stride = source[i + 3u];
-        uint64_t bytes = (uint64_t)(rows - 1u) * stride + columns;
-        if (stride < columns) recomp_stop(2, "cri-movie:invalid-plane-stride");
-        planes[i] = (RecompMoviePlane){movie_span(source[i], bytes),
-            (size_t)bytes, stride};
-    }
-    recomp_guest_load(table, arguments[2], sizeof table);
-    uint64_t bytes = (uint64_t)(height - 1u) * pitch + (uint64_t)width * 4u;
-    uint8_t *output = movie_span(destination[0], bytes);
-    if (!recomp_movie_color_convert(planes, width, height, table,
-            RECOMP_MOVIE_COLOR_TABLE_ENTRIES, output, (size_t)bytes, pitch)) {
-        recomp_stop(2, "cri-movie:invalid-color-conversion");
-    }
-    recomp_runtime.registers.esp = entry_esp + 4u;
-}
-
-static void recomp_mwp_frame_get_status_adapter(void)
-{
-    RecompCriServiceResult lane2_result = run_file_worker_step();
-
-    if (service_hooks.mwp_frame_get_status == NULL) {
-        recomp_stop(2, "cri-service:mwp-status-unavailable");
-    }
-    require_lane2_service(lane2_result);
-    /* Boot movies register their decoder on lane 5 and poll for readiness. */
-    require_lane5_service(run_service_batch(5, &service_hooks.lane5_service, 1u));
-    service_hooks.mwp_frame_get_status();
-    ++mwp_status_calls;
-    if (!have_prior_mwp_status ||
-        recomp_runtime.registers.eax != prior_mwp_status) {
-        fprintf(
-            stderr,
-            "recomp cri: generated MWP_FrameGetStatus call=%" PRIu32
-            " status=%" PRIu32 "\n",
-            mwp_status_calls,
-            recomp_runtime.registers.eax);
-        prior_mwp_status = recomp_runtime.registers.eax;
-        have_prior_mwp_status = 1;
-    }
-    if (recomp_runtime.registers.eax == 3u ||
-        recomp_runtime.registers.eax == 4u) {
-        recomp_stop_at_boundary("cri-movie-status:terminal");
-    }
-}
-
 static void recomp_cri_sync_callback_adapter(void)
 {
     uint32_t entry_esp = recomp_runtime.registers.esp;
@@ -551,9 +455,6 @@ void recomp_cri_service_adapter_reset(void)
     reported_lane5 = 0;
     reported_catalog = 0;
     reported_adxf_open = 0;
-    mwp_status_calls = 0u;
-    prior_mwp_status = 0u;
-    have_prior_mwp_status = 0;
     adxf_get_stat_calls = 0u;
     file_worker_steps = 0u;
 }
@@ -584,10 +485,6 @@ RecompFunction recomp_cri_service_lookup_manual(uint32_t guest_address)
         return recomp_adxf_open_adapter;
     case CRI_SYNC_CALLBACK_ADDRESS:
         return recomp_cri_sync_callback_adapter;
-    case MWP_FRAME_GET_STATUS_ADDRESS:
-        return recomp_mwp_frame_get_status_adapter;
-    case MWP_COLOR_CONVERT_ADDRESS:
-        return recomp_mwp_color_convert_adapter;
     default:
         return NULL;
     }

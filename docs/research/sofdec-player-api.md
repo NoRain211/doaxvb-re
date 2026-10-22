@@ -1,8 +1,9 @@
 # Sofdec movie player API
 
-Status: static map for step 1 of a native movie player. Read from the
-supported XBE (SHA-256 `053d44e8…`) with bounded Ghidra queries. Addresses
-are guest virtual addresses.
+Status: the native player in `recomp-runtime/movie_player.c` replaces every
+call below; movies play silently until the ADX track is decoded. The map was
+read from the supported XBE (SHA-256 `053d44e8…`) with bounded Ghidra
+queries. Addresses are guest virtual addresses.
 
 ## Format
 
@@ -105,32 +106,33 @@ per pass; a CRI worker thread does the rest of the decoding.
 
 ## Replacement seam
 
-Replace the library at the calls above:
+`movie_player.c` replaces the library at the calls above:
 
-1. Register native replacements for the nine direct calls and the six table
-   targets. Keep the table at `0x284168`: the native create returns a guest
-   block whose first word points at it, so the game's indirect calls reach
-   native code through normal dispatch. Decoder state stays on the host.
-2. Return 0 from `mwPlyGetAdxtHn`; `0x189210` then does nothing. Send the
-   decoded ADX audio to the host output with the volume from `+0x2C`.
-3. Convert frames into the locked texture with the existing native color
-   model, then retire the runtime's wrappers of `0x198320` and `0x1A8A70` in
-   `cri_service_adapter.c`.
-4. Leave the lane-4 tick alone; with no player servers registered it runs only
-   the other CRI servers.
+1. All fifteen calls are cdecl and are registered in `recomp_lookup_manual`.
+   The nine direct calls are listed in `manual-call-targets.json` so generated
+   callers dispatch to them. The table at `0x284168` stays: create writes its
+   address into the first word of the guest work block from the creation
+   parameters and returns that block as the handle, so the game's indirect
+   calls reach native code through normal dispatch.
+2. `mwPlyGetAdxtHn` returns 0, so `0x189210` does nothing.
+3. A worker thread decodes with `movie_video.c` and converts each frame to
+   A8R8G8B8 with `movie_color_model.c` and a BT.601 studio-range table, up to
+   four frames ahead. On the Switch it runs on core 1. `mwPlyGetCurFrm`
+   hands out the frame that is due on a wall clock started by the first frame
+   and drops frames that are late. `mwPlyFxSetOutBufSize(h, pitch, height)`
+   records the texture pitch and `mwPlyFxCnvFrmARGB8888(h, frame, bits)`
+   copies the held frame into the locked texture.
+4. A file that does not open reports status 4, and the game skips the movie.
+5. The lane-4 tick stays; with no player servers registered it runs only the
+   other CRI servers.
 
 ## Open questions
 
-1. Where the color table passed to `0x1A8A70` comes from, and whether a
-   native converter should reuse it.
-2. The exact arguments of `mwPlyFxSetOutBufSize` and
-   `mwPlyFxCnvFrmARGB8888`; the decompiler drops the register arguments the
-   game passes.
-3. Which speaker configuration the runtime's DirectSound reports, and so
+1. Which speaker configuration the runtime's DirectSound reports, and so
    which audio path runs.
-4. Frame pacing: the native player must release frames at 29.97 fps against
-   the audio clock and report status 3 once the last frame is shown.
-5. The packet timestamp and interleave rules of the SFD files, which the
+2. Pacing against the audio clock once the ADX track plays, with
+   `mwPlySetOutVol` applied to it.
+3. The packet timestamp and interleave rules of the SFD files, which the
    format gate in [audio-movie-replacements.md](../wayfinder/research/audio-movie-replacements.md)
    still requires.
 

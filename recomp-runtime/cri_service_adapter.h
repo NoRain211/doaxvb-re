@@ -16,7 +16,6 @@ typedef struct RecompCriServiceHooks {
     RecompFunction adxf_get_stat;
     RecompFunction adxf_get_pt_stat;
     RecompFunction adxf_open;
-    RecompFunction mwp_frame_get_status;
     RecompFunction adxt_get_stat;
 } RecompCriServiceHooks;
 
