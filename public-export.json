@@ -30,6 +30,7 @@
     "docs/building.md",
     "docs/texture-replacement.md",
     "docs/fog.md",
+    "docs/lighting-and-lines.md",
     "docs/sun-shadow.md",
     "docs/gbuffer.md",
     "docs/title-idle.md",
