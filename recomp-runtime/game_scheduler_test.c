@@ -129,8 +129,12 @@ static void check_display_passes(void)
     expect(recomp_game_pacing_display_passes(&pacing, 2, 0, 6 * ms, 6 * ms, 2 * ms) == 2,
            "game work alone dropped a pass that was not missing its slot");
     recomp_game_pacing_init(&pacing, 1);
-    expect(recomp_game_pacing_display_passes(&pacing, 1, 1, 3 * ms, 2 * ms, 30 * ms) == 1,
-           "dropped below one pass per tick");
+    /* With no pass left, ticks present directly. */
+    expect(recomp_game_pacing_display_passes(&pacing, 1, 1, 3 * ms, 2 * ms, 30 * ms) == 0,
+           "kept a display pass that cannot fit");
+    for (unsigned i = 0; i < 240; ++i)
+        passes = recomp_game_pacing_display_passes(&pacing, 1, 0, 8 * ms, 8 * ms, 3 * ms);
+    expect(passes == 1, "a stale pass cost kept the first pass from returning");
 }
 
 int recomp_game_scheduler_test(void)

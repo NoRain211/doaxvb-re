@@ -48,6 +48,7 @@ void sub_001E7750(void);
 
 static RecompD3dDrawState draw_state;
 static uint32_t draw_submitted;
+static uint32_t draw_hidden;
 static RecompD3dDrawObserver draw_observer;
 static uint32_t draw_declined;
 static uint32_t draw_unbound;
@@ -132,6 +133,8 @@ uint32_t recomp_d3d_draw_adapter_submitted(void)
     return draw_submitted;
 }
 
+uint32_t recomp_d3d_draw_adapter_hidden(void) { return draw_hidden; }
+
 void recomp_d3d_draw_adapter_observe(RecompD3dDrawObserver observer)
 {
     draw_observer = observer;
@@ -147,9 +150,11 @@ void recomp_d3d_draw_adapter_notify(const RecompD3dPresenterCommand *command)
    offscreen targets and recorded frame-owner draws keep the full path. */
 static bool hidden_backbuffer_draw(uint32_t device)
 {
-    return device != 0u && draw_observer == NULL && recomp_game_tick_hidden() &&
+    const bool hidden = device != 0u && draw_observer == NULL && recomp_game_tick_hidden() &&
         *recomp_memory_u32(device + D3D_CURRENT_RENDER_TARGET_OFFSET) ==
             *recomp_memory_u32(device + D3D_BACK_BUFFER_OFFSET);
+    draw_hidden += hidden;
+    return hidden;
 }
 
 uint32_t recomp_d3d_draw_adapter_declined(void)

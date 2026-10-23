@@ -14,6 +14,9 @@ unsigned recomp_game_scheduler_hz(void);
 bool recomp_game_authored_pass(void);
 /* Hide the authoritative frame; completed snapshots supply all HFR frames. */
 bool recomp_game_tick_hidden(void);
+void recomp_game_tick_hidden_swap(void);
+/* Tick-only code drew into this tick's frame; show it and skip display passes. */
+void recomp_game_tick_drew(void);
 /* Fractional-model test seam; runtime display uses completed snapshots. */
 unsigned recomp_game_substep(void);
 /* Starts a pass; display writes are undone before the following pass. */

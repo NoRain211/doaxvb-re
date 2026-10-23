@@ -142,6 +142,8 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 const void *source = command.data.draw.*pointer_fields[i];
                 if (source != nullptr && borrowed(command.data.draw, i)) {
                     captured.offsets[i] = borrowed_offset;
+                    if (i == 2u) captured.value.data.draw.texture_fingerprint =
+                        recomp_d3d_texture_fingerprint(source, static_cast<uint32_t>(sizes[2]));
                     continue;
                 }
                 captured.value.data.draw.*pointer_fields[i] = nullptr;

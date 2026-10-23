@@ -341,6 +341,9 @@ void recomp_game_scenery_draw(void)
             *recomp_ebp_register() = frame;
             const uint32_t wind_rng = recomp_game_debug_rng_state();
             if (authored_tick) call(0x001792e0u);
+            /* The casino draws cards the card games queue each tick, which a
+               display pass has not got; show its ticks at 60 Hz. */
+            if (authored_tick && draw == 0x0012b3e0u) recomp_game_tick_drew();
             if (wind_rng != recomp_game_debug_rng_state()) fprintf(stderr, "recomp wind rng: before=%08x after=%08x\n", wind_rng, recomp_game_debug_rng_state());
             push(scene);
             *recomp_ebp_register() = frame;
@@ -375,6 +378,112 @@ static void actor_update_fiber(void)
     }
 }
 
+/* The location menu's camera-mode callback; it changes menu state, so only
+   authored ticks run it. */
+static void location_mode_callback(void)
+{
+    if (byte(0x009d9a44u) != 8) return;
+    push(0);
+    recomp_runtime.registers.eax = *recomp_memory_u32(0x009d9a40u);
+    call(0x0002ec50u);
+    recomp_runtime.registers.esp += 4u;
+    const uint32_t callback = *recomp_memory_u32(0x009d9a4cu);
+    if (recomp_runtime.registers.eax == 8 || callback == 0) return;
+    push(0);
+    push(byte(0x009d9a47u));
+    call(callback);
+    recomp_runtime.registers.esp += 8u;
+}
+
+/* 0x000C1680 draws the hotel, casino, pool and island-map views, either as
+   3D scenes or into the menu texture 0x009D5674 shown by 0x000C27E0. Display
+   passes redraw it with effects held; its frame counter 0x009D5880, the UI
+   list node 0x000C2C70 and the mode callback advance once per tick. */
+static void location_fiber(void)
+{
+    for (;;) {
+        while (byte(0x009d62c5u) * byte(0x009d62c9u) == 0) next_frame();
+        const bool tick = recomp_game_authored_pass();
+        const bool hold = !tick && !byte(0x004d56efu);
+        const uint8_t view = byte(0x009d9a45u), next_view = byte(0x009d9a46u);
+        const bool shown = byte(0x004d56ccu) || byte(0x009d9a48u) != 0xffu;
+        const bool menu_only = byte(0x009d9a48u) != 0xffu &&
+            ((next_view != 0xffu && view == next_view) || view == 0xffu || byte(0x009d9a47u) == 0xffu);
+        set_byte(0x002a8c58u, shown);
+        if (menu_only) {
+            call(0x000c27e0u);
+            set_byte(0x009d5884u, 1);
+        } else {
+            if (tick) ++*recomp_memory_u32(0x009d5880u);
+            if (shown) {
+                call(0x001e3f80u);
+                *recomp_memory_u32(0x00b3c418u) = recomp_runtime.registers.eax;
+                call(0x001e3fa0u);
+                *recomp_memory_u32(0x00b3c41cu) = recomp_runtime.registers.eax;
+                push(0); push(*recomp_memory_u32(0x009d5674u));
+                call(0x001e8040u);
+                *recomp_memory_u32(0x009d5678u) = recomp_runtime.registers.eax;
+                push(*recomp_memory_u32(0x009d567cu)); push(recomp_runtime.registers.eax);
+                call(0x001e3620u);
+                push(0); push(0x3f800000u); push(0); push(0xf3u); push(0); push(0);
+                call(0x001e72d0u);
+            }
+            recomp_runtime.registers.ebx = 0x003af87cu;
+            call(0x000c1df0u);
+            const int8_t mode = (int8_t)byte(0x009d9937u);
+            bool casino = mode % 4 != 3 && byte(0x002a8c59u) != 0xfeu;
+            if (casino) {
+                recomp_runtime.registers.eax = byte(0x002a8c59u);
+                call(0x000c3110u);
+                casino = recomp_runtime.registers.eax != 0;
+            }
+            if (view != 0xffu) {
+                if (tick) location_mode_callback();
+                if (hold) set_byte(0x004d56efu, 1);
+                if (casino) {
+                    recomp_runtime.registers.esi = 0x000cb3c0u;
+                    call(0x000cb3c0u);
+                } else {
+                    call(0x000c03e0u);
+                    call(0x0017eef0u);
+                    call(0x000c0d50u);
+                    call(0x001435a0u);
+                    call(0x000c0fa0u);
+                    call(0x0017ef70u);
+                }
+                if (hold) set_byte(0x004d56efu, 0);
+            }
+            set_byte(0x009d5884u, 0);
+            if (shown) {
+                if ((int8_t)byte(0x009d5885u) <= 20) {
+                    call(0x00093680u);
+                    call(0x000c1d40u);
+                    call(0x000937d0u);
+                }
+                recomp_runtime.registers.edi = 0x009d5674u;
+                call(0x00097820u);
+            }
+        }
+        const uint32_t node = *recomp_memory_u32(0x005d7800u);
+        const uint32_t link = *recomp_memory_u32(0x005d77f8u);
+        if (tick && shown && node != 0 && node + 12u <= 0x005d3580u) {
+            const uint16_t header[2] = {7, 12};
+            recomp_guest_store(node, header, sizeof header);
+            *recomp_memory_u32(node + 4u) = 0x000c2c70u;
+            *recomp_memory_u32(node + 8u) = 0;
+            if (link <= 0x005d77f0u) {
+                *recomp_memory_u32(link + 4u) = node;
+                *recomp_memory_u32(link) = 0;
+                *recomp_memory_u32(0x005d77f8u) = link + 8u;
+                *recomp_memory_u32(*recomp_memory_u32(0x005d8934u)) = link;
+                *recomp_memory_u32(0x005d8934u) = link;
+                *recomp_memory_u32(0x005d7800u) = node + 12u;
+            }
+        }
+        next_frame();
+    }
+}
+
 /* Complete game-owned scene, authored-script and world-frame owners. Their
    generated D3D SetTransform and fence seams remain at 0x001e36d0,
    0x001e3870 and 0x001e39e0; wholesale D3D
@@ -389,7 +498,7 @@ RecompFunction recomp_game_scene_lookup_manual(uint32_t address)
     if (camera == NULL && address != 0x000a37f0u && address != 0x0006adb0u &&
         address != 0x00079d00u && address != 0x000b42b0u &&
         address != 0x000b4450u && address != 0x000a4e00u &&
-        address != 0x000af160u && address != 0x001435a0u) {
+        address != 0x000af160u && address != 0x001435a0u && address != 0x000c1680u) {
         return NULL;
     }
     /* This lookup runs on every dispatched call to a hand owner. */
@@ -409,6 +518,7 @@ RecompFunction recomp_game_scene_lookup_manual(uint32_t address)
     case 0x000a4e00u: return startup_movie;
     case 0x000af160u: return actor_update_fiber;
     case 0x001435a0u: return recomp_game_scenery_draw;
+    case 0x000c1680u: return location_fiber;
     default: return NULL;
     }
 }

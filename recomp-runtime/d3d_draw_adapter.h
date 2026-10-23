@@ -13,6 +13,8 @@ void recomp_d3d_draw_adapter_reset(void);
    The runner reports both so a silent decline cannot masquerade as an
    empty scene. */
 uint32_t recomp_d3d_draw_adapter_submitted(void);
+/* Back-buffer draws a hidden tick skipped. */
+uint32_t recomp_d3d_draw_adapter_hidden(void);
 /* 2D draws (pre-transformed vertices) to the back buffer that fall wholly
    inside one of these rectangles, {left, top, right, bottom} in the game's
    screen pixels, are left out. At most RECOMP_D3D_SCREEN_MASKS; a count of
