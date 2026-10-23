@@ -14,6 +14,7 @@ extern "C" {
    so the guest is already speaking the hardware encoding. The PC enum is one
    lower across the board, which silently turns strips into fans. */
 enum {
+    RECOMP_D3D_PT_LINELIST = 2u,
     RECOMP_D3D_PT_TRIANGLELIST = 5u,
     RECOMP_D3D_PT_TRIANGLESTRIP = 6u,
     RECOMP_D3D_PT_TRIANGLEFAN = 7u,

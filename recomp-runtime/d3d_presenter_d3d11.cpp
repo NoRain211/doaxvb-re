@@ -110,6 +110,8 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 light_positions[8];\n"
     "    float4 light_attenuation[8];\n"
     "    float4 light_ambient[8];\n"
+    "    float4 light_specular[8];\n"
+    "    float4 light_view;\n"
     "    float4 fog_color;\n"
     "    float4 fog_params; // start, end, density, mode\n"
     "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
@@ -239,12 +241,13 @@ void buildDrawShaderSource(
         "struct VSOut {\n"
         "    float4 position : SV_POSITION;\n"
         "    float4 color : COLOR0;\n"
+        "    float3 lit_specular : TEXCOORD15;\n"
         "    float2 texcoord : TEXCOORD0;\n"
         "    float2 reflection_coord : TEXCOORD4;\n"
         "%s"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
-        "    VSOut output;\n"
+        "    VSOut output; output.lit_specular=0;\n"
         "%s"
         "%s"
         "%s"
@@ -285,6 +288,7 @@ void buildDrawShaderSource(
         "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
         "    }\n"
         "    if (reflection_flags.z > 0.5f) shaded.a *= alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
+        "    if (directional_flags.x > 0.5f && light_view.w > 0) shaded.rgb += input.lit_specular;\n"
         /* NV2A compares rounded 8-bit alpha. Function values follow
            RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
         "    if (draw_flags.y > 0.5f) {\n"
@@ -1765,8 +1769,8 @@ bool drawShaderSource(
                 std::to_string(layout.blend_weight_count)+"]).xyz; }\n";
         }
         const std::string evaluate =
-            "float3 evaluateLighting(float3 n, float3 world_pos) {\n"
-            "        float3 rgb=directional_base.rgb;\n"
+            "float3 evaluateLighting(float3 n, float3 world_pos, out float3 spec) {\n"
+            "        float3 rgb=directional_base.rgb; spec=0;\n"
             "        for (uint i=0; i<(uint)directional_flags.z; ++i) {\n"
             "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
             "            if (light_positions[i].w > 0.5f) {\n"
@@ -1777,7 +1781,12 @@ bool drawShaderSource(
             "                l = d > 0 ? l/d : float3(0,0,0);\n"
             "            }\n"
             "            rgb += (directional_material.rgb * directional_colors[i].rgb * max(0,dot(n,l)) + light_ambient[i].rgb) * atten;\n"
+            "            float3 h = l + light_view.xyz;\n"
+            "            float h2 = dot(h,h);\n"
+            "            if (light_view.w > 0 && dot(n,l) > 0 && h2 > 0)\n"
+            "                spec += atten * light_specular[i].rgb * pow(max(dot(n,h*rsqrt(h2)),1e-6f),light_view.w);\n"
             "        }\n"
+            "        spec=saturate(spec);\n"
             "        return saturate(rgb);\n"
             "}\n";
         const auto vertex = compiled_source.find("VSOut vs_main(");
@@ -1802,10 +1811,10 @@ bool drawShaderSource(
                 "        float3 n = input.light_normal.xyz;\n"
                 "        if (dot(n,n)>0) n *= rsqrt(dot(n,n));\n"
                 "        if (directional_flags.y < 0.5f) n *= input.light_normal.w;\n"
-                "        input.color.rgb = evaluateLighting(n, input.light_position);\n"
+                "        input.color.rgb = evaluateLighting(n, input.light_position, input.lit_specular);\n"
                 "    }\n");
         } else {
-            lighting += "        output.color.rgb = evaluateLighting(n, world_pos);\n";
+            lighting += "        output.color.rgb = evaluateLighting(n, world_pos, output.lit_specular);\n";
         }
         lighting += "    }\n";
         const auto uv = compiled_source.find("    output.texcoord =");
@@ -1819,7 +1828,7 @@ bool drawShaderSource(
         const auto begin = compiled_source.find("VSOut vs_main(");
         const auto end = compiled_source.find("float4 ps_main(", begin);
         if (begin == std::string::npos || end == std::string::npos) return false;
-        compiled_source.replace(begin, end-begin, "VSOut vs_main(VSIn input) { VSOut output;\n" + body + "return output; }\n");
+        compiled_source.replace(begin, end-begin, "VSOut vs_main(VSIn input) { VSOut output; output.lit_specular=0;\n" + body + "return output; }\n");
         // Preserve q until the pixel shader so projection follows interpolation.
         const std::string declaration = "struct VSOut {";
         const auto fields = compiled_source.find(declaration);
@@ -2007,8 +2016,8 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     D3D11_BUFFER_DESC constant_desc{};
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
-       point positions, attenuation/range and material-scaled ambient (300 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 300u + 76u + 16u) * sizeof(float);
+       point positions, attenuation/range and material-scaled ambient, specular and viewer (336 floats). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 336u + 76u + 16u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -3062,6 +3071,11 @@ RecompD3dPresenterError submitDraw(
 
     D3D11_PRIMITIVE_TOPOLOGY topology;
     switch (draw.primitive_type) {
+    case RECOMP_D3D_PT_LINELIST:
+        if (draw.index_count < 2u || draw.index_count % 2u != 0u)
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        topology = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
+        break;
     case 5u:
         topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
         break;
@@ -3189,7 +3203,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     if (!presenter->sun.casting) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 300 + 76 + 16]{};
+    float draw_constants[140 + 192 * 4 + 336 + 76 + 16]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -3248,6 +3262,8 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(constants+204, light.positions, sizeof light.positions);
         std::memcpy(constants+236, light.attenuation, sizeof light.attenuation);
         std::memcpy(constants+268, light.ambient, sizeof light.ambient);
+        std::memcpy(constants+300, light.specular, sizeof light.specular);
+        std::memcpy(constants+332, light.view, sizeof light.view);
     }
     {
         static const bool fog_enabled = [] {
@@ -3258,7 +3274,7 @@ RecompD3dPresenterError submitDraw(
             const char *value = std::getenv("RECOMP_D3D_FOG_FACTOR");
             return value && std::strcmp(value, "1") == 0;
         }();
-        float *fog = draw_constants + 140 + 192 * 4 + 300;
+        float *fog = draw_constants + 140 + 192 * 4 + 336;
         for (unsigned c = 0; c < 3; ++c)
             fog[c] = ((draw.fog.color >> (16 - 8*c)) & 255u) / 255.0f;
         fog[4] = draw.fog.start;
@@ -3327,7 +3343,7 @@ RecompD3dPresenterError submitDraw(
         draw_constants[79] = draw.reflection_texture.linear && draw.reflection_texture.height
             ? 1.0f / draw.reflection_texture.height : 1.0f;
         for (unsigned i = 0u; i < 16u; ++i) {
-            draw_constants[140 + 192 * 4 + 300 + 76 + i] =
+            draw_constants[140 + 192 * 4 + 336 + 76 + i] =
                 static_cast<float>(draw.combiner[i / 8u][i % 8u]);
         }
     }

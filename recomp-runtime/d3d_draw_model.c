@@ -191,7 +191,8 @@ RecompD3dDrawResult recomp_d3d_draw_indexed(
         result.error = RECOMP_D3D_DRAW_NO_STREAM;
         return result;
     }
-    if (primitive_type != RECOMP_D3D_PT_TRIANGLELIST &&
+    if (primitive_type != RECOMP_D3D_PT_LINELIST &&
+        primitive_type != RECOMP_D3D_PT_TRIANGLELIST &&
         primitive_type != RECOMP_D3D_PT_TRIANGLESTRIP &&
         primitive_type != RECOMP_D3D_PT_TRIANGLEFAN) {
         result.error = RECOMP_D3D_DRAW_UNSUPPORTED_PRIMITIVE;
@@ -199,7 +200,8 @@ RecompD3dDrawResult recomp_d3d_draw_indexed(
     }
 
     triangles = recomp_d3d_draw_triangle_count(primitive_type, index_count);
-    if (triangles == 0u) {
+    if (primitive_type == RECOMP_D3D_PT_LINELIST ?
+            index_count < 2u || index_count % 2u != 0u : triangles == 0u) {
         result.error = RECOMP_D3D_DRAW_EMPTY;
         return result;
     }

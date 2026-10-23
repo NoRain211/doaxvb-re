@@ -65,7 +65,7 @@ typedef struct RecompD3dPresenterPresentCommand {
     bool hold;
 } RecompD3dPresenterPresentCommand;
 
-/* Directional and point diffuse/ambient lighting for the material-source path. */
+/* Directional and point lighting for the material-source path. */
 typedef struct RecompD3dDirectionalLighting {
     bool enabled;
     bool normalize;
@@ -82,6 +82,10 @@ typedef struct RecompD3dDirectionalLighting {
     float attenuation[8][4];
     /* Point-light ambient multiplied by material ambient, before attenuation. */
     float ambient[8][4];
+    /* Light specular multiplied by material specular. */
+    float specular[8][4];
+    /* World vertex-to-viewer direction; w is power, zero disables specular. */
+    float view[4];
 } RecompD3dDirectionalLighting;
 
 typedef enum RecompD3dCullMode {
