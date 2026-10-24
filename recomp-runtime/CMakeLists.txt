@@ -379,6 +379,10 @@ add_executable(recomp_runtime_test
     animation_split_adapter.c
     d3d_split_pose.c
     save_adapter.c
+    body_joints.c
+    body_joints_adapter.c
+    body_morph.c
+    body_morph_adapter.c
     ohci_model.c
     ohci_model_test.c
     apu_model.c
@@ -695,6 +699,10 @@ if(RECOMP_PROGRAM_DIR)
         animation_split_adapter.c
         d3d_split_pose.c
         save_adapter.c
+        body_joints.c
+        body_joints_adapter.c
+        body_morph.c
+        body_morph_adapter.c
         cpu_exhibition.c
         title_idle.c
         free_camera.c
@@ -944,6 +952,12 @@ if(NOT MSVC)
     target_link_libraries(recomp_animation_track_test PRIVATE m)
 endif()
 
+add_executable(recomp_body_joints_test body_joints.c body_joints_test.c)
+if(NOT MSVC)
+    target_link_libraries(recomp_body_joints_test PRIVATE m)
+endif()
+add_executable(recomp_body_morph_test body_morph.c body_morph_test.c)
+
 add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
 add_executable(recomp_cpu_exhibition_test cpu_exhibition_test.c)
 add_executable(recomp_title_idle_test title_idle_test.c)
@@ -986,6 +1000,8 @@ endif()
 include(CTest)
 add_test(NAME recomp-runtime-animation-track COMMAND recomp_animation_track_test)
 add_test(NAME recomp-runtime-animation-palette COMMAND recomp_animation_palette_test)
+add_test(NAME recomp-runtime-body-joints COMMAND recomp_body_joints_test)
+add_test(NAME recomp-runtime-body-morph COMMAND recomp_body_morph_test)
 add_test(NAME recomp-runtime-cpu-exhibition COMMAND recomp_cpu_exhibition_test)
 add_test(NAME recomp-runtime-title-idle COMMAND recomp_title_idle_test)
 add_test(NAME recomp-runtime-free-camera COMMAND recomp_free_camera_test)

@@ -2,6 +2,8 @@
 #include "game_scheduler.h"
 #include "game_scene.h"
 #include "animation_track_adapter.h"
+#include "body_joints_adapter.h"
+#include "body_morph_adapter.h"
 #include "title_idle.h"
 #include "free_camera_adapter.h"
 #include "viewer_menu_adapter.h"
@@ -355,6 +357,19 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
 
     if (function == NULL) {
         function = recomp_animation_track_lookup_manual(guest_address);
+    }
+
+    /* Readable bend of the girls' joint pieces (0x00067540, which calls
+       0x00067630 per joint); it calls no game code. The record builder
+       (0x000672B0) stays generated. docs/body-joints.md. */
+    if (function == NULL) {
+        function = recomp_body_joints_lookup_manual(guest_address);
+    }
+    /* Readable blend of one morph record (0x00064FD0: hands, face, chest);
+       the D3D vertex buffer lock it calls (0x001E4D00) stays the library's.
+       docs/body-morph.md. */
+    if (function == NULL) {
+        function = recomp_body_morph_lookup_manual(guest_address);
     }
 
     if (function == NULL) {
