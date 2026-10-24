@@ -28,7 +28,8 @@ class LauncherArtTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             disc, private = Path(temp, "disc"), Path(temp, "private")
             disc.mkdir()
-            (disc / "a.AFS").write_bytes(afs(b"not a texture", xpr))
+            (disc / "a.AFS").write_bytes(afs(b"not a texture", xpr[:64]))
+            (disc / "b.AFS").write_bytes(afs(xpr))
             art = {"logo.png": key, "beach.png": key, "button-a.png": "0b-missing"}
             with patch.dict(launcher_art.ART, art, clear=True), patch.object(launcher_art, "EMBLEM", (0, 0, 4, 2)):
                 written = launcher_art.install(disc, private)
