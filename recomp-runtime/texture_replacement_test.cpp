@@ -8,11 +8,11 @@
 int main()
 {
     const fs::path root = fs::temp_directory_path() /
-        ("recomp-textures-test-" + std::to_string(GetCurrentProcessId()));
+        (L"recomp-textures-test-\u65e5\u672c-" + std::to_wstring(GetCurrentProcessId()));
     struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); } } cleanup{root};
     fs::create_directories(root / "replace");
-    _putenv_s("RECOMP_TEXTURES", (root / "replace").string().c_str());
-    _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
+    _wputenv_s(L"RECOMP_TEXTURES", (root / "replace").c_str());
+    _wputenv_s(L"RECOMP_TEXTURE_DUMP_DIR", root.c_str());
     _putenv_s("RECOMP_TEXTURE_DUMP", "1");
     try {
         for (const char *invalid : {"", "no", "1x", "-1", "0", "4294967296"}) REQUIRE(frameNumber(invalid) == 0);
@@ -147,7 +147,7 @@ int main()
         // Dump setup failures preserve cached replacements and still allow new loads.
         const auto blocked_root = root / "blocked-output";
         { std::ofstream blocked(blocked_root); blocked << "not a directory"; }
-        _putenv_s("RECOMP_TEXTURE_DUMP_DIR", blocked_root.string().c_str());
+        _wputenv_s(L"RECOMP_TEXTURE_DUMP_DIR", blocked_root.c_str());
         TextureReplacements blocked_dump;
         blocked_dump.lookup(first.key, original.Get());
         blocked_dump.finishFrame(device.Get(), context.Get(), 20);
@@ -161,7 +161,7 @@ int main()
         blocked_frame.request(false);
         blocked_frame.finishFrame(device.Get(), context.Get(), 22);
         REQUIRE(blocked_frame.lookup(first.key, original.Get()) == retained);
-        _putenv_s("RECOMP_TEXTURE_DUMP_DIR", root.string().c_str());
+        _wputenv_s(L"RECOMP_TEXTURE_DUMP_DIR", root.c_str());
         _putenv_s("RECOMP_TEXTURE_DUMP", "1");
 
         // Reload retries a locked input even when its path, time and size are unchanged.
