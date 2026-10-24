@@ -295,6 +295,15 @@ float4 reduceColorPS(Vertex v) : SV_Target {
 }
 // Dual-source blend: target *= scale + add. Unchanged is exactly scale 1, add 0.
 struct Gain { float4 add : SV_Target0; float4 scale : SV_Target1; };
+// Depth change per pixel along this surface. Quad derivatives straddle a
+// silhouette and admit the surface behind it, so take the flatter side per axis.
+float surfaceSlope(int2 p, float depth) {
+    int2 last = int2(fullSize) - 1;
+    float2 before = float2(readDepth(max(p - int2(1, 0), 0)), readDepth(max(p - int2(0, 1), 0)));
+    float2 after = float2(readDepth(min(p + int2(1, 0), last)), readDepth(min(p + int2(0, 1), last)));
+    float2 change = min(abs(before - depth), abs(after - depth));
+    return change.x + change.y;
+}
 Gain shade(Vertex v, int2 p, float depth, float slope) {
     Gain gain = {float4(0, 0, 0, 0), float4(1, 1, 1, 1)};
     if (depth >= 1 || v.uv.x < split) return gain;
@@ -369,8 +378,8 @@ Gain compositePS(Vertex v, out uint coverage : SV_Coverage) {
         near |= same ? 1u << s : 0;
         if (!found && !same) { depth = other; found = true; }
     }
-    // Quad neighbours shade other surfaces in pass 1, so its slope is meaningless there.
-    float slope = PASS == 0 ? abs(ddx(depth)) + abs(ddy(depth)) : 0;
+    // Neighbouring sample 0s lie on other surfaces in pass 1, so its slope is meaningless there.
+    float slope = PASS == 0 ? surfaceSlope(p, depth) : 0;
     coverage = !found ? 0 : PASS == 0 ? near : ~near;
     if (!coverage) return (Gain)0;
     return shade(v, p, depth, slope);
@@ -379,7 +388,7 @@ Gain compositePS(Vertex v, out uint coverage : SV_Coverage) {
 Gain compositePS(Vertex v) {
     int2 p = int2(v.position.xy);
     float depth = readDepth(p);
-    return shade(v, p, depth, abs(ddx(depth)) + abs(ddy(depth)));
+    return shade(v, p, depth, surfaceSlope(p, depth));
 }
 #endif
 )";
