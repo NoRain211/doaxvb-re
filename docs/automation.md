@@ -26,13 +26,14 @@ python tools/drive_game.py stop
 | Command | Does |
 |---|---|
 | `start` | starts the game with `RECOMP_AUTO_LOG=1`, muted, at render scale 1 |
-| `route shop\|map\|pool\|items` | starts the game and walks to the Sports Shop, the island map, the pool's menu or the items screen |
+| `route shop\|map\|pool\|items\|hotel` | starts the game and walks to the Sports Shop, the island map, the pool's menu, the items screen or the hotel's menu at night |
 | `press BUTTON [-n N] [--gap S]` | `a b x y black white lt rt up down left right start back` |
 | `wait REGEX [--timeout S]` | waits for a log line after the mark |
 | `until BUTTON REGEX` | presses the button until a line after the mark matches |
 | `goto LOCATION` | steps the island map to a location, the shorter way round |
 | `select LABEL` | moves the open list menu onto the item and confirms it |
 | `buy [--wrap]` | buys the item under the shop's cursor, gift wrapped or not |
+| `rest` | takes a rest at the pool, which uses up a part of the day |
 | `shot NAME` | saves the next frame, without the runtime's overlay |
 | `log [-n N]` | the last `[auto:...]` lines |
 | `stop [--keep-save]` | stops the game |
@@ -73,9 +74,20 @@ describe it:
   View items and Quit the game. Resting or the hopping game uses up a part of
   the day. View items opens the items screen with its Swimsuit, Accessory,
   Item and Present tabs.
-- At night the player goes to the hotel. Its menu has View items, the
-  Collection, gifts, sleep and the Casino. The hotel's screens are not in the
-  log yet.
+- Going to a place on the map uses up a part of the day too. After the
+  evening the player goes to the hotel. Each gift that arrives that night is
+  a dialog that A moves on; B does not. Then the hotel's menu opens: Go to
+  the Casino, Make a gift, Watch video, View items, View Collection, Go to
+  bed and Quit the game. A pressed once the menu is up takes the Casino, so
+  `route hotel` stops pressing as soon as the menu's line appears, and walks
+  back from the Casino if a press got there first.
+- The night writes the save. Go to bed starts the next day, on the island
+  map. `stop` puts the saves back unless `--keep-save` is given.
+
+`route hotel` rests at the pool until night (two or three rests from a
+morning) and takes about 45 s. One A skips each rest's scene; the driver
+presses nothing more until the pool's menu is back, because the menu would
+take the next A as Leave the poolside.
 
 ### The pool's menu hides itself
 

@@ -135,6 +135,31 @@ class DriveGameTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(self.game.presses, ["d0002", "d0002", "d0002", "d0002", "0"])
 
+    def test_rest_presses_a_once_and_waits(self):
+        self.append("[auto:ui] frame 1: list open",
+                    "[auto:ui] frame 1: list cursor 0 of 5: Leave the poolside")
+        labels = ["Leave the poolside", "Take a rest"]
+        state = {"cursor": 0}
+
+        def answer(code, count):
+            if code == "d0002":
+                state["cursor"] += 1
+                return [f"[auto:ui] frame {count}: list cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
+            if state["cursor"] == 1 and count == 2:
+                state["cursor"] = 2
+                return [f"[auto:ui] frame {count}: list closed", f"[auto:ui] frame {count}: island rest"]
+            # The A that skips the rest; night falls on the way back.
+            return [f"[auto:ui] frame {count}: day part night", f"[auto:ui] frame {count}: island hotel"]
+
+        self.play(answer)
+        drive_game.REST_SKIP_DELAY, delay = 0, drive_game.REST_SKIP_DELAY
+        try:
+            line = self.session.rest()
+        finally:
+            drive_game.REST_SKIP_DELAY = delay
+        self.assertTrue(line.endswith("island hotel"))
+        self.assertEqual(self.game.presses, ["d0002", "0", "0"])
+
     def test_buy_walks_the_prompts(self):
         state = {"step": "list", "cursor": 0}
 

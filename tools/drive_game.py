@@ -32,6 +32,10 @@ LOCATIONS = ("Niki Beach", "Private Beach", "Jungle", "Bass Island", "Accessory 
 # Shows a list menu that has hidden itself; the game takes the press only
 # to show the menu again.
 WAKE_BUTTON = "down"
+# Seconds into a rest before its scene takes the A that skips it.
+REST_SKIP_DELAY = 3
+# Advances the dialogs that open the hotel's night; B does not.
+HOTEL_DIALOG_BUTTON = "a"
 AUTO_LINE = re.compile(r"^\[auto:")
 POLL = 0.1
 
@@ -324,6 +328,17 @@ class Session:
         self.finish()
         self.press("a")
 
+    def rest(self):
+        """Takes a rest at the pool, which uses up a part of the day, and
+        waits until it is over: back at the pool, or at the hotel once night
+        falls. One A skips the rest's scene; no more are pressed, since the
+        pool's menu takes the next A as Leave the poolside."""
+        self.select("Take a rest")
+        self.expect(r"island rest$", 20)
+        time.sleep(REST_SKIP_DELAY)
+        self.press("a")
+        return self.expect(r"island (pool|hotel)$", 60)
+
     def buy(self, wrap=False):
         """Buys the item under the shop's cursor: Buy, then Wrap or No."""
         self.finish()
@@ -372,8 +387,9 @@ class Session:
 
 
 def route(session, target):
-    """From launch to the Sports Shop, the island map, the pool's menu or the
-    items screen, each step waiting for the line that shows it landed."""
+    """From launch to the Sports Shop, the island map, the pool's menu, the
+    items screen or the hotel's menu, each step waiting for the line that
+    shows it landed."""
     # The opening ignores early presses; START until the menus.
     session.press_until("start", r"\[auto:ui\] frame \d+: scene menu", 60, 2)
     session.expect(r"list cursor 0 of 2: GO TO ZACK ISLAND")
@@ -390,6 +406,21 @@ def route(session, target):
         if target == "items":
             session.select("View items")
             session.expect(r"island items")
+    elif target == "hotel":
+        # Rest at the pool until night falls; the evening rest ends at the
+        # hotel. Its gifts come first, one A each, then its menu opens.
+        session.goto("Poolside")
+        session.press_until("a", r"island pool")
+        for _ in range(4):
+            session.expect(r"list cursor 0 of 5", 30)
+            if session.rest().endswith("hotel"):
+                break
+        else:
+            raise DriveError("night never came")
+        session.press_until(HOTEL_DIALOG_BUTTON, r"list cursor \d+ of 7: ", 60, 2.5)
+        if session.latest(r"\[auto:ui\] .*island (hotel|casino)$").endswith("casino"):
+            session.select("Go back to the Room")
+            session.expect(r"list cursor \d+ of 7: ", 30)
     elif target == "shop":
         session.goto("Sports Shop")
         session.press_until("a", r"shop 0 cursor")
@@ -412,7 +443,7 @@ def main(argv=None):
 
     add_start_options(commands.add_parser("start", help="start the game"))
     route_command = commands.add_parser("route", help="start the game and walk to a screen")
-    route_command.add_argument("target", choices=("shop", "map", "pool", "items"))
+    route_command.add_argument("target", choices=("shop", "map", "pool", "items", "hotel"))
     add_start_options(route_command)
     command = commands.add_parser("press", help="press a button")
     command.add_argument("button", choices=BUTTONS)
@@ -430,6 +461,7 @@ def main(argv=None):
     command.add_argument("location", choices=[name for name in LOCATIONS if name])
     command = commands.add_parser("select", help="confirm an item of the open list menu")
     command.add_argument("label")
+    commands.add_parser("rest", help="take a rest at the pool")
     command = commands.add_parser("buy", help="buy the item under the shop's cursor")
     command.add_argument("--wrap", action="store_true", help="gift wrap it")
     command = commands.add_parser("shot", help="save the next frame as shots/NAME.png")
@@ -464,6 +496,8 @@ def main(argv=None):
             session.goto(args.location)
         elif args.command == "select":
             session.select(args.label)
+        elif args.command == "rest":
+            session.rest()
         elif args.command == "buy":
             session.buy(args.wrap)
         elif args.command == "shot":

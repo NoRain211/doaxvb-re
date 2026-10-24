@@ -89,7 +89,8 @@ int main(void)
     *recomp_memory(ISLAND_PLACE, 1) = PLACE_MAP;
     *recomp_memory(MAP_LOCATION, 1) = 7u;
     CHECK(strcmp(run_frame(),
-                 "[auto:ui] frame 11: scene island\n[auto:ui] frame 11: island map\n"
+                 "[auto:ui] frame 11: scene island\n[auto:ui] frame 11: day part morning\n"
+                 "[auto:ui] frame 11: island map\n"
                  "[auto:ui] frame 11: map location 7 Poolside\n") == 0);
     *recomp_memory(MAP_LOCATION, 1) = 8u;
     CHECK(strcmp(run_frame(), "[auto:ui] frame 12: map location 8 ?\n") == 0);
@@ -119,10 +120,26 @@ int main(void)
     /* The items screen: its tab and grid cursor. */
     *recomp_memory(ISLAND_PLACE, 1) = PLACE_ITEMS;
     *recomp_memory(ITEMS_TAB, 1) = 2u;
-    *recomp_memory(ITEMS_CURSOR, 1) = 4u;
+    *recomp_memory_u16(ITEMS_CURSOR) = 4u;
     CHECK(strcmp(run_frame(), "[auto:ui] frame 18: island items\n[auto:ui] frame 18: items tab 2 Item cursor 4\n") == 0);
     *recomp_memory(ITEMS_TAB, 1) = 4u;
     CHECK(strcmp(run_frame(), "[auto:ui] frame 19: items tab 4 ? cursor 4\n") == 0);
+
+    /* Place 5 is the pool by day and the hotel at night. */
+    *recomp_memory(ISLAND_PLACE, 1) = PLACE_MENU;
+    *recomp_memory(DAY_PART, 1) = 2u;
+    CHECK(strcmp(run_frame(), "[auto:ui] frame 20: day part evening\n[auto:ui] frame 20: island pool\n") == 0);
+    *recomp_memory(DAY_PART, 1) = PART_NIGHT;
+    CHECK(strcmp(run_frame(), "[auto:ui] frame 21: day part night\n[auto:ui] frame 21: island hotel\n") == 0);
+
+    /* The Collection: its tab, and the cursor over pages of 25. */
+    *recomp_memory(ISLAND_PLACE, 1) = PLACE_COLLECTION;
+    *recomp_memory(COLLECTION_TAB, 1) = 1u;
+    *recomp_memory_u16(COLLECTION_CURSOR) = 300u;
+    CHECK(strcmp(run_frame(), "[auto:ui] frame 22: island collection\n"
+                              "[auto:ui] frame 22: collection tab 1 Accessory page 13 cursor 300\n") == 0);
+    *recomp_memory(ISLAND_PLACE, 1) = PLACE_CASINO;
+    CHECK(strcmp(run_frame(), "[auto:ui] frame 23: island casino\n") == 0);
 
     fclose(output);
     puts("UI log tests passed");

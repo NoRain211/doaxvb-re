@@ -53,11 +53,17 @@ bool recomp_ui_log_enabled(void)
    while the list is open.
 
    On the island the byte at 0x4D72E3 says where the player is: 1 the map,
-   3 a shop, 4 the items screen, 5 the pool (255 off the island). On the map
-   the byte at 0x3AF875 is the location the map points at. On the items
-   screen the byte at 0x31BD69 is the tab (RT and LT step through Swimsuit,
-   Accessory, Item and Present) and the byte at 0x31BE04 the cursor in its
-   grid of three columns.
+   3 a shop, 4 the items screen, 5 a place with a menu, 6 the Collection,
+   7 a rest at the pool, 8 the Casino (255 off the island). 5 is the pool by
+   day and the hotel at night: the byte at 0x41EFEB is the part of the day,
+   0 morning to 3 night, and the pool is closed at night. On the map the
+   byte at 0x3AF875 is the location the map points at. On the items screen
+   the byte at 0x31BD69 is the tab (RT and LT step through Swimsuit,
+   Accessory, Item and Present) and the word at 0x31BE04 the cursor in its
+   grid of three columns. Making a gift at the hotel shows the same grid on
+   its Present tab without changing the place. On the Collection screen the
+   byte at 0x31CC7D is the tab (Swimsuit, Accessory, Item) and the word at
+   0x31CE0C the cursor over all its pages of 25, five columns a page.
 
    A shop keeps its screen in the block at 0x3AF874, the context its row
    draw 0x000C8840 is given; the word at +0x18 points to its list state:
@@ -101,7 +107,13 @@ enum {
     PLACE_MAP = 1,
     PLACE_SHOP = 3,
     PLACE_ITEMS = 4,
-    PLACE_POOL = 5,
+    PLACE_MENU = 5,
+    PLACE_COLLECTION = 6,
+    PLACE_REST = 7,
+    PLACE_CASINO = 8,
+    DAY_PART = 0x0041EFEBu,
+    PART_NIGHT = 3,
+    PART_COUNT = 4,
     MAP_LOCATION = 0x003AF875u,
     SHOP_STATE = 0x003AF874u + 0x18u,
     SHOP_NUMBER = 0x003AF8A1u,
@@ -115,6 +127,9 @@ enum {
     PROMPT_CURSOR = 0x005C5A8Au,
     ITEMS_TAB = 0x0031BD69u,
     ITEMS_CURSOR = 0x0031BE04u,
+    COLLECTION_TAB = 0x0031CC7Du,
+    COLLECTION_CURSOR = 0x0031CE0Cu,
+    COLLECTION_PAGE = 25,
     TAB_COUNT = 4,
     LOCATION_COUNT = 10,
     TEXT_LIMIT = 48,
@@ -152,7 +167,9 @@ static const char *place_name(int place)
     case PLACE_MAP: return "map";
     case PLACE_SHOP: return "shop";
     case PLACE_ITEMS: return "items";
-    case PLACE_POOL: return "pool";
+    case PLACE_COLLECTION: return "collection";
+    case PLACE_REST: return "rest";
+    case PLACE_CASINO: return "casino";
     default: return NULL;
     }
 }
@@ -179,6 +196,13 @@ static void log_state(const char *what, int value, const char *name)
     }
 }
 
+static const char *part_name(int part)
+{
+    static const char *const names[PART_COUNT] = {"morning", "daytime", "evening", "night"};
+
+    return part >= 0 && part < PART_COUNT ? names[part] : NULL;
+}
+
 static const char *tab_name(int tab)
 {
     /* The items screen's tabs, as their titles read. */
@@ -187,7 +211,7 @@ static const char *tab_name(int tab)
     return tab >= 0 && tab < TAB_COUNT ? names[tab] : "?";
 }
 
-/* Copies a guest string, printable characters only. */
+/* Copies a guest string, printable characters only; "?" when it is empty. */
 static const char *guest_text(uint32_t at, char *text, size_t size)
 {
     size_t length = 0;
@@ -205,6 +229,11 @@ static const char *guest_text(uint32_t at, char *text, size_t size)
         text[length++] = c >= 0x20u && c < 0x7Fu ? (char)c : '.';
     }
     text[length] = '\0';
+    if (length == 0u) {
+        /* Some items' texts are made as they are drawn, such as the
+           Casino's chip price. */
+        snprintf(text, size, "?");
+    }
     return text;
 }
 
@@ -322,7 +351,7 @@ static void log_shop(bool entered)
 void recomp_ui_log_frame(void)
 {
     static bool started;
-    static int scene = UNSET, screen = UNSET, place = UNSET, location = UNSET, tab, cursor;
+    static int scene = UNSET, screen = UNSET, place = UNSET, part = UNSET, location = UNSET, tab, cursor;
     int now;
 
     if (!setting_on()) {
@@ -339,7 +368,7 @@ void recomp_ui_log_frame(void)
     }
     if (now != scene) {
         scene = now;
-        screen = place = UNSET;
+        screen = place = part = UNSET;
         log_state("scene", now, scene_name(now));
     }
     if (scene == SCENE_MENU) {
@@ -358,12 +387,24 @@ void recomp_ui_log_frame(void)
     if (scene == SCENE_ISLAND) {
         bool entered = false;
 
+        now = *recomp_memory(DAY_PART, 1);
+        if (now != part) {
+            const bool night_changed = (now == PART_NIGHT) != (part == PART_NIGHT);
+
+            part = now;
+            log_state("day part", now, part_name(now));
+            /* The menu place is named by the part of the day. */
+            if (night_changed && place == PLACE_MENU) {
+                place = UNSET;
+            }
+        }
         now = *recomp_memory(ISLAND_PLACE, 1);
         if (now != place) {
             place = now;
             entered = true;
             location = tab = cursor = UNSET;
-            log_state("island", now, place_name(now));
+            log_state("island", now,
+                      now == PLACE_MENU ? (part == PART_NIGHT ? "hotel" : "pool") : place_name(now));
         }
         now = *recomp_memory(MAP_LOCATION, 1);
         if (place == PLACE_MAP && now != location) {
@@ -372,13 +413,24 @@ void recomp_ui_log_frame(void)
         }
         if (place == PLACE_ITEMS) {
             const int now_tab = *recomp_memory(ITEMS_TAB, 1);
-            const int now_cursor = *recomp_memory(ITEMS_CURSOR, 1);
+            const int now_cursor = *recomp_memory_u16(ITEMS_CURSOR);
 
             if (now_tab != tab || now_cursor != cursor) {
                 tab = now_tab;
                 cursor = now_cursor;
                 fprintf(output, "[auto:ui] frame %u: items tab %d %s cursor %d\n", frame, tab, tab_name(tab),
                         cursor);
+            }
+        }
+        if (place == PLACE_COLLECTION) {
+            const int now_tab = *recomp_memory(COLLECTION_TAB, 1);
+            const int now_cursor = *recomp_memory_u16(COLLECTION_CURSOR);
+
+            if (now_tab != tab || now_cursor != cursor) {
+                tab = now_tab;
+                cursor = now_cursor;
+                fprintf(output, "[auto:ui] frame %u: collection tab %d %s page %d cursor %d\n", frame, tab,
+                        tab < 3 ? tab_name(tab) : "?", cursor / COLLECTION_PAGE + 1, cursor);
             }
         }
         if (place == PLACE_SHOP) {

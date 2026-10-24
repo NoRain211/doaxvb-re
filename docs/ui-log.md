@@ -44,9 +44,11 @@ as a number, such as `scene 8` or `island 9`.
 | `list cursor C of N: TEXT` | the open list's cursor and the text of its item |
 | `save vacation V` | the save select's cursor is on Vacation V |
 | `save prompt cursor C: TEXT` | the prompt under a chosen vacation: Continue, Options, Delete a saved game |
-| `island map\|shop\|items\|pool` | where the player is on the island |
+| `day part morning\|daytime\|evening\|night` | the part of the day changed; logged on the island |
+| `island map\|shop\|items\|pool\|hotel\|collection\|rest\|casino` | where the player is on the island; `pool` and `hotel` are the same place value, named by the part of the day |
 | `map location L NAME` | the island map points at location L |
 | `items tab T NAME cursor C` | the items screen's tab (0 Swimsuit, 1 Accessory, 2 Item, 3 Present) and its grid cursor, three columns |
+| `collection tab T NAME page P cursor C` | the Collection's tab (0 Swimsuit, 1 Accessory, 2 Item), its page, and the cursor counted over all pages, 25 cells a page in five columns |
 | `shop S cursor C item I` | in shop S (0 Sports, 1 Accessory) the cursor is on entry C, item id I |
 | `shop step list\|buy\|wrap` | the shop's list, its Buy/No prompt, or the Wrap/No prompt after Buy |
 | `shop prompt cursor C: Buy\|Wrap\|No` | the open prompt's cursor |
@@ -54,6 +56,11 @@ as a number, such as `scene 8` or `island 9`.
 Map locations: 0 Niki Beach, 1 Private Beach, 2 Jungle, 3 Bass Island,
 4 Accessory Shop, 5 Sports Shop, 6 Zack of All Trades, 7 Poolside,
 9 Radio Station. The map skipped 8 on a morning; it is printed as `8 ?`.
+
+The hotel's and the Casino's menus are list menus, so their items show as
+`list cursor` lines (the Casino's chip price is drawn without a text and shows
+as `?`). Making a gift at the hotel shows the items grid on its Present tab
+without changing the place; the girl it goes to is not in the log yet.
 
 ## Guest contract
 
@@ -70,19 +77,22 @@ screenshot of the same moment.
 | `0x5C585C` | list widget's item count |
 | `0x5C5860` | list widget's item text pointers |
 | `0x5C5888` | list widget's phase: 1 opening, 2 open, 4 closing, 5 closed |
-| `0x4D72E3` | island place: 1 map, 3 shop, 4 items screen, 5 pool; 255 off the island |
+| `0x4D72E3` | island place: 1 map, 3 shop, 4 items screen, 5 a place with a menu (the pool by day, the hotel at night), 6 Collection, 7 a rest at the pool, 8 Casino; 255 off the island |
+| `0x41EFEB` | part of the day: 0 morning, 1 daytime, 2 evening, 3 night |
 | `0x3AF874` | a shop's screen block, the context of its row draw `0x000C8840`; `+0x18` points to the list state: `+0x22` highlighted row, `+0x24` entry at the top (wraps), `+0x26` entry count |
 | `0x3AF894` | shop step (block `+0x20`): 1 list, 2 Buy/No, 3 Wrap/No |
 | `0x5C5A8A` | the shop prompts' cursor (word), 0 the first button |
 | `0x3AF8A1` | shop number (signed) |
 | `0x317638` | points to the shops' entries: 16 bytes each, 15 a shop, the item id first |
 | `0x31BD69` | items screen's tab; RT and LT step through them |
-| `0x31BE04` | items screen's grid cursor |
+| `0x31BE04` | items screen's grid cursor (word); also the hotel's gift grid |
+| `0x31CC7D` | Collection's tab |
+| `0x31CE0C` | Collection's cursor over all its pages (word) |
 | `0x3AF875` | location the map points at |
 
 A closed list keeps its items and cursor, so the cursor is logged only while
 the phase reads open.
 
-Open: the place values of the beaches, the other venues and the hotel; the
-items screen's scrolling past its twelve visible cells; the Continue prompt of
-an empty vacation.
+Open: the place values of the beaches and the other venues; the day number;
+the items screen's scrolling past its twelve visible cells; the gift's
+recipient; the Continue prompt of an empty vacation.
