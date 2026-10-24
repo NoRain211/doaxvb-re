@@ -197,10 +197,12 @@ def build(args, verify_parity=True, lifter_revision=None):
             if icon.is_file():
                 configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
-        targets = ["recomp_program_runner"] + (["recomp_launcher"] if sys.platform.startswith("linux") else [])
+        targets = ["recomp_program_runner", "recomp_launcher"]
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
+        if windows:
+            shutil.copy2(output / "recomp_launcher.exe", ROOT / "Launcher.exe")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
@@ -213,7 +215,7 @@ def build(args, verify_parity=True, lifter_revision=None):
             selected = ROOT / "private" / ("active-build-" + uuid.uuid4().hex + ".tmp")
             selected.write_text(json.dumps({"receipt": str(receipt_path.relative_to(ROOT))}) + "\n", encoding="utf-8")
             selected.replace(ROOT / "private/active-build.json")
-            launcher = "Launcher.cmd" if sys.platform == "win32" else "launcher.sh"
+            launcher = "Launcher.exe" if sys.platform == "win32" else "launcher.sh"
             print(f"Setup complete. Open {launcher} to play this build.", flush=True)
         print(f"Build receipt: {receipt_path}", flush=True)
 

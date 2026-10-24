@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Remember graphics and audio settings, then start RunGame.cmd.
+# Build the game from an ISO with BuildGame.cmd, remember graphics and audio settings, then start RunGame.cmd.
 Add-Type -AssemblyName System.Windows.Forms
+# Panels and their controls each own a window, so repaint the whole window tree
+# in one call; the screen then shows one completed section instead of strips.
+Add-Type -Namespace DOAXBV -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr window, IntPtr rect, IntPtr region, uint flags);
+[DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr window, int index);
+[DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr window, int index, int value);
+'@
 # The console is hidden, so show any failure instead of exiting silently.
 $ErrorActionPreference = 'Stop'
 trap { [Windows.Forms.MessageBox]::Show("$_", 'DOAXBV launcher') | Out-Null; exit 1 }
@@ -80,24 +87,13 @@ function Draw-Icon($g, $name, $letter, $color, $x, $y, $size) {
     Draw-Outlined $g $letter ($size * 0.6) $x $y $size $size '#203040' 'Center'
 }
 
-# Panes repaint in separate passes, so compose the window to present one frame.
-Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
-using System.Windows.Forms;
-
-public sealed class ComposedForm : Form {
-    protected override CreateParams CreateParams {
-        get {
-            System.Windows.Forms.CreateParams style = base.CreateParams;
-            style.ExStyle |= 0x02000000;  // WS_EX_COMPOSITED
-            return style;
-        }
-    }
-}
-'@
-$form = New-Object ComposedForm -Property @{
+$form = New-Object Windows.Forms.Form -Property @{
     Text = 'DOAXBV'; FormBorderStyle = 'FixedSingle'; MaximizeBox = $false; StartPosition = 'CenterScreen'; KeyPreview = $true
     ClientSize = (New-Object Drawing.Size $W, $H); BackColor = (C '#1a8fc0'); ForeColor = $ink; Font = (New-Object Drawing.Font('Segoe UI', 9.75))
 }
+$form.Add_Load({
+    [DOAXBV.Native]::SetWindowLong($form.Handle, -20, [DOAXBV.Native]::GetWindowLong($form.Handle, -20) -bor 0x02000000) | Out-Null
+})
 [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic').SetValue($form, $true, $null)
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
@@ -126,10 +122,6 @@ Draw-Plate $g 346 110 504 402 '#d4fffa' '#53bcc8' 235
 $inner = New-Round 358 122 480 378 8
 $fill = New-Object Drawing.SolidBrush (C '#073e52' 225)
 $g.FillPath($fill, $inner); $fill.Dispose(); $inner.Dispose()
-Draw-Icon $g 'button-a.png' 'A' '#3fc43f' ($W - 302) ($H - 54) 34
-Draw-Outlined $g 'Play' 17 ($W - 266) ($H - 52) 70 30
-Draw-Icon $g 'button-b.png' 'B' '#e03a3a' ($W - 192) ($H - 54) 34
-Draw-Outlined $g 'Quit' 17 ($W - 156) ($H - 52) 70 30
 Draw-Outlined $g "$([char]0x2191)$([char]0x2193) Select" 15 ($W - 420) ($H - 52) 110 30
 Draw-Outlined $g 'Settings apply on next launch' 13 24 ($H - 52) 300 30 '#0b3a66'
 $g.Dispose()
@@ -154,8 +146,8 @@ $card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width
 $subtitle = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 448; Height = 22; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
 $card.Controls.Add($subtitle)
 
-$sections = 'Main Menu', 'Graphics', 'Audio', 'Game', 'Textures', 'Experimental', 'Help'
-$subtitles = 'Your next visit to Zack Island', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Unfinished renderer features', 'Keys while playing'
+$sections = 'Main Menu', 'Build', 'Graphics', 'Audio', 'Game', 'Textures', 'Help'
+$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Keys while playing'
 $pages = foreach ($name in $sections) {
     $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = (C '#185162'); BackgroundImage = (Crop 374 170 448 244); BackgroundImageLayout = 'None'; Visible = $false }
     $card.Controls.Add($page); $page
@@ -171,8 +163,8 @@ function New-Choice($items, $index) {
     $box.SelectedIndex = [Math]::Max(0, $index)
     $box
 }
-function New-Toggle($page, $text, $top, $checked) {
-    $box = New-Object Windows.Forms.CheckBox -Property @{ Text = $text; Left = 0; Top = $top; Width = 446; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent; Checked = [bool]$checked }
+function New-Toggle($page, $text, $top, $checked, $left = 0, $width = 446) {
+    $box = New-Object Windows.Forms.CheckBox -Property @{ Text = $text; Left = $left; Top = $top; Width = $width; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent; Checked = [bool]$checked }
     $page.Controls.Add($box); $box
 }
 function New-Note($page, $text, $top, $height) {
@@ -185,28 +177,116 @@ function New-Button($text, $width) {
     $button
 }
 
-$ready = New-Object Windows.Forms.Label -Property @{ Text = 'Ready to play'; Left = 0; Top = 0; Width = 446; Height = 28; Font = (New-Object Drawing.Font('Arial', 14, [Drawing.FontStyle]'Bold, Italic')); ForeColor = (C '#9af5c8'); BackColor = [Drawing.Color]::Transparent }
+$ready = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 446; Height = 28; Font = (New-Object Drawing.Font('Arial', 14, [Drawing.FontStyle]'Bold, Italic')); BackColor = [Drawing.Color]::Transparent }
+# Same places RunGame.cmd looks; it still validates the build before launch.
+function Test-Built {
+    if (@('private\active-build.json', 'recomp_program_runner.exe', 'RunGame.exe', 'build\recomp-program\Release\recomp_program_runner.exe') |
+        Where-Object { Test-Path (Join-Path $root $_) }) { return $true }
+    # Builds from before active-build.json; failed attempts also leave receipts.
+    [bool](Get-ChildItem (Join-Path $root 'private\setup-*\build-receipt.json') -ErrorAction SilentlyContinue |
+        Where-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).status -eq 'built-unverified' })
+}
+function Update-Ready {
+    if (Test-Built) { $ready.Text = 'Ready to play'; $ready.ForeColor = C '#9af5c8' }
+    else { $ready.Text = 'Build the game first (Build page)'; $ready.ForeColor = C '#ffd27a' }
+}
 $summaryKeys = New-Note $pages[0] "Display`nRendering`nExtras" 44 80
 $summaryKeys.Width = 110
 $summary = New-Object Windows.Forms.Label -Property @{ Left = 120; Top = 44; Width = 326; Height = 80; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent }
 $pages[0].Controls.AddRange(@($ready, $summary))
 
+# Build: run BuildGame.cmd hidden and tail its output into the log box.
+$iso = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 2; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink }
+$pickIso = New-Button 'ISO...' 88
+$pickIso.Left = 358; $pickIso.Top = 0
+$pickIso.Add_Click({
+    $dialog = New-Object Windows.Forms.OpenFileDialog -Property @{ Title = 'Choose your game ISO'; Filter = 'Xbox disc image (*.iso)|*.iso|All files (*.*)|*.*' }
+    if ($dialog.ShowDialog($form) -eq 'OK') { $iso.Text = $dialog.FileName }
+    $dialog.Dispose()
+})
+$buildNow = New-Button 'Build game' 160
+$buildNow.Top = 36
+$buildState = New-Object Windows.Forms.Label -Property @{ Left = 168; Top = 42; Width = 278; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent; Text = 'Pick your ISO, then build once.' }
+$buildLog = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 72; Width = 446; Height = 170; Multiline = $true; ReadOnly = $true; ScrollBars = 'Vertical'; WordWrap = $false; BorderStyle = 'FixedSingle'; BackColor = (C '#062f3e'); ForeColor = $soft; Font = (New-Object Drawing.Font('Consolas', 8)) }
+$pages[1].Controls.AddRange(@($iso, $pickIso, $buildNow, $buildState, $buildLog))
+$build = @{ process = $null; log = (Join-Path $root 'private\launcher-build.log'); read = 0 }
+$buildTimer = New-Object Windows.Forms.Timer -Property @{ Interval = 250 }
+function Read-BuildLog {
+    if (-not (Test-Path $build.log)) { return }
+    $stream = [IO.File]::Open($build.log, 'Open', 'Read', 'ReadWrite, Delete')
+    try {
+        $stream.Position = $build.read
+        $text = (New-Object IO.StreamReader($stream, [Text.Encoding]::Default)).ReadToEnd()
+        $build.read = $stream.Length
+    } finally { $stream.Dispose() }
+    if (-not $text) { return }
+    # Compiling prints thousands of lines; keep the box responsive.
+    if ($buildLog.TextLength -gt 200000) { $buildLog.Text = $buildLog.Text.Substring(100000) }
+    $buildLog.AppendText($text)
+}
+$buildTimer.Add_Tick({
+    try {
+        $done = $build.process.HasExited
+        Read-BuildLog
+        if (-not $done) { return }
+        $buildTimer.Stop()
+        $ok = $build.process.ExitCode -eq 0
+        $build.process.Dispose(); $build.process = $null
+        $buildState.Text = if ($ok) { 'Build complete. Press Play.' } else { 'Build failed. Log: private\launcher-build.log' }
+        $buildNow.Enabled = $true; $pickIso.Enabled = $true
+        Update-Ready
+        if ($ok) { Select-Section 0 }
+    } catch {
+        $buildTimer.Stop()
+        [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
+    }
+})
+$buildNow.Add_Click({
+    try {
+        if (-not $iso.Text) { $pickIso.PerformClick() }
+        if (-not $iso.Text) { return }
+        New-Item -ItemType Directory -Force (Split-Path $build.log) | Out-Null
+        Remove-Item -LiteralPath $build.log -Force -ErrorAction SilentlyContinue
+        $build.read = 0; $buildLog.Clear()
+        $start = New-Object Diagnostics.ProcessStartInfo 'cmd.exe'
+        # cmd strips the outer quotes; NUL input lets BuildGame.cmd's closing pause return.
+        $start.Arguments = '/d /c ""{0}" "{1}" > "{2}" 2>&1 < nul"' -f (Join-Path $root 'BuildGame.cmd'), $iso.Text, $build.log
+        $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+        $start.EnvironmentVariables['PYTHONUNBUFFERED'] = '1'
+        $build.process = [Diagnostics.Process]::Start($start)
+        $buildNow.Enabled = $false; $pickIso.Enabled = $false
+        $buildState.Text = 'Building... this can take a while.'
+        $buildTimer.Start()
+    } catch {
+        [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
+    }
+})
+
 $heightNames = [string[]]($heights | ForEach-Object { if ($_ -eq 480) { '480p (windowed)' } else { "$($_)p" } })
 $nearest = @($heights | Where-Object { $_ -le [int]$settings.height }).Count - 1
-$resolution = Add-Row $pages[1] 'Resolution' 0 (New-Choice $heightNames $nearest)
+$resolution = Add-Row $pages[2] 'Resolution' 0 (New-Choice $heightNames $nearest)
 $msaaNames = [string[]]($samples | ForEach-Object { if ($_ -eq 1) { 'Off' } else { "$($_)x" } })
-$msaa = Add-Row $pages[1] 'MSAA' 36 (New-Choice $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa)))
-$smaa = New-Toggle $pages[1] 'SMAA edge smoothing' 76 $settings.smaa
-$vrr = New-Toggle $pages[1] 'VRR display (even 60 Hz pacing)' 104 $settings.vrr
-$fog = New-Toggle $pages[1] 'Fog' 132 $settings.fog
+$msaa = Add-Row $pages[2] 'MSAA' 36 (New-Choice $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa)))
+# Display settings on the left, renderer toggles on the right.
+$smaa = New-Toggle $pages[2] 'SMAA edge smoothing' 72 $settings.smaa 0 218
+$vrr = New-Toggle $pages[2] 'VRR display (even 60 Hz pacing)' 100 $settings.vrr 0 218
+$fog = New-Toggle $pages[2] 'Fog' 128 $settings.fog 0 218
 # Off keeps the game's original shadows for lower-powered PCs; see docs/sun-shadow.md.
-$sun = New-Toggle $pages[1] 'Sun shadows' 160 $settings.sun_shadows
+$sun = New-Toggle $pages[2] 'Sun shadows' 156 $settings.sun_shadows 0 218
+$pixelLighting = New-Toggle $pages[2] 'Per-pixel lighting' 72 $settings.pixelLighting 228 220
+$smoothNormals = New-Toggle $pages[2] 'Smooth normals' 100 $settings.smoothNormals 228 220
+$rtgi = New-Toggle $pages[2] 'Ray-traced GI (RTGI)' 128 $settings.rtgi 228 220
+$hitColor = New-Toggle $pages[2] 'RTGI hit-point color' 156 $settings.rtgiHitColor 228 220
+$strength = Add-Row $pages[2] 'RTGI strength' 184 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)); Enabled = $rtgi.Checked })
+$hitColor.Enabled = $rtgi.Checked
+$rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
+New-Note $pages[2] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 208 32 | Out-Null
 
 # PowerShell 7 loads JSON numbers as Int64, so cast before finding their index.
 $savedVolume = [Array]::IndexOf($volumes, [int]$settings.volume)
 $volumeNames = [string[]]($volumes | ForEach-Object { if ($_ -eq 0) { 'Mute' } else { "$_%" } })
-$volume = Add-Row $pages[2] 'Volume' 0 (New-Choice $volumeNames $savedVolume)
-$shuffle = New-Toggle $pages[2] 'Shuffle music' 40 $settings.shuffle
+$volume = Add-Row $pages[3] 'Volume' 0 (New-Choice $volumeNames $savedVolume)
+$shuffle = New-Toggle $pages[3] 'Shuffle music' 40 $settings.shuffle
 $music = New-Button 'Open music folder' 160
 $music.Top = 76
 $music.Add_Click({
@@ -219,15 +299,15 @@ $music.Add_Click({
         [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
     }
 })
-$pages[2].Controls.Add($music)
-New-Note $pages[2] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
+$pages[3].Controls.Add($music)
+New-Note $pages[3] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
 
-$unlock = New-Toggle $pages[3] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
-$demoCut = New-Toggle $pages[3] 'Shorter demo cuts' 28 $settings.demo_cut_hold
-$freeCamera = New-Toggle $pages[3] 'Free camera (F1)' 56 $settings.free_camera
-$idle = Add-Row $pages[3] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
+$unlock = New-Toggle $pages[4] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
+$demoCut = New-Toggle $pages[4] 'Shorter demo cuts' 28 $settings.demo_cut_hold
+$freeCamera = New-Toggle $pages[4] 'Free camera (F1)' 56 $settings.free_camera
+$idle = Add-Row $pages[4] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
 
-$textures = New-Toggle $pages[4] 'Use texture pack' 0 $settings.textures
+$textures = New-Toggle $pages[5] 'Use texture pack' 0 $settings.textures
 $textureFolder = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 32; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Text = [string]$settings.textureFolder }
 $browse = New-Button 'Folder...' 88
 $browse.Left = 358; $browse.Top = 30
@@ -238,18 +318,9 @@ $browse.Add_Click({
     if ($dialog.ShowDialog($form) -eq 'OK') { $textureFolder.Text = $dialog.SelectedPath }
     $dialog.Dispose()
 })
-$pages[4].Controls.AddRange(@($textureFolder, $browse))
-$textureDump = New-Toggle $pages[4] 'Dump original textures' 68 $settings.textureDump
-New-Note $pages[4] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
-
-$pixelLighting = New-Toggle $pages[5] 'Per-pixel lighting' 0 $settings.pixelLighting
-$smoothNormals = New-Toggle $pages[5] 'Smooth normals' 28 $settings.smoothNormals
-$rtgi = New-Toggle $pages[5] 'Ray-traced GI (RTGI)' 56 $settings.rtgi
-$strength = Add-Row $pages[5] 'RTGI strength' 88 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)); Enabled = $rtgi.Checked })
-$hitColor = New-Toggle $pages[5] 'RTGI hit-point color' 120 $settings.rtgiHitColor
-$hitColor.Enabled = $rtgi.Checked
-$rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
-New-Note $pages[5] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 154 40 | Out-Null
+$pages[5].Controls.AddRange(@($textureFolder, $browse))
+$textureDump = New-Toggle $pages[5] 'Dump original textures' 68 $settings.textureDump
+New-Note $pages[5] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
 
 New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
 
@@ -276,13 +347,16 @@ $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
     $item
 }
 function Select-Section($index) {
+    $previous = $state.section
     $state.section = $index
+    $menu[$previous].Invalidate()
+    $menu[$index].Invalidate()
     $title.Text = $sections[$index].ToUpper()
     $subtitle.Text = $subtitles[$index]
     for ($i = 0; $i -lt $pages.Count; $i++) { $pages[$i].Visible = $i -eq $index }
-    if ($index -eq 0) { Update-Summary }
-    # Repaint now so the menu, title and new pane reach the screen together.
-    $form.Refresh()
+    if ($index -eq 0) { Update-Summary; Update-Ready }
+    # Paint only what changed, now, so the menu, title and new pane land together.
+    [DOAXBV.Native]::RedrawWindow($form.Handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180) | Out-Null
 }
 $form.Add_KeyDown({
     param($s, $e)
@@ -292,8 +366,20 @@ $form.Add_KeyDown({
     if ($step) { Select-Section (($state.section + $step + $sections.Count) % $sections.Count); $e.Handled = $true }
     if ($e.KeyCode -eq 'Escape') { $form.Close() }
 })
+$form.Add_FormClosing({
+    param($s, $e)
+    if ($build.process) {
+        [Windows.Forms.MessageBox]::Show('Setup is still building. Wait for it to finish before closing.', 'DOAXBV launcher') | Out-Null
+        $e.Cancel = $true
+    }
+})
 
-$play = New-Object Windows.Forms.Button -Property @{ Text = 'PLAY'; Left = 232; Top = 286; Width = 214; Height = 50; FlatStyle = 'Flat'; BackColor = [Drawing.Color]::Transparent; DialogResult = 'OK'; Cursor = 'Hand' }
+$play = New-Object Windows.Forms.Button -Property @{ Text = 'PLAY'; Left = 232; Top = 286; Width = 214; Height = 50; FlatStyle = 'Flat'; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand' }
+$play.Add_Click({
+    if ($build.process) { Select-Section 1 }
+    elseif (-not (Test-Built)) { Select-Section 1; $pickIso.Focus() | Out-Null }
+    else { $form.DialogResult = 'OK' }
+})
 $play.FlatAppearance.BorderSize = 0
 $play.FlatAppearance.MouseOverBackColor = [Drawing.Color]::Transparent
 $play.FlatAppearance.MouseDownBackColor = [Drawing.Color]::Transparent

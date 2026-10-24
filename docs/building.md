@@ -57,7 +57,12 @@ If the extractor reports a missing `VCRUNTIME140.dll`, install the included
 `Prerequisites/vc_redist.x86.exe` and retry. The extractor remains 32-bit;
 the game runner is x64.
 
-To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
+The simplest Windows route is `Launcher.cmd`: open **Build**, choose the ISO
+and press **Build game**. The launcher runs `BuildGame.cmd` without a console
+window, shows its output, saves it to `private/launcher-build.log`, and enables
+**Play** once the build completes.
+
+To use the Windows wrapper directly, drop one supported ISO on `BuildGame.cmd` or run:
 
 ```powershell
 .\BuildGame.cmd "D:\Games\game.iso"
@@ -65,10 +70,13 @@ To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 
 This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
-stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
-(graphics, audio, game, texture and experimental options, saved in `private/launcher.json`) or `RunGame.cmd`
-in the same folder. Keep that folder in place after setup: build receipts
-identify the exact local paths. Setup does not launch the game automatically.
+stage's log under `private/setup-*`. After success, double-click `Launcher.exe`
+(graphics, audio, game, texture and experimental options, saved in
+`private/launcher.json`) or `RunGame.cmd` in the same folder. Setup builds the
+launcher with the runner, using the same `private/doaxbv.ico`; `Launcher.cmd`
+opens the same window when the exe is absent. Keep that folder in place after
+setup: build receipts identify the exact local paths. Setup does not launch the
+game automatically.
 
 The Windows launcher copies the game's island map menus: glass panels, green
 name plates and A/B prompts. It draws game images from `private/launcher`.
