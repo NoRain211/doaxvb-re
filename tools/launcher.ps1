@@ -91,7 +91,10 @@ if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
 $backdrop = New-Object Drawing.Bitmap $W, $H
 $g = [Drawing.Graphics]::FromImage($backdrop)
 $g.InterpolationMode = 'HighQualityBicubic'
-if ($artFile = Art 'background.png') {
+# A player's own island map frame wins over the beach preview setup extracts.
+$artFile = Art 'background.png'
+if (-not $artFile) { $artFile = Art 'beach.png' }
+if ($artFile) {
     Draw-Fit $g $artFile 0 0 $W $H -cover
 } else {
     $sea = New-Object Drawing.Drawing2D.LinearGradientBrush((RF 0 0 $W $H), (C '#7fd8ff'), (C '#178ab8'), [single]90)
