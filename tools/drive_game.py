@@ -137,6 +137,14 @@ class Session:
     def start(self, runner, image, log=None, env=None):
         if self.running():
             raise DriveError(f"a game is already running (pid {self.state['pid']}); stop it first")
+        if "pid" in self.state:
+            # The last run ended without stop (it crashed or was killed):
+            # its backup still holds the player's saves, so put them back
+            # before taking a new one.
+            say("the last run was not stopped; putting back what it changed")
+            self.put_back(keep=False)
+            self.state.pop("pid")
+            self.save_state()
         self.folder.mkdir(parents=True, exist_ok=True)
         self.frames.mkdir(exist_ok=True)
         for path in (self.press_path, self.trigger_path, self.folder / "resume"):
@@ -188,19 +196,24 @@ class Session:
                 os.kill(pid, signal.SIGKILL)
         for path in (self.press_path, self.trigger_path):
             path.unlink(missing_ok=True)
+        self.put_back(keep_save)
+        self.state.pop("pid", None)
+        self.save_state()
+        say("stopped")
+
+    def put_back(self, keep):
+        """Puts back the saves and the controller-mode preference as they
+        were at start, unless `keep`."""
         saves, backup = self.state.get("saves"), self.state.get("backup")
         if backup and Path(backup).is_dir() and not same_tree(saves, backup):
-            if keep_save:
+            if keep:
                 say("the run changed the saves; kept them")
             else:
                 written = self.folder / ("saves-written-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
                 shutil.move(saves, written)
                 shutil.copytree(backup, saves)
                 say(f"the run wrote the saves; restored them (the written ones are in {written})")
-        self.restore_preference(keep_save)
-        self.state.pop("pid", None)
-        self.save_state()
-        say("stopped")
+        self.restore_preference(keep)
 
     def restore_preference(self, keep):
         """Puts back the controller-mode preference as it was at start: the

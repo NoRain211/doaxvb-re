@@ -63,7 +63,9 @@ with exit code 1. The tool saves a `fail-HHMMSS` screenshot and prints the last
 the game executable). `stop` puts them back if the run changed them, and keeps
 the written copy in the session folder. The same goes for the Analog/Digital
 preference (`.recomp-storage/controller-mode-v1`), which Controller Settings
-writes outside the saves. Pass `--keep-save` to keep the changes.
+writes outside the saves. Pass `--keep-save` to keep the changes. If a run
+ended without `stop` (it crashed or was killed), the next `start` puts both
+back first, so the backup always holds the player's own saves.
 
 The driver prints its own lines as `[auto:driver] ...`, in the same prefix
 family as the game's `[auto:ui]` lines.

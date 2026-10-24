@@ -231,6 +231,23 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual((written[0] / "slot/data").read_bytes(), b"written")
         self.assertTrue(drive_game.same_tree(saves, backup))
 
+    def test_start_puts_back_saves_an_unstopped_run_wrote(self):
+        image = self.folder / "game/default.xbe"
+        saves = image.parent / ".recomp-storage/partition1/UDATA"
+        backup = self.session.folder / "saves-at-start"
+        (saves / "slot").mkdir(parents=True)
+        (saves / "slot/data").write_bytes(b"before")
+        drive_game.shutil.copytree(saves, backup)
+        # The last run wrote the saves and died without stop.
+        (saves / "slot/data").write_bytes(b"written")
+        self.session.state.update(saves=str(saves), backup=str(backup))
+        self.session.running = lambda: False
+        # No runner: start fails once it launches, after the new backup.
+        with self.assertRaises(OSError):
+            self.session.start(self.folder / "missing-runner", image)
+        self.assertEqual((saves / "slot/data").read_bytes(), b"before")
+        self.assertEqual((backup / "slot/data").read_bytes(), b"before")
+
     def test_stop_puts_back_the_controller_mode_preference(self):
         self.session.running = lambda: False
         preference = self.folder / "controller-mode-v1"
