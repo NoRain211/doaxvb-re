@@ -222,6 +222,23 @@ if((RECOMP_PROGRAM_DIR AND NOT RECOMP_PROGRAM_MANIFEST_SHA256) OR
         "RECOMP_PROGRAM_DIR and RECOMP_PROGRAM_MANIFEST_SHA256 must be supplied together")
 endif()
 
+# The binary .ico stays out of git; see docs/building.md.
+set(RECOMP_APP_ICON "" CACHE FILEPATH "Optional .ico embedded in the program and launcher")
+if(RECOMP_APP_ICON)
+    file(TO_CMAKE_PATH "${RECOMP_APP_ICON}" app_icon)
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc"
+        CONTENT "1 ICON \"${app_icon}\"\n")
+endif()
+
+# Windows entry point for the PowerShell launcher, so the file carries the app icon.
+if(WIN32)
+    add_executable(recomp_launcher ../tools/launcher_windows.c)
+    set_target_properties(recomp_launcher PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(recomp_launcher PRIVATE user32)
+    if(RECOMP_APP_ICON)
+        target_sources(recomp_launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
+    endif()
+endif()
 if(MSVC)
     set(_recomp_force_include "/FI${CMAKE_CURRENT_SOURCE_DIR}/runtime.h")
 else()
@@ -783,12 +800,7 @@ if(RECOMP_PROGRAM_DIR)
         target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
 
-    # The binary .ico stays out of git; see docs/building.md.
-    set(RECOMP_APP_ICON "" CACHE FILEPATH "Optional .ico embedded as the runner icon")
     if(RECOMP_APP_ICON)
-        file(TO_CMAKE_PATH "${RECOMP_APP_ICON}" app_icon)
-        file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc"
-            CONTENT "1 ICON \"${app_icon}\"\n")
         target_sources(recomp_program_runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
     endif()
 

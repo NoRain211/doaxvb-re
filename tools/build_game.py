@@ -13,6 +13,7 @@ import uuid
 
 from extract_iso import extract, run_logged, sha256
 from build_prerequisites import ensure_prerequisites, prefer_bundled_tools
+import launcher_art
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
@@ -125,6 +126,13 @@ def build(args, verify_parity=True, lifter_revision=None):
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
+        if windows:  # before configure, which embeds private/doaxbv.ico in the runner
+            try:
+                written = launcher_art.install(disc)
+                print(f"Copied {len(written)} launcher art files from the disc." if written
+                      else "Launcher art is already in place.", flush=True)
+            except (OSError, ValueError) as error:  # cosmetic; never block the build
+                print(f"Skipped launcher art: {error}", flush=True)
         prepare_lifter(work, lifter_revision)
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
@@ -189,10 +197,12 @@ def build(args, verify_parity=True, lifter_revision=None):
             if icon.is_file():
                 configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
-        targets = ["recomp_program_runner"] + (["recomp_launcher"] if sys.platform.startswith("linux") else [])
+        targets = ["recomp_program_runner", "recomp_launcher"]
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
+        if windows:
+            shutil.copy2(output / "recomp_launcher.exe", ROOT / "Launcher.exe")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
@@ -205,7 +215,7 @@ def build(args, verify_parity=True, lifter_revision=None):
             selected = ROOT / "private" / ("active-build-" + uuid.uuid4().hex + ".tmp")
             selected.write_text(json.dumps({"receipt": str(receipt_path.relative_to(ROOT))}) + "\n", encoding="utf-8")
             selected.replace(ROOT / "private/active-build.json")
-            launcher = "Launcher.cmd" if sys.platform == "win32" else "launcher.sh"
+            launcher = "Launcher.exe" if sys.platform == "win32" else "launcher.sh"
             print(f"Setup complete. Open {launcher} to play this build.", flush=True)
         print(f"Build receipt: {receipt_path}", flush=True)
 
