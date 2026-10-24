@@ -805,7 +805,7 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
         layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) return;
     const uint8_t *state = guest_span(0x001f2d20u, 0xa0u);
     const uint8_t *stage = guest_span(0x001f29b8u, 16u);
-    const uint8_t *material = guest_span(device + 0xab0u, 64u);
+    const uint8_t *material = guest_span(device + 0xab0u, 68u);
     const uint8_t *head = guest_span(device + 0x398u, 4u);
     if (!state || !stage || !material || !head) return;
     uint32_t lighting, color_vertex, two_sided, ambient, args[4], light;
@@ -815,8 +815,19 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
     if (!lighting || color_vertex || two_sided ||
         (!draw->has_reflection && (args[0]!=4 || args[2]!=2 || args[3]!=0))) return;
     RecompD3dDirectionalLighting result = {0};
-    float mat[16]; memcpy(mat, material, sizeof mat);
-    for (uint32_t i=0; i<16; ++i) if (!isfinite(mat[i])) return;
+    float mat[17]; memcpy(mat, material, sizeof mat);
+    for (uint32_t i=0; i<17; ++i) if (!isfinite(mat[i])) return;
+    uint32_t specular, local_viewer;
+    memcpy(&specular, state+4, 4); memcpy(&local_viewer, state+8, 4);
+    if (specular && !local_viewer) {
+        float view[16];
+        if (!read_transform(device, D3D_TRANSFORM_VIEW, view)) return;
+        float length = sqrtf(view[2]*view[2]+view[6]*view[6]+view[10]*view[10]);
+        if (!isfinite(length) || length <= 0) return;
+        for (uint32_t c=0; c<3; ++c) result.view[c] = -view[2+4*c]/length;
+        result.view[3] = mat[16] > 0 ? mat[16] : 1e-6f;
+    }
+    /* shortcut: local-viewer specular is omitted until a verified draw needs it. */
     memcpy(result.material_diffuse, mat, 16);
     for (uint32_t c=0; c<3; ++c)
         result.ambient_emissive[c] = mat[12+c] + mat[4+c] * ((ambient >> (16-8*c)) & 255u) / 255.0f;
@@ -847,6 +858,10 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
         for (uint32_t c=0; c<3; ++c) {
             if (!isfinite(data[1+c]) || !isfinite(data[9+c])) return;
             result.colors[result.count][c] = data[1+c];
+            if (result.view[3] > 0) {
+                result.specular[result.count][c] = data[5+c]*mat[8+c];
+                if (!isfinite(result.specular[result.count][c])) return;
+            }
             if (type == 1) result.ambient[result.count][c] = mat[4+c]*data[9+c];
             else result.ambient_emissive[c] += mat[4+c]*data[9+c];
         }
@@ -2330,6 +2345,8 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
     const uint32_t vertices = stack_argument(entry_esp, 2u);
     const uint32_t stride = stack_argument(entry_esp, 3u);
     static const uint16_t indices[4] = {0u, 1u, 2u, 3u};
+    uint16_t *line_indices = NULL;
+    const bool lines = primitive == RECOMP_D3D_PT_LINELIST;
     static uint32_t reported;
     RecompD3dPresenterCommand command = {0};
     const uint8_t *device_bytes, *vertex_bytes;
@@ -2339,7 +2356,8 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
     /* Preserve the driver's UP state, push-buffer/fence work, and RET 0x10. */
     sub_001E7750();
     if (hidden_backbuffer_draw(*recomp_memory_u32(D3D_DEVICE_GLOBAL))) return;
-    if (primitive != RECOMP_D3D_PT_TRIANGLESTRIP || count != 4u) {
+    if (lines ? count < 2u || count > 65536u || count % 2u != 0u
+              : primitive != RECOMP_D3D_PT_TRIANGLESTRIP || count != 4u) {
         decline = "up-shape";
         goto finished;
     }
@@ -2350,7 +2368,9 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         goto finished;
     }
     memcpy(&fvf, device_bytes + D3D_VERTEX_SHADER_HANDLE_OFFSET, sizeof fvf);
-    if (!((fvf == 0x104u && stride == 24u) ||
+    if (lines ? !((fvf == 0x42u && stride == 16u) ||
+                  (fvf == 0x44u && stride == 20u))
+              : !((fvf == 0x104u && stride == 24u) ||
           (fvf == 0x144u && stride == 28u) ||
           (fvf == 0x404u && stride == 48u) ||
           (fvf == 0x344u && stride == 36u))) {
@@ -2362,26 +2382,41 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
         decline = "up-vertices";
         goto finished;
     }
-    for (uint32_t i = 0u; i < 4u; ++i) {
-        float position[4];
-        memcpy(position, vertex_bytes + i * stride, sizeof position);
+    for (uint32_t i = 0u; i < count; ++i) {
+        float position[4] = {0};
+        memcpy(position, vertex_bytes + i * stride, fvf == 0x42u ? 12u : 16u);
         if (!isfinite(position[0]) || !isfinite(position[1]) ||
-            !isfinite(position[2]) || !isfinite(position[3]) || position[3] <= 0.0f) {
+            !isfinite(position[2]) ||
+            (fvf != 0x42u && (!isfinite(position[3]) || position[3] <= 0.0f))) {
             decline = "up-position";
             goto finished;
         }
     }
-    if (screen_masked(device, vertex_bytes, stride)) goto finished;
+    /* The mask matches pretransformed quads; lines are never masked. */
+    if (!lines && screen_masked(device, vertex_bytes, stride)) goto finished;
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     command.data.draw.primitive_type = primitive;
-    command.data.draw.index_count = 4u;
-    command.data.draw.triangle_count = 2u;
-    command.data.draw.vertex_count = 4u;
+    command.data.draw.index_count = count;
+    command.data.draw.triangle_count = lines ? 0u : 2u;
+    command.data.draw.vertex_count = count;
     command.data.draw.vertex_stride = stride;
     /* The disabled third stage has no supplied UVs in these UP vertices. */
     command.data.draw.fvf = fvf == 0x344u ? 0x244u : fvf;
     command.data.draw.vertex_bytes = vertex_bytes;
     command.data.draw.index_bytes = indices;
+    if (lines) {
+        line_indices = malloc(count * sizeof *line_indices);
+        if (line_indices == NULL) { decline = "up-indices"; goto finished; }
+        for (uint32_t i = 0; i < count; ++i) line_indices[i] = (uint16_t)i;
+        command.data.draw.index_bytes = line_indices;
+        if (fvf == 0x42u) {
+            if (!compose_world_view_projection(device, command.data.draw.transform)) {
+                decline = "up-transform";
+                goto finished;
+            }
+            command.data.draw.has_transform = true;
+        }
+    }
     /* XYZRHW is already in screen space; the presenter reverses its viewport. */
     if (!attach_draw_state(device, &command.data.draw)) {
         decline = "up-render-target";
@@ -2409,12 +2444,14 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             command.data.draw.has_texture ? 1 : 0, command.data.draw.texture.format_byte);
     }
 finished:
+    free(line_indices);
     if (device != 0u) capture_up(device, fvf, stride, vertices, count, decline);
     if (decline != NULL) report_decline(decline);
 }
 
-/* Draws consume deferred fog state retained by generated D3D8 setters;
-   see docs/fog.md. Replacing those library setters remains open work. */
+/* Draws retain generated D3D8 driver bookkeeping and deferred lighting/fog
+   state; see docs/lighting-and-lines.md and docs/fog.md. Wholesale replacement
+   of these library bodies and setters remains open work. */
 RecompFunction recomp_d3d_draw_lookup_manual(uint32_t guest_address)
 {
     if (guest_address == D3D_DEVICE_DRAW_VERTICES_UP_ADDRESS) {

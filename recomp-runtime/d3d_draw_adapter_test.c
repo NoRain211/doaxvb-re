@@ -1,4 +1,5 @@
 #include "d3d_draw_adapter.c"
+#include "d3d_presenter_memory_test.h"
 
 #define REQUIRE(value) do { if (!(value)) { fprintf(stderr, "draw adapter line %d\n", __LINE__); goto cleanup; } } while (0)
 
@@ -183,6 +184,131 @@ cleanup:
     return passed;
 }
 
+
+static int specular_adapter_test(void)
+{
+    int passed = 0;
+    uint8_t memory[0x7000] = {0};
+    const RecompMemoryRegion region = {0x001f0000u, sizeof memory, memory};
+    const uint32_t device = 0x001f3120u, light = 0x001f6100u;
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    *recomp_memory_u32(0x001f2d20u) = 1;
+    *recomp_memory_u32(0x001f2d24u) = 1;
+    *recomp_memory_u32(0x001f29b8u) = 4;
+    *recomp_memory_u32(0x001f29c0u) = 2;
+    *recomp_memory_u32(device + 0x398u) = light;
+    *recomp_memory_u32(light) = 3;
+    float *material = (float *)(void *)recomp_memory_u32(device + 0xab0u);
+    float *data = (float *)(void *)recomp_memory_u32(light);
+    for (unsigned c = 0; c < 3; ++c) {
+        material[c] = data[1+c] = 1;
+        material[8+c] = 0.5f;
+        data[5+c] = 0.25f;
+    }
+    material[16] = 10;
+    data[18] = -1;
+    float *world = (float *)(void *)recomp_memory_u32(device + 0x990u);
+    float *view = (float *)(void *)recomp_memory_u32(device + 0x810u);
+    for (unsigned i = 0; i < 4; ++i) world[i*5] = view[i*5] = 1;
+    RecompD3dPresenterDrawCommand draw = {0};
+    draw.fvf = 0x112;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(draw.directional.enabled && draw.directional.view[2] == -1);
+    REQUIRE(draw.directional.view[3] == 10 && draw.directional.specular[0][0] == 0.125f);
+    view[0] = view[10] = 0; view[2] = 2; view[8] = -2;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(draw.directional.view[0] == -1 && draw.directional.view[2] == 0);
+    material[16] = 0;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(draw.directional.view[3] > 0);
+    *recomp_memory_u32(0x001f2d28u) = 1;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(draw.directional.enabled && draw.directional.view[3] == 0);
+    *recomp_memory_u32(0x001f2d28u) = 0;
+    *recomp_memory_u32(0x001f2d24u) = 0;
+    data[5] = NAN;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(draw.directional.enabled && draw.directional.specular[0][0] == 0);
+    *recomp_memory_u32(0x001f2d24u) = 1;
+    draw.directional.enabled = false;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(!draw.directional.enabled);
+    data[5] = 0.25f; material[16] = NAN;
+    attach_directional_lighting(device, &draw);
+    REQUIRE(!draw.directional.enabled);
+    passed = 1;
+cleanup:
+    recomp_runtime_init(NULL, 0u, NULL, 0u, NULL, 0u);
+    return passed;
+}
+
+static int line_list_adapter_test(void)
+{
+    int passed = 0;
+    uint8_t memory[0x7000] = {0};
+    const RecompMemoryRegion region = {0x001f0000u, sizeof memory, memory};
+    const uint32_t device = 0x001f3120u, vertices = 0x001f6000u, esp = 0x001f6500u;
+    const RecompD3dPresenterConfig config = {4, 4,
+        RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM, RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+    RecompD3dPresenterMemorySnapshot snapshot;
+    recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    recomp_d3d_frame_adapter_initialize(&config, device);
+    *recomp_memory_u32(D3D_DEVICE_GLOBAL) = device;
+    *recomp_memory_u32(device + 0x21b4u) = vertices;
+    *recomp_memory_u32(device + 0x21c0u) = vertices;
+    for (unsigned transform = 0; transform <= 6; ++transform) {
+        float *matrix = (float *)(void *)recomp_memory_u32(device + 0x810u + transform*64u);
+        for (unsigned i = 0; i < 4; ++i) matrix[i*5] = 1;
+    }
+    const struct { uint32_t fvf, stride, count; bool valid; } cases[] = {
+        {0x42,16,2,true}, {0x44,20,8,true}, {0x44,20,3,false},
+        {0x44,20,0,false}, {0x44,20,65538,false}, {0x104,24,2,false},
+        {0x44,20,2,false}, {0x42,16,2,false}, {0x44,20,2,false},
+    };
+    unsigned submitted = 0;
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
+        *recomp_memory_u32(device + 0x384u) = cases[c].fvf;
+        for (unsigned i = 0; i < 8; ++i) {
+            float position[] = {0, 0, 0.25f, 1};
+            memcpy(recomp_memory_u32(vertices + i*cases[c].stride), position, cases[c].fvf == 0x42 ? 12 : 16);
+            *recomp_memory_u32(vertices + i*cases[c].stride + cases[c].stride - 4) = 0xffffffffu;
+        }
+        if (c == 6) *recomp_memory_u32(vertices + 12) = 0; // Invalid RHW.
+        if (c == 7) *(float *)(void *)recomp_memory_u32(vertices) = NAN;
+        uint32_t args[] = {0, RECOMP_D3D_PT_LINELIST, cases[c].count,
+            c == 8 ? 0x00900000u : vertices, cases[c].stride};
+        memcpy(recomp_memory_u32(esp), args, sizeof args);
+        recomp_runtime.registers.esp = esp;
+        recomp_d3d_draw_vertices_up_adapter();
+        REQUIRE(recomp_runtime.registers.esp == esp + 20);
+        submitted += cases[c].valid;
+        REQUIRE(recomp_d3d_presenter_memory_snapshot(&snapshot) && snapshot.draw_count == submitted);
+        if (cases[c].valid) {
+            const RecompD3dPresenterDrawCommand *draw = &snapshot.commands[submitted-1].data.draw;
+            REQUIRE(draw->primitive_type == RECOMP_D3D_PT_LINELIST && draw->triangle_count == 0);
+            REQUIRE(draw->index_count == cases[c].count && draw->fvf == cases[c].fvf);
+            REQUIRE(draw->has_transform == (cases[c].fvf == 0x42));
+        }
+    }
+    *recomp_memory_u32(0x001f2e20u) = 20;
+    *recomp_memory_u32(0x001f2e28u) = 0x001f6300u;
+    *recomp_memory_u32(0x001f6304u) = vertices;
+    const uint16_t indices[] = {0,1};
+    memcpy(recomp_memory_u32(0x001f6400u), indices, sizeof indices);
+    const uint32_t indexed_args[] = {0,RECOMP_D3D_PT_LINELIST,2,0x001f6400u};
+    memcpy(recomp_memory_u32(esp), indexed_args, sizeof indexed_args);
+    recomp_runtime.registers.esp = esp;
+    recomp_d3d_draw_indexed_vertices_adapter();
+    REQUIRE(recomp_runtime.registers.esp == esp + 16);
+    REQUIRE(recomp_d3d_presenter_memory_snapshot(&snapshot) && snapshot.draw_count == submitted + 1);
+    REQUIRE(snapshot.commands[submitted].data.draw.primitive_type == RECOMP_D3D_PT_LINELIST);
+    passed = 1;
+cleanup:
+    recomp_d3d_frame_adapter_reset();
+    recomp_runtime_init(NULL, 0u, NULL, 0u, NULL, 0u);
+    return passed;
+}
+
 #undef REQUIRE
 #define REQUIRE(value) do { if (!(value)) { fprintf(stderr, "draw adapter line %d\n", __LINE__); return 0; } } while (0)
 
@@ -224,5 +350,6 @@ static int backbuffer_adapter_test(void)
 
 int recomp_d3d_draw_adapter_test(void)
 {
-    return combiner_adapter_test() && backbuffer_adapter_test();
+    return combiner_adapter_test() && backbuffer_adapter_test() &&
+        specular_adapter_test() && line_list_adapter_test();
 }

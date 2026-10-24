@@ -2106,6 +2106,35 @@ static bool testVertexProgram(RecompD3dPresenter *presenter,
     return submitDraw(presenter,draw)==RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
 }
 
+static bool testLineLists(RecompD3dPresenter *presenter,
+    ID3D11Texture2D *color, ID3D11Texture2D *readback)
+{
+    struct Vertex { float x, y, z, rhw; uint32_t diffuse; };
+    Vertex vertices[8]{};
+    uint16_t indices[8];
+    for (unsigned i = 0; i < 8; ++i) {
+        vertices[i] = {i & 1u ? 3.5f : -0.5f, float(i / 2u),
+            0.25f, 1.0f, 0xff00ff00u};
+        indices[i] = uint16_t(i);
+    }
+    RecompD3dPresenterDrawCommand draw{};
+    draw.primitive_type = RECOMP_D3D_PT_LINELIST;
+    draw.index_count = draw.vertex_count = 8u;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.fvf = 0x44u;
+    draw.vertex_bytes = vertices;
+    draw.index_bytes = indices;
+    draw.blend.color_write_mask = 15u;
+    const RecompD3dPresenterClearCommand clear = {
+        true, true, false, 0xff0000ffu, 1.0f, 0u};
+    const uint32_t green[] = {0xff00ff00u, 0xff00ff00u, 0xff00ff00u, 0xff00ff00u};
+    if (submitClear(presenter, clear) != RECOMP_D3D_PRESENTER_OK ||
+        submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_OK ||
+        !checkPixels(presenter, color, readback, "XYZRHW line lists", green)) return false;
+    draw.index_count = 3u;
+    return submitDraw(presenter, draw) == RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+}
+
 static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     ID3D11Texture2D *color, ID3D11Texture2D *readback)
 {
@@ -2141,6 +2170,24 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
             checkPixels(presenter,color,readback,label,expected);
     };
     if (!pixels("directional diffuse plus ambient and material",0xff402010)) return false;
+    light.view[0]=1; light.view[3]=1;
+    for (unsigned c=0;c<3;++c) light.specular[0][c]=0.25f;
+    if (!pixels("specular adds after texture without changing alpha",0xff806050)) return false;
+    light.view[0]=-1;
+    if (!pixels("opposing viewer has no specular",0xff402010)) return false;
+    light.view[0]=0; light.view[1]=1;
+    if (!pixels("specular half vector",0xff6d4d3d)) return false;
+    light.view[3]=2;
+    if (!pixels("specular material power",0xff604030)) return false;
+    light.view[0]=1; light.view[1]=0; light.view[3]=1;
+    draw.has_texture=false;
+    if (!pixels("untextured specular",0xffbfbfbf)) return false;
+    draw.has_texture=true;
+    draw.fog={true,false,3,0xff000000u,0,2,0};
+    if (!pixels("fog applies after specular",0xff403028)) return false;
+    draw.fog={};
+    light.view[3]=0;
+
     light.directions[0][0]=-1;
     if (!pixels("back-facing normal gets ambient only",0xff201008)) return false;
     world[0]=-2;
@@ -2215,6 +2262,20 @@ static bool testDirectionalLighting(RecompD3dPresenter *presenter,
     if (!pixels("point light weighted world position uses remainder matrix",0xff402010)) return false;
     draw.blend_weight_count=0;
     if (!pixels("point light disabled blending uses world zero",0xff1a0d06)) return false;
+    for (auto &vertex : vertices) vertex[5]=1;
+    light.view[2]=1; light.view[3]=1;
+    light.attenuation[0][0]=2; light.attenuation[0][1]=0;
+    for (unsigned c=0;c<3;++c) { light.colors[0][c]=0; light.specular[0][c]=0.5f; }
+    // Keep raster positions while making the point-light distance identical at every vertex.
+    std::memset(light.world_transforms[0],0,64);
+    light.world_transforms[0][15]=1;
+    draw.fvf=0x112; draw.vertex_stride=32; draw.vertex_bytes=vertices;
+    vertices[0][0]=-1; vertices[0][1]=1; vertices[1][0]=1; vertices[1][1]=1;
+    vertices[2][0]=-1; vertices[2][1]=-1; vertices[3][0]=1; vertices[3][1]=-1;
+    if (!pixels("point specular attenuation",0xff404040)) return false;
+    light.attenuation[0][3]=10;
+    if (!pixels("point specular range cutoff",0xff000000)) return false;
+
 
     // Half-byte gray must cover both neighboring bytes without changing alpha.
     const uint32_t gray = 0x80ffffff;
@@ -4199,6 +4260,7 @@ int main()
         status = 60;
     }
     if (status == 0 && !testFog(&presenter, color, readback)) status = 82;
+    if (status == 0 && !testLineLists(&presenter, color, readback)) status = 100;
     if (status == 0 && !testVertexBlending(&presenter, color, readback)) status = 80;
     if (status == 0 && !testLinearTextureUpdates(&presenter, readback)) status = 88;
     if (status == 0 && !testDrawPipelineEviction(&presenter)) status = 89;

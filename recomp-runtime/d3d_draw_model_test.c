@@ -209,6 +209,15 @@ int recomp_d3d_draw_model_test(void)
         result.error,
         RECOMP_D3D_DRAW_UNSUPPORTED_PRIMITIVE);
 
+    result = recomp_d3d_draw_indexed(&state, RECOMP_D3D_PT_LINELIST, 4u, 0x822b1fc6u);
+    passed &= expect_u32("line list accepted", result.error, RECOMP_D3D_DRAW_OK);
+    passed &= expect_u32("line list has no triangles", result.plan.triangle_count, 0u);
+    passed &= expect_u32("line list index bytes", result.plan.index_bytes, 8u);
+    result = recomp_d3d_draw_indexed(&state, RECOMP_D3D_PT_LINELIST, 3u, 0x822b1fc6u);
+    passed &= expect_u32("odd line count rejected", result.error, RECOMP_D3D_DRAW_EMPTY);
+    result = recomp_d3d_draw_indexed(&state, RECOMP_D3D_PT_LINELIST, 0u, 0x822b1fc6u);
+    passed &= expect_u32("empty line list rejected", result.error, RECOMP_D3D_DRAW_EMPTY);
+
     state.stream0.vertex_data = 0u;
     result = recomp_d3d_draw_indexed(
         &state, RECOMP_D3D_PT_TRIANGLEFAN, 13u, 0x822b1fc6u);

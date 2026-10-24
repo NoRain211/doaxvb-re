@@ -1330,7 +1330,7 @@ int main(int argc, char **argv)
         // Trace every frame: the default reuses GI on frames under 12.5 ms apart.
         require(_putenv_s("RECOMP_D3D_RTGI_HZ", "0") == 0, "set trace rate");
         bool passed = true;
-        for (UINT samples : {1u, 4u}) {
+        for (UINT samples : {1u, 4u, 8u}) {
             Renderer renderer(device.Get(), context.Get(), samples);
             auto meshes = scene(false);
             renderer.render(meshes);
