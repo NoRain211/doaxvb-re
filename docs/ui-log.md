@@ -1,0 +1,88 @@
+# Screen and cursor log
+
+`RECOMP_AUTO_LOG=1` makes the runner print an `[auto:ui]` line to the console
+each time the game changes screen or moves a cursor. It is meant for scripts
+that drive the game with scripted pad input: instead of sleeping a fixed time
+after a press, a script waits for the line that shows the press landed.
+[`tools/drive_game.py`](automation.md) does this. Everything is read-only: no
+save or game state is changed.
+
+Every line meant for automation starts with `[auto:<source>]`, so a tool can
+pick them out of the runner's other output with `^\[auto:`: `ui` is this log,
+and `driver` is what `drive_game.py` prints about its own steps. An
+`[auto:ui]` line goes on with `frame N: ` and the event.
+
+## Log output
+
+```text
+[auto:ui] frame 134: scene title
+[auto:ui] frame 253: scene menu
+[auto:ui] frame 253: menu screen main
+[auto:ui] frame 267: list open
+[auto:ui] frame 267: list cursor 0 of 2: GO TO ZACK ISLAND
+[auto:ui] frame 280: list closed
+[auto:ui] frame 309: menu screen save-select
+[auto:ui] frame 341: save vacation 1
+[auto:ui] frame 355: save prompt cursor 0: Continue
+[auto:ui] frame 400: menu screen -1
+[auto:ui] frame 401: scene island
+[auto:ui] frame 401: island map
+[auto:ui] frame 401: map location 0 Niki Beach
+[auto:ui] frame 840: map location 5 Sports Shop
+[auto:ui] frame 879: island shop
+[auto:ui] frame 913: shop 0 cursor 2 item 178
+```
+
+Frames count from the first logged frame. A value without a name is printed
+as a number, such as `scene 8` or `island 9`.
+
+| Line | Meaning |
+|---|---|
+| `scene title\|menu\|island\|match` | the running scene changed; logged from the first scene after boot |
+| `menu screen main\|save-select\|exhibition-setup\|character-select` | the menus' screen changed; `-1` while they change screens or leave |
+| `list open`, `list closed` | the game's list menu (main menu, pool menu) opened or closed |
+| `list cursor C of N: TEXT` | the open list's cursor and the text of its item |
+| `save vacation V` | the save select's cursor is on Vacation V |
+| `save prompt cursor C: TEXT` | the prompt under a chosen vacation: Continue, Options, Delete a saved game |
+| `island map\|shop\|items\|pool` | where the player is on the island |
+| `map location L NAME` | the island map points at location L |
+| `items tab T NAME cursor C` | the items screen's tab (0 Swimsuit, 1 Accessory, 2 Item, 3 Present) and its grid cursor, three columns |
+| `shop S cursor C item I` | in shop S (0 Sports, 1 Accessory) the cursor is on entry C, item id I |
+| `shop step list\|buy\|wrap` | the shop's list, its Buy/No prompt, or the Wrap/No prompt after Buy |
+| `shop prompt cursor C: Buy\|Wrap\|No` | the open prompt's cursor |
+
+Map locations: 0 Niki Beach, 1 Private Beach, 2 Jungle, 3 Bass Island,
+4 Accessory Shop, 5 Sports Shop, 6 Zack of All Trades, 7 Poolside,
+9 Radio Station. The map skipped 8 on a morning; it is printed as `8 ?`.
+
+## Guest contract
+
+USA executable. Each address below was found by comparing guest RAM dumps
+taken at successive screens or cursor positions and checked against a
+screenshot of the same moment.
+
+| Address | Meaning |
+|---|---|
+| `0x5DECE0` | running scene: 0 match, 1 island, 3 menus, 4 title (state machine at `0x000A3820`) |
+| `0x9D9D80` | menus' screen (signed); the screen table at `0x2A78B0` holds 32-byte records of seven handlers and a data block |
+| `0x9DA120` | save select's data block: `+0xD` vacation under the cursor, `+0xE` prompt cursor, `+0x10` step (3 choosing a vacation, 4 prompt open) |
+| `0x5C581A` | list widget's cursor (word) |
+| `0x5C585C` | list widget's item count |
+| `0x5C5860` | list widget's item text pointers |
+| `0x5C5888` | list widget's phase: 1 opening, 2 open, 4 closing, 5 closed |
+| `0x4D72E3` | island place: 1 map, 3 shop, 4 items screen, 5 pool; 255 off the island |
+| `0x3AF874` | a shop's screen block, the context of its row draw `0x000C8840`; `+0x18` points to the list state: `+0x22` highlighted row, `+0x24` entry at the top (wraps), `+0x26` entry count |
+| `0x3AF894` | shop step (block `+0x20`): 1 list, 2 Buy/No, 3 Wrap/No |
+| `0x5C5A8A` | the shop prompts' cursor (word), 0 the first button |
+| `0x3AF8A1` | shop number (signed) |
+| `0x317638` | points to the shops' entries: 16 bytes each, 15 a shop, the item id first |
+| `0x31BD69` | items screen's tab; RT and LT step through them |
+| `0x31BE04` | items screen's grid cursor |
+| `0x3AF875` | location the map points at |
+
+A closed list keeps its items and cursor, so the cursor is logged only while
+the phase reads open.
+
+Open: the place values of the beaches, the other venues and the hotel; the
+items screen's scrolling past its twelve visible cells; the Continue prompt of
+an empty vacation.

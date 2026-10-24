@@ -25,6 +25,14 @@ be placed beneath the game.
 `public_export.py` enforces the tracked public allowlist, scans regular files,
 and verifies each declared submodule's path, URL, and pinned commit.
 
+## Scripted play
+
+`drive_game.py` presses pad buttons in a running game and waits for the
+runtime's `[auto:ui]` log lines to confirm each step. It has routes to the
+shop, the island map, the pool and the items screen. See
+[driving the game by script](../docs/automation.md). `test_drive_game.py` tests
+it against a fake game.
+
 ## Deliberately absent
 
 The private repository contains historical frontier runners, provenance locks,

@@ -78,6 +78,23 @@ bool recomp_screenshot_take_request(void)
 #endif
 }
 
+void recomp_screenshot_poll_trigger(void)
+{
+    static int enabled = -1;
+    static char trigger[1024];
+    if (enabled < 0) {
+        const char *chosen = getenv("RECOMP_SCREENSHOT_TRIGGER");
+        enabled = chosen != NULL && chosen[0] != '\0';
+        if (enabled) snprintf(trigger, sizeof trigger, "%s", chosen);
+    }
+    if (!enabled) return;
+    FILE *file = open_file(trigger, "rb");
+    if (file == NULL) return;
+    fclose(file);
+    remove_file(trigger);
+    recomp_screenshot_request();
+}
+
 static uint32_t crc_table[256];
 
 static uint32_t crc_update(uint32_t crc, const uint8_t *bytes, size_t length)
