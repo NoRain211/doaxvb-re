@@ -13,6 +13,7 @@ import uuid
 
 from extract_iso import extract, run_logged, sha256
 from build_prerequisites import ensure_prerequisites, prefer_bundled_tools
+import launcher_art
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
@@ -125,6 +126,13 @@ def build(args, verify_parity=True, lifter_revision=None):
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
+        if windows:  # before configure, which embeds private/doaxbv.ico in the runner
+            try:
+                written = launcher_art.install(disc)
+                print(f"Copied {len(written)} launcher art files from the disc." if written
+                      else "Launcher art is already in place.", flush=True)
+            except (OSError, ValueError) as error:  # cosmetic; never block the build
+                print(f"Skipped launcher art: {error}", flush=True)
         prepare_lifter(work, lifter_revision)
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
