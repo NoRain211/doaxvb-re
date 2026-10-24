@@ -80,14 +80,27 @@ function Draw-Icon($g, $name, $letter, $color, $x, $y, $size) {
     Draw-Outlined $g $letter ($size * 0.6) $x $y $size $size '#203040' 'Center'
 }
 
-$form = New-Object Windows.Forms.Form -Property @{
+# Panes repaint in separate passes, so compose the window to present one frame.
+Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
+using System.Windows.Forms;
+
+public sealed class ComposedForm : Form {
+    protected override CreateParams CreateParams {
+        get {
+            System.Windows.Forms.CreateParams style = base.CreateParams;
+            style.ExStyle |= 0x02000000;  // WS_EX_COMPOSITED
+            return style;
+        }
+    }
+}
+'@
+$form = New-Object ComposedForm -Property @{
     Text = 'DOAXBV'; FormBorderStyle = 'FixedSingle'; MaximizeBox = $false; StartPosition = 'CenterScreen'; KeyPreview = $true
     ClientSize = (New-Object Drawing.Size $W, $H); BackColor = (C '#1a8fc0'); ForeColor = $ink; Font = (New-Object Drawing.Font('Segoe UI', 9.75))
 }
 [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic').SetValue($form, $true, $null)
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
-
 $backdrop = New-Object Drawing.Bitmap $W, $H
 $g = [Drawing.Graphics]::FromImage($backdrop)
 $g.InterpolationMode = 'HighQualityBicubic'
@@ -121,6 +134,15 @@ Draw-Outlined $g "$([char]0x2191)$([char]0x2193) Select" 15 ($W - 420) ($H - 52)
 Draw-Outlined $g 'Settings apply on next launch' 13 24 ($H - 52) 300 30 '#0b3a66'
 $g.Dispose()
 $form.BackgroundImage = $backdrop
+# Panels copy the backdrop under themselves instead of painting it through
+# their parent, so a page appears in one blit without translucency bands.
+function Crop($x, $y, $w, $h) {
+    $bitmap = New-Object Drawing.Bitmap $w, $h
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    $graphics.DrawImage($backdrop, (New-Object Drawing.Rectangle 0, 0, $w, $h), (New-Object Drawing.Rectangle $x, $y, $w, $h), 'Pixel')
+    $graphics.Dispose()
+    $bitmap
+}
 
 $title = New-Object Windows.Forms.Label -Property @{ Left = 372; Top = 54; Width = 452; Height = 46; BackColor = [Drawing.Color]::Transparent }
 $title.Add_Paint({
@@ -128,14 +150,14 @@ $title.Add_Paint({
     Draw-Plate $e.Graphics 1 1 ($s.Width - 2) ($s.Height - 2) '#9af5c8' '#17886a' 245
     Draw-Outlined $e.Graphics $s.Text 24 0 0 $s.Width $s.Height '#1d4fb8' 'Center'
 })
-$card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width = 448; Height = 350; BackColor = [Drawing.Color]::Transparent }
+$card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width = 448; Height = 350; BackColor = (C '#185162'); BackgroundImage = (Crop 374 138 448 350); BackgroundImageLayout = 'None' }
 $subtitle = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 448; Height = 22; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
 $card.Controls.Add($subtitle)
 
 $sections = 'Main Menu', 'Graphics', 'Audio', 'Game', 'Textures', 'Experimental', 'Help'
 $subtitles = 'Your next visit to Zack Island', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Unfinished renderer features', 'Keys while playing'
 $pages = foreach ($name in $sections) {
-    $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = [Drawing.Color]::Transparent; Visible = $false }
+    $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = (C '#185162'); BackgroundImage = (Crop 374 170 448 244); BackgroundImageLayout = 'None'; Visible = $false }
     $card.Controls.Add($page); $page
 }
 function Add-Row($page, $text, $top, $control) {
@@ -255,10 +277,12 @@ $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
 }
 function Select-Section($index) {
     $state.section = $index
-    for ($i = 0; $i -lt $pages.Count; $i++) { $pages[$i].Visible = $i -eq $index; $menu[$i].Invalidate() }
-    $title.Text = $sections[$index].ToUpper(); $title.Invalidate()
+    $title.Text = $sections[$index].ToUpper()
     $subtitle.Text = $subtitles[$index]
+    for ($i = 0; $i -lt $pages.Count; $i++) { $pages[$i].Visible = $i -eq $index }
     if ($index -eq 0) { Update-Summary }
+    # Repaint now so the menu, title and new pane reach the screen together.
+    $form.Refresh()
 }
 $form.Add_KeyDown({
     param($s, $e)
