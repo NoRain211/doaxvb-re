@@ -2,6 +2,9 @@
 """Tests drive_game.py against a fake game: a thread that takes presses from
 the press file and answers with log lines. No runner or game data."""
 from pathlib import Path
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -264,6 +267,42 @@ class DriveGameTests(unittest.TestCase):
         self.session.state.update(pid=1)
         self.session.stop(keep_save=True)
         self.assertTrue(preference.exists())
+
+    @unittest.skipUnless(Path("/proc").is_dir() and os.name == "posix", "lists processes through /proc")
+    def test_start_refuses_a_disc_another_game_runs(self):
+        image = self.folder / "disc/default.xbe"
+        image.parent.mkdir()
+        image.write_bytes(b"xbe")
+        runner = self.folder / "recomp_program_runner"
+        # A process whose command line reads like a runner's.
+        other = subprocess.Popen([str(runner), "-c", "import time; time.sleep(30)", "--xbe", str(image)],
+                                 executable=sys.executable)
+        try:
+            deadline = time.monotonic() + 5
+            while not drive_game.other_runners(image) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(drive_game.other_runners(image), [other.pid])
+            session = Session(self.folder / "fresh")
+            with self.assertRaisesRegex(DriveError, "another game is running"):
+                session.start(runner, image)
+            self.assertNotIn("backup", session.state)
+        finally:
+            other.kill()
+            other.wait()
+
+    @unittest.skipUnless(os.name == "posix", "runs a shell script as the game")
+    def test_a_game_that_exits_at_once_leaves_nothing_to_put_back(self):
+        image = self.folder / "disc/default.xbe"
+        (image.parent / ".recomp-storage/partition1/UDATA").mkdir(parents=True)
+        image.write_bytes(b"xbe")
+        runner = self.folder / "game"
+        runner.write_text("#!/bin/sh\necho 'save recovery failed'\n", encoding="ascii")
+        runner.chmod(0o755)
+        session = Session(self.folder / "fresh")
+        with self.assertRaisesRegex(DriveError, "exited before it polled"):
+            session.start(runner, image)
+        state = Session(self.folder / "fresh").state
+        self.assertFalse({"pid", "backup", "preference"} & set(state))
 
 
 if __name__ == "__main__":

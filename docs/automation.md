@@ -28,7 +28,7 @@ python tools/drive_game.py stop
 | `start` | starts the game with `RECOMP_AUTO_LOG=1`, muted, at render scale 1 |
 | `route shop\|map\|pool\|items\|hotel [--vacation N]` | starts the game, continues Vacation N (default 1) and walks to the Sports Shop, the island map, the pool's menu, the items screen or the hotel's menu at night |
 | `route new [--vacation N] [--girl NAME]` | starts a new vacation in the empty Vacation N (default 2) as the girl (default Kasumi), through to the end of its welcome |
-| `press BUTTON [-n N] [--gap S]` | `a b x y black white lt rt up down left right start back` |
+| `press BUTTON [-n N] [--gap S]` | `a b x y black white lt rt up down left right start back ls rs` (`ls`, `rs`: thumbstick clicks) |
 | `wait REGEX [--timeout S]` | waits for a log line after the mark |
 | `until BUTTON REGEX` | presses the button until a line after the mark matches |
 | `goto LOCATION` | steps the island map to a location, the shorter way round |
@@ -65,7 +65,11 @@ the written copy in the session folder. The same goes for the Analog/Digital
 preference (`.recomp-storage/controller-mode-v1`), which Controller Settings
 writes outside the saves. Pass `--keep-save` to keep the changes. If a run
 ended without `stop` (it crashed or was killed), the next `start` puts both
-back first, so the backup always holds the player's own saves.
+back first, so the backup always holds the player's own saves. A game that
+exits before it polls the pad, such as one that cannot open the saves, has
+changed nothing, and `start` keeps no backup of it. On Linux `start` refuses
+to run while another runner has the same game open: a person may be playing
+it, and its saves are in use.
 
 The driver prints its own lines as `[auto:driver] ...`, in the same prefix
 family as the game's `[auto:ui]` lines.

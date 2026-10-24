@@ -25,7 +25,7 @@ import run_game
 # a digital mask in four hex digits.
 BUTTONS = {"a": "0", "b": "1", "x": "2", "y": "3", "black": "4", "white": "5", "lt": "6", "rt": "7",
            "up": "d0001", "down": "d0002", "left": "d0004", "right": "d0008",
-           "start": "d0010", "back": "d0020"}
+           "start": "d0010", "back": "d0020", "ls": "d0040", "rs": "d0080"}
 # The island map's stops by the log's location number; 8 has no name yet.
 LOCATIONS = ("Niki Beach", "Private Beach", "Jungle", "Bass Island", "Accessory Shop", "Sports Shop",
              "Zack of All Trades", "Poolside", None, "Radio Station")
@@ -107,6 +107,35 @@ def find_game(root, runner=None, image=None):
     return Path(runner).resolve(strict=True), Path(image).resolve(strict=True)
 
 
+def other_runners(image):
+    """The ids of runner processes started on `image`, where /proc lists
+    them (Linux); an empty list elsewhere."""
+    found, wanted = [], Path(image).resolve()
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return found
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            args = (entry / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+        except OSError:
+            continue
+        if args and "recomp_program_runner" in Path(args[0]).name and "--xbe" in args:
+            index = args.index("--xbe") + 1
+            if index >= len(args):
+                continue
+            path = Path(args[index])
+            if not path.is_absolute():
+                try:
+                    path = Path(os.readlink(entry / "cwd")) / path
+                except OSError:
+                    continue
+            if path.resolve() == wanted:
+                found.append(int(entry.name))
+    return found
+
+
 class Session:
     """A running game and what the steps have seen of its log so far."""
 
@@ -137,6 +166,11 @@ class Session:
     def start(self, runner, image, log=None, env=None):
         if self.running():
             raise DriveError(f"a game is already running (pid {self.state['pid']}); stop it first")
+        others = other_runners(image)
+        if others:
+            # A person may be playing it: its saves are in use, and a backup
+            # taken now would be older than what that game writes next.
+            raise DriveError(f"another game is running on this disc (pid {others[0]}); not starting")
         if "pid" in self.state:
             # The last run ended without stop (it crashed or was killed):
             # its backup still holds the player's saves, so put them back
@@ -179,7 +213,19 @@ class Session:
         say(f"started pid {self.process.pid}, log {log}")
         # The runner checks that no press is waiting before it polls the
         # pad; presses go in once it does.
-        if self.wait(r"^recomp input: script waiting after poll", 60) is None:
+        try:
+            polled = self.wait(r"^recomp input: script waiting after poll", 60)
+        except DriveError:
+            polled = None
+        if polled is None and not self.running():
+            # The game stopped before it ran, so it changed nothing; drop
+            # the backup, which a later stop or start would otherwise put
+            # back over saves written since.
+            for key in ("pid", "backup", "preference", "preference_bytes"):
+                self.state.pop(key, None)
+            self.save_state()
+            raise DriveError(f"the game exited before it polled its pad; see {log}")
+        if polled is None:
             raise DriveError("the game never polled its pad")
 
     def stop(self, keep_save=False):
