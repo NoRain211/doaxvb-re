@@ -306,6 +306,7 @@ void recomp_d3d_swap_adapter(void)
     }
 
     if (recomp_game_tick_hidden()) {
+        recomp_game_tick_hidden_swap();
         recomp_runtime.registers.eax = result.command.data.present.swap_counter;
         recomp_runtime.registers.esp = entry_esp + 8u;
         return;

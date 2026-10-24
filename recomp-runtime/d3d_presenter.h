@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "d3d_render_state_model.h"
 #include "d3d_texture_model.h"
@@ -163,6 +164,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool texture_is_frontbuffer;
     const void *texture_bytes;
     uint32_t texture_byte_count;
+    /* recomp_d3d_texture_fingerprint of texture_bytes at capture, or 0. The
+       guest can refill borrowed bytes before the render worker reads them. */
+    uint64_t texture_fingerprint;
     /* Bound P8 palette in guest ARGB32 order, valid during the submit. */
     const void *palette_bytes;
     uint32_t palette_byte_count;
@@ -203,6 +207,23 @@ typedef struct RecompD3dPresenterDrawCommand {
     const void *split_pose;
     uint32_t split_pose_size;
 } RecompD3dPresenterDrawCommand;
+
+/* Samples 128 words, so changed texels are usually, not always, detected. */
+static inline uint64_t recomp_d3d_texture_fingerprint(const void *bytes, uint32_t count)
+{
+    const uint8_t *data = (const uint8_t *)bytes;
+    uint64_t hash = 0xcbf29ce484222325ull ^ count;
+    if (count < 8u) {
+        for (uint32_t i = 0u; i < count; ++i) hash = (hash ^ data[i]) * 0x100000001b3ull;
+        return hash;
+    }
+    for (uint32_t i = 0u; i < 128u; ++i) {
+        uint64_t word;
+        memcpy(&word, data + (uint64_t)(count - 8u) * i / 127u, 8u);
+        hash = (hash ^ word) * 0x100000001b3ull;
+    }
+    return hash;
+}
 
 typedef struct RecompD3dPresenterCommand {
     RecompD3dPresenterCommandType type;

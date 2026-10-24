@@ -515,19 +515,7 @@ struct TextureEntry {
    Hash the whole span if that is ever observed. */
 uint64_t textureFingerprint(const void *bytes, uint32_t count)
 {
-    const auto *data = static_cast<const uint8_t *>(bytes);
-    uint64_t hash = 0xcbf29ce484222325ull ^ count;
-    if (count < 8u) {
-        for (uint32_t i = 0u; i < count; ++i) hash = (hash ^ data[i]) * 0x100000001b3ull;
-        return hash;
-    }
-    constexpr uint32_t kSamples = 128u;
-    for (uint32_t i = 0u; i < kSamples; ++i) {
-        uint64_t word;
-        std::memcpy(&word, data + static_cast<uint64_t>(count - 8u) * i / (kSamples - 1u), 8u);
-        hash = (hash ^ word) * 0x100000001b3ull;
-    }
-    return hash;
+    return recomp_d3d_texture_fingerprint(bytes, count);
 }
 
 /* Rendered pixels have no CPU copy to re-upload after texture FIFO eviction.
@@ -2676,8 +2664,9 @@ ID3D11ShaderResourceView *lookupTexture(
         draw.texture_byte_count == recomp_d3d_texture_mip_span(&desc);
     const auto cached = presenter->texture_index.equal_range(desc.data);
     const bool fingerprinted = !linear_bgra && draw.texture_bytes != nullptr;
-    const uint64_t fingerprint = fingerprinted
-        ? textureFingerprint(draw.texture_bytes, draw.texture_byte_count) : 0u;
+    // The capture-time fingerprint keeps a texture the guest has begun to refill.
+    const uint64_t fingerprint = !fingerprinted ? 0u : draw.texture_fingerprint ? draw.texture_fingerprint
+        : textureFingerprint(draw.texture_bytes, draw.texture_byte_count);
     for (auto it = cached.first; it != cached.second; ++it) {
         TextureEntry &entry = presenter->textures[it->second];
 
@@ -2714,12 +2703,21 @@ ID3D11ShaderResourceView *lookupTexture(
         draw.texture_byte_count == 0u || (desc.linear && !linear_bgra)) {
         return nullptr;
     }
+    // Upload and fingerprint one copy: the guest may still be streaming into the
+    // borrowed bytes, and a torn upload must not match the finished texture.
+    std::vector<uint8_t> snapshot;
+    const void *texture_bytes = draw.texture_bytes;
+    if (!linear_bgra) {
+        const auto *source = static_cast<const uint8_t *>(draw.texture_bytes);
+        snapshot.assign(source, source + draw.texture_byte_count);
+        texture_bytes = snapshot.data();
+    }
     SunOverlay overlay = presenter->sun.enabled &&
         desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5 &&
         draw.texture_byte_count == recomp_d3d_texture_compressed_mip_span(&desc) ?
-        sunStaticOverlay(desc, sunPropPayloadHash(draw.texture_bytes, draw.texture_byte_count)) : SunOverlay::None;
+        sunStaticOverlay(desc, sunPropPayloadHash(texture_bytes, draw.texture_byte_count)) : SunOverlay::None;
     if (presenter->sun.enabled && overlay == SunOverlay::None &&
-        sunShadowTexels(desc, static_cast<const uint8_t *>(draw.texture_bytes), draw.texture_byte_count)) {
+        sunShadowTexels(desc, static_cast<const uint8_t *>(texture_bytes), draw.texture_byte_count)) {
         overlay = SunOverlay::Palm;
         std::fprintf(stderr, "recomp sun shadow: legacy tree overlay data=0x%08X size=%ux%u mips=%u\n",
             desc.data, desc.width, desc.height, levels);
@@ -2753,7 +2751,7 @@ ID3D11ShaderResourceView *lookupTexture(
             const size_t texels = size_t(width) * height;
             auto &pixels = mip_pixels[level];
             pixels.resize(texels * (palettized ? 4u : texel_bytes));
-            const auto *source = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            const auto *source = static_cast<const uint8_t *>(texture_bytes) + offset;
             if (palettized) {
                 std::vector<uint8_t> indices(texels);
                 if (!recomp_d3d_texture_unswizzle(source, indices.data(), width, height, 1u)) return nullptr;
@@ -2770,7 +2768,7 @@ ID3D11ShaderResourceView *lookupTexture(
         }
     } else {
         const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
-        const auto *bytes = static_cast<const uint8_t *>(draw.texture_bytes);
+        const auto *bytes = static_cast<const uint8_t *>(texture_bytes);
         if (overlay == SunOverlay::NetPost) {
             mip_pixels[0].assign(bytes, bytes + draw.texture_byte_count);
             sunKeepNetLine(desc, mip_pixels[0].data(), levels);
@@ -2817,7 +2815,8 @@ ID3D11ShaderResourceView *lookupTexture(
     entry.height = desc.height;
     entry.mip_levels = levels;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
-    entry.fingerprint = fingerprint;
+    // A new entry holds the snapshot, which may be newer than the capture.
+    entry.fingerprint = fingerprinted ? textureFingerprint(texture_bytes, draw.texture_byte_count) : fingerprint;
     entry.sun_overlay = overlay;
     if (sun_overlay) *sun_overlay = entry.sun_overlay;
     presenter->texture_identity_bytes -= entry.identity.bytes.size();
@@ -4244,8 +4243,7 @@ void endFrameCost(RecompD3dPresenter *presenter)
     }
     presenter->cost_cpu_ms += cpu_ms;
     ++presenter->cost_frames;
-    recomp_d3d_set_frame_cost_ns(static_cast<uint32_t>(
-        (std::min)((std::max)(cpu_ms, presenter->gpu_frame_ms), 4000.0) * 1e6));
+    recomp_d3d_set_frame_cost_ns(static_cast<uint32_t>((std::min)(cpu_ms, 4000.0) * 1e6));
 }
 
 void recordFrameStatistics(RecompD3dPresenter *presenter,

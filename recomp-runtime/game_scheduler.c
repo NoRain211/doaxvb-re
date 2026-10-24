@@ -57,6 +57,15 @@ static bool main_present_pending;
 static bool authored_pass = true;
 static unsigned pass_steps = 1, pass_substep;
 static uint32_t game_pass, game_tick;
+/* A hidden tick owns one Swap. A UI loading loop that draws and swaps
+   without yielding to the scheduler must present every later frame. */
+static bool hidden_swap_done;
+/* Whether the current tick leaves its frame to a display pass. */
+static bool tick_displayed;
+/* A fiber outside the draw owners drew this tick (the hopping game over the
+   pool's location fiber); display passes would present the owners alone. */
+static bool foreign_draws;
+static uint32_t foreign_callback;
 
 bool recomp_game_authored_pass(void) { return authored_pass; }
 uint32_t recomp_game_pass(void) { return game_pass; }
@@ -66,6 +75,8 @@ unsigned recomp_game_substep(void) { return pass_substep; }
 void recomp_game_pass_begin(bool tick, unsigned steps, unsigned substep)
 {
     authored_pass = tick;
+    hidden_swap_done = false;
+    if (tick) foreign_draws = false;
     pass_steps = tick || steps == 0 ? 1u : steps;
     pass_substep = tick ? 0u : substep;
     ++game_pass;
@@ -239,7 +250,8 @@ void recomp_game_scheduler_tick(void)
             /* Only drawing fibers run between ticks. UI owner output is
                retained; gameplay, animation and camera controllers never run. */
             const bool replay_owner = callback == 0x0008a970u && game_hz > 60u;
-            const bool draw_owner = callback == 0x00079d00u || callback == 0x000b42b0u;
+            const bool draw_owner = callback == 0x00079d00u || callback == 0x000b42b0u ||
+                callback == 0x000c1680u;
             if (replay_owner && authored_pass) recomp_game_frame_replay_clear(&frame_owner_draws);
             if (replay_owner && !authored_pass) replay_frame_owner_draws();
             unsigned subtick = 0;
@@ -248,12 +260,21 @@ void recomp_game_scheduler_tick(void)
             *recomp_memory_u32(slot + 4u) = (uint32_t)ticks;
             if (resume) {
                 const uint32_t draws_before = recomp_d3d_draw_adapter_submitted();
+                const uint32_t hidden_before = recomp_d3d_draw_adapter_hidden();
                 const bool trace = trace_rng && authored_pass;
                 const uint32_t rng_before = trace ? recomp_game_debug_rng_state() : 0;
                 const uint64_t started = timing_now();
                 if (replay_owner) recomp_d3d_draw_adapter_observe(record_frame_owner_draw);
                 call_one(0x0018305au, *recomp_memory_u32(slot + 8u));
                 recomp_d3d_draw_adapter_observe(NULL);
+                if (authored_pass && !draw_owner && !replay_owner &&
+                    (recomp_d3d_draw_adapter_submitted() != draws_before ||
+                     recomp_d3d_draw_adapter_hidden() != hidden_before)) {
+                    foreign_draws = true;
+                    if (trace_scheduler && callback != foreign_callback)
+                        fprintf(stderr, "recomp game fiber: tick=%u foreign draws callback=%08x\n", game_tick, callback);
+                    foreign_callback = callback;
+                }
                 if (trace && recomp_game_debug_rng_state() != rng_before) {
                     fprintf(stderr, "recomp rng: tick=%u pass=%u swap=%u slot=%u callback=%08x before=%08x after=%08x\n",
                         game_tick, scheduler_pass, recomp_d3d_frame_adapter_swap_counter(), index, callback,
@@ -349,7 +370,8 @@ static void capture_game_state(void)
 static void game_swap(void)
 {
     const uint32_t stack = recomp_runtime.registers.esp;
-    const unsigned presents = main_present_pending ? 1u : (game_hz + 30u) / 60u;
+    /* A hidden tick owns one Swap; repeating it would show the skipped back buffer. */
+    const unsigned presents = main_present_pending || recomp_game_tick_hidden() ? 1u : (game_hz + 30u) / 60u;
     main_present_pending = false;
     for (unsigned i = 0; i < presents; ++i) {
         recomp_runtime.registers.esp = stack;
@@ -362,9 +384,13 @@ static bool display_ready;
 static int64_t completed_tick_ns;
 bool recomp_game_tick_hidden(void)
 {
-    return display_ready && authored_pass &&
+    /* A tick that starts hidden stays hidden: its Clear and earlier draws were
+       skipped, so foreign draws found mid-tick show from the next tick. */
+    return display_ready && authored_pass && tick_displayed && !hidden_swap_done &&
         *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
 }
+void recomp_game_tick_hidden_swap(void) { hidden_swap_done = true; }
+void recomp_game_tick_drew(void) { foreign_draws = true; }
 static int64_t next_tick_ns, pass_start_ns, tick_pass_ns, display_pass_ns, render_ns;
 static uint64_t pass_start_waited_ns;
 /* Vblank waits stretch every pass to a refresh, and presenter-queue waits are
@@ -390,8 +416,9 @@ static bool next_pass_is_tick(void)
         *average = *average ? (*average * 7 + last) / 8 : last;
     }
     if (next_tick_ns == 0) next_tick_ns = now;
-    const bool display = display_ready && game_hz > 60u &&
+    const bool display_scene = display_ready && game_hz > 60u &&
         *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
+    const bool display = display_scene && !foreign_draws && pacing.passes > 0;
     /* A display pass only fills time before the next tick is due, so a slow
        pass never delays ticks; the passes that miss are dropped. */
     if (display && display_done < pacing.passes && now < next_tick_ns &&
@@ -414,7 +441,8 @@ static bool next_pass_is_tick(void)
     /* ponytail: a stall longer than four ticks (a load) is not caught up. */
     if (now - next_tick_ns > 4 * (int64_t)TICK_NS) next_tick_ns = now;
     next_tick_ns += TICK_NS;
-    if (display) {
+    /* A tick that drew its own frame skipped its passes on purpose. */
+    if (display_scene && !foreign_draws) {
         const int64_t frame = (int64_t)recomp_d3d_frame_cost_ns();
         render_ns = render_ns ? (render_ns * 7 + frame) / 8 : frame;
         recomp_game_pacing_display_passes(&pacing, display_steps,
@@ -422,7 +450,9 @@ static bool next_pass_is_tick(void)
             tick_pass_ns, display_pass_ns, render_ns);
     }
     recomp_d3d_count_passes(1, 0, display ? display_steps - display_done : 0);
-    recomp_d3d_set_display_rate(display && pacing.passes < display_steps ? 60u * pacing.passes : game_hz);
+    tick_displayed = display_scene && !foreign_draws && pacing.passes > 0;
+    recomp_d3d_set_display_rate(tick_displayed && pacing.passes < display_steps ? 60u * pacing.passes :
+        display_scene && !tick_displayed ? 60u : game_hz);
     display_done = 0;
     static int64_t report_ns;
     static uint32_t report_tick, report_pass;
