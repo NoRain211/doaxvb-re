@@ -27,9 +27,10 @@ The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
 pass its path to `tools/build_game.py`.
 
-The runner icon is optional and kept out of git. Place it at
-`private/doaxbv.ico` and the build embeds it; without it, the runner uses
-the default Windows icon.
+On Windows, setup cuts the program icon from the game logo on your disc and
+saves it as `private/doaxbv.ico`. The build embeds it in the runner and the
+launcher window uses it. Setup keeps an existing `private/doaxbv.ico`, so you
+can replace it with your own; the icon stays out of git.
 
 The **DOAXBV-0.5.3-Beta** ZIP bundles Python, Capstone, MinGit, CMake and the
 tagged extractor. Setup prefers the bundled Git and CMake for its own process;
@@ -70,10 +71,14 @@ in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
 
 The Windows launcher copies the game's island map menus: glass panels, green
-name plates and A/B prompts. It draws game images from `private/launcher` when
-present: `background.png` (an island map frame), `logo.png`, and
-`button-a.png`/`button-b.png`. Use images from your own copy of the game;
-without them it draws a plain sea backdrop and simple buttons. Arrow keys
+name plates and A/B prompts. It draws game images from `private/launcher`.
+Setup copies `logo.png`, `button-a.png`, `button-b.png` and a sunny beach
+preview, `beach.png`, from your disc, finding each texture by its content key
+(`tools/launcher_art.py`; run it on an extracted disc folder to refill
+missing files). Setup never replaces files that are already there. An
+island map frame of your own saved as `background.png` replaces the beach and
+hides the logo. Without these files the launcher draws a plain sea backdrop and
+simple buttons. Arrow keys
 switch sections, Enter plays and Esc quits. Texture dumps go to
 `private/textures`. To check launcher settings, run `tools/test_launcher.ps1`
 with both Windows PowerShell 5 and PowerShell 7; it uses isolated synthetic
