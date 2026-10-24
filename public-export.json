@@ -81,6 +81,7 @@
     "tools/test_texture_sort.py",
     "tools/run_game.py",
     "tools/launcher.ps1",
+    "tools/test_launcher.ps1",
     "tools/launcher_macos.swift",
     "tools/launcher_sdl.cpp",
     "tools/test_extract_iso.py",

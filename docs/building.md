@@ -65,9 +65,19 @@ To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
 stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
-(resolution, MSAA, SMAA and sun shadows, saved in `private/launcher.json`) or `RunGame.cmd`
+(graphics, audio, game, texture and experimental options, saved in `private/launcher.json`) or `RunGame.cmd`
 in the same folder. Keep that folder in place after setup: build receipts
 identify the exact local paths. Setup does not launch the game automatically.
+
+The Windows launcher copies the game's island map menus: glass panels, green
+name plates and A/B prompts. It draws game images from `private/launcher` when
+present: `background.png` (an island map frame), `logo.png`, and
+`button-a.png`/`button-b.png`. Use images from your own copy of the game;
+without them it draws a plain sea backdrop and simple buttons. Arrow keys
+switch sections, Enter plays and Esc quits. Texture dumps go to
+`private/textures`. To check launcher settings, run `tools/test_launcher.ps1`
+with both Windows PowerShell 5 and PowerShell 7; it uses isolated synthetic
+settings under `private/`.
 
 On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) include
 court posts, palm trunks and leaves, and the volleyball net tape and rope.
