@@ -15,12 +15,14 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command, int sh
     directory[length] = L'\0';
     StringCchPrintfW(script, ARRAYSIZE(script), L"%stools\\launcher.ps1", directory);
     if (GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES) {
-        MessageBoxW(NULL, L"tools\\launcher.ps1 is missing. Run BuildGame.cmd to set up this copy.",
+        MessageBoxW(NULL,
+                    L"tools\\launcher.ps1 is missing. Run BuildGame.cmd to set up this copy.",
                     L"DOAXBV", MB_ICONERROR);
         return 1;
     }
     StringCchPrintfW(line, ARRAYSIZE(line),
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%s\"", script);
+        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden"
+        L" -File \"%s\"", script);
     STARTUPINFOW start = {0};
     PROCESS_INFORMATION process;
     start.cb = sizeof start;
