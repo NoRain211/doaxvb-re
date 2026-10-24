@@ -295,6 +295,9 @@ is set; the log names the file. H first hides the game's own overlay too.
 While `RECOMP_TEXTURES` or `RECOMP_TEXTURE_DUMP=1` turns on texture
 replacement, F12 and Ctrl+F12 are its keys and Shift+F12 takes the
 screenshot; Shift+F12 works at any time, and the panel names the key.
+A script can take one without a key: set `RECOMP_SCREENSHOT_TRIGGER` to a
+file path, and each time that file appears the runtime removes it and saves
+the next frame.
 The presenter takes the request when it presents: the SDL GPU one downloads
 the frame it rendered, and the D3D11 one copies the window's back buffer
 before the panel is drawn on it. `recomp-runtime/screenshot.c` writes the

@@ -380,6 +380,9 @@ Set `RECOMP_TITLE_IDLE` to `no-cutscene` or `cpu-exhibition` to change what
 the idle title screen leads to; see [`docs/title-idle.md`](title-idle.md).
 Set `RECOMP_UNLOCK_SWIMSUITS=1` to unlock every swimsuit in Exhibition; see
 [`docs/swimsuit-unlock.md`](swimsuit-unlock.md).
+Set `RECOMP_AUTO_LOG=1` to log screen and cursor changes for scripts that drive
+the game; see [`docs/ui-log.md`](ui-log.md). `tools/drive_game.py` drives the
+game by those lines; see [`docs/automation.md`](automation.md).
 Tick **Shorter demo cuts** in the launcher, or set `RECOMP_DEMO_CUT_HOLD` from
 1 to 59 to shorten the one-second freeze between the demo's scenes; see
 [`docs/title-idle.md`](title-idle.md#demo-cut-hold).
