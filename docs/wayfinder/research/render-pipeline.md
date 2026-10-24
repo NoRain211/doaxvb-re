@@ -80,7 +80,7 @@ and return within one frame.
 | --- | --- | --- |
 | Startup, present 2 | 0 / 1 | Main clear and gamma updates, then present. |
 | Intro video/fade, 30 | 2 / 1 | Main clear; full-screen UP quad samples mutable 720x480 linear BGRA; untextured blended fade quad; present. The screenshot is near black at this transition, so it does not validate movie image quality. |
-| Title/logo fade and island flyover, 60, 120, 240, 360, 480, 600, 1200, 1800 | 1,164–1,228 / 1 each | Main clear; background/world meshes, environment/reflection materials and translucent layers; pretransformed title/copyright/fade overlays; present. No offscreen pass in these frames. |
+| Title/logo fade and island flyover, 60, 120, 240, 360, 480, 600, 1200, 1800 | 1,164â€“1,228 / 1 each | Main clear; background/world meshes, environment/reflection materials and translucent layers; pretransformed title/copyright/fade overlays; present. No offscreen pass in these frames. |
 | Attract transition, 2400 | 395 / 3 | Main clear + 43 draws; 256x256 color clear + 35 draws; 512x256 color clear + 50 draws; return to main for 267 draws including one sample of the second target; full-screen transition and corner logo. Final screenshot is black under the transition. |
 | Sunset close-up, 3000 | 238 / 3 | Main clear + 49 background draws; 256x512 color clear + 46 draws; return to main for 140 draws, including two meshes sampling that target; clear 256x256 and copy the current main color into it; depth-tested full-screen composite back to main, then corner logo. |
 | Sunset volleyball attract match, 3600 | 461 / 2 | Main clear + 35 background draws; the same 256x512 offscreen pattern with 46 draws; main scene/characters, stencil layers and translucent effects; logo. No final scene-copy pass in this frame. |
@@ -230,7 +230,7 @@ faithful shading.
    coordinate and units before choosing an eye-distance formula. Compare two
    camera distances and keep UI/disabled draws unchanged. This has the widest
    observed reach and should precede a new atmospheric effect.
-2. **Fix the observed texture-stage omissions.** Start with stage-1 CURRENT ×
+2. **Fix the observed texture-stage omissions.** Start with stage-1 CURRENT Ã—
    TFACTOR independently of material-alpha admission, with a synthetic nonwhite
    alpha factor and one captured nonidentity case. Then implement exactly the
    observed ADD/MULTIPLYADD argument patterns and the missed reflection layout.
