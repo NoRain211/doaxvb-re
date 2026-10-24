@@ -26,7 +26,8 @@ python tools/drive_game.py stop
 | Command | Does |
 |---|---|
 | `start` | starts the game with `RECOMP_AUTO_LOG=1`, muted, at render scale 1 |
-| `route shop\|map\|pool\|items\|hotel` | starts the game and walks to the Sports Shop, the island map, the pool's menu, the items screen or the hotel's menu at night |
+| `route shop\|map\|pool\|items\|hotel [--vacation N]` | starts the game, continues Vacation N (default 1) and walks to the Sports Shop, the island map, the pool's menu, the items screen or the hotel's menu at night |
+| `route new [--vacation N] [--girl NAME]` | starts a new vacation in the empty Vacation N (default 2) as the girl (default Kasumi), through to the end of its welcome |
 | `press BUTTON [-n N] [--gap S]` | `a b x y black white lt rt up down left right start back` |
 | `wait REGEX [--timeout S]` | waits for a log line after the mark |
 | `until BUTTON REGEX` | presses the button until a line after the mark matches |
@@ -93,10 +94,23 @@ take the next A as Leave the poolside.
 
 When no button is pressed for a while, the pool's menu hides. In one run it
 hid 39 s after it opened. The next press only shows the menu again, and the
-game takes the press after that. The log shows the hide as `list closed`.
+game takes the press after that. The log shows the hide as `list 0 closed`.
 `select` wakes the menu before it moves the cursor. It wakes the menu with
 Down, because a run showed that Down only brings the menu back. A on a menu
 that is showing confirms the item under the cursor.
+
+### A new vacation
+
+`route new` chooses an empty vacation, whose prompt reads New Game and
+Options, and refuses one that reads Continue. New Game starts the opening
+scene, which START skips, then the character select: the girl is chosen
+by her name in the `pick cursor` line. A welcome follows at the pool, a
+conversation of many lines, then Lisa's tour of the map, which ends with
+"Then let's take a look at the Accessory Shop." The driver presses A only
+while the log says the dialog is open (`dialog open`), one press a line,
+so no press goes past the end: the tour's last A enters the Accessory
+Shop and the dialog closes there. A run takes about 70 s. A new vacation
+writes the save, which `stop` puts back.
 
 ## Platforms
 

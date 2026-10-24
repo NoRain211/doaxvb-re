@@ -112,21 +112,21 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual(self.game.presses, ["d0004", "d0004"])
 
     def test_select_wakes_a_hidden_list_and_confirms(self):
-        self.append("[auto:ui] frame 1: list open",
-                    "[auto:ui] frame 1: list cursor 0 of 5: Leave the poolside",
-                    "[auto:ui] frame 2: list closed")
+        self.append("[auto:ui] frame 1: list 0 open",
+                    "[auto:ui] frame 1: list 0 cursor 0 of 5: Leave the poolside",
+                    "[auto:ui] frame 2: list 0 closed")
         labels = ["Leave the poolside", "Take a rest", "Play Hopping game", "View items", "Quit the game"]
         state = {"open": False, "cursor": 0}
 
         def answer(code, count):
             if not state["open"]:
                 state["open"] = True  # the waking press does nothing else
-                return [f"[auto:ui] frame {count}: list open",
-                        f"[auto:ui] frame {count}: list cursor 0 of 5: {labels[0]}"]
+                return [f"[auto:ui] frame {count}: list 0 open",
+                        f"[auto:ui] frame {count}: list 0 cursor 0 of 5: {labels[0]}"]
             if code == "d0002":
                 state["cursor"] += 1
-                return [f"[auto:ui] frame {count}: list cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
-            return [f"[auto:ui] frame {count}: list closed"]
+                return [f"[auto:ui] frame {count}: list 0 cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
+            return [f"[auto:ui] frame {count}: list 0 closed"]
 
         self.play(answer)
         self.session.select("View items")
@@ -136,18 +136,18 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual(self.game.presses, ["d0002", "d0002", "d0002", "d0002", "0"])
 
     def test_rest_presses_a_once_and_waits(self):
-        self.append("[auto:ui] frame 1: list open",
-                    "[auto:ui] frame 1: list cursor 0 of 5: Leave the poolside")
+        self.append("[auto:ui] frame 1: list 0 open",
+                    "[auto:ui] frame 1: list 0 cursor 0 of 5: Leave the poolside")
         labels = ["Leave the poolside", "Take a rest"]
         state = {"cursor": 0}
 
         def answer(code, count):
             if code == "d0002":
                 state["cursor"] += 1
-                return [f"[auto:ui] frame {count}: list cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
+                return [f"[auto:ui] frame {count}: list 0 cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
             if state["cursor"] == 1 and count == 2:
                 state["cursor"] = 2
-                return [f"[auto:ui] frame {count}: list closed", f"[auto:ui] frame {count}: island rest"]
+                return [f"[auto:ui] frame {count}: list 0 closed", f"[auto:ui] frame {count}: island rest"]
             # The A that skips the rest; night falls on the way back.
             return [f"[auto:ui] frame {count}: day part night", f"[auto:ui] frame {count}: island hotel"]
 
@@ -159,6 +159,21 @@ class DriveGameTests(unittest.TestCase):
             drive_game.REST_SKIP_DELAY = delay
         self.assertTrue(line.endswith("island hotel"))
         self.assertEqual(self.game.presses, ["d0002", "0", "0"])
+
+    def test_finish_dialogs_stops_pressing_once_closed(self):
+        self.append("[auto:ui] frame 1: dialog open")
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: dialog closed"] if count == 3 else
+                  [f"[auto:ui] frame {count}: island map"])
+        self.session.finish_dialogs(10)
+        time.sleep(0.3)
+        self.assertEqual(self.game.presses, ["0", "0", "0"])
+
+    def test_new_vacation_needs_an_empty_slot(self):
+        self.append("[auto:ui] frame 1: save vacation 1")
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: list 2 cursor 0 of 3: Continue"])
+        with self.assertRaises(DriveError):
+            drive_game.new_vacation(self.session, 1, "Kasumi")
+        self.assertEqual(self.game.presses, ["0"])
 
     def test_buy_walks_the_prompts(self):
         state = {"step": "list", "cursor": 0}

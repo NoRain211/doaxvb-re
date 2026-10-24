@@ -41,18 +41,24 @@ bool recomp_ui_log_enabled(void)
    signed byte at 0x9D9D80 (cpu_exhibition.c), -1 between screens. Screen 0
    is the main menu, 1 the save select, 2 Exhibition's setup and 4 character
    select. The save select's data block is at 0x9DA120: +0x10 is its step,
-   3 while a vacation is being chosen and 4 while the prompt under it
-   (Continue, Options, Delete a saved game) is open; +0xD is the vacation
-   under the cursor and +0xE the prompt's cursor.
+   3 while a vacation is being chosen and 4 while the prompt under it is
+   open, and +0xD is the vacation under the cursor.
 
-   Lists such as the main menu and the pool's menu share one widget at
-   0x5C57F8 (viewer_menu_adapter.c): the cursor is the word at 0x5C581A, the
-   item count the word at 0x5C585C, and the items' texts are pointed to from
-   0x5C5860. The word at 0x5C5888 is its phase: 1 opening, 2 open, 4 closing
-   and 5 closed. A closed list keeps its items, so the cursor is logged only
-   while the list is open.
+   The game's menus are list widgets in an array of 0xD0-byte records from
+   0x5C5800 (viewer_menu_adapter.c knows the first): +0x1A the cursor
+   (word), +0x5C the item count, +0x60 pointers to the items' texts, and
+   +0x88 the phase: 1 opening, 2 open, 4 closing, 5 closed. List 0 is the
+   main menu, the pool's, the hotel's and the Casino's; list 1 the row of
+   vacations and the island's character select, which has no texts; list 2
+   the prompt under a vacation (Continue, Options, Delete a saved game, or
+   New Game and Options for an empty one); list 3 the shop's prompts, open
+   only while a choice is confirmed (the shop's step tracks them). A
+   closed list keeps its items, so the cursor is logged only while the list
+   is open.
 
-   On the island the byte at 0x4D72E3 says where the player is: 1 the map,
+   On the island the byte at 0x4D72E3 says where the player is: 0 the
+   character select of a new vacation (list 1, the girls in the order of
+   PICK_ORDER), 17 the opening scene before it, 1 the map,
    3 a shop, 4 the items screen, 5 a place with a menu, 6 the Collection,
    7 a rest at the pool, 8 the Casino (255 off the island). 5 is the pool by
    day and the hotel at night: the byte at 0x41EFEB is the part of the day,
@@ -75,6 +81,9 @@ bool recomp_ui_log_enabled(void)
    prompt, 3 the Wrap/No prompt that follows Buy. The prompts' cursor is the
    word at 0x5C5A8A, 0 the first button.
 
+   The byte at 0x5C5FED, in the message window's block, is set while a
+   conversation is going on.
+
    These were found by comparing RAM dumps taken at
    each place and cursor position, each checked against a screenshot.
 
@@ -92,18 +101,22 @@ enum {
     SCREEN_CHARACTER_SELECT = 4,
     SAVE_SELECT = 0x009DA120u,
     SAVE_VACATION = SAVE_SELECT + 0xDu,
-    SAVE_PROMPT_CURSOR = SAVE_SELECT + 0xEu,
     SAVE_STEP = SAVE_SELECT + 0x10u,
     STEP_VACATIONS = 3,
-    STEP_PROMPT = 4,
-    PROMPT_COUNT = 3,
-    LIST_CURSOR = 0x005C581Au,
-    LIST_COUNT = 0x005C585Cu,
-    LIST_TEXTS = 0x005C5860u,
-    LIST_PHASE = 0x005C5888u,
+    LIST_BASE = 0x005C5800u,
+    LIST_STRIDE = 0xD0,
+    LIST_COUNT = 4,
+    LIST_CURSOR = 0x1A,
+    LIST_ITEMS = 0x5C,
+    LIST_TEXTS = 0x60,
+    LIST_PHASE = 0x88,
+    LIST_COLUMNS = 0x0D,
+    PICK_GIRLS = 8,
     LIST_OPEN = 2,
     LIST_LIMIT = 10,
     ISLAND_PLACE = 0x004D72E3u,
+    PLACE_PICK = 0,
+    PLACE_OPENING = 17,
     PLACE_MAP = 1,
     PLACE_SHOP = 3,
     PLACE_ITEMS = 4,
@@ -130,6 +143,7 @@ enum {
     COLLECTION_TAB = 0x0031CC7Du,
     COLLECTION_CURSOR = 0x0031CE0Cu,
     COLLECTION_PAGE = 25,
+    DIALOG_SHOWN = 0x005C5FEDu,
     TAB_COUNT = 4,
     LOCATION_COUNT = 10,
     TEXT_LIMIT = 48,
@@ -164,6 +178,8 @@ static const char *screen_name(int screen)
 static const char *place_name(int place)
 {
     switch (place) {
+    case PLACE_PICK: return "pick";
+    case PLACE_OPENING: return "opening";
     case PLACE_MAP: return "map";
     case PLACE_SHOP: return "shop";
     case PLACE_ITEMS: return "items";
@@ -194,6 +210,15 @@ static void log_state(const char *what, int value, const char *name)
     } else {
         fprintf(output, "[auto:ui] frame %u: %s %d\n", frame, what, value);
     }
+}
+
+/* The new vacation's character select shows the girls in this order. */
+static const char *pick_name(int cursor)
+{
+    static const char *const names[] = {"Kasumi", "Hitomi", "Helena", "Leifang", "Christie", "Lisa", "Tina",
+                                        "Ayane"};
+
+    return cursor >= 0 && cursor < (int)(sizeof names / sizeof names[0]) ? names[cursor] : "?";
 }
 
 static const char *part_name(int part)
@@ -237,53 +262,64 @@ static const char *guest_text(uint32_t at, char *text, size_t size)
     return text;
 }
 
-/* While the save select is up: the vacation under the cursor, or the
-   prompt's cursor once a vacation is chosen. */
+/* While the save select is up and no vacation is chosen yet, the vacation
+   under the cursor. The prompt under a chosen vacation is list 2. */
 static void log_save_select(bool entered)
 {
-    static const char *const prompt[PROMPT_COUNT] = {"Continue", "Options", "Delete a saved game"};
-    static int step, vacation, cursor;
+    static int step, vacation;
     const int now_step = *recomp_memory(SAVE_STEP, 1);
     const int now_vacation = *recomp_memory(SAVE_VACATION, 1);
-    const int now_cursor = *recomp_memory(SAVE_PROMPT_CURSOR, 1);
 
     if (entered) {
-        step = vacation = cursor = UNSET;
+        step = vacation = UNSET;
     }
     if (now_step == STEP_VACATIONS && (now_step != step || now_vacation != vacation)) {
         fprintf(output, "[auto:ui] frame %u: save vacation %d\n", frame, now_vacation + 1);
-    } else if (now_step == STEP_PROMPT && (now_step != step || now_cursor != cursor)) {
-        fprintf(output, "[auto:ui] frame %u: save prompt cursor %d: %s\n", frame, now_cursor,
-                now_cursor >= 0 && now_cursor < PROMPT_COUNT ? prompt[now_cursor] : "?");
     }
     step = now_step;
     vacation = now_vacation;
-    cursor = now_cursor;
 }
 
-/* Whether the list widget is open, and while it is its cursor and the text
-   of the item under it. */
-static void log_list(void)
+/* For each list widget: whether it is open, and while it is its cursor and
+   the text of the item under it (a widget without texts, such as the save
+   select's row of vacations, gives only its cursor). */
+static void log_lists(void)
 {
-    static int phase = UNSET, cursor = UNSET, count = UNSET;
-    const int now = (int)*recomp_memory_u32(LIST_PHASE);
-    const int open_count = (int)*recomp_memory_u32(LIST_COUNT);
-    const int open_cursor = *recomp_memory_u16(LIST_CURSOR);
+    static int phase[LIST_COUNT], cursor[LIST_COUNT], count[LIST_COUNT];
+    static bool started;
     char text[TEXT_LIMIT];
 
-    if ((now == LIST_OPEN) != (phase == LIST_OPEN)) {
-        fprintf(output, "[auto:ui] frame %u: list %s\n", frame, now == LIST_OPEN ? "open" : "closed");
-        cursor = count = UNSET;
+    if (!started) {
+        for (unsigned k = 0; k < LIST_COUNT; ++k) {
+            phase[k] = cursor[k] = count[k] = UNSET;
+        }
+        started = true;
     }
-    phase = now;
-    if (phase != LIST_OPEN || open_count <= 0 || open_count > LIST_LIMIT || open_cursor >= open_count ||
-        (open_cursor == cursor && open_count == count)) {
-        return;
+    for (unsigned k = 0; k < LIST_COUNT; ++k) {
+        const uint32_t base = LIST_BASE + k * LIST_STRIDE;
+        const int now = (int)*recomp_memory_u32(base + LIST_PHASE);
+        const int now_count = (int)*recomp_memory_u32(base + LIST_ITEMS);
+        const int now_cursor = *recomp_memory_u16(base + LIST_CURSOR);
+
+        if ((now == LIST_OPEN) != (phase[k] == LIST_OPEN)) {
+            fprintf(output, "[auto:ui] frame %u: list %u %s\n", frame, k, now == LIST_OPEN ? "open" : "closed");
+            cursor[k] = count[k] = UNSET;
+        }
+        phase[k] = now;
+        if (phase[k] != LIST_OPEN || now_count < 0 || now_count > LIST_LIMIT ||
+            (now_count > 0 && now_cursor >= now_count) || (now_cursor == cursor[k] && now_count == count[k])) {
+            continue;
+        }
+        cursor[k] = now_cursor;
+        count[k] = now_count;
+        if (now_count == 0) {
+            fprintf(output, "[auto:ui] frame %u: list %u cursor %d\n", frame, k, now_cursor);
+        } else {
+            fprintf(output, "[auto:ui] frame %u: list %u cursor %d of %d: %s\n", frame, k, now_cursor, now_count,
+                    guest_text(*recomp_memory_u32(base + LIST_TEXTS + (uint32_t)now_cursor * 4u), text,
+                               sizeof text));
+        }
     }
-    cursor = open_cursor;
-    count = open_count;
-    fprintf(output, "[auto:ui] frame %u: list cursor %d of %d: %s\n", frame, cursor, count,
-            guest_text(*recomp_memory_u32(LIST_TEXTS + (uint32_t)cursor * 4u), text, sizeof text));
 }
 
 static const char *shop_step_name(int step)
@@ -316,6 +352,20 @@ static void log_shop_step(bool entered)
         cursor = now_cursor;
         fprintf(output, "[auto:ui] frame %u: shop prompt cursor %d: %s\n", frame, cursor,
                 cursor == 1 ? "No" : step == STEP_BUY ? "Buy" : "Wrap");
+    }
+}
+
+/* Whether a conversation is going on: its flag comes on with the first
+   line and goes off after the last, and a guided step such as the welcome
+   tour's walk into the Accessory Shop keeps it on. */
+static void log_dialog(void)
+{
+    static bool shown;
+    const bool now = *recomp_memory(DIALOG_SHOWN, 1) != 0u;
+
+    if (now != shown) {
+        shown = now;
+        fprintf(output, "[auto:ui] frame %u: dialog %s\n", frame, shown ? "open" : "closed");
     }
 }
 
@@ -422,6 +472,17 @@ void recomp_ui_log_frame(void)
                         cursor);
             }
         }
+        if (place == PLACE_PICK) {
+            /* List 1 still holds the save select's row until the character
+               select sets it up for its eight girls. */
+            const uint32_t row = LIST_BASE + LIST_STRIDE;
+            const int now_cursor = *recomp_memory_u16(row + LIST_CURSOR);
+
+            if (*recomp_memory(row + LIST_COLUMNS, 1) == PICK_GIRLS && now_cursor != cursor) {
+                cursor = now_cursor;
+                fprintf(output, "[auto:ui] frame %u: pick cursor %d %s\n", frame, cursor, pick_name(cursor));
+            }
+        }
         if (place == PLACE_COLLECTION) {
             const int now_tab = *recomp_memory(COLLECTION_TAB, 1);
             const int now_cursor = *recomp_memory_u16(COLLECTION_CURSOR);
@@ -438,7 +499,8 @@ void recomp_ui_log_frame(void)
             log_shop_step(entered);
         }
     }
-    log_list();
+    log_lists();
+    log_dialog();
 }
 #else
 void recomp_ui_log_frame(void) {}

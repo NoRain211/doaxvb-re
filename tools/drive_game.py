@@ -304,26 +304,26 @@ class Session:
     def wake_list(self):
         """Shows the list menu again when it has hidden itself (the pool's
         menu does after a few idle seconds)."""
-        last = self.latest(r"\[auto:ui\] .*list (open|closed)$")
+        last = self.latest(r"\[auto:ui\] .*list 0 (open|closed)$")
         if last is not None and last.endswith("closed"):
             self.finish()
-            self.press_until(WAKE_BUTTON, r"list open$", 10, 1.5)
+            self.press_until(WAKE_BUTTON, r"list 0 open$", 10, 1.5)
 
     def select(self, label, timeout=30.0):
-        """Moves the open list menu's cursor onto the item `label` and
-        confirms it."""
-        expression = re.compile(r"list cursor (\d+) of (\d+): " + re.escape(label) + "$")
+        """Moves the open list menu's (list 0's) cursor onto the item `label`
+        and confirms it."""
+        expression = re.compile(r"list 0 cursor (\d+) of (\d+): " + re.escape(label) + "$")
         deadline = time.monotonic() + timeout
         while True:
             self.wake_list()
-            line = self.latest(r"\[auto:ui\] .*list cursor \d+ of \d+: ")
+            line = self.latest(r"\[auto:ui\] .*list 0 cursor \d+ of \d+: ")
             if line is not None and expression.search(line):
                 break
             if time.monotonic() >= deadline:
                 raise DriveError(f"the list never reached {label}")
             self.finish()
             self.press("down")
-            self.wait(r"list (cursor|closed)", 1.5)
+            self.wait(r"list 0 (cursor|closed)", 1.5)
         say(f"on {label}")
         self.finish()
         self.press("a")
@@ -350,6 +350,22 @@ class Session:
         else:
             self.press_until("right", r"shop prompt cursor 1: No$", 10, 0.6)
         self.press_until("a", r"shop step list$", 10)
+
+    def finish_dialogs(self, timeout=180.0):
+        """Presses A while a dialog is open, one press a line, until it
+        closes. Nothing is pressed once it has closed, so no press reaches
+        the screen behind it."""
+        deadline = time.monotonic() + timeout
+        while True:
+            last = self.latest(r"\[auto:ui\] .*dialog (open|closed)$")
+            if last is None or last.endswith("closed"):
+                self.finish()
+                return
+            if time.monotonic() >= deadline:
+                raise DriveError(f"a dialog stayed open for {timeout:g} s")
+            self.finish()
+            self.press("a")
+            self.wait(r"\[auto:ui\]", 1.2)
 
     def shot(self, name):
         """Saves the next frame (without the runtime's overlay) as shots/NAME.png."""
@@ -386,23 +402,59 @@ class Session:
             print(line, file=sys.stderr)
 
 
-def route(session, target):
-    """From launch to the Sports Shop, the island map, the pool's menu, the
-    items screen or the hotel's menu, each step waiting for the line that
-    shows it landed."""
+def to_save_select(session):
+    """From launch to the save select, Vacation 1 under the cursor."""
     # The opening ignores early presses; START until the menus.
     session.press_until("start", r"\[auto:ui\] frame \d+: scene menu", 60, 2)
-    session.expect(r"list cursor 0 of 2: GO TO ZACK ISLAND")
+    session.expect(r"list 0 cursor 0 of 2: GO TO ZACK ISLAND")
     session.press_until("a", r"menu screen save-select")
     session.expect(r"save vacation 1")
-    session.press_until("a", r"save prompt cursor 0: Continue")
+
+
+def choose_vacation(session, number):
+    """Moves the save select's cursor to Vacation `number` and opens its
+    prompt; returns the prompt's first item, Continue or New Game."""
+    current = int(re.search(r"save vacation (\d+)$", session.latest(r"\[auto:ui\] .*save vacation \d+$"))[1])
+    if number != current:
+        session.press_until("right" if number > current else "left", rf"save vacation {number}$", 10, 1)
+    return session.press_until("a", r"list 2 cursor 0 of \d+: ", 10).rsplit(": ", 1)[1]
+
+
+def new_vacation(session, number, girl):
+    """Starts a new vacation in the empty Vacation `number` as `girl`, past
+    the opening scene and the welcome dialogs."""
+    if choose_vacation(session, number) != "New Game":
+        raise DriveError(f"Vacation {number} has a save; choose an empty one")
+    session.press_until("a", r"island opening$", 10)
+    # START skips the opening scene.
+    session.press_until("start", r"island pick$", 30, 2)
+    if not session.expect(r"pick cursor \d+ ", 10).endswith(f" {girl}"):
+        session.press_until("right", rf"pick cursor \d+ {re.escape(girl)}$", 20, 0.6)
+    session.press_until("a", r"island pool$", 30, 4)
+    session.expect(r"dialog open$", 30)
+    session.finish_dialogs()
+
+
+def route(session, target, vacation=1, girl="Kasumi"):
+    """From launch to the Sports Shop, the island map, the pool's menu, the
+    items screen or the hotel's menu, each step waiting for the line that
+    shows it landed. "new" starts a new vacation instead, in an empty
+    Vacation `vacation` as `girl`, and ends where its welcome leaves off."""
+    to_save_select(session)
+    if target == "new":
+        new_vacation(session, vacation, girl)
+        place = session.latest(r"\[auto:ui\] .*island \w+$").rsplit(" ", 1)[1]
+        say(f"route new: done, at the {place}")
+        return
+    if choose_vacation(session, vacation) != "Continue":
+        raise DriveError(f"Vacation {vacation} has no save to continue")
     # One A takes Continue; the island takes a while to load.
     session.press_until("a", r"menu screen -1|scene island", 30, 4)
     session.expect(r"map location", 60)
     if target in ("pool", "items"):
         session.goto("Poolside")
         session.press_until("a", r"island pool")
-        session.expect(r"list cursor 0 of 5", 30)
+        session.expect(r"list 0 cursor 0 of 5", 30)
         if target == "items":
             session.select("View items")
             session.expect(r"island items")
@@ -412,15 +464,15 @@ def route(session, target):
         session.goto("Poolside")
         session.press_until("a", r"island pool")
         for _ in range(4):
-            session.expect(r"list cursor 0 of 5", 30)
+            session.expect(r"list 0 cursor 0 of 5", 30)
             if session.rest().endswith("hotel"):
                 break
         else:
             raise DriveError("night never came")
-        session.press_until(HOTEL_DIALOG_BUTTON, r"list cursor \d+ of 7: ", 60, 2.5)
+        session.press_until(HOTEL_DIALOG_BUTTON, r"list 0 cursor \d+ of 7: ", 60, 2.5)
         if session.latest(r"\[auto:ui\] .*island (hotel|casino)$").endswith("casino"):
             session.select("Go back to the Room")
-            session.expect(r"list cursor \d+ of 7: ", 30)
+            session.expect(r"list 0 cursor \d+ of 7: ", 30)
     elif target == "shop":
         session.goto("Sports Shop")
         session.press_until("a", r"shop 0 cursor")
@@ -443,7 +495,10 @@ def main(argv=None):
 
     add_start_options(commands.add_parser("start", help="start the game"))
     route_command = commands.add_parser("route", help="start the game and walk to a screen")
-    route_command.add_argument("target", choices=("shop", "map", "pool", "items", "hotel"))
+    route_command.add_argument("target", choices=("shop", "map", "pool", "items", "hotel", "new"))
+    route_command.add_argument("--vacation", type=int, default=None,
+                               help="save slot: 1 to continue (default), an empty one for new (default 2)")
+    route_command.add_argument("--girl", default="Kasumi", help="who to play in a new vacation")
     add_start_options(route_command)
     command = commands.add_parser("press", help="press a button")
     command.add_argument("button", choices=BUTTONS)
@@ -479,7 +534,8 @@ def main(argv=None):
             env = dict(item.split("=", 1) for item in args.env)
             session.start(runner, image, args.log, env)
             if args.command == "route":
-                route(session, args.target)
+                vacation = args.vacation or (2 if args.target == "new" else 1)
+                route(session, args.target, vacation, args.girl)
         elif args.command == "stop":
             session.stop(args.keep_save)
         elif args.command == "log":
