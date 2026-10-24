@@ -64,10 +64,12 @@ To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
 
 This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
-stage's log under `private/setup-*`. After success, double-click `Launcher.cmd`
-(graphics, audio, game, texture and experimental options, saved in `private/launcher.json`) or `RunGame.cmd`
-in the same folder. Keep that folder in place after setup: build receipts
-identify the exact local paths. Setup does not launch the game automatically.
+stage's log under `private/setup-*`. After success, double-click `Launcher.exe`
+(graphics, audio, game, texture and experimental options, saved in
+`private/launcher.json`) or `RunGame.cmd` in the same folder. Setup builds the
+launcher with the game icon; `Launcher.cmd` opens the same window when the exe
+is absent. Keep that folder in place after setup: build receipts identify the
+exact local paths. Setup does not launch the game automatically.
 
 The Windows launcher copies the game's island map menus: glass panels, green
 name plates and A/B prompts. It draws game images from `private/launcher` when
