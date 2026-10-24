@@ -671,6 +671,11 @@ unchanged. These owners still call generated game neighbours. The world frame
 also retains the generated D3D SetTransform seam at `0x001E36D0`; wholesale
 library replacement remains open.
 
+The location-view owner `0x000C1680` (hotel, casino, pool and island map)
+keeps the generated D3D render-target and surface calls `0x001E3F80`,
+`0x001E3FA0`, `0x001E8040` and `0x001E3620` that draw its menu texture.
+Wholesale library replacement remains open.
+
 The rejected half-sleep experiment has two independently observed causes:
 
 - The main loop clears and swaps every pass, but one-tick fiber sleeps also

@@ -370,7 +370,8 @@ static void capture_game_state(void)
 static void game_swap(void)
 {
     const uint32_t stack = recomp_runtime.registers.esp;
-    const unsigned presents = main_present_pending ? 1u : (game_hz + 30u) / 60u;
+    /* A hidden tick owns one Swap; repeating it would show the skipped back buffer. */
+    const unsigned presents = main_present_pending || recomp_game_tick_hidden() ? 1u : (game_hz + 30u) / 60u;
     main_present_pending = false;
     for (unsigned i = 0; i < presents; ++i) {
         recomp_runtime.registers.esp = stack;
@@ -383,7 +384,9 @@ static bool display_ready;
 static int64_t completed_tick_ns;
 bool recomp_game_tick_hidden(void)
 {
-    return display_ready && authored_pass && tick_displayed && !foreign_draws && !hidden_swap_done &&
+    /* A tick that starts hidden stays hidden: its Clear and earlier draws were
+       skipped, so foreign draws found mid-tick show from the next tick. */
+    return display_ready && authored_pass && tick_displayed && !hidden_swap_done &&
         *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
 }
 void recomp_game_tick_hidden_swap(void) { hidden_swap_done = true; }

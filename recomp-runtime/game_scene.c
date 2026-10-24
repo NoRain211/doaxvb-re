@@ -486,8 +486,10 @@ static void location_fiber(void)
 
 /* Complete game-owned scene, authored-script and world-frame owners. Their
    generated D3D SetTransform and fence seams remain at 0x001e36d0,
-   0x001e3870 and 0x001e39e0; wholesale D3D
-   replacement remains open. See the whole-game high-frame-rate research page. */
+   0x001e3870 and 0x001e39e0; the location owner also keeps the generated
+   render-target and surface calls 0x001e3f80, 0x001e3fa0, 0x001e8040 and
+   0x001e3620. Wholesale D3D replacement remains open. See the whole-game
+   high-frame-rate research page. */
 RecompFunction recomp_game_scene_lookup_manual(uint32_t address)
 {
     RecompFunction camera = recomp_game_camera_lookup_manual(address);
