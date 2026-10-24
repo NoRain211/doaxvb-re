@@ -985,7 +985,7 @@ Clock domains must remain explicit:
 | Clock | Current implementation | Effect of this probe |
 | --- | --- | --- |
 | Guest update/sleep counts | One scheduler pass per ordinary frame | Approximately twice as many passes per wall second. |
-| `KeTickCount`, synthetic export `0x00740040` | Adds 16 milliseconds per Swap in the frame adapter | Approximately doubles; even the 60 Hz baseline is 16 rather than 16.667 ms per Swap. This is a runtime approximation, not a claim about Xbox hardware. |
+| `KeTickCount`, synthetic export `0x00f80040` | Adds 16 milliseconds per Swap in the frame adapter | Approximately doubles; even the 60 Hz baseline is 16 rather than 16.667 ms per Swap. This is a runtime approximation, not a claim about Xbox hardware. |
 | XAPI QPC `0x001830CF`, frequency `0x001830E0` | [Time adapter](../../../recomp-runtime/xapi_time_adapter.cpp): steady-clock nanoseconds, frequency 1 billion | Wall time remains unchanged. |
 | DirectSound/output clock | [Service adapter](../../../recomp-runtime/dsound_service_adapter.c): host milliseconds and a separate 5 ms output-pump wakeup | Playback does not automatically run twice as fast. |
 | Host Present | Render-worker DXGI presentation, optionally monitor-vsync-limited | Separate from simulation time; can constrain achieved throughput. |
