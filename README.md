@@ -106,8 +106,9 @@ installer, which needs administrator approval and several GB of disk space.
    to try upcoming fixes early) and extract it into a new folder with a short path.
 2. Drag your ISO onto `BuildGame.cmd` and wait for **Setup complete**. With a
    release ZIP up to 0.6.0 RC1, first follow any Microsoft installer prompts.
-3. Run `Launcher.cmd` from the same folder to pick resolution, MSAA, SMAA and sun shadows,
-   then press **Play**. Running `RunGame.cmd` directly uses the defaults.
+3. Run `Launcher.exe` (setup builds it; `Launcher.cmd` opens the same window)
+   from the same folder to pick resolution, MSAA, SMAA and sun shadows, then
+   press **Play**. Running `RunGame.cmd` directly uses the defaults.
 
 On macOS:
 1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).

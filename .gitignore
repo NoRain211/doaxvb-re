@@ -53,6 +53,7 @@ third_party/**
 out/
 build/
 dist/
+/Launcher.exe
 tmp/
 *.log
 *.map
