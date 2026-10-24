@@ -2487,15 +2487,18 @@ static bool testCombiner(RecompD3dPresenter *presenter,
     if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
     draw.combiner[0][2] = 0;
     draw.combiner_lod_bias = -2.0f;
+    draw.combiner_mip_point = true;
     if (!render(0xffffff00u, "combiner stage one LOD bias")) return false;
     ID3D11SamplerState *biased = nullptr;
     presenter->context->PSGetSamplers(1u, 1u, &biased);
     D3D11_SAMPLER_DESC sampler{};
     if (biased) biased->GetDesc(&sampler);
-    const bool bias_preserved = biased && sampler.MipLODBias == -2.0f;
+    const bool bias_preserved = biased && sampler.MipLODBias == -2.0f &&
+        sampler.Filter == D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     releaseCom(biased);
     if (!bias_preserved) return false;
     draw.combiner_lod_bias = 0.0f;
+    draw.combiner_mip_point = false;
     draw.reflection_texture.width = 0;
     if (submitDraw(presenter, draw) != RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND) return false;
     draw.reflection_texture.width = 1;

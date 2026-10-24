@@ -198,6 +198,7 @@ typedef struct RecompD3dPresenterDrawCommand {
     uint32_t combiner[2][8];
     uint32_t combiner_address_u, combiner_address_v;
     float combiner_lod_bias;
+    bool combiner_mip_point;
     RecompD3dPresenterTarget target;
     /* Optional immutable RecompD3dPoseReplay, copied during submit. */
     const void *pose_replay;

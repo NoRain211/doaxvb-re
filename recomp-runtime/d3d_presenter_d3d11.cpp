@@ -3389,12 +3389,14 @@ RecompD3dPresenterError submitDraw(
             ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v, false)
             : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
-    if (draw.has_combiner && draw.combiner_lod_bias != 0.0f && samplers[1] != nullptr) {
+    if (draw.has_combiner && (draw.combiner_lod_bias != 0.0f || draw.combiner_mip_point) &&
+        samplers[1] != nullptr) {
         /* The title sea biases its tiled shimmer two mips sharper; D3D11
            returns the existing object for a repeated description. */
         D3D11_SAMPLER_DESC desc{};
         samplers[1]->GetDesc(&desc);
         desc.MipLODBias = draw.combiner_lod_bias;
+        if (draw.combiner_mip_point) desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
         ID3D11SamplerState *biased = nullptr;
         if (SUCCEEDED(presenter->device->CreateSamplerState(&desc, &biased))) {
             presenter->context->PSSetSamplers(1u, 1u, &biased);
