@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <stdexcept>
 #include <utility>
@@ -291,12 +292,12 @@ void TextureIdentity::assign(const RecompD3dPresenterDrawCommand &draw)
 TextureReplacements::TextureReplacements()
 {
     const char *dump = std::getenv("RECOMP_TEXTURE_DUMP");
-    const char *directory = std::getenv("RECOMP_TEXTURES");
+    const wchar_t *directory = _wgetenv(L"RECOMP_TEXTURES");
     dump_ = dump && std::strcmp(dump, "1") == 0;
-    enabled_ = recomp_texture_keys_enabled(dump, directory);
-    const char *root = std::getenv("RECOMP_TEXTURE_DUMP_DIR");
+    enabled_ = dump_ || (directory && *directory);
+    const wchar_t *root = _wgetenv(L"RECOMP_TEXTURE_DUMP_DIR");
     root_ = root && *root ? fs::path(root) : fs::path("private/textures");
-    directory_ = directory && *directory && std::strcmp(directory, "1") != 0
+    directory_ = directory && *directory && std::wcscmp(directory, L"1") != 0
         ? fs::path(directory) : fs::path("private/textures/replace");
     const char *at = std::getenv("RECOMP_TEXTURE_FRAME_AT");
     if (at) {
