@@ -148,6 +148,10 @@ class Session:
         shutil.rmtree(backup, ignore_errors=True)
         if saves.is_dir():
             shutil.copytree(saves, backup)
+        # So must the Analog/Digital choice, which the runtime keeps beside
+        # the saves as a PC preference (docs/recomp-controls.md).
+        preference = image.parent / ".recomp-storage/controller-mode-v1"
+        preference_bytes = preference.read_bytes().hex() if preference.is_file() else None
         environment = dict(os.environ, RECOMP_AUTO_LOG="1", RECOMP_AUDIO_GAIN="0", RECOMP_D3D_SCALE="1",
                            RECOMP_SCREENSHOT_TRIGGER=str(self.trigger_path),
                            RECOMP_SCREENSHOT_DIR=str(self.frames))
@@ -161,7 +165,8 @@ class Session:
             self.process = subprocess.Popen(command, cwd=image.parent, env=environment, stdout=output,
                                             stderr=subprocess.STDOUT, **detach)
         self.state = {"pid": self.process.pid, "log": str(log), "mark": -1, "saves": str(saves),
-                      "backup": str(backup) if backup.is_dir() else None}
+                      "backup": str(backup) if backup.is_dir() else None,
+                      "preference": str(preference), "preference_bytes": preference_bytes}
         self.save_state()
         say(f"started pid {self.process.pid}, log {log}")
         # The runner checks that no press is waiting before it polls the
@@ -192,9 +197,29 @@ class Session:
                 shutil.move(saves, written)
                 shutil.copytree(backup, saves)
                 say(f"the run wrote the saves; restored them (the written ones are in {written})")
+        self.restore_preference(keep_save)
         self.state.pop("pid", None)
         self.save_state()
         say("stopped")
+
+    def restore_preference(self, keep):
+        """Puts back the controller-mode preference as it was at start: the
+        same bytes, or no file."""
+        path = self.state.get("preference")
+        if not path:
+            return
+        path, before = Path(path), self.state.get("preference_bytes")
+        now = path.read_bytes().hex() if path.is_file() else None
+        if now == before:
+            return
+        if keep:
+            say("the run changed the controller-mode preference; kept it")
+        elif before is None:
+            path.unlink()
+            say("the run wrote a controller-mode preference; removed it")
+        else:
+            path.write_bytes(bytes.fromhex(before))
+            say("the run changed the controller-mode preference; restored it")
 
     # Reading the log
 

@@ -61,7 +61,9 @@ with exit code 1. The tool saves a `fail-HHMMSS` screenshot and prints the last
 
 **Saves.** `start` copies the saves (`.recomp-storage/partition1/UDATA` beside
 the game executable). `stop` puts them back if the run changed them, and keeps
-the written copy in the session folder. Pass `--keep-save` to keep the changes.
+the written copy in the session folder. The same goes for the Analog/Digital
+preference (`.recomp-storage/controller-mode-v1`), which Controller Settings
+writes outside the saves. Pass `--keep-save` to keep the changes.
 
 The driver prints its own lines as `[auto:driver] ...`, in the same prefix
 family as the game's `[auto:ui]` lines.

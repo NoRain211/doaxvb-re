@@ -231,6 +231,23 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual((written[0] / "slot/data").read_bytes(), b"written")
         self.assertTrue(drive_game.same_tree(saves, backup))
 
+    def test_stop_puts_back_the_controller_mode_preference(self):
+        self.session.running = lambda: False
+        preference = self.folder / "controller-mode-v1"
+        preference.write_bytes(b"DCP1\x01\x01\x01\x01")
+        self.session.state.update(preference=str(preference), preference_bytes=b"DCP1\0\0\0\0".hex())
+        self.session.stop()
+        self.assertEqual(preference.read_bytes(), b"DCP1\0\0\0\0")
+        # A file the run created goes again.
+        self.session.state.update(pid=1, preference_bytes=None)
+        self.session.stop()
+        self.assertFalse(preference.exists())
+        # --keep-save keeps it.
+        preference.write_bytes(b"DCP1\x01\0\0\0")
+        self.session.state.update(pid=1)
+        self.session.stop(keep_save=True)
+        self.assertTrue(preference.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
