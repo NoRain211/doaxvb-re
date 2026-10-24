@@ -21,8 +21,9 @@ in Ghidra against the supported XBE, SHA-256
 Indexed draws accept Xbox LINELIST (2). DrawVerticesUP also accepts even line
 counts up to 65,536 vertices, for XYZ/diffuse (FVF `0x42`, stride 16) and
 XYZRHW/diffuse (`0x44`, stride 20). XYZ lines use world/view/projection;
-XYZRHW lines use the existing screen-space conversion. The host draws ordinary
-one-pixel lines; guest line width and edge antialiasing are not reproduced.
+XYZRHW lines use the existing screen-space conversion. The D3D11 and SDL GPU
+presenters draw ordinary one-pixel lines; guest line width and edge
+antialiasing are not reproduced. Model-viewer screen masks apply only to quads.
 
 DrawVerticesUP (`0x001e7750`) and DrawIndexedVertices (`0x001e78b0`) still call
 the generated D3D8 bodies for driver bookkeeping. Generated setters retain the

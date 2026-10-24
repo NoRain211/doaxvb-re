@@ -2392,7 +2392,8 @@ static void recomp_d3d_draw_vertices_up_adapter(void)
             goto finished;
         }
     }
-    if (screen_masked(device, vertex_bytes, stride)) goto finished;
+    /* The mask matches pretransformed quads; lines are never masked. */
+    if (!lines && screen_masked(device, vertex_bytes, stride)) goto finished;
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     command.data.draw.primitive_type = primitive;
     command.data.draw.index_count = count;

@@ -268,7 +268,7 @@ struct PipelineKey {
     uint32_t vertex_stride = 0;
     uint32_t program_count = 0;
     uint64_t program_hash = 0;
-    bool is_strip = false;
+    uint32_t primitive_type = 0;
     RecompD3dCullMode cull_mode = RECOMP_D3D_CULL_NONE;
     SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
@@ -297,7 +297,7 @@ struct PipelineKey {
                vertex_stride == o.vertex_stride &&
                program_count == o.program_count &&
                program_hash == o.program_hash &&
-               is_strip == o.is_strip &&
+               primitive_type == o.primitive_type &&
                cull_mode == o.cull_mode &&
                color_format == o.color_format &&
                depth_format == o.depth_format &&
@@ -324,7 +324,7 @@ struct PipelineKey {
 struct PipelineKeyHash {
     size_t operator()(const PipelineKey &k) const {
         size_t h = k.fvf ^ (static_cast<size_t>(k.vertex_stride) << 8) ^ (static_cast<size_t>(k.program_count) << 16) ^ k.program_hash;
-        h ^= (static_cast<size_t>(k.is_strip) << 24) ^ (static_cast<size_t>(k.cull_mode) << 28);
+        h ^= (static_cast<size_t>(k.primitive_type) << 24) ^ (static_cast<size_t>(k.cull_mode) << 28);
         h ^= (static_cast<size_t>(k.color_format) << 4) ^ (static_cast<size_t>(k.depth_format) << 12);
         h ^= (static_cast<size_t>(k.sample_count) << 30);
         h ^= (static_cast<size_t>(k.color_write_mask) << 20) ^ (static_cast<size_t>(k.blend_enable) << 27);
@@ -1649,7 +1649,6 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
                                              SDL_GPUTextureFormat depth_fmt,
                                              SDL_GPUSampleCount sample_count)
 {
-    const bool is_strip = (draw.primitive_type == RECOMP_D3D_PT_TRIANGLESTRIP);
     uint64_t prog_hash = draw.program_count ? programHash(draw.program, draw.program_count) : 0u;
 
     PipelineKey pkey{};
@@ -1657,7 +1656,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     pkey.vertex_stride = draw.vertex_stride;
     pkey.program_count = draw.program_count;
     pkey.program_hash = prog_hash;
-    pkey.is_strip = is_strip;
+    pkey.primitive_type = draw.primitive_type;
     pkey.cull_mode = draw.cull_mode;
     pkey.color_format = color_fmt;
     pkey.depth_format = depth_fmt;
@@ -1719,7 +1718,10 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     SDL_GPUGraphicsPipelineCreateInfo pinfo{};
     pinfo.vertex_shader = shaders.vertex_shader;
     pinfo.fragment_shader = shaders.fragment_shader;
-    pinfo.primitive_type = is_strip ? SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    // Fans are queued as triangle lists.
+    pinfo.primitive_type = draw.primitive_type == RECOMP_D3D_PT_TRIANGLESTRIP ? SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP
+        : draw.primitive_type == RECOMP_D3D_PT_LINELIST ? SDL_GPU_PRIMITIVETYPE_LINELIST
+        : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pinfo.multisample_state.sample_count = sample_count;
     pinfo.multisample_state.enable_alpha_to_coverage = pkey.alpha_to_coverage;
 
