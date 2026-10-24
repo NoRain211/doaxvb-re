@@ -56,7 +56,12 @@ If the extractor reports a missing `VCRUNTIME140.dll`, install the included
 `Prerequisites/vc_redist.x86.exe` and retry. The extractor remains 32-bit;
 the game runner is x64.
 
-To use the Windows wrapper, drop one supported ISO on `BuildGame.cmd` or run:
+The simplest Windows route is `Launcher.cmd`: open **Build**, choose the ISO
+and press **Build game**. The launcher runs `BuildGame.cmd` without a console
+window, shows its output, saves it to `private/launcher-build.log`, and enables
+**Play** once the build completes.
+
+To use the Windows wrapper directly, drop one supported ISO on `BuildGame.cmd` or run:
 
 ```powershell
 .\BuildGame.cmd "D:\Games\game.iso"
