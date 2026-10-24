@@ -131,6 +131,6 @@ Replace the library at the calls above:
 4. Frame pacing: the native player must release frames at 29.97 fps against
    the audio clock and report status 3 once the last frame is shown.
 5. The packet timestamp and interleave rules of the SFD files, which the
-   format gate in [audio-movie-replacements.md](../wayfinder/research/audio-movie-replacements.md)
+   format gate in [audio-movie-replacements.md](audio-movie-replacements.md)
    still requires.
 
