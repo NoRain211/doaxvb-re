@@ -96,6 +96,26 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual(line, "[auto:ui] frame 9: scene menu")
         self.assertEqual(self.game.presses, ["d0010"] * 3)
 
+    def test_press_until_ignores_lines_from_earlier_presses(self):
+        # A separate press moved the cursor through Options onto Delete. The
+        # Options line from before that press must not end `until` at once:
+        # it has to press up and see Options again.
+        answers = {"d0002": "[auto:ui] frame 5: list 2 cursor 2 of 3: Delete a saved game",
+                   "d0001": "[auto:ui] frame 7: list 2 cursor 1 of 3: Options"}
+        self.play(lambda code, count: [answers[code]])
+        self.append("[auto:ui] frame 3: list 2 cursor 1 of 3: Options")
+        self.session.press("down")
+        # As separate commands do: the next one starts from the saved mark,
+        # with no wait in between to move it.
+        deadline = time.monotonic() + 2
+        while "Delete" not in self.log.read_text(encoding="utf-8") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.session = FakeSession(self.session.folder)
+        self.game.session = self.session
+        line = self.session.press_until("up", "cursor 1 of 3: Options$", 5, 0.5)
+        self.assertEqual(line, "[auto:ui] frame 7: list 2 cursor 1 of 3: Options")
+        self.assertEqual(self.game.presses, ["d0002", "d0001"])
+
     def test_goto_takes_the_shorter_way(self):
         self.append("[auto:ui] frame 1: map location 0 Niki Beach")
         stops = {"d0004": -1, "d0008": 1}

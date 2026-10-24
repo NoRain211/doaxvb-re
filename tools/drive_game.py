@@ -245,9 +245,14 @@ class Session:
     # Pressing
 
     def press(self, button, count=1, gap=0.6):
+        """Presses `button` `count` times. The mark moves to the end of the
+        log first, so a wait after it only sees what followed this press: a
+        line an earlier press caused, as from a separate `press` command,
+        cannot stand in for this one's."""
         code = BUTTONS.get(button)
         if code is None:
             raise DriveError(f"unknown button {button}; one of {', '.join(BUTTONS)}")
+        self.finish()
         for number in range(count):
             # The runner removes the file when it takes the press.
             deadline = time.monotonic() + 5
@@ -262,7 +267,8 @@ class Session:
                 time.sleep(gap)
 
     def press_until(self, button, pattern, timeout=30.0, gap=1.5):
-        """Presses `button` every `gap` s until a line after the mark matches."""
+        """Presses `button` every `gap` s until a line after the mark matches.
+        A match already logged since the last press counts without a press."""
         line = self.seen(pattern)
         deadline = time.monotonic() + timeout
         while line is None:

@@ -44,8 +44,12 @@ the selected build receipt. `--runner` and `--xbe` choose others, and
 `--env NAME=VALUE` adds runner settings such as `RECOMP_SHOP_PANEL=1`.
 
 **The mark.** `wait`, `until` and the steps built on them look only at log
-lines after the mark. The mark is the line the previous wait matched. If a
-press lands before its wait starts, the wait still finds its line.
+lines after the mark. The mark is the line the previous wait matched, or
+the end of the log when a press was made since: a press moves it there
+first, so a wait after a press only sees what followed it. If a press lands
+before its wait starts, the wait still finds its line. `until` takes a match
+logged since the last press without pressing; a line an earlier `press`
+command caused cannot end it.
 
 A screen often drops a press made while it opens, such as the shop list's
 first Down. Use `until` to move a cursor: it presses again until the log shows
