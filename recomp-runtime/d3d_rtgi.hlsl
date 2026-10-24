@@ -311,8 +311,11 @@ void temporalMain(uint3 thread : SV_DispatchThreadID)
             // alone is not: retain history, bounded by the current neighbourhood.
             if (depthAgrees(oldDepth, oldPosition.w) && dot(normal.xyz, oldNormal.xyz) > 0.8) {
                 float4 history = previousGI[oldPixel];
-                float count = min(history.a, 31);
-                result = float4(lerp(clamp(history.rgb, low, high), result.rgb, 1 / (count + 1)), count + 1);
+                // History follows the surface, not its occluders: a short history held
+                // close to this frame keeps a moving occluder's old shadow from trailing.
+                float count = min(history.a, 7);
+                float3 held = clamp(history.rgb, mean - 1.25 * sigma, mean + 1.25 * sigma);
+                result = float4(lerp(held, result.rgb, 1 / (count + 1)), count + 1);
             }
         }
     }
