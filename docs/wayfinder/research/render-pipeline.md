@@ -6,6 +6,12 @@ This describes the intercepted D3D8 calls and their D3D11 delivery. It is not
 an inventory of every original Xbox GPU submission. Raw records and images
 remain private; resources below are described by role, never asset filename.
 
+This is a dated snapshot of `codex/rtgi-dxr`, and its source links point at
+the current tree. Later work on `main` closes some gaps listed here: host fog
+is in [fog.md](../../fog.md), and fixed-function specular and line lists are in
+[lighting-and-lines.md](../../lighting-and-lines.md). Check those pages before
+treating a gap below as open.
+
 ## Scope and capture contract
 
 `recomp_lookup_manual()` routes into the creation, frame, state, texture and
@@ -161,7 +167,7 @@ and does not replace the original offscreen pass chain.
 | Stage-1 factor modulation | 349 draws request it without the host modulation flag; 152 have a nonidentity factor | The material-source admission gate omits some valid stage-1 operations; most nonidentity factors change alpha. Identity factors are harmless for this omission. |
 | Environment reflection | 112 draws take the reflection host path; three additional reflection-like patterns at 6000 do not | Recognized patterns blend two textures. The additional FVF/layout pattern uses ordinary shading and loses that stage cascade. |
 | DOT3 / EMBM / bump luminance | None in active stages | No general implementation; the sand bump lead remains unconfirmed. |
-| Directional/point lighting | Both; all 96 point-lit draws in the sunset close-up attach lighting | Diffuse/ambient lighting is now supported on this branch. Spot/two-sided/specular support does not follow from that. |
+| Directional/point lighting | Both; all 96 point-lit draws in the sunset close-up attach lighting | Diffuse/ambient lighting is now supported on `codex/rtgi-dxr`. Spot/two-sided/specular support does not follow from that. |
 | Fog | Enabled on 12,161 draws; linear and EXP2 modes with scene-specific parameters | Omitted entirely by the host shader. An enabled state establishes a support gap; per-pixel visibility loss depends on distance. |
 | Specular | Enabled on 1,860 draws | No fixed-function specular term or specular vertex color consumption. Material/light specular contribution needs a follow-up capture before quantifying the image difference. |
 | Stencil, depth, alpha and blending | Extensively used, including paired shadow draws and depth-gated composite | Implemented comparisons, masks, operations and factors; opaque MSAA cutouts can use host alpha-to-coverage. |
@@ -187,12 +193,12 @@ its effect. A fatal API validation failure can stop before a complete frame can
 be captured. Host allocation, shader compilation, buffer mapping, window closure
 and command-queue failures are reported errors, not evidence of an artistic effect.
 
-The last column separates a captured **requested-but-omitted** state from a
-validation branch that never fired. Passing draw admission does not establish
-faithful shading.
+The final sentence of each row separates a captured **requested-but-omitted**
+state from a validation branch that never fired. Passing draw admission does
+not establish faithful shading.
 
-| Boundary and source location | Rejection, omission or approximation  Captured hit |
-| --- | --- | --- |
+| Boundary and source location | Rejection, omission or approximation, then captured hit |
+| --- | --- |
 | [Creation model](../../../recomp-runtime/d3d_creation_model.c#L12), [adapter](../../../recomp-runtime/d3d_creation_adapter.c#L211) | CreateDevice/Reset admit measured presentation modes only; unsupported parameters and allocation failures fail. The capture is downstream of successful creation. Observed successful creation; alternative modes/failures not hit. |
 | [Frame model](../../../recomp-runtime/d3d_frame_model.c#L35) | Reject clear rectangles, unknown flags, invalid depth/stencil; any requested color-component clear becomes a whole-color clear. Swap admits only the modeled default flags and rejects counter overflow. No validation failure. Original clear component masks are not logged. |
 | [Target adapter](../../../recomp-runtime/d3d_frame_adapter.c#L110) | Reject missing main/current color, undescribable offscreen color, non-renderable/depth color, and invalid custom depth. Aliasing wrappers of default depth are normalized. No rejection; small color targets and absent depth observed. |
@@ -206,7 +212,7 @@ faithful shading.
 | [Reflection admission](../../../recomp-runtime/d3d_draw_adapter.c#L708), [attachment](../../../recomp-runtime/d3d_draw_adapter.c#L731) | Require one fixed stage pattern, no active pixel shader and two 2D textures. Reject invalid/nonfinite transforms/material, unusable normal matrix, absent/linear/depth/palettized secondary texture. Coordinates are vertex reflection or mesh UV; no per-pixel bump perturbation, cube/volume mapping or general dependent fetch. 112 admitted reflection draws; three reflection-like layouts missed the outer selection gate. |
 | [Alpha-mask attachment](../../../recomp-runtime/d3d_draw_adapter.c#L2131) | Exact two-stage UP pattern only; reject active pixel shader, wrong arguments/samplers or missing color/mask. Gaussian-cubic preview filtering is approximated by clamped linear sampling. Not hit: no separate alpha-mask host path or cubic-filter request. |
 | [Lighting](../../../recomp-runtime/d3d_draw_adapter.c#L765) | Directional and point diffuse/ambient, at most eight lights. Skip attachment for programs, texture factor, pretransformed/no-normal/vertex-diffuse layouts, color-vertex/two-sided paths or unsupported stage selection. Spot lights, malformed/cyclic/over-limit lists, invalid material/light values or singular transforms abandon lighting attachment for the whole draw. No specular term. Directional/point attachment observed; spot/two-sided rejection not established. |
-| [Material alpha](../../../recomp-runtime/d3d_draw_adapter.c#L505), [fallback shader](../../../recomp-runtime/d3d_presenter_d3d11.cpp#L249) | Only measured material-source selection/modulation and exact zero-light case. Unattached lighting can fall back to texture-only shading, absolute normalized normal color or a constant tint; those are not original lighting. Point-light support on this branch supersedes the September survey's point-light gap. Material alpha/factor paths observed; actual unsupported-light fallback not established. |
+| [Material alpha](../../../recomp-runtime/d3d_draw_adapter.c#L505), [fallback shader](../../../recomp-runtime/d3d_presenter_d3d11.cpp#L249) | Only measured material-source selection/modulation and exact zero-light case. Unattached lighting can fall back to texture-only shading, absolute normalized normal color or a constant tint; those are not original lighting. Point-light support on `codex/rtgi-dxr` supersedes the September survey's point-light gap. Material alpha/factor paths observed; actual unsupported-light fallback not established. |
 | [Vertex-program admission](../../../recomp-runtime/d3d_draw_adapter.c#L1506) | Only one stream layout (position/normal/UV), bounded declaration/program payload and finite viewport conversion. Reject any active pixel shader, unrecognized stage/mask pattern, unsupported texture/sampler state, mip count or mask LOD bias. Viewport constants are rewritten. Not hit: no vertex program handle. |
 | [Vertex translator](../../../recomp-runtime/d3d_vertex_program.cpp#L35) | Bound of 136 instructions; only three input attributes, 13 temporaries, 192 constants and selected outputs. MAC MOV/MUL/ADD/MAD/DP3/DP4 and ILU MOV/RCP/RCC/RSQ; other opcodes, relative addressing, bad final flags, illegal registers/outputs and constant writes reject. Fog output is not consumed by the pixel shader. Not hit: no vertex program reached translation. |
 | [Texture attachment](../../../recomp-runtime/d3d_draw_adapter.c#L376), [palette](../../../recomp-runtime/d3d_draw_adapter.c#L415) | CPU upload supports linear BGRA, swizzled BGRA/A8/P8 and DXT1/3/5. P8 requires a valid 256-entry palette. Unmapped/unsupported data leaves texture attachment without upload bytes; ordinary host draws can continue without sampling. No general depth-texture, volume/cube or EMBM-format conversion. Supported texture/palette uploads observed; no missing requested host view. |
