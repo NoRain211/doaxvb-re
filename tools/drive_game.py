@@ -6,6 +6,7 @@ press landed (RECOMP_AUTO_LOG; see docs/ui-log.md), instead of sleeping. A
 session folder keeps the running game between commands, so steps can be run
 one at a time from a shell or chained in a route. See docs/automation.md."""
 import argparse
+import ctypes
 from datetime import datetime
 import filecmp
 import json
@@ -74,9 +75,20 @@ def same_tree(left, right):
 
 def alive(pid):
     if os.name == "nt":
-        listed = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                                capture_output=True, text=True).stdout
-        return re.search(rf"\b{pid}\b", listed) is not None
+        # os.kill(pid, 0) would end the process here, and tasklist takes a
+        # quarter second, too slow for every poll.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -107,32 +119,83 @@ def find_game(root, runner=None, image=None):
     return Path(runner).resolve(strict=True), Path(image).resolve(strict=True)
 
 
-def other_runners(image):
-    """The ids of runner processes started on `image`, where /proc lists
-    them (Linux); an empty list elsewhere."""
-    found, wanted = [], Path(image).resolve()
+def split_windows_command(line):
+    """A Windows command line's arguments, split as the C runtime splits them."""
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(line, ctypes.byref(count))
+    if not argv:
+        return []
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
+
+
+def listed_processes():
+    """(pid, arguments, working folder) of the processes that may be
+    runners. The folder is None where it cannot be read."""
+    if os.name == "nt":
+        script = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; ConvertTo-Json -Compress -InputObject "
+                  "@(Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%recomp_program_runner%'\" | "
+                  "Select-Object ProcessId, CommandLine)")
+        listed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                capture_output=True)
+        if listed.returncode != 0:
+            raise DriveError("cannot list the running processes: " + listed.stderr.decode("utf-8", "replace"))
+        # shortcut: no working folder, so a runner started with a relative
+        # --xbe is not matched; every launcher passes an absolute one.
+        return [(process["ProcessId"], split_windows_command(process["CommandLine"]), None)
+                for process in json.loads(listed.stdout.decode("utf-8") or "[]") if process["CommandLine"]]
     proc = Path("/proc")
-    if not proc.is_dir():
-        return found
-    for entry in proc.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            args = (entry / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
-        except OSError:
-            continue
-        if args and "recomp_program_runner" in Path(args[0]).name and "--xbe" in args:
-            index = args.index("--xbe") + 1
-            if index >= len(args):
+    if proc.is_dir():
+        found = []
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
                 continue
-            path = Path(args[index])
-            if not path.is_absolute():
-                try:
-                    path = Path(os.readlink(entry / "cwd")) / path
-                except OSError:
-                    continue
-            if path.resolve() == wanted:
-                found.append(int(entry.name))
+            try:
+                args = (entry / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+            except OSError:
+                continue
+            try:
+                folder = os.readlink(entry / "cwd")
+            except OSError:
+                folder = None
+            found.append((int(entry.name), args, folder))
+        return found
+    # macOS: ps joins the arguments with spaces, so --xbe's path runs from
+    # there to the next option. shortcut: no working folder, as on Windows.
+    listed = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True)
+    if listed.returncode != 0:
+        raise DriveError("cannot list the running processes: " + listed.stderr)
+    found = []
+    for line in listed.stdout.splitlines():
+        match = re.match(r"\s*(\d+) (.*?recomp_program_runner\S*) .*?--xbe (.+?)(?= --|$)", line)
+        if match:
+            found.append((int(match[1]), [match[2], "--xbe", match[3]], None))
+    return found
+
+
+def other_runners(image):
+    """The ids of runner processes started on `image`."""
+    found, wanted = [], Path(image).resolve()
+    for pid, args, folder in listed_processes():
+        if not args or "recomp_program_runner" not in Path(args[0]).name or "--xbe" not in args:
+            continue
+        index = args.index("--xbe") + 1
+        if index >= len(args):
+            continue
+        path = Path(args[index])
+        if not path.is_absolute():
+            if folder is None:
+                continue
+            path = Path(folder) / path
+        if path.resolve() == wanted:
+            found.append(pid)
     return found
 
 
@@ -140,7 +203,8 @@ class Session:
     """A running game and what the steps have seen of its log so far."""
 
     def __init__(self, folder):
-        self.folder = Path(folder)
+        # Absolute: the runner starts in the disc's folder.
+        self.folder = Path(folder).resolve()
         self.state_path = self.folder / "session.json"
         self.press_path = self.folder / "press"
         self.trigger_path = self.folder / "shot-trigger"
@@ -201,7 +265,9 @@ class Session:
         command = [str(runner), "--xbe", str(image), "--vsync", "--input-wait-after-poll", "1",
                    "--input-resume-file", str(self.folder / "resume"),
                    "--input-paused-analog-file", str(self.press_path)]
-        detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+        # The game outlives the shell that started it, as each step is its own command.
+        detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+                  if os.name == "nt"
                   else {"start_new_session": True})
         with log.open("w", encoding="utf-8") as output:
             self.process = subprocess.Popen(command, cwd=image.parent, env=environment, stdout=output,
@@ -459,24 +525,25 @@ class Session:
 
     def shot(self, name):
         """Saves the next frame (without the runtime's overlay) as shots/NAME.png."""
-        before = set(self.frames.glob("*.png"))
+        mark = len(self.lines()) - 1
         self.trigger_path.touch()
         deadline = time.monotonic() + 10
         while True:
-            new = sorted(set(self.frames.glob("*.png")) - before, key=lambda path: path.stat().st_mtime)
-            if new:
+            # The runtime logs the file once it has closed it; Windows cannot
+            # move it before then.
+            lines = self.lines()
+            index = first_match(lines, mark, r"^recomp screenshot: ")
+            if index is not None:
                 break
             if time.monotonic() >= deadline or not self.running():
                 raise DriveError("no screenshot arrived")
             time.sleep(POLL)
-        # The file is complete once its size holds still.
-        size = -1
-        while new[-1].stat().st_size != size:
-            size = new[-1].stat().st_size
-            time.sleep(POLL * 2)
+        saved = re.match(r"recomp screenshot: saved (.+) \(\d+x\d+\)$", lines[index])
+        if saved is None:
+            raise DriveError(lines[index])
         self.shots.mkdir(exist_ok=True)
         target = self.shots / f"{name}.png"
-        os.replace(new[-1], target)
+        os.replace(saved[1], target)
         say(f"shot {target}")
         return target
 

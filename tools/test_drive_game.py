@@ -72,6 +72,34 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual(drive_game.direction(0, 7), "left")
         self.assertEqual(drive_game.direction(5, 7), "right")
 
+    def test_alive_tells_a_running_process_from_an_ended_one(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertTrue(drive_game.alive(child.pid))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(drive_game.alive(child.pid))
+
+    def test_shot_moves_the_frame_the_runtime_logs(self):
+        self.session.frames.mkdir(parents=True)
+        frame = self.session.frames / "DOAXBV-1.png"
+
+        def runtime():
+            deadline = time.monotonic() + 5
+            while not self.session.trigger_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.session.trigger_path.unlink()
+            frame.write_bytes(b"png")
+            self.append(f"recomp screenshot: saved {frame} (640x480)")
+
+        thread = threading.Thread(target=runtime)
+        thread.start()
+        target = self.session.shot("menu")
+        thread.join()
+        self.assertEqual(target.read_bytes(), b"png")
+        self.assertFalse(frame.exists())
+
     def test_waits_look_after_the_mark(self):
         self.append("[auto:ui] frame 1: scene title", "[auto:ui] frame 2: scene menu")
         self.assertEqual(self.session.wait("scene menu", 0), "[auto:ui] frame 2: scene menu")
@@ -268,7 +296,6 @@ class DriveGameTests(unittest.TestCase):
         self.session.stop(keep_save=True)
         self.assertTrue(preference.exists())
 
-    @unittest.skipUnless(Path("/proc").is_dir() and os.name == "posix", "lists processes through /proc")
     def test_start_refuses_a_disc_another_game_runs(self):
         image = self.folder / "disc/default.xbe"
         image.parent.mkdir()

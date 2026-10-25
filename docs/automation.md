@@ -67,9 +67,9 @@ writes outside the saves. Pass `--keep-save` to keep the changes. If a run
 ended without `stop` (it crashed or was killed), the next `start` puts both
 back first, so the backup always holds the player's own saves. A game that
 exits before it polls the pad, such as one that cannot open the saves, has
-changed nothing, and `start` keeps no backup of it. On Linux `start` refuses
-to run while another runner has the same game open: a person may be playing
-it, and its saves are in use.
+changed nothing, and `start` keeps no backup of it. `start` refuses to run
+while another runner has the same game open: a person may be playing it, and
+its saves are in use.
 
 The driver prints its own lines as `[auto:driver] ...`, in the same prefix
 family as the game's `[auto:ui]` lines.
@@ -130,4 +130,7 @@ The tool needs only Python. It starts the runner in its own process group and
 stops it with `taskkill` on Windows or a signal elsewhere. Screenshots come
 from the runtime (`RECOMP_SCREENSHOT_TRIGGER`; see
 [free-camera.md](free-camera.md)), so they need no window capture, but they
-leave out the runtime's overlay. Linux is the only platform tested so far.
+leave out the runtime's overlay. To find another runner on the same game it
+reads `/proc` on Linux, asks PowerShell for process command lines on Windows,
+and reads `ps` on macOS; on Windows and macOS it matches only a runner given
+an absolute `--xbe` path, which every launcher passes.
