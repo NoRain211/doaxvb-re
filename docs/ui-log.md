@@ -4,8 +4,10 @@
 each time the game changes screen or moves a cursor. It is meant for scripts
 that drive the game with scripted pad input: instead of sleeping a fixed time
 after a press, a script waits for the line that shows the press landed.
-[`tools/drive_game.py`](automation.md) does this. Everything is read-only: no
-save or game state is changed.
+[`tools/drive_game.py`](../tools/drive_game.py) does this (see
+[Driving the game by script](automation.md)). The log itself is read-only: it
+does not write guest memory or change game state. The presses a script sends
+do, as a player's would.
 
 Every line meant for automation starts with `[auto:<source>]`, so a tool can
 pick them out of the runner's other output with `^\[auto:`: `ui` is this log,
@@ -34,7 +36,8 @@ and `driver` is what `drive_game.py` prints about its own steps. An
 [auto:ui] frame 913: shop 0 cursor 2 item 178
 ```
 
-Frames count from the first logged frame. A value without a name is printed
+Frames count from the first frame the game presents, including the silent
+ones before the first line, so the first line may not be frame 1. A value without a name is printed
 as a number, such as `scene 8` or `island 9`.
 
 | Line | Meaning |

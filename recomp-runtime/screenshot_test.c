@@ -47,6 +47,7 @@ int main(int argc, char **argv)
 #else
         setenv("RECOMP_SCREENSHOT_TRIGGER", trigger, 1);
 #endif
+        remove(trigger); /* left by an interrupted run */
         recomp_screenshot_poll_trigger();
         check(!recomp_screenshot_take_request(), "no trigger file, no request");
         created = fopen(trigger, "wb");

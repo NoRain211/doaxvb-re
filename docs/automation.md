@@ -1,10 +1,12 @@
 # Driving the game by script
 
 `tools/drive_game.py` plays the game without a person at the pad. It sends
-scripted presses through the runner's `--input-paused-analog-file` and, after
-each press, waits for the [`[auto:ui]` log line](ui-log.md) that shows the
-press landed. It does not sleep a fixed time and hope. A press the game
-ignored, for example while the island map loads, is sent again.
+scripted presses through the runner's `--input-paused-analog-file`. The steps
+and routes wait after each press for the [`[auto:ui]` log line](ui-log.md)
+that shows the press landed, instead of sleeping a fixed time and hoping. A
+press the game ignored, for example while the island map loads, is sent
+again. A plain `press` command is the exception: it only queues its presses
+and returns, so follow it with `wait`, or use `until`.
 
 Use it to check a change in the running game: reach a screen, look at the log,
 and take a screenshot. Everything it writes goes into its session folder
@@ -67,7 +69,10 @@ writes outside the saves. Pass `--keep-save` to keep the changes. If a run
 ended without `stop` (it crashed or was killed), the next `start` puts both
 back first, so the backup always holds the player's own saves. A game that
 exits before it polls the pad, such as one that cannot open the saves, has
-changed nothing, and `start` keeps no backup of it. `start` refuses to run
+changed nothing, and `start` deletes the backup it took. A game started with
+no saves at all, such as for a new vacation, has the saves it made moved
+aside on `stop`. A second `stop` changes nothing: once a run is put back,
+the saves are the player's again. `start` refuses to run
 while another runner has the same game open: a person may be playing it, and
 its saves are in use.
 

@@ -66,7 +66,7 @@ def direction(current, target):
 def same_tree(left, right):
     """Whether two folders hold the same files with the same contents."""
     compared = filecmp.dircmp(left, right)
-    if compared.left_only or compared.right_only or compared.funny_files:
+    if compared.left_only or compared.right_only or compared.funny_files or compared.common_funny:
         return False
     _, mismatch, errors = filecmp.cmpfiles(left, right, compared.common_files, shallow=False)
     return not mismatch and not errors and all(
@@ -104,13 +104,14 @@ def find_game(root, runner=None, image=None):
     if runner is None:
         built = run_game.build_inputs(root)
         if built is not None:
-            return built[0], built[1]
-        candidates = [root / "recomp_program_runner.exe", root / "recomp_program_runner",
-                      root / "build/recomp-program/Release/recomp_program_runner.exe",
-                      root / "build/recomp-program/recomp_program_runner"]
-        runner = next((path for path in candidates if path.is_file()), None)
-        if runner is None:
-            raise DriveError("no runner found; pass --runner")
+            runner, image = built[0], image or built[1]
+        else:
+            candidates = [root / "recomp_program_runner.exe", root / "recomp_program_runner",
+                          root / "build/recomp-program/Release/recomp_program_runner.exe",
+                          root / "build/recomp-program/recomp_program_runner"]
+            runner = next((path for path in candidates if path.is_file()), None)
+            if runner is None:
+                raise DriveError("no runner found; pass --runner")
     if image is None:
         images = list((root / "private/imported-disc/disc").glob("*.xbe"))
         if len(images) != 1:
@@ -211,6 +212,8 @@ class Session:
         self.frames = self.folder / "frames"
         self.shots = self.folder / "shots"
         self.process = None
+        # Whether the pid in session.json is still this session's runner.
+        self.identified = None
         try:
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -223,7 +226,15 @@ class Session:
     def running(self):
         if self.process is not None:
             return self.process.poll() is None
-        return "pid" in self.state and alive(self.state["pid"])
+        if "pid" not in self.state or not alive(self.state["pid"]):
+            return False
+        # After a crash the pid may have gone to another process, which stop
+        # must not end: check once per command that it is a runner on this
+        # session's disc.
+        if self.identified is None:
+            image = self.state.get("image")
+            self.identified = image is not None and self.state["pid"] in other_runners(image)
+        return self.identified
 
     # Starting and stopping
 
@@ -272,7 +283,8 @@ class Session:
         with log.open("w", encoding="utf-8") as output:
             self.process = subprocess.Popen(command, cwd=image.parent, env=environment, stdout=output,
                                             stderr=subprocess.STDOUT, **detach)
-        self.state = {"pid": self.process.pid, "log": str(log), "mark": -1, "saves": str(saves),
+        self.state = {"pid": self.process.pid, "image": str(image), "log": str(log), "mark": -1,
+                      "saves": str(saves),
                       "backup": str(backup) if backup.is_dir() else None,
                       "preference": str(preference), "preference_bytes": preference_bytes}
         self.save_state()
@@ -290,6 +302,7 @@ class Session:
             for key in ("pid", "backup", "preference", "preference_bytes"):
                 self.state.pop(key, None)
             self.save_state()
+            shutil.rmtree(backup, ignore_errors=True)
             raise DriveError(f"the game exited before it polled its pad; see {log}")
         if polled is None:
             raise DriveError("the game never polled its pad")
@@ -308,7 +321,9 @@ class Session:
                 os.kill(pid, signal.SIGKILL)
         for path in (self.press_path, self.trigger_path):
             path.unlink(missing_ok=True)
-        self.put_back(keep_save)
+        # Only once per run: after it, the saves are the player's again.
+        if pid is not None:
+            self.put_back(keep_save)
         self.state.pop("pid", None)
         self.save_state()
         say("stopped")
@@ -317,13 +332,20 @@ class Session:
         """Puts back the saves and the controller-mode preference as they
         were at start, unless `keep`."""
         saves, backup = self.state.get("saves"), self.state.get("backup")
-        if backup and Path(backup).is_dir() and not same_tree(saves, backup):
+        if backup:
+            changed = Path(backup).is_dir() and not same_tree(saves, backup)
+        else:
+            # A backup of None means there were no saves at start, so any
+            # there are now, such as a new vacation's, are the run's.
+            changed = "backup" in self.state and saves is not None and Path(saves).exists()
+        if changed:
             if keep:
                 say("the run changed the saves; kept them")
             else:
                 written = self.folder / ("saves-written-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
                 shutil.move(saves, written)
-                shutil.copytree(backup, saves)
+                if backup:
+                    shutil.copytree(backup, saves)
                 say(f"the run wrote the saves; restored them (the written ones are in {written})")
         self.restore_preference(keep)
 
@@ -525,6 +547,8 @@ class Session:
 
     def shot(self, name):
         """Saves the next frame (without the runtime's overlay) as shots/NAME.png."""
+        if not name or Path(name).name != name or name in (".", ".."):
+            raise DriveError(f"a shot's name is a file name, not a path: {name}")
         mark = len(self.lines()) - 1
         self.trigger_path.touch()
         deadline = time.monotonic() + 10

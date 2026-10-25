@@ -11,8 +11,8 @@
   `tools/drive_game.py` presses pad buttons and waits for those lines, with
   routes from launch to the shop, the pool, the items screen, the hotel at
   night and a new vacation, and puts back any saves a run changes.
-  `RECOMP_SCREENSHOT_TRIGGER` lets a script take screenshots. Read-only; off
-  by default. See `docs/automation.md` and `docs/ui-log.md`.
+  `RECOMP_SCREENSHOT_TRIGGER` lets a script take screenshots. The log and
+  the trigger do not write guest memory; both are off by default. See `docs/automation.md` and `docs/ui-log.md`.
 - **Title screen idle behavior** (#117). A launcher choice, or
   `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
   idle. **Default** is the game's own attract sequence. **No cutscene**

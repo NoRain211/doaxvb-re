@@ -81,6 +81,23 @@ class DriveGameTests(unittest.TestCase):
             child.wait()
         self.assertFalse(drive_game.alive(child.pid))
 
+    def test_a_reused_pid_is_not_the_session_game(self):
+        # This test's own process is alive but is no runner on the disc.
+        session = Session(self.folder / "reused")
+        session.state = {"pid": os.getpid(), "image": str(self.folder / "disc/default.xbe")}
+        self.assertFalse(session.running())
+
+    def test_find_game_takes_xbe_beside_the_selected_build(self):
+        runner, built, chosen = self.folder / "runner", self.folder / "built.xbe", self.folder / "chosen.xbe"
+        for path in (runner, built, chosen):
+            path.write_bytes(b"")
+        inputs, drive_game.run_game.build_inputs = drive_game.run_game.build_inputs, lambda root: (runner, built)
+        try:
+            self.assertEqual(drive_game.find_game(self.folder, image=chosen), (runner, chosen))
+            self.assertEqual(drive_game.find_game(self.folder), (runner, built))
+        finally:
+            drive_game.run_game.build_inputs = inputs
+
     def test_shot_moves_the_frame_the_runtime_logs(self):
         self.session.frames.mkdir(parents=True)
         frame = self.session.frames / "DOAXBV-1.png"
@@ -99,6 +116,12 @@ class DriveGameTests(unittest.TestCase):
         thread.join()
         self.assertEqual(target.read_bytes(), b"png")
         self.assertFalse(frame.exists())
+
+    def test_shot_names_stay_in_the_shots_folder(self):
+        for name in ("../menu", str(self.folder / "menu"), "..", ""):
+            with self.assertRaises(DriveError):
+                self.session.shot(name)
+        self.assertFalse(self.session.trigger_path.exists())
 
     def test_waits_look_after_the_mark(self):
         self.append("[auto:ui] frame 1: scene title", "[auto:ui] frame 2: scene menu")
@@ -226,6 +249,16 @@ class DriveGameTests(unittest.TestCase):
             drive_game.new_vacation(self.session, 1, "Kasumi")
         self.assertEqual(self.game.presses, ["0"])
 
+    def test_new_vacation_picks_the_girl_and_ends_after_the_welcome(self):
+        self.append("[auto:ui] frame 1: save vacation 2")
+        answers = [["list 2 cursor 0 of 2: New Game"], ["island opening"],
+                   ["island pick", "pick cursor 0 Kasumi"], ["pick cursor 1 Helena"],
+                   ["island pool", "dialog open"], ["dialog closed"]]
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: {line}" for line in answers[count - 1]])
+        drive_game.new_vacation(self.session, 2, "Helena")
+        time.sleep(0.3)
+        self.assertEqual(self.game.presses, ["0", "0", "d0010", "d0008", "0", "0"])
+
     def test_buy_walks_the_prompts(self):
         state = {"step": "list", "cursor": 0}
 
@@ -246,6 +279,10 @@ class DriveGameTests(unittest.TestCase):
         self.play(answer)
         self.session.buy()
         self.assertEqual(self.game.presses, ["0", "0", "d0008", "0"])
+        # Wrapping keeps the prompt's first item, so A alone gets through.
+        self.game.presses.clear()
+        self.session.buy(wrap=True)
+        self.assertEqual(self.game.presses, ["0", "0", "0"])
 
     def test_stop_puts_back_saves_the_run_wrote(self):
         saves, backup = self.folder / "UDATA", self.folder / "backup"
@@ -261,6 +298,23 @@ class DriveGameTests(unittest.TestCase):
         self.assertEqual(len(written), 1)
         self.assertEqual((written[0] / "slot/data").read_bytes(), b"written")
         self.assertTrue(drive_game.same_tree(saves, backup))
+        # A second stop finds no run to undo: what the player saves after a
+        # run stays.
+        (saves / "slot/data").write_bytes(b"played")
+        self.session.stop()
+        self.assertEqual((saves / "slot/data").read_bytes(), b"played")
+
+    def test_stop_moves_aside_saves_a_fresh_profile_made(self):
+        saves = self.folder / "UDATA"
+        self.session.state.update(saves=str(saves), backup=None)
+        # There were none at start; the run's new vacation made them.
+        (saves / "slot").mkdir(parents=True)
+        (saves / "slot/data").write_bytes(b"new vacation")
+        self.session.running = lambda: False
+        self.session.stop()
+        self.assertFalse(saves.exists())
+        written = list(self.session.folder.glob("saves-written-*"))
+        self.assertEqual((written[0] / "slot/data").read_bytes(), b"new vacation")
 
     def test_start_puts_back_saves_an_unstopped_run_wrote(self):
         image = self.folder / "game/default.xbe"
@@ -309,6 +363,9 @@ class DriveGameTests(unittest.TestCase):
             while not drive_game.other_runners(image) and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertEqual(drive_game.other_runners(image), [other.pid])
+            found = Session(self.folder / "found")
+            found.state = {"pid": other.pid, "image": str(image)}
+            self.assertTrue(found.running())
             session = Session(self.folder / "fresh")
             with self.assertRaisesRegex(DriveError, "another game is running"):
                 session.start(runner, image)
