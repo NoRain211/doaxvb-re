@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the game from an ISO with BuildGame.cmd, remember graphics and audio settings, then start RunGame.cmd.
 Add-Type -AssemblyName System.Windows.Forms
+# Panels and their controls each own a window, so repaint the whole window tree
+# in one call; the screen then shows one completed section instead of strips.
+Add-Type -Namespace DOAXBV -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr window, IntPtr rect, IntPtr region, uint flags);
+[DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr window, int index);
+[DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr window, int index, int value);
+'@
 # The console is hidden, so show any failure instead of exiting silently.
 $ErrorActionPreference = 'Stop'
 trap { [Windows.Forms.MessageBox]::Show("$_", 'DOAXBV launcher') | Out-Null; exit 1 }
@@ -84,10 +91,12 @@ $form = New-Object Windows.Forms.Form -Property @{
     Text = 'DOAXBV'; FormBorderStyle = 'FixedSingle'; MaximizeBox = $false; StartPosition = 'CenterScreen'; KeyPreview = $true
     ClientSize = (New-Object Drawing.Size $W, $H); BackColor = (C '#1a8fc0'); ForeColor = $ink; Font = (New-Object Drawing.Font('Segoe UI', 9.75))
 }
+$form.Add_Load({
+    [DOAXBV.Native]::SetWindowLong($form.Handle, -20, [DOAXBV.Native]::GetWindowLong($form.Handle, -20) -bor 0x02000000) | Out-Null
+})
 [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance, NonPublic').SetValue($form, $true, $null)
 $icon = Join-Path $root 'private\doaxbv.ico'
 if (Test-Path $icon) { $form.Icon = New-Object Drawing.Icon $icon }
-
 $backdrop = New-Object Drawing.Bitmap $W, $H
 $g = [Drawing.Graphics]::FromImage($backdrop)
 $g.InterpolationMode = 'HighQualityBicubic'
@@ -113,14 +122,19 @@ Draw-Plate $g 346 110 504 402 '#d4fffa' '#53bcc8' 235
 $inner = New-Round 358 122 480 378 8
 $fill = New-Object Drawing.SolidBrush (C '#073e52' 225)
 $g.FillPath($fill, $inner); $fill.Dispose(); $inner.Dispose()
-Draw-Icon $g 'button-a.png' 'A' '#3fc43f' ($W - 302) ($H - 54) 34
-Draw-Outlined $g 'Play' 17 ($W - 266) ($H - 52) 70 30
-Draw-Icon $g 'button-b.png' 'B' '#e03a3a' ($W - 192) ($H - 54) 34
-Draw-Outlined $g 'Quit' 17 ($W - 156) ($H - 52) 70 30
 Draw-Outlined $g "$([char]0x2191)$([char]0x2193) Select" 15 ($W - 420) ($H - 52) 110 30
 Draw-Outlined $g 'Settings apply on next launch' 13 24 ($H - 52) 300 30 '#0b3a66'
 $g.Dispose()
 $form.BackgroundImage = $backdrop
+# Panels copy the backdrop under themselves instead of painting it through
+# their parent, so a page appears in one blit without translucency bands.
+function Crop($x, $y, $w, $h) {
+    $bitmap = New-Object Drawing.Bitmap $w, $h
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    $graphics.DrawImage($backdrop, (New-Object Drawing.Rectangle 0, 0, $w, $h), (New-Object Drawing.Rectangle $x, $y, $w, $h), 'Pixel')
+    $graphics.Dispose()
+    $bitmap
+}
 
 $title = New-Object Windows.Forms.Label -Property @{ Left = 372; Top = 54; Width = 452; Height = 46; BackColor = [Drawing.Color]::Transparent }
 $title.Add_Paint({
@@ -128,14 +142,14 @@ $title.Add_Paint({
     Draw-Plate $e.Graphics 1 1 ($s.Width - 2) ($s.Height - 2) '#9af5c8' '#17886a' 245
     Draw-Outlined $e.Graphics $s.Text 24 0 0 $s.Width $s.Height '#1d4fb8' 'Center'
 })
-$card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width = 448; Height = 350; BackColor = [Drawing.Color]::Transparent }
+$card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width = 448; Height = 350; BackColor = (C '#185162'); BackgroundImage = (Crop 374 138 448 350); BackgroundImageLayout = 'None' }
 $subtitle = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 448; Height = 22; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
 $card.Controls.Add($subtitle)
 
-$sections = 'Main Menu', 'Build', 'Graphics', 'Audio', 'Game', 'Textures', 'Experimental', 'Help'
-$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Unfinished renderer features', 'Keys while playing'
+$sections = 'Main Menu', 'Build', 'Graphics', 'Audio', 'Game', 'Textures', 'Help'
+$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Keys while playing'
 $pages = foreach ($name in $sections) {
-    $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = [Drawing.Color]::Transparent; Visible = $false }
+    $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = (C '#185162'); BackgroundImage = (Crop 374 170 448 244); BackgroundImageLayout = 'None'; Visible = $false }
     $card.Controls.Add($page); $page
 }
 function Add-Row($page, $text, $top, $control) {
@@ -149,8 +163,8 @@ function New-Choice($items, $index) {
     $box.SelectedIndex = [Math]::Max(0, $index)
     $box
 }
-function New-Toggle($page, $text, $top, $checked) {
-    $box = New-Object Windows.Forms.CheckBox -Property @{ Text = $text; Left = 0; Top = $top; Width = 446; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent; Checked = [bool]$checked }
+function New-Toggle($page, $text, $top, $checked, $left = 0, $width = 446) {
+    $box = New-Object Windows.Forms.CheckBox -Property @{ Text = $text; Left = $left; Top = $top; Width = $width; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent; Checked = [bool]$checked }
     $page.Controls.Add($box); $box
 }
 function New-Note($page, $text, $top, $height) {
@@ -253,11 +267,20 @@ $nearest = @($heights | Where-Object { $_ -le [int]$settings.height }).Count - 1
 $resolution = Add-Row $pages[2] 'Resolution' 0 (New-Choice $heightNames $nearest)
 $msaaNames = [string[]]($samples | ForEach-Object { if ($_ -eq 1) { 'Off' } else { "$($_)x" } })
 $msaa = Add-Row $pages[2] 'MSAA' 36 (New-Choice $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa)))
-$smaa = New-Toggle $pages[2] 'SMAA edge smoothing' 76 $settings.smaa
-$vrr = New-Toggle $pages[2] 'VRR display (even 60 Hz pacing)' 104 $settings.vrr
-$fog = New-Toggle $pages[2] 'Fog' 132 $settings.fog
+# Display settings on the left, renderer toggles on the right.
+$smaa = New-Toggle $pages[2] 'SMAA edge smoothing' 72 $settings.smaa 0 218
+$vrr = New-Toggle $pages[2] 'VRR display (even 60 Hz pacing)' 100 $settings.vrr 0 218
+$fog = New-Toggle $pages[2] 'Fog' 128 $settings.fog 0 218
 # Off keeps the game's original shadows for lower-powered PCs; see docs/sun-shadow.md.
-$sun = New-Toggle $pages[2] 'Sun shadows' 160 $settings.sun_shadows
+$sun = New-Toggle $pages[2] 'Sun shadows' 156 $settings.sun_shadows 0 218
+$pixelLighting = New-Toggle $pages[2] 'Per-pixel lighting' 72 $settings.pixelLighting 228 220
+$smoothNormals = New-Toggle $pages[2] 'Smooth normals' 100 $settings.smoothNormals 228 220
+$rtgi = New-Toggle $pages[2] 'Ray-traced GI (RTGI)' 128 $settings.rtgi 228 220
+$hitColor = New-Toggle $pages[2] 'RTGI hit-point color' 156 $settings.rtgiHitColor 228 220
+$strength = Add-Row $pages[2] 'RTGI strength' 184 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)); Enabled = $rtgi.Checked })
+$hitColor.Enabled = $rtgi.Checked
+$rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
+New-Note $pages[2] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 208 32 | Out-Null
 
 # PowerShell 7 loads JSON numbers as Int64, so cast before finding their index.
 $savedVolume = [Array]::IndexOf($volumes, [int]$settings.volume)
@@ -299,16 +322,7 @@ $pages[5].Controls.AddRange(@($textureFolder, $browse))
 $textureDump = New-Toggle $pages[5] 'Dump original textures' 68 $settings.textureDump
 New-Note $pages[5] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
 
-$pixelLighting = New-Toggle $pages[6] 'Per-pixel lighting' 0 $settings.pixelLighting
-$smoothNormals = New-Toggle $pages[6] 'Smooth normals' 28 $settings.smoothNormals
-$rtgi = New-Toggle $pages[6] 'Ray-traced GI (RTGI)' 56 $settings.rtgi
-$strength = Add-Row $pages[6] 'RTGI strength' 88 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)); Enabled = $rtgi.Checked })
-$hitColor = New-Toggle $pages[6] 'RTGI hit-point color' 120 $settings.rtgiHitColor
-$hitColor.Enabled = $rtgi.Checked
-$rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
-New-Note $pages[6] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 154 40 | Out-Null
-
-New-Note $pages[7] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
+New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
 
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" })
@@ -319,7 +333,7 @@ function Update-Summary {
 
 $state = @{ section = 0 }
 $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
-    $item = New-Object Windows.Forms.Label -Property @{ Left = 24; Top = 214 + $i * 38; Width = 270; Height = 36; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand'; Tag = $i; AccessibleName = $sections[$i]; AccessibleRole = 'MenuItem' }
+    $item = New-Object Windows.Forms.Label -Property @{ Left = 24; Top = 214 + $i * 44; Width = 270; Height = 42; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand'; Tag = $i; AccessibleName = $sections[$i]; AccessibleRole = 'MenuItem' }
     $item.Add_Paint({
         param($s, $e)
         if ($state.section -eq $s.Tag) {
@@ -333,11 +347,16 @@ $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
     $item
 }
 function Select-Section($index) {
+    $previous = $state.section
     $state.section = $index
-    for ($i = 0; $i -lt $pages.Count; $i++) { $pages[$i].Visible = $i -eq $index; $menu[$i].Invalidate() }
-    $title.Text = $sections[$index].ToUpper(); $title.Invalidate()
+    $menu[$previous].Invalidate()
+    $menu[$index].Invalidate()
+    $title.Text = $sections[$index].ToUpper()
     $subtitle.Text = $subtitles[$index]
+    for ($i = 0; $i -lt $pages.Count; $i++) { $pages[$i].Visible = $i -eq $index }
     if ($index -eq 0) { Update-Summary; Update-Ready }
+    # Paint only what changed, now, so the menu, title and new pane land together.
+    [DOAXBV.Native]::RedrawWindow($form.Handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180) | Out-Null
 }
 $form.Add_KeyDown({
     param($s, $e)
