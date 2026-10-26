@@ -31,8 +31,10 @@ struct D3dRtgiStats {
 D3dRtgiStats d3d_rtgi_take_stats(D3dRtgi *rtgi);
 
 /* Adds one draw to this frame's scene. Keeps only main-target, depth-writing,
-   transformed triangle draws and copies what it needs before returning.
-   Returns true when the draw joined the scene. */
+   transformed triangle draws and copies what it needs before returning; an
+   internal worker thread skins the copy while the caller keeps drawing.
+   Returns true when the draw was queued; the worker can still reject it, and
+   apply then traces what remains. collectMs in the stats is worker time. */
 /* texture: the stage-0 view the D3D11 path sampled for this draw, or null when it
    had none or the view holds render-target/backbuffer content. alphaMask: the
    separate alpha-mask view when draw.has_alpha_mask, else null. RTGI keeps its own

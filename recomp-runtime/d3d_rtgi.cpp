@@ -9,12 +9,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <atomic>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -110,6 +115,18 @@ struct RtgiTimer11 {
 };
 constexpr UINT stampsPerSlot = 5, timers11 = 6;
 
+/* One draw queued for the collection worker. The command's vertex and index
+   pointers may name scratch memory the presenter reuses for the next draw, so
+   the referenced ranges are copied; vertices start at firstVertex. */
+struct RtgiJob {
+    RecompD3dPresenterDrawCommand draw{};
+    RecompD3dVertexLayout layout{};
+    std::vector<unsigned char> vertices, indices;
+    uint32_t firstVertex = 0, lastVertex = 0;
+    ComPtr<ID3D11ShaderResourceView> texture, alphaMask;
+    bool colorMaterial = false;
+};
+
 struct D3dRtgi {
     ComPtr<ID3D11Device5> device11;
     ComPtr<ID3D11DeviceContext4> context11;
@@ -153,7 +170,8 @@ struct D3dRtgi {
     UINT64 capture = 0;
     float strength = 1;
     bool hitColor = true;
-    bool failed = false, historyValid = false, alphaFullLogged = false, colorFullLogged = false;
+    std::atomic<bool> failed{false};  // the collection worker can fail too
+    bool historyValid = false, alphaFullLogged = false, colorFullLogged = false;
     bool timing = false;
     // RECOMP_D3D_RTGI_HZ: a capture starting sooner than reuseMs after the last
     // traced one, such as a display pass between 60 Hz ticks, reprojects its GI.
@@ -167,7 +185,20 @@ struct D3dRtgi {
     RtgiTimer11 timer11[timers11];
     UINT64 passes = 0;
     D3dRtgiStats stats;
+    /* Scene collection runs on a worker beside the draws that feed it. Only
+       the worker touches the scene arrays and texture caches until apply waits
+       for it; jobs keeps its elements in place while pending names them. */
+    std::deque<RtgiJob> jobs;
+    size_t jobCount = 0;
+    std::vector<RtgiJob *> pending;
+    std::mutex workMutex;
+    std::condition_variable workReady, workDone;
+    std::thread worker;
+    bool working = false, stopWorker = false;
+    double workerMs = 0;
 };
+
+static void workerLoop(D3dRtgi *r);
 
 static void fail(D3dRtgi &r, const char *operation, HRESULT result = E_FAIL)
 {
@@ -620,6 +651,7 @@ D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height, 
         const char *hitColor = std::getenv("RECOMP_D3D_RTGI_HITCOLOR");
         r->hitColor = !hitColor || std::strcmp(hitColor, "0") != 0;
         initialize(*r, device);
+        r->worker = std::thread(workerLoop, r.get());
         char rate[32] = "every frame";
         if (hz > 0) std::snprintf(rate, sizeof rate, "up to %g Hz", hz);
         std::fprintf(stderr, "recomp rtgi: tracing %ux%u (1/%u scale) %s\n",
@@ -637,6 +669,12 @@ D3dRtgi *d3d_rtgi_create(ID3D11Device *device, uint32_t width, uint32_t height, 
 void d3d_rtgi_destroy(D3dRtgi *r)
 {
     if (!r) return;
+    {
+        std::lock_guard<std::mutex> lock(r->workMutex);
+        r->stopWorker = true;
+    }
+    r->workReady.notify_one();
+    if (r->worker.joinable()) r->worker.join();
     try {
         r->context11->Flush();
         waitFence(*r, r->done12.Get(), r->doneValue);
@@ -746,10 +784,46 @@ static uint32_t textureSlice(D3dRtgi &r, ID3D11ShaderResourceView *source, bool 
     return oldest;
 }
 
+static bool collectDraw(D3dRtgi *r, const RtgiJob &job);
+
+static void workerLoop(D3dRtgi *r)
+{
+    std::vector<RtgiJob *> batch;
+    std::unique_lock<std::mutex> lock(r->workMutex);
+    for (;;) {
+        r->workReady.wait(lock, [r] { return r->stopWorker || !r->pending.empty(); });
+        if (r->stopWorker) return;
+        batch.swap(r->pending);
+        r->working = true;
+        lock.unlock();
+        {
+            const CpuClock clock(r->timing ? &r->workerMs : nullptr);
+            for (const RtgiJob *job : batch) collectDraw(r, *job);
+        }
+        batch.clear();
+        lock.lock();
+        r->working = false;
+        if (r->pending.empty()) r->workDone.notify_all();
+    }
+}
+
+// Waits until the worker has collected every queued draw, then frees the jobs' views.
+static void finishCollection(D3dRtgi &r)
+{
+    std::unique_lock<std::mutex> lock(r.workMutex);
+    r.workDone.wait(lock, [&r] { return r.pending.empty() && !r.working; });
+    r.stats.collectMs += r.workerMs;
+    r.workerMs = 0;
+    for (size_t i = 0; i < r.jobCount; ++i) {
+        r.jobs[i].texture.Reset();
+        r.jobs[i].alphaMask.Reset();
+    }
+    r.jobCount = 0;
+}
+
 bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     ID3D11ShaderResourceView *texture, ID3D11ShaderResourceView *alphaMask, bool colorMaterial)
 {
-    const CpuClock clock(r && r->timing ? &r->stats.collectMs : nullptr);
     // Vertex-program draws (water) move vertices in their program; WORLD alone would misplace them.
     if (!r || r->failed || !draw.has_transform || draw.target.offscreen || draw.program_count ||
         !draw.depth.depth_write_enable || !draw.triangle_count || !draw.vertex_count ||
@@ -757,8 +831,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     RecompD3dVertexLayout layout{};
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) || layout.pretransformed ||
         draw.blend_weight_count > 3 || draw.blend_weight_count > layout.blend_weight_count ||
-        draw.vertex_stride < 12 + 4 * layout.blend_weight_count ||
-        uint64_t(r->positions.size()) + draw.vertex_count > UINT32_MAX) return false;
+        draw.vertex_stride < 12 + 4 * layout.blend_weight_count) return false;
     for (float value : draw.view_projection) if (!std::isfinite(value)) return false;
     if (!r->captureOpen) {
         r->captureOpen = true;
@@ -778,19 +851,58 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     }
     // Indexed draws often use a small range near the end of a shared vertex buffer.
     // Do not skin or upload the unrelated prefix for every draw using that buffer.
-    auto indexAt = [&](uint32_t i) {
-        uint16_t index;
-        std::memcpy(&index, static_cast<const unsigned char *>(draw.index_bytes) + size_t(i) * 2, 2);
-        return uint32_t(index);
-    };
+    const auto *drawIndices = static_cast<const unsigned char *>(draw.index_bytes);
     uint32_t firstVertex = draw.vertex_count, lastVertex = 0;
     for (uint32_t i = 0; i < draw.index_count; ++i) {
-        const uint32_t index = indexAt(i);
+        uint16_t index;
+        std::memcpy(&index, drawIndices + size_t(i) * 2, 2);
         if (index >= draw.vertex_count) continue;
-        firstVertex = std::min(firstVertex, index);
-        lastVertex = std::max(lastVertex, index);
+        firstVertex = std::min(firstVertex, uint32_t(index));
+        lastVertex = std::max(lastVertex, uint32_t(index));
     }
     if (firstVertex > lastVertex) return false;
+    try {
+        RtgiJob &job = r->jobCount < r->jobs.size() ? r->jobs[r->jobCount] : r->jobs.emplace_back();
+        job.draw = draw;
+        job.draw.vertex_bytes = job.draw.index_bytes = nullptr;
+        job.layout = layout;
+        job.firstVertex = firstVertex;
+        job.lastVertex = lastVertex;
+        const auto *vertices = static_cast<const unsigned char *>(draw.vertex_bytes);
+        job.vertices.assign(vertices + size_t(firstVertex) * draw.vertex_stride,
+            vertices + size_t(lastVertex + 1) * draw.vertex_stride);
+        job.indices.assign(drawIndices, drawIndices + size_t(draw.index_count) * 2);
+        job.texture = texture;
+        job.alphaMask = alphaMask;
+        job.colorMaterial = colorMaterial;
+        ++r->jobCount;
+        {
+            std::lock_guard<std::mutex> lock(r->workMutex);
+            r->pending.push_back(&job);
+        }
+        r->workReady.notify_one();
+    } catch (const std::exception &error) {
+        fail(*r, error.what());
+        return false;
+    }
+    // The worker may still reject the draw; apply then finds less, or nothing, to trace.
+    return true;
+}
+
+// Skins one queued draw into this frame's scene; runs on the collection worker.
+static bool collectDraw(D3dRtgi *r, const RtgiJob &job)
+{
+    const auto &draw = job.draw;
+    const auto &layout = job.layout;
+    ID3D11ShaderResourceView *texture = job.texture.Get(), *alphaMask = job.alphaMask.Get();
+    bool colorMaterial = job.colorMaterial;
+    const uint32_t firstVertex = job.firstVertex, lastVertex = job.lastVertex;
+    if (r->failed || uint64_t(r->positions.size()) + draw.vertex_count > UINT32_MAX) return false;
+    auto indexAt = [&job](uint32_t i) {
+        uint16_t index;
+        std::memcpy(&index, job.indices.data() + size_t(i) * 2, 2);
+        return uint32_t(index);
+    };
     const uint32_t vertexCount = lastVertex - firstVertex + 1;
     const size_t base = r->positions.size(), firstIndex = r->indices.size(), firstMaterial = r->materials.size();
     try {
@@ -835,7 +947,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         const bool hasNormal = normalOffset != RECOMP_D3D_FVF_ABSENT && uint64_t(normalOffset) + 12 <= stride;
         float world[4][16];
         std::memcpy(world, draw.world, (weightCount + 1) * sizeof world[0]);
-        const auto *vertexBytes = static_cast<const unsigned char *>(draw.vertex_bytes) + size_t(firstVertex) * stride;
+        const unsigned char *vertexBytes = job.vertices.data();
         for (uint32_t v = 0; v < vertexCount; ++v) {
             const auto *bytes = vertexBytes + size_t(v) * stride;
             float p[3], weights[3]{};
@@ -1382,6 +1494,7 @@ static void reuseAndComposite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11Re
 void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
     ID3D11ShaderResourceView *color, ID3D11ShaderResourceView *depth, uint32_t depthSamples)
 {
+    if (r) finishCollection(*r);
     const CpuClock clock(r && r->timing ? &r->stats.applyMs : nullptr);
     bool applied = false;
     const bool recorded = r && (r->reuse ? r->reuseDraws != 0 : !r->indices.empty());
