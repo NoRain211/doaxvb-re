@@ -200,12 +200,13 @@ def build(args, verify_parity=True, lifter_revision=None):
             if icon.is_file():
                 configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
-        targets = ["recomp_program_runner", "recomp_launcher"]
+        targets = ["recomp_program_runner"] + (["recomp_launcher", "recomp_play"] if windows else [])
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
         if windows:
             shutil.copy2(output / "recomp_launcher.exe", ROOT / "Launcher.exe")
+            shutil.copy2(output / "recomp_play.exe", ROOT / "DOAXBV.exe")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work

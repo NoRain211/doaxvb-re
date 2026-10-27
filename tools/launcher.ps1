@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the game from an ISO with BuildGame.cmd, remember graphics and audio settings, then start RunGame.cmd.
+# -PlaySaved (DOAXBV.exe) starts the game with the saved settings without showing the window.
+param([switch]$PlaySaved)
 Add-Type -AssemblyName System.Windows.Forms
 # Panels and their controls each own a window, so repaint the whole window tree
 # in one call; the screen then shows one completed section instead of strips.
@@ -154,6 +156,8 @@ $form = New-Object Windows.Forms.Form -Property @{
     Text = 'DOAXBV'; FormBorderStyle = 'FixedSingle'; MaximizeBox = $false; StartPosition = 'CenterScreen'; KeyPreview = $true
     ClientSize = (New-Object Drawing.Size $W, $H); BackColor = (C '#1a8fc0'); ForeColor = $ink; Font = (New-Object Drawing.Font('Segoe UI', 9.75))
 }
+# Setup cuts the icon from the player's disc; without it the window keeps the default.
+if (Test-Path (Join-Path $root 'private\doaxbv.ico')) { $form.Icon = New-Object Drawing.Icon (Join-Path $root 'private\doaxbv.ico') }
 $form.Add_Load({
     [DOAXBV.Native]::SetWindowLong($form.Handle, -20, [DOAXBV.Native]::GetWindowLong($form.Handle, -20) -bor 0x02000000) | Out-Null
 })
@@ -496,7 +500,8 @@ if ($padReady) {
     })
     $padTimer.Start()
 }
-if ($form.ShowDialog() -ne 'OK') { exit }
+# Without a build, -PlaySaved opens the window, whose Play button leads to the Build page.
+if (-not ($PlaySaved -and (Test-Built)) -and $form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]
 $count = $samples[$msaa.SelectedIndex]

@@ -4,6 +4,11 @@
 
 ### Added
 
+- **DOAXBV.exe**. Windows setup now also builds `DOAXBV.exe` beside
+  `Launcher.exe`. It starts the game with the settings last saved in the
+  launcher, without showing the launcher; with nothing built yet it opens the
+  launcher instead. The launcher window and taskbar button now show the game
+  icon that setup cuts from the disc.
 - **Launcher controller support**. The Windows launcher took only the
   keyboard and mouse, so players on a pad had to reach for the keyboard to
   press Play. Once a build exists, Xbox and PlayStation controllers work in
