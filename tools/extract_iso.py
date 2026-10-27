@@ -23,8 +23,15 @@ def sha256(path):
     return digest.hexdigest()
 
 
+class ToolError(subprocess.CalledProcessError):
+    """Ends with the tool's last line, which says why it failed; users report only this message (#160)."""
+    def __str__(self):
+        return f"{super().__str__()} {self.output}"
+
+
 def run_logged(args, log_path, cwd=None):
     print(f"{log_path.stem}... (log: {log_path})", flush=True)
+    last = b""
     with log_path.open("xb") as log:
         with subprocess.Popen([str(arg) for arg in args], cwd=cwd,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
@@ -32,9 +39,10 @@ def run_logged(args, log_path, cwd=None):
                 log.write(line)
                 log.flush()
                 print(line.decode("utf-8", errors="replace"), end="", flush=True)
+                last = line.strip() or last
             code = process.wait()
         if code:
-            raise subprocess.CalledProcessError(code, args)
+            raise ToolError(code, args, f"{last.decode('utf-8', errors='replace')} (log: {log_path})")
 
 
 def listing_files(text):

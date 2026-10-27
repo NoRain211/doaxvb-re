@@ -61,6 +61,10 @@
 
 ### Fixed
 
+- **Setup failures name their cause** (#160). When a setup step such as the
+  lifter download failed, the closing "Build failed" line gave only the
+  command and its exit code. It now ends with the tool's own last message,
+  such as Git's reason for a failed download, and the path of the step's log.
 - **Depth of field above 480p on macOS and Linux**. The blurred background
   in the real-time demo and close-ups looked blocky and streaky next to the
   sharp model on an upscaled frame. The game blurs a 256x256 copy of the
