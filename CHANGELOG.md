@@ -4,6 +4,17 @@
 
 ### Added
 
+- **DOAXBV.exe**. Windows setup now also builds `DOAXBV.exe` beside
+  `Launcher.exe`. It starts the game with the settings last saved in the
+  launcher, without showing the launcher; with nothing built yet it opens the
+  launcher instead. The launcher window and taskbar button now show the game
+  icon that setup cuts from the disc.
+- **Launcher controller support**. The Windows launcher took only the
+  keyboard and mouse, so players on a pad had to reach for the keyboard to
+  press Play. Once a build exists, Xbox and PlayStation controllers work in
+  it through the game's own SDL3: LB/RB switch sections, the d-pad moves
+  between options and changes lists, A ticks or presses, Start plays and B
+  quits.
 - **Scripted play** (#158). `RECOMP_AUTO_LOG=1` prints an `[auto:ui]` line
   whenever the game changes screen or moves a cursor: menus, the save
   select, the island's places, the part of the day, the shop, the items and
@@ -70,6 +81,10 @@
 
 ### Fixed
 
+- **macOS setup** (#164). Since the Linux launcher was added, setup asked CMake for
+  a `recomp_launcher` target that only Windows and Linux define, so a macOS
+  build stopped after compiling. macOS builds no longer request it; its
+  launcher is still compiled from Swift on first use by `launcher.sh`.
 - **Setup failures name their cause** (#160). When a setup step such as the
   lifter download failed, the closing "Build failed" line gave only the
   command and its exit code. It now ends with the tool's own last message,

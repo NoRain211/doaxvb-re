@@ -1,7 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Windows entry point for the PowerShell launcher, so the file carries the game icon. */
+/* Windows entry point for the PowerShell launcher, so the file carries the game icon.
+   Built with RECOMP_LAUNCHER_PLAY as DOAXBV.exe, it plays with the saved settings. */
 #include <windows.h>
 #include <strsafe.h>
+
+#ifdef RECOMP_LAUNCHER_PLAY
+#define LAUNCHER_ARGUMENTS L" -PlaySaved"
+#else
+#define LAUNCHER_ARGUMENTS L""
+#endif
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command, int show) {
     wchar_t directory[1024], script[2048], line[4096];
@@ -22,7 +29,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command, int sh
     }
     StringCchPrintfW(line, ARRAYSIZE(line),
         L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden"
-        L" -File \"%s\"", script);
+        L" -File \"%s\"" LAUNCHER_ARGUMENTS, script);
     STARTUPINFOW start = {0};
     PROCESS_INFORMATION process;
     start.cb = sizeof start;

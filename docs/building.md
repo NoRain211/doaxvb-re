@@ -72,8 +72,11 @@ This single command extracts the ISO, generates the program, and compiles the
 runner. Output appears live in the setup window and is also saved in each
 stage's log under `private/setup-*`. After success, double-click `Launcher.exe`
 (graphics, audio, game, texture and experimental options, saved in
-`private/launcher.json`) or `RunGame.cmd` in the same folder. Setup builds the
-launcher with the runner, using the same `private/doaxbv.ico`; `Launcher.cmd`
+`private/launcher.json`), `DOAXBV.exe` (plays with those saved choices without
+showing the launcher, or opens it on the Build page when nothing is built) or
+`RunGame.cmd` (default settings) in the same folder. Setup builds both exes
+with the runner and embeds `private/doaxbv.ico` in them; the launcher window
+shows that icon too. `Launcher.cmd`
 opens the same window when the exe is absent. Keep that folder in place after
 setup: build receipts identify the exact local paths. Setup does not launch the
 game automatically.
@@ -87,7 +90,10 @@ missing files). Setup never replaces files that are already there. An
 island map frame of your own saved as `background.png` replaces the beach and
 hides the logo. Without these files the launcher draws a plain sea backdrop and
 simple buttons. Arrow keys
-switch sections, Enter plays and Esc quits. Texture dumps go to
+switch sections, Enter plays and Esc quits. Once a build exists, an Xbox or
+PlayStation controller also works, read through the build's `SDL3.dll`: LB and
+RB switch sections, the d-pad moves between options and left or right changes
+a list, A ticks or presses, Start plays and B quits. Texture dumps go to
 `private/textures`. To check launcher settings, run `tools/test_launcher.ps1`
 with both Windows PowerShell 5 and PowerShell 7; it uses isolated synthetic
 settings under `private/`.

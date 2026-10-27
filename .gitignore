@@ -54,6 +54,7 @@ out/
 build/
 dist/
 /Launcher.exe
+/DOAXBV.exe
 tmp/
 *.log
 *.map

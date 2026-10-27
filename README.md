@@ -109,7 +109,9 @@ installer, which needs administrator approval and several GB of disk space.
    complete**. (Dragging the ISO onto `BuildGame.cmd` does the same.) With a
    release ZIP up to 0.6.0 RC1, first follow any Microsoft installer prompts.
 3. Pick resolution, MSAA, SMAA and sun shadows in the launcher, then press
-   **Play**. Running `RunGame.cmd` directly uses the defaults.
+   **Play**. Afterwards `DOAXBV.exe` starts the game with those saved
+   choices without opening the launcher. Running `RunGame.cmd` directly uses
+   the defaults.
 
 On macOS:
 1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).
