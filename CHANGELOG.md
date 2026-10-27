@@ -81,6 +81,10 @@
 
 ### Fixed
 
+- **macOS setup**. Since the Linux launcher was added, setup asked CMake for
+  a `recomp_launcher` target that only Windows and Linux define, so a macOS
+  build stopped after compiling. macOS builds no longer request it; its
+  launcher is still compiled from Swift on first use by `launcher.sh`.
 - **Setup failures name their cause** (#160). When a setup step such as the
   lifter download failed, the closing "Build failed" line gave only the
   command and its exit code. It now ends with the tool's own last message,

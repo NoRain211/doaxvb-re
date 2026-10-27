@@ -200,7 +200,11 @@ def build(args, verify_parity=True, lifter_revision=None):
             if icon.is_file():
                 configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
-        targets = ["recomp_program_runner"] + (["recomp_launcher", "recomp_play"] if windows else [])
+        targets = ["recomp_program_runner"]
+        if windows or sys.platform.startswith("linux"):  # macOS compiles its Swift launcher on first use
+            targets.append("recomp_launcher")
+        if windows:
+            targets.append("recomp_play")
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
