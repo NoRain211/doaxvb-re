@@ -1,0 +1,409 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Tests drive_game.py against a fake game: a thread that takes presses from
+the press file and answers with log lines. No runner or game data."""
+from pathlib import Path
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+
+import drive_game
+from drive_game import DriveError, Session
+
+
+class FakeSession(Session):
+    def running(self):
+        return True
+
+
+class FakeGame(threading.Thread):
+    """Takes each press and appends whatever `answer` returns for it."""
+
+    def __init__(self, session, answer):
+        super().__init__(daemon=True)
+        self.session, self.answer, self.presses = session, answer, []
+        self.stopping = threading.Event()
+
+    def run(self):
+        while not self.stopping.is_set():
+            if self.session.press_path.exists():
+                try:
+                    code = self.session.press_path.read_text(encoding="ascii")
+                    self.session.press_path.unlink()
+                except PermissionError:
+                    # Windows refuses the file while the driver renames it
+                    # into place; the runner retries the same way.
+                    time.sleep(0.01)
+                    continue
+                self.presses.append(code)
+                lines = self.answer(code, len(self.presses))
+                if lines:
+                    with open(self.session.state["log"], "a", encoding="utf-8") as log:
+                        log.writelines(line + "\n" for line in lines)
+            time.sleep(0.01)
+
+
+class DriveGameTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temporary.name)
+        self.log = self.folder / "run.log"
+        self.log.write_text("", encoding="utf-8")
+        self.session = FakeSession(self.folder / "session")
+        self.session.state = {"pid": 1, "log": str(self.log), "mark": -1}
+        self.session.save_state()
+        self.game = None
+
+    def tearDown(self):
+        if self.game is not None:
+            self.game.stopping.set()
+            self.game.join()
+        self.temporary.cleanup()
+
+    def play(self, answer):
+        self.game = FakeGame(self.session, answer)
+        self.game.start()
+
+    def append(self, *lines):
+        with self.log.open("a", encoding="utf-8") as log:
+            log.writelines(line + "\n" for line in lines)
+
+    def test_helpers(self):
+        self.assertEqual(drive_game.first_match(["a", "b", "a"], 0, "a"), 2)
+        self.assertIsNone(drive_game.first_match(["a", "b"], 0, "a"))
+        self.assertEqual(drive_game.direction(0, 5), "right")
+        self.assertEqual(drive_game.direction(0, 7), "left")
+        self.assertEqual(drive_game.direction(5, 7), "right")
+
+    def test_alive_tells_a_running_process_from_an_ended_one(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertTrue(drive_game.alive(child.pid))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(drive_game.alive(child.pid))
+
+    def test_a_reused_pid_is_not_the_session_game(self):
+        # This test's own process is alive but is no runner on the disc.
+        session = Session(self.folder / "reused")
+        session.state = {"pid": os.getpid(), "image": str(self.folder / "disc/default.xbe")}
+        self.assertFalse(session.running())
+
+    def test_find_game_takes_xbe_beside_the_selected_build(self):
+        runner, built, chosen = self.folder / "runner", self.folder / "built.xbe", self.folder / "chosen.xbe"
+        for path in (runner, built, chosen):
+            path.write_bytes(b"")
+        inputs, drive_game.run_game.build_inputs = drive_game.run_game.build_inputs, lambda root: (runner, built)
+        try:
+            self.assertEqual(drive_game.find_game(self.folder, image=chosen), (runner, chosen))
+            self.assertEqual(drive_game.find_game(self.folder), (runner, built))
+        finally:
+            drive_game.run_game.build_inputs = inputs
+
+    def test_shot_moves_the_frame_the_runtime_logs(self):
+        self.session.frames.mkdir(parents=True)
+        frame = self.session.frames / "DOAXBV-1.png"
+
+        def runtime():
+            deadline = time.monotonic() + 5
+            while not self.session.trigger_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.session.trigger_path.unlink()
+            frame.write_bytes(b"png")
+            self.append(f"recomp screenshot: saved {frame} (640x480)")
+
+        thread = threading.Thread(target=runtime)
+        thread.start()
+        target = self.session.shot("menu")
+        thread.join()
+        self.assertEqual(target.read_bytes(), b"png")
+        self.assertFalse(frame.exists())
+
+    def test_shot_names_stay_in_the_shots_folder(self):
+        for name in ("../menu", str(self.folder / "menu"), "..", ""):
+            with self.assertRaises(DriveError):
+                self.session.shot(name)
+        self.assertFalse(self.session.trigger_path.exists())
+
+    def test_waits_look_after_the_mark(self):
+        self.append("[auto:ui] frame 1: scene title", "[auto:ui] frame 2: scene menu")
+        self.assertEqual(self.session.wait("scene menu", 0), "[auto:ui] frame 2: scene menu")
+        # The line is behind the mark now: the same wait finds nothing new.
+        self.assertIsNone(self.session.wait("scene menu", 0))
+        self.assertEqual(Session(self.session.folder).state["mark"], 1)
+        with self.assertRaises(DriveError):
+            self.session.expect("scene island", 0.2)
+
+    def test_press_writes_codes_the_game_takes(self):
+        self.play(lambda code, count: None)
+        self.session.press("a")
+        self.session.press("right", 2, 0)
+        deadline = time.monotonic() + 2
+        while len(self.game.presses) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.game.presses, ["0", "d0008", "d0008"])
+        with self.assertRaises(DriveError):
+            self.session.press("z")
+
+    def test_press_until_repeats_lost_presses(self):
+        # The first two presses are lost; the third lands.
+        self.play(lambda code, count: ["[auto:ui] frame 9: scene menu"] if count == 3 else None)
+        line = self.session.press_until("start", "scene menu", 5, 0.1)
+        self.assertEqual(line, "[auto:ui] frame 9: scene menu")
+        self.assertEqual(self.game.presses, ["d0010"] * 3)
+
+    def test_press_until_ignores_lines_from_earlier_presses(self):
+        # A separate press moved the cursor through Options onto Delete. The
+        # Options line from before that press must not end `until` at once:
+        # it has to press up and see Options again.
+        answers = {"d0002": "[auto:ui] frame 5: list 2 cursor 2 of 3: Delete a saved game",
+                   "d0001": "[auto:ui] frame 7: list 2 cursor 1 of 3: Options"}
+        self.play(lambda code, count: [answers[code]])
+        self.append("[auto:ui] frame 3: list 2 cursor 1 of 3: Options")
+        self.session.press("down")
+        # As separate commands do: the next one starts from the saved mark,
+        # with no wait in between to move it.
+        deadline = time.monotonic() + 2
+        while "Delete" not in self.log.read_text(encoding="utf-8") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.session = FakeSession(self.session.folder)
+        self.game.session = self.session
+        line = self.session.press_until("up", "cursor 1 of 3: Options$", 5, 0.5)
+        self.assertEqual(line, "[auto:ui] frame 7: list 2 cursor 1 of 3: Options")
+        self.assertEqual(self.game.presses, ["d0002", "d0001"])
+
+    def test_goto_takes_the_shorter_way(self):
+        self.append("[auto:ui] frame 1: map location 0 Niki Beach")
+        stops = {"d0004": -1, "d0008": 1}
+        position = [0]
+
+        def answer(code, count):
+            position[0] = (position[0] + stops[code]) % 10
+            if position[0] == 8:  # the map skips 8 in the morning
+                position[0] = (position[0] + stops[code]) % 10
+            return [f"[auto:ui] frame {count + 1}: map location {position[0]} x"]
+
+        self.play(answer)
+        self.session.goto("Poolside")
+        self.assertEqual(self.game.presses, ["d0004", "d0004"])
+
+    def test_select_wakes_a_hidden_list_and_confirms(self):
+        self.append("[auto:ui] frame 1: list 0 open",
+                    "[auto:ui] frame 1: list 0 cursor 0 of 5: Leave the poolside",
+                    "[auto:ui] frame 2: list 0 closed")
+        labels = ["Leave the poolside", "Take a rest", "Play Hopping game", "View items", "Quit the game"]
+        state = {"open": False, "cursor": 0}
+
+        def answer(code, count):
+            if not state["open"]:
+                state["open"] = True  # the waking press does nothing else
+                return [f"[auto:ui] frame {count}: list 0 open",
+                        f"[auto:ui] frame {count}: list 0 cursor 0 of 5: {labels[0]}"]
+            if code == "d0002":
+                state["cursor"] += 1
+                return [f"[auto:ui] frame {count}: list 0 cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
+            return [f"[auto:ui] frame {count}: list 0 closed"]
+
+        self.play(answer)
+        self.session.select("View items")
+        deadline = time.monotonic() + 2
+        while len(self.game.presses) < 5 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.game.presses, ["d0002", "d0002", "d0002", "d0002", "0"])
+
+    def test_rest_presses_a_once_and_waits(self):
+        self.append("[auto:ui] frame 1: list 0 open",
+                    "[auto:ui] frame 1: list 0 cursor 0 of 5: Leave the poolside")
+        labels = ["Leave the poolside", "Take a rest"]
+        state = {"cursor": 0}
+
+        def answer(code, count):
+            if code == "d0002":
+                state["cursor"] += 1
+                return [f"[auto:ui] frame {count}: list 0 cursor {state['cursor']} of 5: {labels[state['cursor']]}"]
+            if state["cursor"] == 1 and count == 2:
+                state["cursor"] = 2
+                return [f"[auto:ui] frame {count}: list 0 closed", f"[auto:ui] frame {count}: island rest"]
+            # The A that skips the rest; night falls on the way back.
+            return [f"[auto:ui] frame {count}: day part night", f"[auto:ui] frame {count}: island hotel"]
+
+        self.play(answer)
+        drive_game.REST_SKIP_DELAY, delay = 0, drive_game.REST_SKIP_DELAY
+        try:
+            line = self.session.rest()
+        finally:
+            drive_game.REST_SKIP_DELAY = delay
+        self.assertTrue(line.endswith("island hotel"))
+        self.assertEqual(self.game.presses, ["d0002", "0", "0"])
+
+    def test_finish_dialogs_stops_pressing_once_closed(self):
+        self.append("[auto:ui] frame 1: dialog open")
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: dialog closed"] if count == 3 else
+                  [f"[auto:ui] frame {count}: island map"])
+        self.session.finish_dialogs(10)
+        time.sleep(0.3)
+        self.assertEqual(self.game.presses, ["0", "0", "0"])
+
+    def test_new_vacation_needs_an_empty_slot(self):
+        self.append("[auto:ui] frame 1: save vacation 1")
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: list 2 cursor 0 of 3: Continue"])
+        with self.assertRaises(DriveError):
+            drive_game.new_vacation(self.session, 1, "Kasumi")
+        self.assertEqual(self.game.presses, ["0"])
+
+    def test_new_vacation_picks_the_girl_and_ends_after_the_welcome(self):
+        self.append("[auto:ui] frame 1: save vacation 2")
+        answers = [["list 2 cursor 0 of 2: New Game"], ["island opening"],
+                   ["island pick", "pick cursor 0 Kasumi"], ["pick cursor 1 Helena"],
+                   ["island pool", "dialog open"], ["dialog closed"]]
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: {line}" for line in answers[count - 1]])
+        drive_game.new_vacation(self.session, 2, "Helena")
+        time.sleep(0.3)
+        self.assertEqual(self.game.presses, ["0", "0", "d0010", "d0008", "0", "0"])
+
+    def test_route_stops_at_once_on_a_save_that_continues_at_night(self):
+        self.append("[auto:ui] frame 1: scene menu", "[auto:ui] frame 1: list 0 cursor 0 of 2: GO TO ZACK ISLAND",
+                    "[auto:ui] frame 2: menu screen save-select", "[auto:ui] frame 2: save vacation 1")
+        answers = [["list 2 cursor 0 of 3: Continue"],
+                   ["scene island", "day part night", "island map", "map location 0 Niki Beach"]]
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: {line}" for line in answers[count - 1]])
+        with self.assertRaisesRegex(DriveError, "at night"):
+            drive_game.route(self.session, "shop")
+        self.assertEqual(self.game.presses, ["0", "0"])
+
+    def test_buy_walks_the_prompts(self):
+        state = {"step": "list", "cursor": 0}
+
+        def answer(code, count):
+            lines = []
+            if code == "0":
+                state["step"] = {"list": "buy", "buy": "wrap", "wrap": "list"}[state["step"]]
+                state["cursor"] = 0
+                lines.append(f"[auto:ui] frame {count}: shop step {state['step']}")
+                if state["step"] != "list":
+                    label = "Buy" if state["step"] == "buy" else "Wrap"
+                    lines.append(f"[auto:ui] frame {count}: shop prompt cursor 0: {label}")
+            elif code == "d0008":
+                state["cursor"] = 1
+                lines.append(f"[auto:ui] frame {count}: shop prompt cursor 1: No")
+            return lines
+
+        self.play(answer)
+        self.session.buy()
+        self.assertEqual(self.game.presses, ["0", "0", "d0008", "0"])
+        # Wrapping keeps the prompt's first item, so A alone gets through.
+        self.game.presses.clear()
+        self.session.buy(wrap=True)
+        self.assertEqual(self.game.presses, ["0", "0", "0"])
+
+    def test_stop_puts_back_saves_the_run_wrote(self):
+        saves, backup = self.folder / "UDATA", self.folder / "backup"
+        (saves / "slot").mkdir(parents=True)
+        (saves / "slot/data").write_bytes(b"before")
+        drive_game.shutil.copytree(saves, backup)
+        (saves / "slot/data").write_bytes(b"written")
+        self.session.state.update(saves=str(saves), backup=str(backup))
+        self.session.running = lambda: False
+        self.session.stop()
+        self.assertEqual((saves / "slot/data").read_bytes(), b"before")
+        written = list(self.session.folder.glob("saves-written-*"))
+        self.assertEqual(len(written), 1)
+        self.assertEqual((written[0] / "slot/data").read_bytes(), b"written")
+        self.assertTrue(drive_game.same_tree(saves, backup))
+        # A second stop finds no run to undo: what the player saves after a
+        # run stays.
+        (saves / "slot/data").write_bytes(b"played")
+        self.session.stop()
+        self.assertEqual((saves / "slot/data").read_bytes(), b"played")
+
+    def test_stop_moves_aside_saves_a_fresh_profile_made(self):
+        saves = self.folder / "UDATA"
+        self.session.state.update(saves=str(saves), backup=None)
+        # There were none at start; the run's new vacation made them.
+        (saves / "slot").mkdir(parents=True)
+        (saves / "slot/data").write_bytes(b"new vacation")
+        self.session.running = lambda: False
+        self.session.stop()
+        self.assertFalse(saves.exists())
+        written = list(self.session.folder.glob("saves-written-*"))
+        self.assertEqual((written[0] / "slot/data").read_bytes(), b"new vacation")
+
+    def test_start_puts_back_saves_an_unstopped_run_wrote(self):
+        image = self.folder / "game/default.xbe"
+        saves = image.parent / ".recomp-storage/partition1/UDATA"
+        backup = self.session.folder / "saves-at-start"
+        (saves / "slot").mkdir(parents=True)
+        (saves / "slot/data").write_bytes(b"before")
+        drive_game.shutil.copytree(saves, backup)
+        # The last run wrote the saves and died without stop.
+        (saves / "slot/data").write_bytes(b"written")
+        self.session.state.update(saves=str(saves), backup=str(backup))
+        self.session.running = lambda: False
+        # No runner: start fails once it launches, after the new backup.
+        with self.assertRaises(OSError):
+            self.session.start(self.folder / "missing-runner", image)
+        self.assertEqual((saves / "slot/data").read_bytes(), b"before")
+        self.assertEqual((backup / "slot/data").read_bytes(), b"before")
+
+    def test_stop_puts_back_the_controller_mode_preference(self):
+        self.session.running = lambda: False
+        preference = self.folder / "controller-mode-v1"
+        preference.write_bytes(b"DCP1\x01\x01\x01\x01")
+        self.session.state.update(preference=str(preference), preference_bytes=b"DCP1\0\0\0\0".hex())
+        self.session.stop()
+        self.assertEqual(preference.read_bytes(), b"DCP1\0\0\0\0")
+        # A file the run created goes again.
+        self.session.state.update(pid=1, preference_bytes=None)
+        self.session.stop()
+        self.assertFalse(preference.exists())
+        # --keep-save keeps it.
+        preference.write_bytes(b"DCP1\x01\0\0\0")
+        self.session.state.update(pid=1)
+        self.session.stop(keep_save=True)
+        self.assertTrue(preference.exists())
+
+    def test_start_refuses_a_disc_another_game_runs(self):
+        image = self.folder / "disc/default.xbe"
+        image.parent.mkdir()
+        image.write_bytes(b"xbe")
+        runner = self.folder / "recomp_program_runner"
+        # A process whose command line reads like a runner's.
+        other = subprocess.Popen([str(runner), "-c", "import time; time.sleep(30)", "--xbe", str(image)],
+                                 executable=sys.executable)
+        try:
+            deadline = time.monotonic() + 5
+            while not drive_game.other_runners(image) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(drive_game.other_runners(image), [other.pid])
+            found = Session(self.folder / "found")
+            found.state = {"pid": other.pid, "image": str(image)}
+            self.assertTrue(found.running())
+            session = Session(self.folder / "fresh")
+            with self.assertRaisesRegex(DriveError, "another game is running"):
+                session.start(runner, image)
+            self.assertNotIn("backup", session.state)
+        finally:
+            other.kill()
+            other.wait()
+
+    @unittest.skipUnless(os.name == "posix", "runs a shell script as the game")
+    def test_a_game_that_exits_at_once_leaves_nothing_to_put_back(self):
+        image = self.folder / "disc/default.xbe"
+        (image.parent / ".recomp-storage/partition1/UDATA").mkdir(parents=True)
+        image.write_bytes(b"xbe")
+        runner = self.folder / "game"
+        runner.write_text("#!/bin/sh\necho 'save recovery failed'\n", encoding="ascii")
+        runner.chmod(0o755)
+        session = Session(self.folder / "fresh")
+        with self.assertRaisesRegex(DriveError, "exited before it polled"):
+            session.start(runner, image)
+        state = Session(self.folder / "fresh").state
+        self.assertFalse({"pid", "backup", "preference"} & set(state))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Scripted play** (#158). `RECOMP_AUTO_LOG=1` prints an `[auto:ui]` line
+  whenever the game changes screen or moves a cursor: menus, the save
+  select, the island's places, the part of the day, the shop, the items and
+  Collection screens, a new vacation's character select and its dialogs.
+  `tools/drive_game.py` presses pad buttons and waits for those lines, with
+  routes from launch to the shop, the pool, the items screen, the hotel at
+  night and a new vacation, and puts back any saves a run changes.
+  `RECOMP_SCREENSHOT_TRIGGER` lets a script take screenshots. The log and
+  the trigger do not write guest memory; both are off by default. See `docs/automation.md` and `docs/ui-log.md`.
 - **Title screen idle behavior** (#117). A launcher choice, or
   `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
   idle. **Default** is the game's own attract sequence. **No cutscene**

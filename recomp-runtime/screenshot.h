@@ -30,6 +30,11 @@ static inline bool recomp_screenshot_key(bool f12, bool shift, bool texture_keys
 void recomp_screenshot_request(void);
 bool recomp_screenshot_take_request(void);
 
+/* Once a frame: when RECOMP_SCREENSHOT_TRIGGER names a file that exists,
+   removes it and requests a screenshot, so a script can take one without a
+   key press. */
+void recomp_screenshot_poll_trigger(void);
+
 /* Writes BGRA rows (top row first, `pitch` bytes apart) as an RGB PNG at a
    UTF-8 path. Uncompressed deflate keeps it dependency-free; false on any
    failure. */

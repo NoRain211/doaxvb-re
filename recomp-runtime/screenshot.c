@@ -16,7 +16,7 @@
 #include <sys/stat.h>
 #define make_folder(path) mkdir(path, 0755)
 #define open_file(path, mode) fopen(path, mode)
-#define remove_file(path) remove(path)
+#define remove_file(path) (remove(path) == 0)
 #endif
 
 #ifdef _WIN32
@@ -47,10 +47,10 @@ static FILE *open_file(const char *path, const char *mode)
     return widen(path, wide, 1200) && widen(mode, wide_mode, 8) ? _wfopen(wide, wide_mode) : NULL;
 }
 
-static void remove_file(const char *path)
+static bool remove_file(const char *path)
 {
     wchar_t wide[1200];
-    if (widen(path, wide, 1200)) _wremove(wide);
+    return widen(path, wide, 1200) && _wremove(wide) == 0;
 }
 #endif
 
@@ -76,6 +76,34 @@ bool recomp_screenshot_take_request(void)
 #else
     return atomic_exchange(&requested, false);
 #endif
+}
+
+void recomp_screenshot_poll_trigger(void)
+{
+    static int enabled = -1;
+    static char trigger[1024];
+    if (enabled < 0) {
+#ifdef _WIN32
+        /* getenv would give the ANSI code page; the path is kept as UTF-8. */
+        const wchar_t *chosen = _wgetenv(L"RECOMP_SCREENSHOT_TRIGGER");
+        enabled = chosen != NULL && chosen[0] != L'\0' && narrow(chosen, trigger, sizeof trigger);
+#else
+        const char *chosen = getenv("RECOMP_SCREENSHOT_TRIGGER");
+        enabled = chosen != NULL && chosen[0] != '\0' &&
+            (size_t)snprintf(trigger, sizeof trigger, "%s", chosen) < sizeof trigger;
+#endif
+    }
+    if (!enabled) return;
+    FILE *file = open_file(trigger, "rb");
+    if (file == NULL) return;
+    fclose(file);
+    /* A file that stays would request a screenshot every frame. */
+    if (!remove_file(trigger)) {
+        enabled = 0;
+        fprintf(stderr, "recomp screenshot: cannot remove the trigger %s; triggers are off\n", trigger);
+        return;
+    }
+    recomp_screenshot_request();
 }
 
 static uint32_t crc_table[256];
@@ -180,7 +208,7 @@ bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
         write_chunk(file, "IDAT", zlib, (uint32_t)at) &&
         write_chunk(file, "IEND", NULL, 0u);
     if (fclose(file) != 0) written = false;
-    if (!written) remove_file(path);
+    if (!written) (void)remove_file(path);
 done:
     free(raw);
     free(zlib);

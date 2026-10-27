@@ -15,6 +15,8 @@
 #include "title_idle.h"
 #include "unlock_swimsuits.h"
 #include "xbox_memory_layout.h"
+#include "ui_log.h"
+#include "screenshot.h"
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -433,6 +435,8 @@ void recomp_d3d_swap_adapter(void)
 #ifdef RECOMP_FULL_PROGRAM
     recomp_title_idle_frame();
     recomp_unlock_swimsuits_frame();
+    recomp_ui_log_frame();
+    recomp_screenshot_poll_trigger();
     /* Scene state machine at 0x000A3820: 0x5DECE0 is the scene currently
        running and 0x5DED55 is the scene requested for the next iteration.
        START writes 0x5DED55 from two scene handlers (0x000A4DA0 -> 4,

@@ -37,6 +37,29 @@ int main(int argc, char **argv)
     check(recomp_screenshot_take_request(), "a request is taken");
     check(!recomp_screenshot_take_request(), "a request is taken once");
 
+    {
+        char trigger[1024];
+        FILE *created;
+
+        snprintf(trigger, sizeof trigger, "%s.trigger", path);
+#ifdef _WIN32
+        _putenv_s("RECOMP_SCREENSHOT_TRIGGER", trigger);
+#else
+        setenv("RECOMP_SCREENSHOT_TRIGGER", trigger, 1);
+#endif
+        remove(trigger); /* left by an interrupted run */
+        recomp_screenshot_poll_trigger();
+        check(!recomp_screenshot_take_request(), "no trigger file, no request");
+        created = fopen(trigger, "wb");
+        check(created != NULL, "the trigger file is made");
+        if (created != NULL) fclose(created);
+        recomp_screenshot_poll_trigger();
+        check(recomp_screenshot_take_request(), "the trigger file requests a screenshot");
+        created = fopen(trigger, "rb");
+        check(created == NULL, "the trigger file is removed");
+        if (created != NULL) fclose(created);
+    }
+
     check(!recomp_texture_keys_enabled(NULL, NULL), "textures are off by default");
     check(!recomp_texture_keys_enabled("0", ""), "an empty texture folder and dump=0 leave F12 free");
     check(recomp_texture_keys_enabled("1", NULL), "a texture dump takes F12");
