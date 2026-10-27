@@ -265,6 +265,16 @@ class DriveGameTests(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(self.game.presses, ["0", "0", "d0010", "d0008", "0", "0"])
 
+    def test_route_stops_at_once_on_a_save_that_continues_at_night(self):
+        self.append("[auto:ui] frame 1: scene menu", "[auto:ui] frame 1: list 0 cursor 0 of 2: GO TO ZACK ISLAND",
+                    "[auto:ui] frame 2: menu screen save-select", "[auto:ui] frame 2: save vacation 1")
+        answers = [["list 2 cursor 0 of 3: Continue"],
+                   ["scene island", "day part night", "island map", "map location 0 Niki Beach"]]
+        self.play(lambda code, count: [f"[auto:ui] frame {count}: {line}" for line in answers[count - 1]])
+        with self.assertRaisesRegex(DriveError, "at night"):
+            drive_game.route(self.session, "shop")
+        self.assertEqual(self.game.presses, ["0", "0"])
+
     def test_buy_walks_the_prompts(self):
         state = {"step": "list", "cursor": 0}
 

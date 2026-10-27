@@ -107,6 +107,10 @@ morning) and takes about 45 s. One A skips each rest's scene; the driver
 presses nothing more until the pool's menu is back, because the menu would
 take the next A as Leave the poolside.
 
+Every route except `route map` needs a save that continues before night.
+At night the map offers only the hotel, so they stop as soon as the map's
+`day part night` line appears.
+
 ### The pool's menu hides itself
 
 When no button is pressed for a while, the pool's menu hides. In one run it

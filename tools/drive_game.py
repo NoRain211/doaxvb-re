@@ -632,6 +632,11 @@ def route(session, target, vacation=1, girl="Kasumi"):
     # One A takes Continue; the island takes a while to load.
     session.press_until("a", r"menu screen -1|scene island", 30, 4)
     session.expect(r"map location", 60)
+    part = session.latest(r"\[auto:ui\] .*day part \w+$")
+    if target != "map" and part is not None and part.endswith(" night"):
+        # The night's map offers only the hotel, so goto would press in vain.
+        raise DriveError(f"Vacation {vacation} continues at night, when only the hotel is open; "
+                         "use a save from earlier in the day")
     if target in ("pool", "items"):
         session.goto("Poolside")
         session.press_until("a", r"island pool")
