@@ -62,6 +62,9 @@ def prepare_lifter(work, revision=None):
     revision = revision or LIFTER_REVISION
     # Drives such as exFAT record no owner, so git rejects the clone as dubious (issue #110).
     lifter_git = ["git", "-c", f"safe.directory={LIFTER.as_posix()}"]
+    # Use Windows' certificate store: a user git config naming a missing CA bundle
+    # broke the download (#160). Passed per command so a retried checkout also gets it.
+    tls = ["-c", "http.sslBackend=schannel"] if sys.platform == "win32" else []
     if (ROOT / ".git").exists():
         # Older checkouts may still point the submodule at the upstream URL.
         command(["git", "submodule", "sync", "--", "tools/xboxrecomp"], ROOT, work / "sync.log")
@@ -69,13 +72,10 @@ def prepare_lifter(work, revision=None):
         if (ROOT / ".git").exists():
             command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
         else:  # A release ZIP carries no repository metadata.
-            # Use Windows' certificate store: a user git config naming a missing CA bundle
-            # broke the download (#160). Saved in the clone, it also covers the checkout's fetches.
-            tls = ["-c", "http.sslBackend=schannel"] if sys.platform == "win32" else []
             command(["git", "clone", *tls, "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
                     ROOT, work / "lifter.log")
     if not (ROOT / ".git").exists():  # Also completes a clone whose checkout failed earlier.
-        command(lifter_git + ["checkout", "--detach", revision], LIFTER, work / "checkout.log")
+        command(lifter_git + tls + ["checkout", "--detach", revision], LIFTER, work / "checkout.log")
     head = subprocess.check_output(lifter_git + ["rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
     dirty = subprocess.check_output(lifter_git + ["status", "--porcelain"], cwd=LIFTER, text=True).strip()
     if head != revision or dirty:
