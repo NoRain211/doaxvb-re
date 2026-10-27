@@ -30,8 +30,14 @@ class FakeGame(threading.Thread):
     def run(self):
         while not self.stopping.is_set():
             if self.session.press_path.exists():
-                code = self.session.press_path.read_text(encoding="ascii")
-                self.session.press_path.unlink()
+                try:
+                    code = self.session.press_path.read_text(encoding="ascii")
+                    self.session.press_path.unlink()
+                except PermissionError:
+                    # Windows refuses the file while the driver renames it
+                    # into place; the runner retries the same way.
+                    time.sleep(0.01)
+                    continue
                 self.presses.append(code)
                 lines = self.answer(code, len(self.presses))
                 if lines:
