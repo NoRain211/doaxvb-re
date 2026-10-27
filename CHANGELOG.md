@@ -81,7 +81,7 @@
 
 ### Fixed
 
-- **macOS setup**. Since the Linux launcher was added, setup asked CMake for
+- **macOS setup** (#164). Since the Linux launcher was added, setup asked CMake for
   a `recomp_launcher` target that only Windows and Linux define, so a macOS
   build stopped after compiling. macOS builds no longer request it; its
   launcher is still compiled from Swift on first use by `launcher.sh`.

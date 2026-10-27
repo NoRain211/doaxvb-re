@@ -500,7 +500,8 @@ if ($padReady) {
     })
     $padTimer.Start()
 }
-# Without a build, -PlaySaved opens the window, whose Play button leads to the Build page.
+# Without a build, -PlaySaved opens the window on the Build page instead.
+if ($PlaySaved -and -not (Test-Built)) { Select-Section 1 }
 if (-not ($PlaySaved -and (Test-Built)) -and $form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]
