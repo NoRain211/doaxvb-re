@@ -8,6 +8,69 @@ Add-Type -Namespace DOAXBV -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr window, int index);
 [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr window, int index, int value);
 '@
+# Controllers read through the game's own SDL3.dll, so Xbox and PlayStation pads both work.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace DOAXBV {
+public static class Pad {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr LoadLibraryW(string path);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] [return: MarshalAs(UnmanagedType.I1)] static extern bool SDL_SetHint(string name, string value);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] [return: MarshalAs(UnmanagedType.I1)] static extern bool SDL_Init(uint flags);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] static extern void SDL_UpdateGamepads();
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] static extern IntPtr SDL_GetGamepads(out int count);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] static extern IntPtr SDL_GetGamepadFromID(uint id);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] static extern IntPtr SDL_OpenGamepad(uint id);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] [return: MarshalAs(UnmanagedType.I1)] static extern bool SDL_GetGamepadButton(IntPtr pad, int button);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] static extern short SDL_GetGamepadAxis(IntPtr pad, int axis);
+    [DllImport("SDL3.dll", CallingConvention = CallingConvention.Cdecl)] static extern void SDL_free(IntPtr memory);
+    static readonly string[] names = { "up", "down", "left", "right", "a", "b", "start", "lb", "rb" };
+    // SDL buttons for a, b, start, lb and rb: south, east, start, left and right shoulder.
+    static readonly int[] buttons = { 0, 1, 6, 9, 10 };
+    static bool ready;
+    static int last, nextRepeat;
+    public static bool Start(string dll) {
+        if (LoadLibraryW(dll) == IntPtr.Zero) return false;
+        SDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
+        return ready = SDL_Init(0x2000);  // SDL_INIT_GAMEPAD
+    }
+    public static string Poll() { return ready ? Step(Held(), Environment.TickCount) : null; }
+    // Bits in names order, from every pad's d-pad, left stick and buttons.
+    static int Held() {
+        SDL_UpdateGamepads();
+        int count, held = 0;
+        IntPtr ids = SDL_GetGamepads(out count);
+        for (int i = 0; i < count; i++) {
+            uint id = (uint)Marshal.ReadInt32(ids, i * 4);
+            IntPtr pad = SDL_GetGamepadFromID(id);
+            if (pad == IntPtr.Zero) pad = SDL_OpenGamepad(id);
+            if (pad == IntPtr.Zero) continue;
+            int x = SDL_GetGamepadAxis(pad, 0), y = SDL_GetGamepadAxis(pad, 1);
+            if (SDL_GetGamepadButton(pad, 11) || y < -20000) held |= 1;
+            if (SDL_GetGamepadButton(pad, 12) || y > 20000) held |= 2;
+            if (SDL_GetGamepadButton(pad, 13) || x < -20000) held |= 4;
+            if (SDL_GetGamepadButton(pad, 14) || x > 20000) held |= 8;
+            for (int b = 0; b < buttons.Length; b++) if (SDL_GetGamepadButton(pad, buttons[b])) held |= 16 << b;
+        }
+        SDL_free(ids);
+        return held;
+    }
+    // One action per call: each new press in turn, else a held direction
+    // repeating after 350 ms, then every 120 ms, like launcher_sdl.cpp.
+    public static string Step(int held, int now) {
+        last &= held;
+        for (int i = 0; i < names.Length; i++) {
+            int bit = 1 << i;
+            if ((held & bit) != 0 && (last & bit) == 0) { last |= bit; nextRepeat = now + 350; return names[i]; }
+        }
+        for (int i = 0; i < 4; i++) {
+            if ((held & (1 << i)) != 0 && now - nextRepeat >= 0) { nextRepeat = now + 120; return names[i]; }
+        }
+        return null;
+    }
+}
+}
+'@
 # The console is hidden, so show any failure instead of exiting silently.
 $ErrorActionPreference = 'Stop'
 trap { [Windows.Forms.MessageBox]::Show("$_", 'DOAXBV launcher') | Out-Null; exit 1 }
@@ -395,6 +458,44 @@ $form.Controls.AddRange(@($menu) + @($title, $card))
 Select-Section 0
 $form.AcceptButton = $play
 $form.ActiveControl = $play
+# Controller, as in launcher_sdl.cpp: LB/RB switch sections, the d-pad moves between
+# controls and left/right change a list or number, A toggles or presses, Start plays, B quits.
+# shortcut: no pad input until a build supplies SDL3.dll; add an XInput fallback if players need the Build page by pad.
+$sdl = @(Get-ChildItem (Join-Path $root 'private\setup-*\build\SDL3.dll'), (Join-Path $root 'SDL3.dll') -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending)[0]
+$padReady = $false
+if ($sdl -and [Environment]::Is64BitProcess) { try { $padReady = [DOAXBV.Pad]::Start($sdl.FullName) } catch {} }
+if ($padReady) {
+    function Select-PadSection($step) {
+        Select-Section (($state.section + $step + $sections.Count) % $sections.Count)
+        if (-not $pages[$state.section].SelectNextControl($null, $true, $true, $true, $false)) { $play.Focus() | Out-Null }
+    }
+    $padTimer = New-Object Windows.Forms.Timer -Property @{ Interval = 30 }
+    $padTimer.Add_Tick({
+        $action = [DOAXBV.Pad]::Poll()
+        # Only the focused launcher acts, so the pad never types into another window.
+        if (-not $action -or [Windows.Forms.Form]::ActiveForm -ne $form) { return }
+        $focused = $form.ActiveControl
+        $change = @{ left = -1; right = 1 }[$action]
+        switch ($action) {
+            'lb' { Select-PadSection -1 }
+            'rb' { Select-PadSection 1 }
+            'up' { $form.SelectNextControl($focused, $false, $true, $true, $true) | Out-Null }
+            'down' { $form.SelectNextControl($focused, $true, $true, $true, $true) | Out-Null }
+            { $change -and $focused -is [Windows.Forms.ComboBox] } {
+                $focused.SelectedIndex = [Math]::Max(0, [Math]::Min($focused.Items.Count - 1, $focused.SelectedIndex + $change))
+            }
+            { $change -and $focused -is [Windows.Forms.NumericUpDown] } { if ($change -gt 0) { $focused.UpButton() } else { $focused.DownButton() } }
+            'a' {
+                if ($focused -is [Windows.Forms.CheckBox]) { $focused.Checked = -not $focused.Checked }
+                elseif ($focused -is [Windows.Forms.Button]) { $focused.PerformClick() }
+            }
+            'start' { $play.PerformClick() }
+            'b' { $form.Close() }
+        }
+    })
+    $padTimer.Start()
+}
 if ($form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]

@@ -104,6 +104,12 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
 
 ### Added
 
+- **Launcher controller support**. The Windows launcher took only the
+  keyboard and mouse, so players on a pad had to reach for the keyboard to
+  press Play. Once a build exists, Xbox and PlayStation controllers work in
+  it through the game's own SDL3: LB/RB switch sections, the d-pad moves
+  between options and changes lists, A ticks or presses, Start plays and B
+  quits.
 - **High refresh presentation** (#98). On a display above 60 Hz,
   `RECOMP_SPLIT_RATE=auto` shows extra frames between the game's 60 Hz ticks
   by interpolating the camera, characters, the ball and singly drawn props.
