@@ -69,7 +69,10 @@ def prepare_lifter(work, revision=None):
         if (ROOT / ".git").exists():
             command(["git", "submodule", "update", "--init", "tools/xboxrecomp"], ROOT, work / "lifter.log")
         else:  # A release ZIP carries no repository metadata.
-            command(["git", "clone", "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
+            # Use Windows' certificate store: a user git config naming a missing CA bundle
+            # broke the download (#160). Saved in the clone, it also covers the checkout's fetches.
+            tls = ["-c", "http.sslBackend=schannel"] if sys.platform == "win32" else []
+            command(["git", "clone", *tls, "--no-checkout", "--filter=blob:none", LIFTER_REPOSITORY, LIFTER],
                     ROOT, work / "lifter.log")
     if not (ROOT / ".git").exists():  # Also completes a clone whose checkout failed earlier.
         command(lifter_git + ["checkout", "--detach", revision], LIFTER, work / "checkout.log")

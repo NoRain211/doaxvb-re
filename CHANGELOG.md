@@ -65,6 +65,10 @@
   lifter download failed, the closing "Build failed" line gave only the
   command and its exit code. It now ends with the tool's own last message,
   such as Git's reason for a failed download, and the path of the step's log.
+- **Lifter download on Windows** (#160). Setup from a release ZIP failed with
+  `error adding trust anchors from file` when the PC's own Git settings
+  pointed at a certificate file that no longer exists. Setup now downloads
+  the lifter with Windows' own certificate store and ignores that setting.
 - **Depth of field above 480p on macOS and Linux**. The blurred background
   in the real-time demo and close-ups looked blocky and streaky next to the
   sharp model on an upscaled frame. The game blurs a 256x256 copy of the
