@@ -41,6 +41,7 @@ class ExtractionTests(unittest.TestCase):
             with patch("sys.stdout", console), self.assertRaises(subprocess.CalledProcessError) as failure:
                 run_logged([sys.executable, "-u", "-c", script, str(gate)], log)
             self.assertEqual(failure.exception.returncode, 7)
+            self.assertTrue(str(failure.exception).endswith(f"compiler error (log: {log})"))
             self.assertTrue(gate.exists(), "Output must reach the console before the child exits")
             self.assertIn("compiler error", console.getvalue())
             self.assertIn(b"compiler error", log.read_bytes())
