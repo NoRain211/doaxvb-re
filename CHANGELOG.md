@@ -179,14 +179,14 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
   presentation path for G-Sync and FreeSync. VRR must already be active for
   the game window, or the picture tears. Its effect on displayed pacing is
   not yet verified.
-- **macOS build** (#99). Apple Silicon and Intel Macs can build the game from
-  source with `build_game.sh` and play it with `launcher.sh`; see
+- **macOS build** (#99, by @tmcleroy). Apple Silicon and Intel Macs can build
+  the game from source with `build_game.sh` and play it with `launcher.sh`; see
   `docs/building.md`. It presents through SDL_GPU on Metal and uses SDL for
   audio and the keyboard. SMAA and custom soundtracks are not available on
   macOS yet. A contributor's smoke run on an Apple Silicon Mac reached the
   save-select and options menus; it has not been play-tested.
-- **Linux and Steam Deck build** (#103). x86-64 Linux, including SteamOS
-  through a container build, can build the game with `build_game.sh` and play
+- **Linux and Steam Deck build** (#103, by @tmcleroy). x86-64 Linux, including
+  SteamOS through a container build, can build the game with `build_game.sh` and play
   it with `launcher.sh`, which opens a gamepad settings screen; see
   `docs/building.md`. It presents through SDL_GPU on Vulkan and compiles
   shaders at runtime with the system's shaderc. SMAA and custom soundtracks are
