@@ -36,7 +36,8 @@ audio output and key Direct3D 8 and DirectSound APIs with native Windows
 equivalents. The rest of the game, including its statically linked libraries,
 still runs as generated code. The plan is to replace game logic with readable,
 hand-written source one data-structure cluster at a time while the game keeps
-running; so far only the startup thread entry has been rewritten.
+running; so far the startup thread entry and the girls' per-frame joint bend
+and morph blend have been rewritten.
 
 ## Screenshots
 
@@ -63,7 +64,8 @@ running; so far only the startup thread entry has been rewritten.
 > upside-down map flash leaving the pool
 > ([#55](https://github.com/NoRain211/doaxbv-re/issues/55)), possibly missing
 > underwater textures ([#56](https://github.com/NoRain211/doaxbv-re/issues/56))
-> and blinking shore textures ([#159](https://github.com/NoRain211/doaxbv-re/issues/159)).
+> and blinking shore textures with a black flash before a point's celebration
+> ([#159](https://github.com/NoRain211/doaxbv-re/issues/159)).
 
 | Area | State |
 | --- | --- |
@@ -81,8 +83,8 @@ running; so far only the startup thread entry has been rewritten.
 | Free camera, pause anywhere, screenshots, and a MODEL VIEWER main-menu mode: pick a girl, court and time of day, change her animation and swimsuit live (launcher checkbox) | Opt-in; see [`docs/free-camera.md`](docs/free-camera.md) and [`docs/model-viewer.md`](docs/model-viewer.md) |
 | Unlock swimsuits: every swimsuit a girl can wear, in Exhibition (launcher option) | Opt-in; see [`docs/swimsuit-unlock.md`](docs/swimsuit-unlock.md) |
 | Sun shadows, per-pixel lighting and smooth normals (Direct3D 11) | Opt-in in 0.6.0; see [`docs/sun-shadow.md`](docs/sun-shadow.md) |
-| Whole-game high frame rate (`RECOMP_GAME_HZ`, Windows) | Opt-in in 0.6.0 |
-| Launcher that builds the game, works with a controller, and `DOAXBV.exe` | Added in 0.6.0 |
+| Whole-game high frame rate (`RECOMP_GAME_HZ`, Windows) | Experimental in 0.6.0; slight streaking at 120 Hz |
+| Launcher that builds the game, works with a controller, and `DOAXBV.exe` | Added in 0.6.0; controller checked with a virtual gamepad only |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |

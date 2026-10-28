@@ -34,12 +34,18 @@ adds manual call targets for the readable body routines (#141) and sun-shadow
 scenery (#133). Windows setup compiles with llvm-mingw instead of Visual
 Studio (#115). It adds the rebuilt launcher with controller support and
 `DOAXBV.exe` (#148–#151, #154, #164) and opt-in sun shadows, per-pixel
-lighting, whole-game high frame rate, the free camera and model viewer, title
-idle modes and swimsuit unlock. Its packaged setup regenerated the program
-byte-for-byte and built the runner, launcher and `DOAXBV.exe` on Windows.
-Most of these changes were play-tested on their own branches before merge;
-0.6.0 itself has not had a full play session, and it does not expand the
-play-test coverage below.
+lighting, an experimental whole-game high frame rate, the free camera and
+model viewer, title idle modes and swimsuit unlock. Its packaged setup
+regenerated the program byte-for-byte and built the runner, launcher and
+`DOAXBV.exe` on Windows. The user play-tested sun shadows (#122, #133, #135),
+per-pixel lighting (#130), the 1440p widescreen fit on a 16:9 screen (#119)
+and the 120 Hz fixes (#137, #138) on their branches before merge; the author
+played the title idle modes, shorter demo cuts and depth-of-field fix on
+macOS and a Steam Deck (#117, #120, #121). Location-view pacing (#145),
+specular and lines (#146), the sea shimmer fix (#155) and the launcher's
+Build page (#149) have not been play-tested, and launcher controller support
+was checked only with a virtual SDL gamepad. 0.6.0 itself has not had a full
+play session, and it does not expand the play-test coverage below.
 
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player

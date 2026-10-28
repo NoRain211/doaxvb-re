@@ -5,7 +5,7 @@
 0.6.0 builds on RC1. Windows setup no longer needs Visual Studio, the
 launcher is rebuilt in the style of the game's island menus and builds the
 game itself, and new opt-in options add sun shadows, per-pixel lighting, a
-whole-game high frame rate, a free camera with a model viewer, and more.
+free camera with a model viewer, and more.
 Every new option is off by default. The generation recipe changed (#141 and
 #133 add manual call targets), so extract the ZIP into a new folder and build
 again; saves are unchanged, so copy your `private` saves over.
@@ -39,17 +39,20 @@ again; saves are unchanged, so copy your `private` saves over.
 - **Sun shadows** (#122, #133, #135, #139, #140). **Sun shadows** on the
   launcher's Graphics page, or `RECOMP_D3D_SUN_SHADOW=1`, replaces the game's flat
   shadows with real sun shadow maps on Direct3D 11. Characters, the ball,
-  court posts, palms and the net tape cast them, and characters and the ball
-  are shaded by palm and post shadows. See `docs/sun-shadow.md`.
+  court posts and palms cast them, characters and the ball are shaded by
+  palm and post shadows, and the net keeps its original shadow. See
+  `docs/sun-shadow.md`.
 - **Per-pixel lighting and smooth normals** (#130). Two Graphics options, or
   `RECOMP_D3D_PIXEL_LIGHTING=1` and `RECOMP_D3D_SMOOTH_NORMALS=1`, light the
   game's directional and point lights per pixel and weld normals across split
   vertices. Direct3D 11 only.
-- **Whole-game high frame rate** (#132, #137, #138, #145).
-  `RECOMP_GAME_HZ=120` (60 to 360) runs the game's logic at its own 60 Hz and
-  presents interpolated frames between ticks, for menus, matches, the island
-  and its locations. Windows only; it is the whole-game alternative to RC1's
-  `RECOMP_SPLIT_RATE`. Unset, timing is unchanged. See
+- **Experimental whole-game high frame rate** (#132, #137, #138, #145).
+  `RECOMP_GAME_HZ=120` runs the game's logic at its own 60 Hz and presents
+  interpolated frames between ticks, for menus, matches, the island and its
+  locations. Windows only. Player tests at 120 Hz still show slight
+  streaking on characters and the ball, and rates above that break animation
+  timing and the camera, so RC1's `RECOMP_SPLIT_RATE` stays the recommended
+  high refresh option. Unset, timing is unchanged. See
   `docs/wayfinder/research/high-frame-rate-whole-game.md`.
 - **Title screen idle behavior** (#117, by @tmcleroy). A launcher choice, or
   `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
@@ -84,7 +87,7 @@ again; saves are unchanged, so copy your `private` saves over.
   with `error adding trust anchors from file` when the PC's own Git settings
   pointed at a certificate file that no longer exists. Setup now downloads
   the lifter with Windows' own certificate store.
-- **Setup failures name their cause** (#161). The closing "Build failed"
+- **Setup failures name their cause** (#160, #161). The closing "Build failed"
   line gave only the command and its exit code. It now ends with the tool's
   own last message, such as Git's reason for a failed download, and the
   step's log path.
