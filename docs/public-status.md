@@ -29,6 +29,18 @@ from #104, still with the same recipe; on Linux only Steam Deck smoke runs to
 the save-select and settings menus have been done. None of these releases
 expands the play-test coverage below.
 
+0.6.0 Beta (tag `v0.6.0`) builds on RC1 with a new generation recipe, which
+adds manual call targets for the readable body routines (#141) and sun-shadow
+scenery (#133). Windows setup compiles with llvm-mingw instead of Visual
+Studio (#115). It adds the rebuilt launcher with controller support and
+`DOAXBV.exe` (#148–#151, #154, #164) and opt-in sun shadows, per-pixel
+lighting, whole-game high frame rate, the free camera and model viewer, title
+idle modes and swimsuit unlock. Its packaged setup regenerated the program
+byte-for-byte and built the runner, launcher and `DOAXBV.exe` on Windows.
+Most of these changes were play-tested on their own branches before merge;
+0.6.0 itself has not had a full play session, and it does not expand the
+play-test coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel

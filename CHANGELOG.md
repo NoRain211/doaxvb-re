@@ -1,30 +1,57 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 Beta — 2026-10-27
+
+0.6.0 builds on RC1. Windows setup no longer needs Visual Studio, the
+launcher is rebuilt in the style of the game's island menus and builds the
+game itself, and new opt-in options add sun shadows, per-pixel lighting, a
+whole-game high frame rate, a free camera with a model viewer, and more.
+Every new option is off by default. The generation recipe changed (#141 and
+#133 add manual call targets), so extract the ZIP into a new folder and build
+again; saves are unchanged, so copy your `private` saves over.
+
+### Changed
+
+- **Windows setup uses llvm-mingw clang instead of Visual Studio** (#115).
+  Setup downloads the pinned llvm-mingw release (190 MB) into
+  `tools/llvm-mingw` on first run and checks its SHA-256. It no longer needs
+  Visual Studio Build Tools, a Windows SDK or administrator approval. The
+  runner needs only Windows system DLLs and `SDL3.dll`.
+- **New launcher** (#148, #149, #150, #151, #154). The Windows launcher
+  copies the game's island map menus, with glass panels, green name plates
+  and A/B prompts, and sections for Build, Graphics, Audio, Game, Textures
+  and Help. Its **Build** page picks the ISO and runs setup with the output
+  shown in the window, so `Launcher.cmd` is the only file a new player has to
+  open. Setup copies the logo, button prompts, a beach backdrop and the
+  program icon from the player's own disc, and builds `Launcher.exe` with that
+  icon.
 
 ### Added
 
-- **DOAXBV.exe**. Windows setup now also builds `DOAXBV.exe` beside
-  `Launcher.exe`. It starts the game with the settings last saved in the
-  launcher, without showing the launcher; with nothing built yet it opens the
-  launcher instead. The launcher window and taskbar button now show the game
-  icon that setup cuts from the disc.
-- **Launcher controller support**. The Windows launcher took only the
-  keyboard and mouse, so players on a pad had to reach for the keyboard to
-  press Play. Once a build exists, Xbox and PlayStation controllers work in
-  it through the game's own SDL3: LB/RB switch sections, the d-pad moves
-  between options and changes lists, A ticks or presses, Start plays and B
-  quits.
-- **Scripted play** (#158). `RECOMP_AUTO_LOG=1` prints an `[auto:ui]` line
-  whenever the game changes screen or moves a cursor: menus, the save
-  select, the island's places, the part of the day, the shop, the items and
-  Collection screens, a new vacation's character select and its dialogs.
-  `tools/drive_game.py` presses pad buttons and waits for those lines, with
-  routes from launch to the shop, the pool, the items screen, the hotel at
-  night and a new vacation, and puts back any saves a run changes.
-  `RECOMP_SCREENSHOT_TRIGGER` lets a script take screenshots. The log and
-  the trigger do not write guest memory; both are off by default. See `docs/automation.md` and `docs/ui-log.md`.
-- **Title screen idle behavior** (#117). A launcher choice, or
+- **DOAXBV.exe** (#164). Setup also builds `DOAXBV.exe` beside `Launcher.exe`. It
+  starts the game with the settings last saved in the launcher, without
+  showing the launcher; with nothing built yet it opens the launcher on its
+  Build page. The launcher window and taskbar button show the game icon.
+- **Launcher controller support** (#164). Once a build exists, Xbox and
+  PlayStation controllers work in the Windows launcher through the game's own
+  SDL3: LB/RB switch sections, the d-pad moves between options and changes
+  lists, A ticks or presses, Start plays and B quits.
+- **Sun shadows** (#122, #133, #135, #139, #140). **Sun shadows** on the
+  launcher's Graphics page, or `RECOMP_D3D_SUN_SHADOW=1`, replaces the game's flat
+  shadows with real sun shadow maps on Direct3D 11. Characters, the ball,
+  court posts, palms and the net tape cast them, and characters and the ball
+  are shaded by palm and post shadows. See `docs/sun-shadow.md`.
+- **Per-pixel lighting and smooth normals** (#130). Two Graphics options, or
+  `RECOMP_D3D_PIXEL_LIGHTING=1` and `RECOMP_D3D_SMOOTH_NORMALS=1`, light the
+  game's directional and point lights per pixel and weld normals across split
+  vertices. Direct3D 11 only.
+- **Whole-game high frame rate** (#132, #137, #138, #145).
+  `RECOMP_GAME_HZ=120` (60 to 360) runs the game's logic at its own 60 Hz and
+  presents interpolated frames between ticks, for menus, matches, the island
+  and its locations. Windows only; it is the whole-game alternative to RC1's
+  `RECOMP_SPLIT_RATE`. Unset, timing is unchanged. See
+  `docs/wayfinder/research/high-frame-rate-whole-game.md`.
+- **Title screen idle behavior** (#117, by @tmcleroy). A launcher choice, or
   `RECOMP_TITLE_IDLE`, sets what the game does when its title screen is left
   idle. **Default** is the game's own attract sequence. **No cutscene**
   (`no-cutscene`) keeps the movies out of it: the game alternates between
@@ -32,84 +59,99 @@
   stays for 10 seconds instead of 30. **CPU Exhibition** (`cpu-exhibition`)
   starts Exhibition matches played by the CPU on every side, each with four
   random girls in random swimsuits on a random court, one match after
-  another until START is pressed. With Default nothing changes. See
-  `docs/title-idle.md`.
-- **Unlock swimsuits** (#112). An opt-in launcher option, or
+  another until START is pressed. See `docs/title-idle.md`.
+- **Shorter demo cuts** (#121, by @tmcleroy). A launcher option, or `RECOMP_DEMO_CUT_HOLD`
+  (1 to 59 frames), shortens the one-second freeze between the scenes of the
+  real-time demo.
+- **Unlock swimsuits** (#112, by @tmcleroy). A launcher option, or
   `RECOMP_UNLOCK_SWIMSUITS=1`, offers every girl in Exhibition every
   swimsuit she can wear, 307 of the game's 328. Vacations and saves are left
-  untouched. Off by default, and with it off nothing changes. See
-  `docs/swimsuit-unlock.md`.
-- **Demo cut hold**. A **Shorter demo cuts** launcher option, or
-  `RECOMP_DEMO_CUT_HOLD` (1 to 59 frames), shortens the one-second freeze
-  between the scenes of the real-time demo. Off by default; the game keeps its
-  own 60 frames. See `docs/title-idle.md`.
-- **Free camera**. A **Free camera** launcher option, or
-  `RECOMP_FREE_CAMERA=1`, lets F1 (or a click of the right stick) take
-  over the game's camera and fly it with the keyboard or a controller. While
-  it flies, Start freezes the scene (P pauses the game anywhere, with or
-  without the camera), H or the left shoulder hides the
-  2D overlay and . or the right shoulder steps one frame, for screenshots.
-  [ and ] or the d-pad's left and right play another of the scene's animation
-  clips on a character and hold it, and `\` or the left stick's click picks the
-  character.
-- **Model viewer**. With Free camera on, the main menu has a MODEL VIEWER
-  item. It goes through Exhibition's own character and court select; once
-  the match starts, the free camera comes on in front of Player 1's girl,
-  the scene keeps running (P or Start pauses it), and the other players,
-  the ball and the overlay are hidden.
-  Putting the camera away returns to the main menu. On court select, [ ] or
-  LT/RT choose the time of day (day, sunset or dusk). See
-  `docs/model-viewer.md`.
-- **Screenshots**. With Free camera on, F12 (or Back + A while flying) saves
-  the game's frame, without the overlay panel, as a PNG in Pictures/DOAXBV.
-  With texture replacement on, F12 stays its key and Shift+F12 takes the
-  screenshot.
-- **Overlay panel**. While the free camera flies, a small panel drawn with
-  Dear ImGui (D3D11 on Windows, SDL GPU elsewhere) names the chosen character, shows her
-  animation and freeze state and lists the controls; H hides it with the
-  game's overlay for a clean view. Off by default. See `docs/free-camera.md`.
-
-### Changed
-
-- Windows setup compiles the game with llvm-mingw clang instead of Visual
-  Studio (#115). `BuildGame.cmd` downloads the pinned llvm-mingw release
-  (190 MB) into `tools/llvm-mingw` on first run and checks its SHA-256. It no
-  longer needs Visual Studio Build Tools, a Windows SDK or administrator
-  approval. The runner needs only Windows system DLLs and `SDL3.dll`. The
-  generation recipe is unchanged, so existing builds keep working and saves
-  are unaffected.
+  untouched. See `docs/swimsuit-unlock.md`.
+- **Free camera, model viewer and screenshots** (#126, by @tmcleroy). With
+  the **Free camera** launcher option, or `RECOMP_FREE_CAMERA=1`, F1 (or a
+  click of the right stick) takes over the game's camera and flies it with
+  the keyboard or a controller. P pauses the game anywhere, H or the left
+  shoulder hides the 2D overlay, . or the right shoulder steps one frame,
+  and [ and ] play another animation clip on a character. The main menu gains
+  a MODEL VIEWER item that frames Player 1's girl on a chosen court and time
+  of day. F12 (Shift+F12 with texture replacement on) saves the frame as a
+  PNG in Pictures/DOAXBV, and a small panel lists the controls. See
+  `docs/free-camera.md` and `docs/model-viewer.md`.
 
 ### Fixed
 
-- **macOS setup** (#164). Since the Linux launcher was added, setup asked CMake for
-  a `recomp_launcher` target that only Windows and Linux define, so a macOS
-  build stopped after compiling. macOS builds no longer request it; its
-  launcher is still compiled from Swift on first use by `launcher.sh`.
-- **Setup failures name their cause** (#160). When a setup step such as the
-  lifter download failed, the closing "Build failed" line gave only the
-  command and its exit code. It now ends with the tool's own last message,
-  such as Git's reason for a failed download, and the path of the step's log.
-- **Lifter download on Windows** (#160). Setup from a release ZIP failed with
-  `error adding trust anchors from file` when the PC's own Git settings
+- **Lifter download on Windows** (#160, #163). Setup from a release ZIP failed
+  with `error adding trust anchors from file` when the PC's own Git settings
   pointed at a certificate file that no longer exists. Setup now downloads
-  the lifter with Windows' own certificate store and ignores that setting.
-- **Depth of field above 480p on macOS and Linux**. The blurred background
-  in the real-time demo and close-ups looked blocky and streaky next to the
-  sharp model on an upscaled frame. The game blurs a 256x256 copy of the
-  frame; the Metal and Vulkan presenter now averages the upscaled frame into
-  that copy and stretches the result back with a smooth filter. The D3D11
-  presenter already averaged the copy.
-- **Scene changes above 480p on macOS and Linux**. The picture the game
-  holds for a moment when it cuts from one scene to the next was a 512x512
-  copy stretched over the screen. The Metal and Vulkan presenter now keeps
-  that copy at the render resolution.
+  the lifter with Windows' own certificate store.
+- **Setup failures name their cause** (#161). The closing "Build failed"
+  line gave only the command and its exit code. It now ends with the tool's
+  own last message, such as Git's reason for a failed download, and the
+  step's log path.
+- **Setup on exFAT and FAT32 drives** (#110, #118). Setup from a release ZIP
+  on a drive that records no file owner stopped at the lifter checkout with
+  exit status 128. Rerunning setup now finishes it.
 - **Widescreen window fit** (#119). Above 480p, the borderless window now
   fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
   cut off the right side, and ultrawide screens show the picture in the
   middle. It uses real screen pixels when Windows display scaling is above
-  100%, so the picture is no longer blurred. The 480p window can no longer be
-  resized, which stretched the picture. The game now sees the dashboard's
-  Widescreen setting without the Letterbox flag, as on a real Xbox.
+  100%, so the picture is no longer blurred. The game now sees the
+  dashboard's Widescreen setting without the Letterbox flag, as on a real
+  Xbox.
+- **Lit materials and lines** (#146). Materials lit by the game's
+  fixed-function lights had no specular highlights, and line geometry the
+  game draws was missing on Direct3D 11.
+- **Title screen sea shimmer** (#155). The sea's shimmer layer was rejected
+  on every build since RC1's combiner change and fell back to plain water.
+- **Texture folders with non-English names** (#152). A texture replacement
+  or dump folder whose name had characters outside the system code page
+  reached the runtime as `???`.
+- **Depth of field and scene changes above 480p on macOS and Linux** (#120,
+  by @tmcleroy). The demo's blurred background looked blocky and streaky,
+  and the held picture at a scene cut was a stretched 512x512 copy.
+- **Kernel data placement** (#153). The runtime's kernel data, such as the
+  tick count, sat inside the game's own variables; it now lives above the
+  main stack, and the runner rejects a game image that reaches it.
+- **Guest buffer checks and music library loading** (#86, #87). Kernel calls
+  now check a guest buffer's full length, and music loads Media Foundation
+  only from System32.
+
+### For developers
+
+- **Scripted play** (#158, by @g-freeks). `RECOMP_AUTO_LOG=1` prints an
+  `[auto:ui]` line whenever the game changes screen or moves a cursor, and
+  `tools/drive_game.py` presses pad buttons and waits for those lines. See
+  `docs/automation.md` and `docs/ui-log.md`.
+- **Readable game code** (#141, by @tmcleroy). The per-frame joint bend and
+  the morph blend of the girls' bodies are now hand-written source, checked
+  identical to the generated code. See `docs/body-joints.md` and
+  `docs/body-morph.md`.
+- **Hardware ray-traced GI** (#131) and **G-buffer views** (#134,
+  `RECOMP_D3D_GBUFFER=1`). RTGI builds only with MSVC, so release builds,
+  which use llvm-mingw, do not include it and the launcher's RTGI option has
+  no effect there.
+- **Asset tools** (#129). Python tools read a player's own archives,
+  textures and models into `private/`. `RECOMP_CPU_EXHIBITION_COURT` pins
+  CPU Exhibition's court and cast for repeatable test runs (#128).
+
+### Known issues
+
+- Shore textures blink on the island, and the cut from a point to the
+  celebration can flash black (#159).
+- A second Hopping Game can be playable before loading finishes (#54), an
+  upside-down map can flash when leaving the pool (#55), and some underwater
+  beach textures may be missing (#56).
+- macOS and Linux do not yet render fog, point lights, the title sea shimmer
+  or the new Direct3D 11 lighting and shadow options (#105).
+- PlayStation controllers have not yet been confirmed on physical hardware.
+
+### Validation
+
+The packaged `BuildGame` regenerated the game program byte-for-byte against
+the recipe and compiled the Windows runner, launcher and `DOAXBV.exe`. Most
+changes were play-tested on their own branches before merge; this exact
+build has not had a full play session. Launcher controller support was checked with a virtual
+SDL gamepad, not a physical one.
 
 ## 0.6.0 Beta RC1 — 2026-10-09
 
