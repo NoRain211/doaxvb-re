@@ -47,7 +47,7 @@ again; saves are unchanged, so copy your `private` saves over.
   game's directional and point lights per pixel and weld normals across split
   vertices. Direct3D 11 only.
 - **Experimental whole-game high frame rate** (#132, #137, #138, #145).
-  `RECOMP_GAME_HZ=120` runs the game's logic at its own 60 Hz and presents
+  `RECOMP_GAME_HZ=120` (60 to 360) runs the game's logic at its own 60 Hz and presents
   interpolated frames between ticks, for menus, matches, the island and its
   locations. Windows only. Player tests at 120 Hz still show slight
   streaking on characters and the ball, and rates above that break animation
