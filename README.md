@@ -7,13 +7,11 @@
 **A native PC port of _Dead or Alive Xtreme Beach Volleyball_ (Windows, macOS & Linux), built by static recompilation, with the goal of rewriting it into readable source.**
 
 [![Latest release](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?label=beta)](https://github.com/NoRain211/doaxbv-re/releases/latest)
-[![Latest prerelease](https://img.shields.io/github/v/release/NoRain211/doaxbv-re?include_prereleases&label=prerelease)](https://github.com/NoRain211/doaxbv-re/releases)
 [![CI](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml/badge.svg)](https://github.com/NoRain211/doaxbv-re/actions/workflows/public-ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 ![Platform: Windows, macOS & Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)
 
 [Download](https://github.com/NoRain211/doaxbv-re/releases/latest) ·
-[Prerelease](https://github.com/NoRain211/doaxbv-re/releases) ·
 [Changelog](CHANGELOG.md) ·
 [Status](docs/public-status.md) ·
 [Controls](docs/recomp-controls.md) ·
@@ -107,9 +105,8 @@ Release ZIPs up to 0.6.0 RC1 instead offer to run Microsoft's C++ Build Tools
 installer, which needs administrator approval and several GB of disk space.
 
 1. Download the ZIP from the
-   [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest)
-   (or the newest [prerelease](https://github.com/NoRain211/doaxbv-re/releases)
-   to try upcoming fixes early) and extract it into a new folder with a short path.
+   [latest release](https://github.com/NoRain211/doaxbv-re/releases/latest) and
+   extract it into a new folder with a short path.
 2. Open `Launcher.cmd` (after setup, `Launcher.exe` opens the same window),
    open **Build**, choose your ISO and press **Build game**. Wait for **Build
    complete**. (Dragging the ISO onto `BuildGame.cmd` does the same.) With a
