@@ -25,7 +25,7 @@ python "%~dp0tools\build_game.py" --install-prerequisites --iso "%~f1"
 :done
 set "result=%errorlevel%"
 echo.
-if "%result%"=="0" echo Build complete. Double-click Launcher.cmd, or drop the printed build receipt onto RunGame.cmd.
+if "%result%"=="0" echo Build complete. Open Launcher.exe to choose settings, or DOAXBV.exe to play with the saved ones.
 pause
 exit /b %result%
 :usage
