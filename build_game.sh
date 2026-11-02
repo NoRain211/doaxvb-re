@@ -5,12 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="${SCRIPT_DIR}/private/venv"
 PYTHON="${VENV}/bin/python3"
 # Homebrew and Ubuntu Pythons refuse pip install, so setup keeps Capstone in its own venv.
-if ! "${PYTHON}" -c "import importlib.metadata as m, sys; sys.exit(m.version('capstone') != '5.0.9')" 2>/dev/null; then
+if ! "${PYTHON}" -c "import capstone, importlib.metadata as m, sys; sys.exit(m.version('capstone') != '5.0.9')" 2>/dev/null; then
     echo "Installing Capstone 5.0.9 into private/venv..."
-    if ! "${PYTHON}" -c "" 2>/dev/null; then
+    if ! "${PYTHON}" -m pip --version >/dev/null 2>&1; then
         python3 -m venv --clear "${VENV}"
     fi
-    "${PYTHON}" -m pip install --disable-pip-version-check --require-hashes \
+    "${PYTHON}" -m pip install --disable-pip-version-check --force-reinstall --require-hashes \
         -r "${SCRIPT_DIR}/tools/capstone-requirements.txt"
 fi
 if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
