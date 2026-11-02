@@ -52,6 +52,14 @@ fixes Windows setup from long folder paths (#171, #172) and the macOS
 Capstone setup hint (#173, #175). Its packaged setup was checked on Windows
 only; it does not expand the play-test coverage below.
 
+0.6.2 Beta (tag `v0.6.2`) keeps the same generation recipe and runtime. On
+macOS and Linux, setup installs Capstone and builds `extract-xiso` itself
+(#173, #177, #179); Linux builds with clang and has a CI runtime job (#178);
+and Windows setup retries the llvm-mingw move while antivirus holds it (#176).
+Its packaged setup was checked on Windows and on Linux (WSL Ubuntu 24.04);
+the macOS setup steps ran only in CI. It does not expand the play-test
+coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel

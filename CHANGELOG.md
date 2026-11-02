@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.2 Beta — 2026-11-02
+
+0.6.2 makes macOS and Linux setup install its own tools, builds Linux with
+clang, and lets Windows setup ride out antivirus scans. The game program,
+generation recipe and runtime are the same as 0.6.0 and 0.6.1, so a working
+build does not need rebuilding.
+
+### Fixed
+
+- **macOS and Linux setup needed Capstone installed by hand** (#173, #177).
+  `build_game.sh` now installs Capstone 5.0.9 into `private/venv`, pinned by
+  hash, and repairs a venv that is missing, broken or has the wrong version.
+- **macOS and Linux setup needed `extract-xiso` built by hand** (#173, #179).
+  When none is on `PATH`, setup builds the XboxDev release that the Windows
+  package bundles into `tools/extract-xiso`.
+- **Windows setup could stop with `Access is denied` after extracting
+  llvm-mingw** (#176). Antivirus can keep the new files open for a few
+  seconds; setup now retries the move and clears staging an earlier run left.
+- **The Linux package list was incomplete** (#178). With the X11 headers
+  installed, SDL3's build also needs six X11 extension packages, and the
+  runner needs `libshaderc1`. `docs/building.md` now gives a tested Ubuntu
+  24.04 command.
+
+### Changed
+
+- **Linux builds with clang** (#178) when `clang` and `clang++` are installed
+  and neither `CC` nor `CXX` is set, as Windows and macOS already do. CI now
+  builds and runs the runtime tests on Linux.
+
 ## 0.6.1 Beta — 2026-11-02
 
 0.6.1 fixes Windows setup from a long folder path and the Capstone setup
