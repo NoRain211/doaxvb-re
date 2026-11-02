@@ -77,6 +77,9 @@ class PrerequisiteTests(unittest.TestCase):
 
     def test_download_installs_verified_toolchain(self):
         payload = self.llvm_mingw_zip()
+        stale = self.root / "private/llvm-mingw-old/extract"
+        stale.mkdir(parents=True)
+        (stale / "locked.dll").write_bytes(b"")
         self.download.side_effect = lambda *args, **kwargs: io.BytesIO(payload)
         with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()), \
                 mock.patch.object(prerequisites.tempfile, "TemporaryDirectory",
@@ -84,7 +87,8 @@ class PrerequisiteTests(unittest.TestCase):
             prerequisites.install_llvm_mingw(self.root)
         # Long paths may be enabled on the test host, so check the staging path directly (#171).
         staging.assert_called_once_with(prefix="llvm-mingw-",
-                                        dir=prerequisites.extended_path(self.root / "private"))
+                                        dir=prerequisites.extended_path(self.root / "private"),
+                                        ignore_cleanup_errors=True)
         self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").read_bytes(), b"clang")
         self.assertEqual((self.root / "tools/llvm-mingw" / self.deep_name).read_bytes(), b"deep")
         self.assertEqual(list((self.root / "private").iterdir()), [])
@@ -109,6 +113,32 @@ class PrerequisiteTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     prerequisites.install_llvm_mingw(self.root)
                 self.assertFalse((self.root / "tools/llvm-mingw").exists())
+                self.assertEqual(list((self.root / "private").iterdir()), [])
+
+    def test_locked_extraction_is_retried_then_reported(self):
+        payload = self.llvm_mingw_zip()
+        self.download.side_effect = lambda *args, **kwargs: io.BytesIO(payload)
+        move = Path.replace
+        for failures, installed in ((10, False), (2, True)):
+            with self.subTest(failures=failures):
+                calls = []
+
+                def locked(path, target):
+                    calls.append(target)
+                    if len(calls) <= failures:
+                        raise PermissionError(13, "Access is denied")
+                    return move(path, target)
+
+                with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()), \
+                        mock.patch.object(Path, "replace", locked), \
+                        mock.patch.object(prerequisites.time, "sleep") as sleep:
+                    if installed:
+                        prerequisites.install_llvm_mingw(self.root)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "rerun setup"):
+                            prerequisites.install_llvm_mingw(self.root)
+                self.assertEqual(sleep.call_args_list, [mock.call(3)] * min(failures, 9))
+                self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").is_file(), installed)
                 self.assertEqual(list((self.root / "private").iterdir()), [])
 
     def test_build_checks_before_extraction_and_skips_for_generation(self):

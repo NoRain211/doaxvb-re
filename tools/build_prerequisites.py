@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -54,9 +55,13 @@ def install_llvm_mingw(root):
         raise ValueError(f"{target} exists but has no bin/clang.exe. Delete it and rerun setup.")
     private = root / "private"
     private.mkdir(exist_ok=True)
+    for stale in private.glob("llvm-mingw-*"):  # staging an earlier run could not clean up
+        shutil.rmtree(extended_path(stale), ignore_errors=True)
     # Staging adds ~70 characters to the ZIP's deepest paths, which can pass 260 under a long
     # install folder when Windows long paths are disabled (#171).
-    with tempfile.TemporaryDirectory(prefix="llvm-mingw-", dir=extended_path(private)) as folder:
+    # A folder antivirus still locks must not hide the rename error below.
+    with tempfile.TemporaryDirectory(prefix="llvm-mingw-", dir=extended_path(private),
+                                     ignore_cleanup_errors=True) as folder:
         archive = Path(folder) / "llvm-mingw.zip"
         print("Downloading the llvm-mingw compiler (190 MB)...", flush=True)
         try:
@@ -72,7 +77,16 @@ def install_llvm_mingw(root):
             contents.extractall(staging)
         (top,) = staging.iterdir()  # the release ZIP holds one versioned folder
         target.parent.mkdir(parents=True, exist_ok=True)
-        top.replace(target)
+        for attempt in range(10):
+            try:
+                top.replace(target)
+                break
+            except PermissionError as error:
+                # Antivirus can hold the freshly extracted files open for a few seconds.
+                if attempt == 9:
+                    raise ValueError(f"Could not move llvm-mingw into {target}: {error}. "
+                                     "Antivirus may still be scanning it; rerun setup.") from error
+                time.sleep(3)
 
 
 def ensure_prerequisites(root, install=False):
