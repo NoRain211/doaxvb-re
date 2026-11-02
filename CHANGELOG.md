@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.1 Beta — 2026-11-02
+
+0.6.1 fixes Windows setup from a long folder path. The game program and its
+generation recipe are the same as 0.6.0, so a working 0.6.0 build does not
+need rebuilding.
+
+### Fixed
+
+- **Setup stopped while extracting llvm-mingw** (#171, #172). When the game
+  folder's path was longer than about 105 characters and Windows long paths
+  were off, setup failed with `No such file or directory` on a deep compiler
+  file. Setup now extracts the compiler through an extended-length path, so
+  folders up to about 145 characters build.
+
 ## 0.6.0 Beta — 2026-10-27
 
 0.6.0 builds on RC1. Windows setup no longer needs Visual Studio, the

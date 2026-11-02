@@ -47,6 +47,10 @@ Build page (#149) have not been play-tested, and launcher controller support
 was checked only with a virtual SDL gamepad. 0.6.0 itself has not had a full
 play session, and it does not expand the play-test coverage below.
 
+0.6.1 Beta (tag `v0.6.1`) keeps the 0.6.0 generation recipe and runtime and
+fixes Windows setup from long folder paths (#171, #172). Its packaged setup
+was checked on Windows only; it does not expand the play-test coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel
