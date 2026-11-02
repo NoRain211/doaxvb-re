@@ -170,7 +170,8 @@ class PrerequisiteTests(unittest.TestCase):
         venv = self.root / "private" / "venv"
         expected = {"win32": f'& "{sys.executable}" -m pip install capstone==5.0.9',
                     "darwin": f"python3 -m venv {shlex.quote(str(venv))} && "
-                              f"{shlex.quote(str(venv / 'bin' / 'pip'))} install capstone==5.0.9, then rerun ./build_game.sh"}
+                              f"{shlex.quote(str(venv / 'bin' / 'pip'))} install capstone==5.0.9, "
+                              f"then rerun {shlex.quote(str(self.root / 'build_game.sh'))}"}
         args = argparse.Namespace(generate_only=True, imported=None, iso=Path("input.iso"), extractor="extract-xiso")
         for platform, hint in expected.items():
             with self.subTest(platform=platform), \

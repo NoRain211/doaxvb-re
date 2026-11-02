@@ -104,7 +104,8 @@ def build(args, verify_parity=True, lifter_revision=None):
         else:  # build_game.sh uses this venv; Homebrew and Ubuntu Pythons refuse pip install
             venv = ROOT / "private" / "venv"
             hint = (f"python3 -m venv {shlex.quote(str(venv))} && "
-                    f"{shlex.quote(str(venv / 'bin' / 'pip'))} install capstone==5.0.9, then rerun ./build_game.sh")
+                    f"{shlex.quote(str(venv / 'bin' / 'pip'))} install capstone==5.0.9, "
+                    f"then rerun {shlex.quote(str(ROOT / 'build_game.sh'))}")
         raise ValueError(f"Install Capstone: {hint}") from error
     if not args.generate_only:
         compiler = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
