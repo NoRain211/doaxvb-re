@@ -7,12 +7,12 @@ import package_release
 
 class PlatformMemberTests(unittest.TestCase):
     def test_each_platform_ships_only_its_own_root_launchers(self):
-        common = {name: b"" for name in ("build_game.sh", "BuildGame.cmd", "README.md",
-                                         "tools/cmake/share/run.sh", "tools/helper.cmd")}
-        self.assertEqual(set(package_release.windows_members(common)),
-                         {"BuildGame.cmd", "README.md", "tools/cmake/share/run.sh", "tools/helper.cmd"})
-        self.assertEqual(set(package_release.unix_members(common)),
-                         {"build_game.sh", "README.md", "tools/cmake/share/run.sh", "tools/helper.cmd"})
+        windows = {"BuildGame.cmd", "Launcher.cmd", "RunGame.cmd", "ExtractIso.cmd"}
+        unix = {"build_game.sh", "launcher.sh", "run_game.sh"}
+        shared = {"README.md", "tools/cmake/share/run.sh", "tools/helper.cmd"}
+        common = {name: b"" for name in windows | unix | shared}
+        self.assertEqual(set(package_release.windows_members(common)), windows | shared)
+        self.assertEqual(set(package_release.unix_members(common)), unix | shared)
 
     def test_packaging_inputs_never_ship(self):
         for name, packaging in (("tools/package_release.py", True), ("tools/test_package_release.py", True),

@@ -36,7 +36,7 @@ python tools/package_release.py v0.6.2 private/rel/final --bundled <0.6.0 RC1 Wi
 
 The Windows ZIP adds the tools and icon the shipped RC1 Windows ZIP bundles
 beyond its tagged source; `--check` proves the script still rebuilds that ZIP.
-Each platform ships only its own launchers, and the packager and
+Each platform ships only its own root launchers, and the packager and
 `tools/release/` stay out of every ZIP.
 
 ## Scripted play

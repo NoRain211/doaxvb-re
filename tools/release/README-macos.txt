@@ -17,7 +17,7 @@ build again. Saves are unchanged; copy your private saves over.
 
 SETUP
 1. Install the Xcode command line tools: xcode-select --install
-2. Install Homebrew packages: brew install cmake ninja sdl3
+2. Install Homebrew packages: brew install cmake ninja sdl3 python
 3. In this folder: ./build_game.sh /path/to/game.iso
    The first run installs Capstone into private/venv and builds
    extract-xiso; both need internet access.

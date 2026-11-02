@@ -35,6 +35,12 @@ UNIX_PLATFORMS = {
 }
 
 
+def require(ok, message):
+    """Custody checks must hold under python -O too, so they are not asserts."""
+    if not ok:
+        raise SystemExit(f"package_release: {message}")
+
+
 def sha(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -64,15 +70,18 @@ def unix_members(common):
 
 def check(kept, recipe, gitlinks, allowed_private, banned_suffixes):
     # Custody: nothing private, generated, retail or agent-facing ships.
-    assert not any(n in gitlinks for n in kept)
-    assert not any(Path(n).name.lower() in ("agents.md", "claude.md") or n.startswith("docs/agents/") for n in kept)
-    assert not any(n.startswith("private/") and n not in allowed_private for n in kept)
-    assert not any(Path(n).suffix.lower() in banned_suffixes for n in kept)
-    assert not any(Path(n).name.startswith("recomp_") and Path(n).suffix in {".c", ".exe"} for n in kept)
-    assert not any("checksum" in Path(n).name.lower() or Path(n).name.upper().startswith("SHA256SUM") for n in kept)
-    assert not any(is_packaging(n) for n in kept)
+    require(not any(n in gitlinks for n in kept), "a submodule would ship")
+    require(not any(Path(n).name.lower() in ("agents.md", "claude.md") or n.startswith("docs/agents/") for n in kept),
+            "agent instructions would ship")
+    require(not any(n.startswith("private/") and n not in allowed_private for n in kept), "a private file would ship")
+    require(not any(Path(n).suffix.lower() in banned_suffixes for n in kept), "game data or a binary would ship")
+    require(not any(Path(n).name.startswith("recomp_") and Path(n).suffix in {".c", ".exe"} for n in kept),
+            "generated code or a runner would ship")
+    require(not any("checksum" in Path(n).name.lower() or Path(n).name.upper().startswith("SHA256SUM") for n in kept),
+            "a checksum file would ship")
+    require(not any(is_packaging(n) for n in kept), "packaging inputs would ship")
     for name, digest in recipe["files"].items():
-        assert sha(kept[name]) == digest, name
+        require(name in kept and sha(kept[name]) == digest, f"{name} differs from the recipe")
 
 
 def write(out, prefix, kept, modes=None, date=None):
@@ -88,8 +97,8 @@ def write(out, prefix, kept, modes=None, date=None):
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, data)
     with zipfile.ZipFile(out) as archive:
-        assert archive.testzip() is None and len(archive.namelist()) == len(kept)
-        assert all(archive.read(prefix + n) == d for n, d in kept.items())
+        require(archive.testzip() is None and len(archive.namelist()) == len(kept), f"{out} is incomplete")
+        require(all(archive.read(prefix + n) == d for n, d in kept.items()), f"{out} differs from its inputs")
     return dict(archive=str(out), sha256=sha(out.read_bytes()), files=len(kept))
 
 
@@ -116,7 +125,9 @@ def main():
         kept = source(BUNDLED_REF)
         kept.update(extras)
         kept["README.txt"], kept["package.json"] = shipped["README.txt"], shipped["package.json"]
-        print("RC1 rebuild differs in:", sorted(n for n in set(kept) | set(shipped) if kept.get(n) != shipped.get(n)))
+        differences = sorted(n for n in set(kept) | set(shipped) if kept.get(n) != shipped.get(n))
+        print("RC1 rebuild differs in:", differences)
+        require(not differences, "the RC1 Windows ZIP no longer rebuilds")
         return
 
     release = json.loads((RELEASE / "release.json").read_text(encoding="utf-8"))
@@ -124,16 +135,19 @@ def main():
     readmes = {name: (RELEASE / name).read_text(encoding="utf-8")
                for name in ("README-windows.txt", "README-macos.txt", "README-linux.txt")}
     for name, text in readmes.items():
-        assert text.splitlines()[0].startswith(f"DOAXBV {version} {channel.upper()}"), f"{name} names another version"
+        require(text.splitlines()[0].startswith(f"DOAXBV {version} {channel.upper()}"), f"{name} names another version")
     bundled_tools = (RELEASE / "BUNDLED-TOOLS.md").read_text(encoding="utf-8")
-    assert f"/tree/v{version}" in bundled_tools, "BUNDLED-TOOLS.md links another source tag"
+    require(f"/tree/v{version}" in bundled_tools, "BUNDLED-TOOLS.md links another source tag")
     icon = (ROOT / "private/release-assets/doaxbv.ico").read_bytes()
-    assert extras["private/doaxbv.ico"] == icon, "RC1 icon differs from the release asset"
+    require(extras["private/doaxbv.ico"] == icon, "RC1 icon differs from the release asset")
 
     commit = git("rev-parse", args.ref + "^{commit}").decode().strip()
     modes = {line.split("\t")[1]: line.split()[0] for line in git("ls-tree", "-r", args.ref).decode().splitlines()}
     gitlinks = {n for n, m in modes.items() if m == "160000"}
     date = tuple(int(part) for part in git("show", "-s", "--date=format:%Y %m %d", "--format=%cd", commit).split()) + (0, 0, 0)
+    changelog = tree(args.ref)["CHANGELOG.md"].decode("utf-8")
+    latest = next(line for line in changelog.splitlines() if line.startswith("## "))
+    require(latest.startswith(f"## {version} "), f"{args.ref} is not the {version} release commit; its CHANGELOG opens with {latest!r}")
     common = source(args.ref)
     recipe = json.loads(common["tools/game-recipe/recipe.json"])
     identity = dict(source_base=commit, lifter_revision=recipe["lifter_revision"],
@@ -164,7 +178,7 @@ def main():
             **identity), indent=2) + "\n").encode()
         check(kept, recipe, gitlinks, ("private/README.md",), GAME_DATA | {".exe", ".dll", ".ico"})
         for script in ("build_game.sh", "run_game.sh", "launcher.sh"):
-            assert modes[script] == "100755", script
+            require(modes.get(script) == "100755", f"{script} is not executable")
         results[target] = write(args.out_dir / f"DOAXBV-{version}-{target}.zip", f"DOAXBV-{version}-{target}/",
                                 kept, modes, date)
     print(json.dumps(dict(commit=commit, **results), indent=2))
