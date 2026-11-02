@@ -124,14 +124,11 @@ python tools/build_game.py --imported private/imported-disc
 
 ### macOS build
 
-On macOS (Apple Silicon or Intel), install CMake, Ninja and SDL3. Homebrew's
-Python refuses `pip install`, so from the checkout folder put Capstone in the
-virtual environment `build_game.sh` looks for:
+On macOS (Apple Silicon or Intel), install CMake, Ninja and SDL3.
+`build_game.sh` installs Capstone into `private/venv` on its first run:
 
 ```bash
 brew install cmake ninja sdl3
-python3 -m venv private/venv
-private/venv/bin/pip install capstone==5.0.9
 ```
 
 Homebrew has no `extract-xiso`; build it from
@@ -159,15 +156,10 @@ Linux builds use Vulkan through SDL3 and compile shaders at runtime with
 shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it) or,
 on Debian and Ubuntu, `libshaderc.so.1` from the `libshaderc1` package.
 Build in an x86-64 distribution with CMake, Ninja, a C++17 compiler,
-Python 3 with `capstone==5.0.9`, `extract-xiso` built as above, and SDL3's
+Python 3, `extract-xiso` built as above, and SDL3's
 build dependencies; `build_game.sh` builds SDL3 when the distribution has none.
-Ubuntu's system Python refuses `pip install`, so put Capstone in the virtual
-environment the scripts look for (Ubuntu needs the `python3-venv` package):
-
-```bash
-python3 -m venv private/venv
-private/venv/bin/pip install capstone==5.0.9
-```
+`build_game.sh` installs Capstone into `private/venv` on its first run; on
+Ubuntu that needs the `python3-venv` package.
 
 SteamOS has a read-only system and no compiler, so build inside a container
 such as an Ubuntu 24.04 `distrobox` that shares your home folder; the
