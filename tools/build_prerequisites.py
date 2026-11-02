@@ -40,13 +40,23 @@ def find_toolchain(root):
     return clang if clang.is_file() else None
 
 
+def extended_path(path):
+    """Return an absolute path that Windows file APIs accept beyond 260 characters."""
+    path = os.path.abspath(path)
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    return "\\\\?\\UNC\\" + path[2:] if path.startswith("\\\\") else "\\\\?\\" + path
+
+
 def install_llvm_mingw(root):
     target = root / LLVM_MINGW
     if target.exists():
         raise ValueError(f"{target} exists but has no bin/clang.exe. Delete it and rerun setup.")
     private = root / "private"
     private.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="llvm-mingw-", dir=private) as folder:
+    # Staging adds ~70 characters to the ZIP's deepest paths, which can pass 260 under a long
+    # install folder when Windows long paths are disabled (#171).
+    with tempfile.TemporaryDirectory(prefix="llvm-mingw-", dir=extended_path(private)) as folder:
         archive = Path(folder) / "llvm-mingw.zip"
         print("Downloading the llvm-mingw compiler (190 MB)...", flush=True)
         try:

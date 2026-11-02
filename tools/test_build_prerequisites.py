@@ -67,19 +67,38 @@ class PrerequisiteTests(unittest.TestCase):
             install.assert_called_once_with(self.root)
 
     def llvm_mingw_zip(self):
+        # Its final path is 250 characters, so the staging path passes 260 (#171).
+        self.deep_name = "lib/" + "a" * (250 - len(str(self.root / "tools/llvm-mingw/lib")) - 1)
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as archive:
             archive.writestr("llvm-mingw-test-ucrt-x86_64/bin/clang.exe", b"clang")
+            archive.writestr("llvm-mingw-test-ucrt-x86_64/" + self.deep_name, b"deep")
         return data.getvalue()
 
     def test_download_installs_verified_toolchain(self):
         payload = self.llvm_mingw_zip()
         self.download.side_effect = lambda *args, **kwargs: io.BytesIO(payload)
-        with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()):
+        with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()), \
+                mock.patch.object(prerequisites.tempfile, "TemporaryDirectory",
+                                  wraps=tempfile.TemporaryDirectory) as staging:
             prerequisites.install_llvm_mingw(self.root)
+        # Long paths may be enabled on the test host, so check the staging path directly (#171).
+        staging.assert_called_once_with(prefix="llvm-mingw-",
+                                        dir=prerequisites.extended_path(self.root / "private"))
         self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").read_bytes(), b"clang")
+        self.assertEqual((self.root / "tools/llvm-mingw" / self.deep_name).read_bytes(), b"deep")
         self.assertEqual(list((self.root / "private").iterdir()), [])
         self.download.assert_called_once_with(prerequisites.LLVM_MINGW_URL, timeout=60)
+
+    def test_extended_path_prefixes_only_windows_paths(self):
+        if os.name != "nt":
+            self.assertEqual(prerequisites.extended_path("x"), os.path.abspath("x"))
+            return
+        for path, expected in (("C:/a/../x", "\\\\?\\C:\\x"),
+                               ("\\\\srv\\share\\x", "\\\\?\\UNC\\srv\\share\\x"),
+                               ("\\\\?\\C:\\x", "\\\\?\\C:\\x")):
+            with self.subTest(path=path):
+                self.assertEqual(prerequisites.extended_path(path), expected)
 
     def test_failed_download_or_hash_installs_nothing(self):
         payload = self.llvm_mingw_zip()
