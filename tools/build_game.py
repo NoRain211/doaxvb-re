@@ -14,7 +14,7 @@ import sys
 import uuid
 
 from extract_iso import extract, run_logged, sha256
-from build_prerequisites import ensure_prerequisites, prefer_bundled_tools
+from build_prerequisites import ensure_extract_xiso, ensure_prerequisites, prefer_bundled_tools
 import launcher_art
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -134,7 +134,10 @@ def build(args, verify_parity=True, lifter_revision=None):
                 if not path.is_relative_to(disc.resolve()) or path.stat().st_size != size:
                     raise ValueError("Existing import differs from its receipt")
         else:
-            disc = extract(args.iso, work / "imported-disc", args.extractor)
+            extractor = args.extractor
+            if not windows and extractor == "extract-xiso" and shutil.which(extractor) is None:
+                extractor = ensure_extract_xiso(ROOT, work)
+            disc = extract(args.iso, work / "imported-disc", extractor)
             imported_receipt = json.loads((disc.parent / "receipt.json").read_text(encoding="utf-8"))
         images = list(disc.glob("*.xbe"))
         if len(images) != 1 or sha256(images[0]) != SUPPORTED_XBE_SHA256:

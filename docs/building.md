@@ -17,11 +17,13 @@ each attempt. The receipt, logs, generated program, and runner stay there.
 For a source checkout or GitHub's automatic source archive, install:
 
 - Python 3.12 or newer
-- Capstone 5.0.9 distribution for that Python installation
+- Capstone 5.0.9 distribution for that Python installation (on macOS and
+  Linux, `build_game.sh` installs it into `private/venv`)
 - Git with network access
 - CMake 3.20 or newer
 - On Windows, nothing else: setup downloads the llvm-mingw compiler (see below)
-- XboxDev `extract-xiso`
+- XboxDev `extract-xiso` on Windows; on macOS and Linux setup builds it when
+  none is on `PATH`
 
 The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
@@ -131,14 +133,11 @@ On macOS (Apple Silicon or Intel), install CMake, Ninja and SDL3.
 brew install cmake ninja sdl3
 ```
 
-Homebrew has no `extract-xiso`; build it from
-[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) and put it on
-`PATH`, or pass its location with `--extractor`:
-
-```bash
-git clone https://github.com/XboxDev/extract-xiso.git
-cmake -S extract-xiso -B extract-xiso/build && cmake --build extract-xiso/build
-```
+Homebrew has no `extract-xiso`, so setup builds the
+[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) release the
+Windows package bundles into `tools/extract-xiso`, using Apple's command line
+tools (`xcode-select --install`). An `extract-xiso` on `PATH` or one passed with
+`--extractor` is used instead.
 
 Then build the runner:
 
@@ -156,8 +155,8 @@ Linux builds use Vulkan through SDL3 and compile shaders at runtime with
 shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it) or,
 on Debian and Ubuntu, `libshaderc.so.1` from the `libshaderc1` package.
 Build in an x86-64 distribution with CMake, Ninja, a C++17 compiler,
-Python 3, `extract-xiso` built as above, and SDL3's
-build dependencies; `build_game.sh` builds SDL3 when the distribution has none.
+Python 3 and SDL3's build dependencies; `build_game.sh` builds SDL3 when the
+distribution has none, and `extract-xiso` as on macOS.
 `build_game.sh` installs Capstone into `private/venv` on its first run; on
 Ubuntu that needs the `python3-venv` package.
 
