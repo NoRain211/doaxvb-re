@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -98,7 +99,8 @@ def build(args, verify_parity=True, lifter_revision=None):
     try:
         import capstone
     except ImportError as error:
-        raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
+        python = f'& "{sys.executable}"' if windows else shlex.quote(sys.executable)  # PowerShell on Windows
+        raise ValueError(f"Install Capstone for this Python: {python} -m pip install capstone==5.0.9") from error
     if not args.generate_only:
         compiler = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
         prefer_bundled_tools(ROOT)  # puts a freshly downloaded llvm-mingw, with mingw32-make, on PATH
