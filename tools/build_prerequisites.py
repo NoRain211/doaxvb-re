@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -72,7 +73,16 @@ def install_llvm_mingw(root):
             contents.extractall(staging)
         (top,) = staging.iterdir()  # the release ZIP holds one versioned folder
         target.parent.mkdir(parents=True, exist_ok=True)
-        top.replace(target)
+        for attempt in range(10):
+            try:
+                top.replace(target)
+                break
+            except PermissionError as error:
+                # Antivirus can hold the freshly extracted files open for a few seconds.
+                if attempt == 9:
+                    raise ValueError(f"Could not move llvm-mingw into {target}: {error}. "
+                                     "Antivirus may still be scanning it; rerun setup.") from error
+                time.sleep(3)
 
 
 def ensure_prerequisites(root, install=False):

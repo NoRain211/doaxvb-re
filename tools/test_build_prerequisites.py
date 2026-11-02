@@ -111,6 +111,32 @@ class PrerequisiteTests(unittest.TestCase):
                 self.assertFalse((self.root / "tools/llvm-mingw").exists())
                 self.assertEqual(list((self.root / "private").iterdir()), [])
 
+    def test_locked_extraction_is_retried_then_reported(self):
+        payload = self.llvm_mingw_zip()
+        self.download.side_effect = lambda *args, **kwargs: io.BytesIO(payload)
+        move = Path.replace
+        for failures, installed in ((10, False), (2, True)):
+            with self.subTest(failures=failures):
+                calls = []
+
+                def locked(path, target):
+                    calls.append(target)
+                    if len(calls) <= failures:
+                        raise PermissionError(13, "Access is denied")
+                    return move(path, target)
+
+                with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()), \
+                        mock.patch.object(Path, "replace", locked), \
+                        mock.patch.object(prerequisites.time, "sleep") as sleep:
+                    if installed:
+                        prerequisites.install_llvm_mingw(self.root)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "rerun setup"):
+                            prerequisites.install_llvm_mingw(self.root)
+                self.assertEqual(sleep.call_count, min(failures, 9))
+                self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").is_file(), installed)
+                self.assertEqual(list((self.root / "private").iterdir()), [])
+
     def test_build_checks_before_extraction_and_skips_for_generation(self):
         recipe = self.root / "tools/game-recipe/recipe.json"
         recipe.parent.mkdir(parents=True)
