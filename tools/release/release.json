@@ -1,0 +1,5 @@
+{
+  "version": "0.6.2",
+  "channel": "Beta",
+  "runtime_change": "llvm-mingw move retried under antivirus (#176); macOS/Linux setup installs Capstone and builds extract-xiso (#177, #179); Linux clang and CI (#178); program unchanged from 0.6.0"
+}
