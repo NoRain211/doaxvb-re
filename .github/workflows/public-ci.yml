@@ -97,3 +97,21 @@ jobs:
         run: cmake --build build/recomp-runtime
       - name: Run public runtime tests
         run: ctest --test-dir build/recomp-runtime --output-on-failure
+
+  runtime-tests-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang libx11-dev libxext-dev libwayland-dev \
+            libxkbcommon-dev libdecor-0-dev libasound2-dev libpulse-dev libvulkan-dev
+      - name: Configure public runtime tests with clang, as setup does
+        run: >-
+          cmake -S recomp-runtime -B build/recomp-runtime -G Ninja -DRECOMP_FETCH_SDL3=ON
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+      - name: Build public runtime tests
+        run: cmake --build build/recomp-runtime --parallel 4
+      - name: Run public runtime tests
+        run: ctest --test-dir build/recomp-runtime --output-on-failure

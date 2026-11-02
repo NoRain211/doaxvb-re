@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -193,6 +194,9 @@ def build(args, verify_parity=True, lifter_revision=None):
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
         if sys.platform.startswith("linux"):
             configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
+            # Windows and macOS build with clang; use it here too unless the player chose a compiler.
+            if not (os.environ.get("CC") or os.environ.get("CXX")) and shutil.which("clang") and shutil.which("clang++"):
+                configure += ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
         if windows:
             receipt["compiler"] = subprocess.check_output(
                 [compiler, "--version"], text=True).splitlines()[0]
