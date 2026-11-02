@@ -182,12 +182,12 @@ SDL3's build dependencies:
 sudo apt install cmake ninja-build clang git python3-venv \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
   libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
-  libasound2-dev libpulse-dev libvulkan-dev
+  libasound2-dev libpulse-dev libvulkan-dev libshaderc1
 ```
 
 Setup compiles with clang when `clang` and `clang++` are installed, as the
 Windows and macOS builds do; otherwise it uses the system's C++17 compiler.
-Set `CC` and `CXX` to choose the compiler yourself.
+If `CC` or `CXX` is set, setup leaves the choice to CMake, which reads them.
 
 For Steam Game Mode, add `launcher.sh` (or `run_game.sh`) with **Add a
 Non-Steam Game** in Desktop Mode. Under Steam the game and launcher open full

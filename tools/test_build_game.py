@@ -14,6 +14,21 @@ from extract_iso import sha256
 
 
 class ProgramManifestTests(unittest.TestCase):
+    def test_linux_compiler_prefers_clang_unless_chosen(self):
+        clang = ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
+        for env, installed, expected in (({}, {"clang", "clang++"}, clang),
+                                         ({"CC": "gcc"}, {"clang", "clang++"}, []),
+                                         ({"CXX": "g++"}, {"clang", "clang++"}, []),
+                                         ({}, {"clang"}, []),
+                                         ({}, set(), [])):
+            with self.subTest(env=env, installed=installed), \
+                    mock.patch.dict("os.environ", env), \
+                    mock.patch.object(build_game.shutil, "which", side_effect=lambda name: name if name in installed else None):
+                for name in ("CC", "CXX"):
+                    if name not in env:
+                        build_game.os.environ.pop(name, None)
+                self.assertEqual(build_game.linux_compiler_args(), expected)
+
     def test_release_lifter_checkout_tolerates_foreign_owner(self):
         """A release ZIP on a drive without ownership, after a failed checkout (issue #110)."""
         source = ROOT / "tools/xboxrecomp"
