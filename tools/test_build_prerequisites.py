@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,34 @@ class PrerequisiteTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     build_game.build(args, verify_parity=False)
                 self.assertEqual(str(caught.exception), "Install Capstone: " + hint)
+
+    def test_extract_xiso_reuses_only_a_finished_build(self):
+        source = self.root / "tools/extract-xiso" / prerequisites.EXTRACT_XISO_COMMIT[:12]
+        tool = source / "build/extract-xiso"
+
+        def fake_run(args, log, cwd=None):
+            if args[:2] == ["cmake", "--build"]:
+                tool.parent.mkdir(parents=True, exist_ok=True)
+                tool.write_bytes(b"built")
+
+        with mock.patch.object(prerequisites.shutil, "which", return_value="tool"), \
+                mock.patch.object(prerequisites, "run_logged", side_effect=fake_run) as run:
+            self.assertEqual(prerequisites.ensure_extract_xiso(self.root, self.root), tool)
+            self.assertEqual(run.call_count, 4)
+            run.reset_mock()
+            self.assertEqual(prerequisites.ensure_extract_xiso(self.root, self.root), tool)
+            run.assert_not_called()
+            (source / "build-complete").unlink()  # as after an interrupted link
+            tool.write_bytes(b"partial")
+            prerequisites.ensure_extract_xiso(self.root, self.root)
+            self.assertEqual(run.call_count, 4)
+            self.assertEqual(tool.read_bytes(), b"built")
+        shutil.rmtree(source)
+        with mock.patch.object(prerequisites.shutil, "which", side_effect=lambda name: None if name == "cmake" else "tool"), \
+                mock.patch.object(prerequisites, "run_logged") as run:
+            with self.assertRaisesRegex(ValueError, "Install cmake to build extract-xiso"):
+                prerequisites.ensure_extract_xiso(self.root, self.root)
+            run.assert_not_called()
 
     def test_missing_extractor_is_built_only_when_not_chosen(self):
         recipe = self.root / "tools/game-recipe/recipe.json"
