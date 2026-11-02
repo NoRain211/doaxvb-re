@@ -167,11 +167,8 @@ class PrerequisiteTests(unittest.TestCase):
         recipe = self.root / "tools/game-recipe/recipe.json"
         recipe.parent.mkdir(parents=True)
         recipe.write_text(json.dumps({"files": {}}), encoding="utf-8")
-        venv = self.root / "private" / "venv"
         expected = {"win32": f'& "{sys.executable}" -m pip install capstone==5.0.9',
-                    "darwin": f"python3 -m venv {shlex.quote(str(venv))} && "
-                              f"{shlex.quote(str(venv / 'bin' / 'pip'))} install capstone==5.0.9, "
-                              f"then rerun {shlex.quote(str(self.root / 'build_game.sh'))}"}
+                    "darwin": f"run {shlex.quote(str(self.root / 'build_game.sh'))}, which installs it into private/venv"}
         args = argparse.Namespace(generate_only=True, imported=None, iso=Path("input.iso"), extractor="extract-xiso")
         for platform, hint in expected.items():
             with self.subTest(platform=platform), \
