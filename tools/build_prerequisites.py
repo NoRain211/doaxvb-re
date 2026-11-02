@@ -3,19 +3,22 @@
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import time
 import urllib.error
 import urllib.request
 import zipfile
 
-from extract_iso import sha256
+from extract_iso import run_logged, sha256
 
 
 LLVM_MINGW_URL = ("https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/"
                   "llvm-mingw-20261006-ucrt-x86_64.zip")
 LLVM_MINGW_SHA256 = "317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a"
 LLVM_MINGW = Path("tools/llvm-mingw")
+EXTRACT_XISO_URL = "https://github.com/XboxDev/extract-xiso.git"
+EXTRACT_XISO_COMMIT = "b72e5b60d598ec6df80534cda19cdcd4361aa18c"  # build-202505152050, as the Windows ZIP bundles
 HELP = ("The Windows build compiles with llvm-mingw. Rerun with --install-prerequisites "
         "(BuildGame.cmd does this) to download it into tools/llvm-mingw, or extract "
         f"{LLVM_MINGW_URL} there so that tools/llvm-mingw/bin/clang.exe exists.")
@@ -87,6 +90,29 @@ def install_llvm_mingw(root):
                     raise ValueError(f"Could not move llvm-mingw into {target}: {error}. "
                                      "Antivirus may still be scanning it; rerun setup.") from error
                 time.sleep(3)
+
+
+def ensure_extract_xiso(root, logs):
+    """Build the pinned XboxDev extract-xiso; macOS and Linux have no package for it."""
+    source = root / "tools/extract-xiso" / EXTRACT_XISO_COMMIT[:12]
+    tool = source / "build/extract-xiso"
+    if tool.is_file():
+        return tool
+    shutil.rmtree(source, ignore_errors=True)  # a build an earlier run did not finish
+    generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+    try:
+        run_logged(["git", "clone", "--quiet", "--no-checkout", EXTRACT_XISO_URL, source],
+                   logs / "extract-xiso-download.log")
+        run_logged(["git", "-C", source, "checkout", "--quiet", EXTRACT_XISO_COMMIT], logs / "extract-xiso-checkout.log")
+        run_logged(["cmake", "-S", source, "-B", source / "build", "-G", generator, "-DCMAKE_BUILD_TYPE=Release"],
+                   logs / "extract-xiso-configure.log")
+        run_logged(["cmake", "--build", source / "build"], logs / "extract-xiso-build.log")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"Could not build extract-xiso: {error}. Install XboxDev extract-xiso "
+                         "or pass --extractor <executable>") from error
+    if not tool.is_file():
+        raise ValueError(f"extract-xiso built, but {tool} is missing. Pass --extractor <executable>")
+    return tool
 
 
 def ensure_prerequisites(root, install=False):

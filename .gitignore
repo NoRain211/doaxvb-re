@@ -15,6 +15,7 @@ recomp_dispatch.c
 recomp_funcs.h
 tools/artifacts/
 tools/llvm-mingw/
+tools/extract-xiso/
 tools/disasm/output/
 
 # Game and console artifacts

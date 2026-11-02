@@ -95,6 +95,11 @@ jobs:
         run: |
           ./build_game.sh --help
           private/venv/bin/python3 -c "import capstone"
+      - name: Build extract-xiso the way setup does
+        run: |
+          mkdir -p private/ci-xiso
+          tool=$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import build_prerequisites as p; print(p.ensure_extract_xiso(Path.cwd(), Path('private/ci-xiso')))" | tail -n 1)
+          "$tool" -h 2>&1 | grep extract-xiso
       - name: Configure public runtime tests
         run: cmake -S recomp-runtime -B build/recomp-runtime -G Ninja
       - name: Build public runtime tests
@@ -116,6 +121,11 @@ jobs:
             libasound2-dev libpulse-dev libvulkan-dev libshaderc1
           # The runner has no display or GPU: software Vulkan for the presenter test.
           sudo apt-get install -y mesa-vulkan-drivers
+      - name: Build extract-xiso the way setup does
+        run: |
+          mkdir -p private/ci-xiso
+          tool=$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import build_prerequisites as p; print(p.ensure_extract_xiso(Path.cwd(), Path('private/ci-xiso')))" | tail -n 1)
+          "$tool" -h 2>&1 | grep extract-xiso
       - name: Configure public runtime tests with clang, as setup does
         run: >-
           cmake -S recomp-runtime -B build/recomp-runtime -G Ninja -DRECOMP_FETCH_SDL3=ON

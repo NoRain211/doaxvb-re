@@ -180,6 +180,28 @@ class PrerequisiteTests(unittest.TestCase):
                     build_game.build(args, verify_parity=False)
                 self.assertEqual(str(caught.exception), "Install Capstone: " + hint)
 
+    def test_missing_extractor_is_built_only_when_not_chosen(self):
+        recipe = self.root / "tools/game-recipe/recipe.json"
+        recipe.parent.mkdir(parents=True)
+        recipe.write_text(json.dumps({"files": {}}), encoding="utf-8")
+        built = Path("built/extract-xiso")
+        for extractor, on_path, expected in (("extract-xiso", False, built),
+                                             ("extract-xiso", True, "extract-xiso"),
+                                             ("/opt/extract-xiso", False, "/opt/extract-xiso")):
+            args = argparse.Namespace(generate_only=True, imported=None, iso=Path("input.iso"), extractor=extractor)
+            with self.subTest(extractor=extractor, on_path=on_path), \
+                    mock.patch.object(build_game, "ROOT", self.root), \
+                    mock.patch.object(build_game.sys, "platform", "linux"), \
+                    mock.patch.object(build_game.shutil, "which",
+                                      side_effect=lambda name: None if name == "extract-xiso" and not on_path else "tool"), \
+                    mock.patch.dict(sys.modules, capstone=mock.Mock()), \
+                    mock.patch.object(build_game, "ensure_extract_xiso", return_value=built) as ensure, \
+                    mock.patch.object(build_game, "extract", side_effect=ValueError("extraction reached")) as extract:
+                with self.assertRaisesRegex(ValueError, "extraction reached"):
+                    build_game.build(args, verify_parity=False)
+                self.assertEqual(ensure.called, expected is built)
+                self.assertEqual(extract.call_args.args[2], expected)
+
 
 if __name__ == "__main__":
     unittest.main()
