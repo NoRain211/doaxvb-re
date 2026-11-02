@@ -17,11 +17,13 @@ each attempt. The receipt, logs, generated program, and runner stay there.
 For a source checkout or GitHub's automatic source archive, install:
 
 - Python 3.12 or newer
-- Capstone 5.0.9 distribution for that Python installation
+- Capstone 5.0.9 distribution for that Python installation (on macOS and
+  Linux, `build_game.sh` installs it into `private/venv`)
 - Git with network access
 - CMake 3.20 or newer
 - On Windows, nothing else: setup downloads the llvm-mingw compiler (see below)
-- XboxDev `extract-xiso`
+- XboxDev `extract-xiso` on Windows; on macOS and Linux setup builds it when
+  none is on `PATH`
 
 The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or

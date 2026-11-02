@@ -96,8 +96,12 @@ def ensure_extract_xiso(root, logs):
     """Build the pinned XboxDev extract-xiso; macOS and Linux have no package for it."""
     source = root / "tools/extract-xiso" / EXTRACT_XISO_COMMIT[:12]
     tool = source / "build/extract-xiso"
-    if tool.is_file():
+    built = source / "build-complete"  # an interrupted link can leave a partial binary
+    if built.is_file() and tool.is_file():
         return tool
+    missing = [name for name in ("git", "cmake") if shutil.which(name) is None]
+    if missing:
+        raise ValueError(f"Install {' and '.join(missing)} to build extract-xiso, or pass --extractor <executable>")
     shutil.rmtree(source, ignore_errors=True)  # a build an earlier run did not finish
     generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
     try:
@@ -112,6 +116,7 @@ def ensure_extract_xiso(root, logs):
                          "or pass --extractor <executable>") from error
     if not tool.is_file():
         raise ValueError(f"extract-xiso built, but {tool} is missing. Pass --extractor <executable>")
+    built.touch()
     return tool
 
 
