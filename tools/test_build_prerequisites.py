@@ -67,9 +67,12 @@ class PrerequisiteTests(unittest.TestCase):
             install.assert_called_once_with(self.root)
 
     def llvm_mingw_zip(self):
+        # Its final path is 250 characters, so the staging path passes 260 (#171).
+        self.deep_name = "lib/" + "a" * (250 - len(str(self.root / "tools/llvm-mingw/lib")) - 1)
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as archive:
             archive.writestr("llvm-mingw-test-ucrt-x86_64/bin/clang.exe", b"clang")
+            archive.writestr("llvm-mingw-test-ucrt-x86_64/" + self.deep_name, b"deep")
         return data.getvalue()
 
     def test_download_installs_verified_toolchain(self):
@@ -78,6 +81,7 @@ class PrerequisiteTests(unittest.TestCase):
         with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()):
             prerequisites.install_llvm_mingw(self.root)
         self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").read_bytes(), b"clang")
+        self.assertEqual((self.root / "tools/llvm-mingw" / self.deep_name).read_bytes(), b"deep")
         self.assertEqual(list((self.root / "private").iterdir()), [])
         self.download.assert_called_once_with(prerequisites.LLVM_MINGW_URL, timeout=60)
 
