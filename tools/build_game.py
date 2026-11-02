@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -82,6 +83,13 @@ def prepare_lifter(work, revision=None):
     if head != revision or dirty:
         raise ValueError(f"tools/xboxrecomp must be a clean checkout of {revision}; "
                          "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
+
+
+def linux_compiler_args():
+    """Windows and macOS build with clang; use it on Linux too unless the player chose a compiler."""
+    if os.environ.get("CC") or os.environ.get("CXX") or not (shutil.which("clang") and shutil.which("clang++")):
+        return []
+    return ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
 
 
 def build(args, verify_parity=True, lifter_revision=None):
@@ -196,6 +204,7 @@ def build(args, verify_parity=True, lifter_revision=None):
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
         if sys.platform.startswith("linux"):
             configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
+            configure += linux_compiler_args()
         if windows:
             receipt["compiler"] = subprocess.check_output(
                 [compiler, "--version"], text=True).splitlines()[0]
