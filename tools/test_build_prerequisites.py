@@ -77,6 +77,9 @@ class PrerequisiteTests(unittest.TestCase):
 
     def test_download_installs_verified_toolchain(self):
         payload = self.llvm_mingw_zip()
+        stale = self.root / "private/llvm-mingw-old/extract"
+        stale.mkdir(parents=True)
+        (stale / "locked.dll").write_bytes(b"")
         self.download.side_effect = lambda *args, **kwargs: io.BytesIO(payload)
         with mock.patch.object(prerequisites, "LLVM_MINGW_SHA256", hashlib.sha256(payload).hexdigest()), \
                 mock.patch.object(prerequisites.tempfile, "TemporaryDirectory",

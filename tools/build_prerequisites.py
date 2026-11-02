@@ -55,6 +55,8 @@ def install_llvm_mingw(root):
         raise ValueError(f"{target} exists but has no bin/clang.exe. Delete it and rerun setup.")
     private = root / "private"
     private.mkdir(exist_ok=True)
+    for stale in private.glob("llvm-mingw-*"):  # staging an earlier run could not clean up
+        shutil.rmtree(extended_path(stale), ignore_errors=True)
     # Staging adds ~70 characters to the ZIP's deepest paths, which can pass 260 under a long
     # install folder when Windows long paths are disabled (#171).
     # A folder antivirus still locks must not hide the rename error below.
