@@ -84,7 +84,8 @@ class PrerequisiteTests(unittest.TestCase):
             prerequisites.install_llvm_mingw(self.root)
         # Long paths may be enabled on the test host, so check the staging path directly (#171).
         staging.assert_called_once_with(prefix="llvm-mingw-",
-                                        dir=prerequisites.extended_path(self.root / "private"))
+                                        dir=prerequisites.extended_path(self.root / "private"),
+                                        ignore_cleanup_errors=True)
         self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").read_bytes(), b"clang")
         self.assertEqual((self.root / "tools/llvm-mingw" / self.deep_name).read_bytes(), b"deep")
         self.assertEqual(list((self.root / "private").iterdir()), [])
@@ -133,7 +134,7 @@ class PrerequisiteTests(unittest.TestCase):
                     else:
                         with self.assertRaisesRegex(ValueError, "rerun setup"):
                             prerequisites.install_llvm_mingw(self.root)
-                self.assertEqual(sleep.call_count, min(failures, 9))
+                self.assertEqual(sleep.call_args_list, [mock.call(3)] * min(failures, 9))
                 self.assertEqual((self.root / "tools/llvm-mingw/bin/clang.exe").is_file(), installed)
                 self.assertEqual(list((self.root / "private").iterdir()), [])
 

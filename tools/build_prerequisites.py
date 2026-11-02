@@ -57,7 +57,9 @@ def install_llvm_mingw(root):
     private.mkdir(exist_ok=True)
     # Staging adds ~70 characters to the ZIP's deepest paths, which can pass 260 under a long
     # install folder when Windows long paths are disabled (#171).
-    with tempfile.TemporaryDirectory(prefix="llvm-mingw-", dir=extended_path(private)) as folder:
+    # A folder antivirus still locks must not hide the rename error below.
+    with tempfile.TemporaryDirectory(prefix="llvm-mingw-", dir=extended_path(private),
+                                     ignore_cleanup_errors=True) as folder:
         archive = Path(folder) / "llvm-mingw.zip"
         print("Downloading the llvm-mingw compiler (190 MB)...", flush=True)
         try:
