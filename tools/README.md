@@ -25,6 +25,20 @@ be placed beneath the game.
 `public_export.py` enforces the tracked public allowlist, scans regular files,
 and verifies each declared submodule's path, URL, and pinned commit.
 
+## Release packager
+
+`package_release.py` stages the Windows, macOS and Linux ZIPs from a release
+tag, with the version, change note and README text in `tools/release/`:
+
+```powershell
+python tools/package_release.py v0.6.2 private/rel/final --bundled <0.6.0 RC1 Windows ZIP>
+```
+
+The Windows ZIP adds the tools and icon the shipped RC1 Windows ZIP bundles
+beyond its tagged source; `--check` proves the script still rebuilds that ZIP.
+Each platform ships only its own launchers, and the packager and
+`tools/release/` stay out of every ZIP.
+
 ## Scripted play
 
 `drive_game.py` presses pad buttons in a running game and waits for the
