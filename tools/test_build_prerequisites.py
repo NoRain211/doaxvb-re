@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -161,6 +162,25 @@ class PrerequisiteTests(unittest.TestCase):
                 build_game.build(args, verify_parity=False)
             ensure.assert_not_called()
             extract.assert_called_once()
+
+    def test_missing_capstone_hint_matches_platform(self):
+        recipe = self.root / "tools/game-recipe/recipe.json"
+        recipe.parent.mkdir(parents=True)
+        recipe.write_text(json.dumps({"files": {}}), encoding="utf-8")
+        venv = self.root / "private" / "venv"
+        expected = {"win32": f'& "{sys.executable}" -m pip install capstone==5.0.9',
+                    "darwin": f"python3 -m venv {shlex.quote(str(venv))} && "
+                              f"{shlex.quote(str(venv / 'bin' / 'pip'))} install capstone==5.0.9"}
+        args = argparse.Namespace(generate_only=True, imported=None, iso=Path("input.iso"), extractor="extract-xiso")
+        for platform, hint in expected.items():
+            with self.subTest(platform=platform), \
+                    mock.patch.object(build_game, "ROOT", self.root), \
+                    mock.patch.object(build_game.shutil, "which", return_value="tool"), \
+                    mock.patch.object(build_game.sys, "platform", platform), \
+                    mock.patch.dict(sys.modules, capstone=None):
+                with self.assertRaises(ValueError) as caught:
+                    build_game.build(args, verify_parity=False)
+                self.assertEqual(str(caught.exception), "Install Capstone: " + hint)
 
 
 if __name__ == "__main__":
