@@ -122,3 +122,11 @@ jobs:
         env:
           SDL_VIDEO_DRIVER: offscreen
         run: ctest --test-dir build/recomp-runtime --output-on-failure
+      - name: Check the presenter compiled its Vulkan shaders
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          # The presenter test passes without shaderc, so fail on its skip or compile errors.
+          build/recomp-runtime/recomp_d3d_presenter_sdl_gpu_test > presenter.log 2>&1
+          cat presenter.log
+          if grep -E 'need shaderc|shaderc compilation failed' presenter.log; then exit 1; fi
