@@ -98,7 +98,7 @@ def build(args, verify_parity=True, lifter_revision=None):
     try:
         import capstone
     except ImportError as error:
-        raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
+        raise ValueError(f"Install Capstone for this Python: {sys.executable} -m pip install capstone==5.0.9") from error
     if not args.generate_only:
         compiler = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
         prefer_bundled_tools(ROOT)  # puts a freshly downloaded llvm-mingw, with mingw32-make, on PATH

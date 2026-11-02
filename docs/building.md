@@ -124,11 +124,14 @@ python tools/build_game.py --imported private/imported-disc
 
 ### macOS build
 
-On macOS (Apple Silicon or Intel), install CMake, Ninja, SDL3 and Capstone:
+On macOS (Apple Silicon or Intel), install CMake, Ninja and SDL3. Homebrew's
+Python refuses `pip install`, so from the checkout folder put Capstone in the
+virtual environment `build_game.sh` looks for:
 
 ```bash
 brew install cmake ninja sdl3
-python3 -m pip install capstone==5.0.9
+python3 -m venv private/venv
+private/venv/bin/pip install capstone==5.0.9
 ```
 
 Homebrew has no `extract-xiso`; build it from
