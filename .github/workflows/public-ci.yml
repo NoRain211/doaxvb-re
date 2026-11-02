@@ -105,8 +105,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang libx11-dev libxext-dev libwayland-dev \
-            libxkbcommon-dev libdecor-0-dev libasound2-dev libpulse-dev libvulkan-dev
+          # Keep in step with the Ubuntu command in docs/building.md.
+          sudo apt-get install -y cmake ninja-build clang git python3-venv \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
+            libasound2-dev libpulse-dev libvulkan-dev
       - name: Configure public runtime tests with clang, as setup does
         run: >-
           cmake -S recomp-runtime -B build/recomp-runtime -G Ninja -DRECOMP_FETCH_SDL3=ON

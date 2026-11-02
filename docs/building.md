@@ -175,6 +175,16 @@ finished checkout then runs on SteamOS itself. Run `./build_game.sh` as on
 macOS. `./launcher.sh` opens a gamepad-friendly settings screen, then starts
 the game; `./run_game.sh` starts the game with the saved choices.
 
+On Ubuntu 24.04, including that `distrobox`, this installs the build tools and
+SDL3's build dependencies:
+
+```bash
+sudo apt install cmake ninja-build clang git python3-venv \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+  libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
+  libasound2-dev libpulse-dev libvulkan-dev
+```
+
 Setup compiles with clang when `clang` and `clang++` are installed, as the
 Windows and macOS builds do; otherwise it uses the system's C++17 compiler.
 Set `CC` and `CXX` to choose the compiler yourself.
