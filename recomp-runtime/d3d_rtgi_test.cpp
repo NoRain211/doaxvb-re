@@ -401,7 +401,8 @@ static void addScene(D3dRtgi *gi, std::array<Mesh, 3> &meshes, bool extras)
     draw.primitive_type = 5;
     const uint16_t invalid[] = {0, 1, 65000, 0, 0, 1};
     draw.index_bytes = invalid;
-    require(!d3d_rtgi_add_draw(gi, draw, nullptr, nullptr), "accepted invalid triangles");
+    // Queued: only the collection worker finds no valid triangle, and the image check proves it dropped the draw.
+    d3d_rtgi_add_draw(gi, draw, nullptr, nullptr);
 }
 
 static void apply(D3dRtgi *gi, Renderer &r)
