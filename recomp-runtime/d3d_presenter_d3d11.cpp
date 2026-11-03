@@ -2285,6 +2285,12 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     if (FAILED(result)) return result;
     createDlss(presenter);    // switches to the scene set, which motion vectors measure
     createMotion(presenter);
+    // DLSS reads the motion target every frame; without it, render as before.
+    if (presenter->dlss_active && (!presenter->motion_requested || presenter->motion_target == nullptr)) {
+        std::fprintf(stderr, "recomp dlss: motion vectors unavailable; off\n");
+        releaseDlss(presenter);
+        presenter->dlss_mode = -1;
+    }
     if (presenter->gbuffer.enabled) {
         if (presenter->depth_sample) {
             presenter->gbuffer.create(presenter->device, mainWidth(presenter), mainHeight(presenter), presenter->msaa);
@@ -5529,7 +5535,9 @@ RecompD3dPresenterError submitPresent(
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
     const bool immediate = immediatePresent(presenter);
-    const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
+    // Unlocked never waits for vblank. Without tearing support the flip model
+    // still shows the newest finished frame at each refresh instead of tearing.
+    const UINT sync_interval = immediate || presenter->vrr || unlocked_present ? 0u : syncInterval(presenter);
     const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
         : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
     if (presenter->vrr && !split_presentation) {
@@ -5786,7 +5794,8 @@ RecompD3dPresenterError d3d11_backend_create(
         }
         created->vrr = tearing != FALSE;
         std::fprintf(stderr, "recomp d3d presenter: vrr %s%s\n", created->vrr ? "on" : "unsupported",
-            unlocked_present ? " (unlocked frame rate)" : "");
+            !unlocked_present ? "" : created->vrr ? " (unlocked frame rate)"
+                : " (unlocked frame rate without tearing: newest frame at each refresh)");
     }
     if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
         created->present_log = std::fopen(log, "w");

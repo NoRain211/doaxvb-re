@@ -24,8 +24,10 @@ RCAS into the window. It only upscales: at or above the window size the
 bilinear pass is used, as it is on hardware below feature level 11_0 or when
 the headers are absent at build time.
 
-Forced anisotropic filtering applies to every linear-filtered texture; point
-filtered draws keep their own samplers.
+Forced anisotropic filtering upgrades the samplers of ordinary textured draws
+and their combiner stage. Draws that use the game's four-tap filter, an alpha
+mask or a vertex/pixel program keep their point-mip clamp sampler, which
+those effects depend on, so they are not filtered anisotropically.
 
 DLSS is offered separately, with its own motion vectors and jitter; see
 [DLSS](dlss.md).
@@ -46,7 +48,9 @@ rigid props, one tick behind (see
 | Unlocked | `unlocked` | As fast as the GPU allows (up to 1000), with tearing |
 
 `unlocked` presents through the VRR path (`DXGI_PRESENT_ALLOW_TEARING`, no
-vblank wait) whatever the VRR toggle says.
+vblank wait) whatever the VRR toggle says. Where the GPU or driver does not
+support tearing, it still presents without waiting for vblank, and the display
+shows the newest finished frame at each refresh; the run log says which.
 
 A tick never takes more presents than fit in it. The worker times a tick's
 first present and its later ones separately and spaces presents evenly by how

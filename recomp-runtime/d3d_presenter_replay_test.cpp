@@ -40,8 +40,10 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *, const RecompD3dPresenter
         shadow_worlds.push_back(command->data.draw.world[0][12]);
 }
 void d3d11_backend_shadow_end(RecompD3dPresenter *) {}
+void d3d11_backend_shadow_tick(RecompD3dPresenter *) {}
 void d3d11_backend_set_immediate_present(bool) {}
 void d3d11_backend_set_split_presentation(bool) {}
+void d3d11_backend_set_unlocked_present(bool) {}
 void d3d11_backend_report_draw_textures() {}
 void recomp_d3d_add_queue_wait_ns(uint64_t) {}
 void d3d11_backend_verify_replay(RecompD3dPresenter *, uint32_t, bool) {}

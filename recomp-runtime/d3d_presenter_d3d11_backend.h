@@ -21,7 +21,7 @@ void d3d11_backend_report_draw_textures();
 bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting);
 void d3d11_backend_shadow_command(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
 void d3d11_backend_shadow_end(RecompD3dPresenter *presenter);
-/* A new captured tick: forget scene bounds kept across its split replays. */
+/* A new captured tick: invalidate the sun shadow map reused across its split replays. */
 void d3d11_backend_shadow_tick(RecompD3dPresenter *presenter);
 void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay);
 

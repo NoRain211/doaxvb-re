@@ -103,7 +103,10 @@ def adapt_modified_xbe(path):
         data[header + 36:header + 56] = digest
     if hashlib.sha256(data).hexdigest() != known["result_sha256"]:
         raise ValueError("Adapted executable differs from the expected result")
-    path.write_bytes(data)
+    # Replace atomically: an interrupted run leaves the original or the result.
+    temporary = path.with_name(path.name + ".adapting")
+    temporary.write_bytes(data)
+    temporary.replace(path)
     return True
 
 

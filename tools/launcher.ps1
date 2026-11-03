@@ -373,7 +373,7 @@ $sharpness = Add-Row $pages[3] 'FSR sharpness (%)' 96 (New-Object Windows.Forms.
 $anisotropy = Add-Row $pages[3] 'Anisotropic filtering' 128 (New-Choice $anisotropyNames ([Array]::IndexOf($anisotropyValues, [int]$settings.anisotropy)))
 $dlss = Add-Row $pages[3] 'NVIDIA DLSS' 160 (New-Choice $dlssNames ([Array]::IndexOf($dlssValues, [string]$settings.dlss)))
 $frameRate = Add-Row $pages[3] 'Frame rate' 192 (New-Choice $frameRateNames ([Array]::IndexOf($frameRateValues, [string]$settings.frameRate)))
-New-Note $pages[3] "DLSS replaces MSAA and RTGI. Alt+Enter: window / fullscreen.`nUnlocked tears; 120 on a faster screen needs VRR (Graphics)." 220 34 | Out-Null
+New-Note $pages[3] "DLSS replaces MSAA and RTGI. Alt+Enter: window / fullscreen.`nUnlocked tears; 120 on a faster screen needs VRR (Graphics)." 216 28 | Out-Null
 function Update-DisplayControls {
     $scaled = $windowMode.SelectedIndex -ne 2
     $windowSize.Enabled = $scaled; $upscale.Enabled = $scaled
