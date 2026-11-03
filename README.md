@@ -133,6 +133,11 @@ build in a new folder and keep your previous install and saves. GitHub's
 automatic source archives are source only; see the
 [source build guide](docs/building.md) for their prerequisites.
 
+Setup also accepts a known community-modified disc image of the USA release.
+Its executable has a call redirected outside the original code; setup points
+that call back during import, and the build skips the byte-for-byte checks
+that only the unmodified executable can pass.
+
 New and older saves start in Digital control mode until you pick a PC
 control mode; later Analog or Digital choices are remembered. See the
 [controller guide](docs/recomp-controls.md).

@@ -16,10 +16,13 @@ RecompD3dPresenterError d3d11_backend_release_memory(
 RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);
 void d3d11_backend_set_immediate_present(bool enabled);
 void d3d11_backend_set_split_presentation(bool enabled);
+void d3d11_backend_set_unlocked_present(bool enabled);
 void d3d11_backend_report_draw_textures();
 bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting);
 void d3d11_backend_shadow_command(RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
 void d3d11_backend_shadow_end(RecompD3dPresenter *presenter);
+/* A new captured tick: forget scene bounds kept across its split replays. */
+void d3d11_backend_shadow_tick(RecompD3dPresenter *presenter);
 void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay);
 
 #endif

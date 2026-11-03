@@ -181,6 +181,13 @@ Use `--generate-only` to stop after generation. A completed build writes
 `private/setup-*/build-receipt.json` with status `built-unverified`. This status
 records a build. A supervised native run provides the behavior evidence.
 
+`MODIFIED_XBES` in `tools/build_game.py` lists community-modified executables
+of the USA release that build. For each, setup restores the direct calls the
+modification redirected outside the recompiled program, recomputes the section
+digests the loader checks, and requires the result to match a recorded hash.
+Their generated program cannot match the recipe, so those builds skip the
+parity checks and record `xbe_variant: community-modified` in the receipt.
+
 The recipe retains the tested local program and adds the bounded activity
 callback and Rest predicate recoveries. Its 19-file manifest is
 `program_manifest_sha256` in the recipe.

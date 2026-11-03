@@ -69,6 +69,10 @@ struct PresenterThread {
     // RECOMP_PERF_COUNTER pacing on the game side, reported once per second.
     bool pacing = false;
     double split_rate = 0, split_next = 0;
+    // Recent wall time of a tick's first present and of its later ones, which reuse
+    // the first's uploads and sun map, so a tick never takes on more than fit.
+    double split_first_ms = 0, split_repeat_ms = 0;
+    unsigned split_probe = 0;
     uint32_t split_first_frame = 0;
     // Visual clock: when the last shown tick's interpolation started.
     uint32_t split_clock_frame = 0;
@@ -206,6 +210,8 @@ void pump(PresenterThread &thread)
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
     const D3dCapturePacket &packet, int phase = -1, float fraction = -1, bool apply_releases = true, bool shadow_pass = false)
 {
+    // The first replay of a packet applies its releases; later ones reuse its sun map.
+    if (!shadow_pass && apply_releases) d3d11_backend_shadow_tick(backend);
     if (!shadow_pass && d3d11_backend_shadow_begin(backend, false)) {
         execute(thread, backend, packet, phase, fraction, false, true);
         if (d3d11_backend_shadow_begin(backend, true))
@@ -403,9 +409,23 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             thread.split_clock_frame = frame;
             thread.split_clock_start = start;
             double end = start+tick_ms;
+            // Picked up well after it was published: the game is waiting on presents.
+            // Show this tick once so the queue drains instead of slowing the game.
+            const bool behind = picked-packet->published_ms > tick_ms/4;
             // A slightly late producer must not discard an otherwise due present.
             // Only abandon the clock after a full simulation interval was missed.
             if (thread.split_next+tick_ms < now) thread.split_next = now;
+            // Space presents evenly by how many fit in a tick at their recent cost,
+            // never faster than the requested rate.
+            double period = 1000.0/thread.split_rate;
+            if (thread.split_first_ms > 0) {
+                double fit = 1;
+                if (thread.split_repeat_ms > 0)
+                    fit += (std::max)(0.0, std::floor((tick_ms*0.8-thread.split_first_ms)/thread.split_repeat_ms));
+                // Now and then offer one more present: the scene may have become cheaper.
+                if (thread.split_repeat_ms == 0 || ++thread.split_probe % 30 == 0) fit += 1;
+                period = (std::max)(period, tick_ms/fit);
+            }
             bool presented = false;
             // Past the tick, hold the end pose at each deadline until the next
             // packet arrives and its new textures exist, so neither a late
@@ -436,6 +456,10 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                     } else YieldProcessor();
                 }
                 if (thread.split_next >= end && next_ready()) break;
+                // A present that would end past the tick delays the next packet, and
+                // the game then waits on the queue: slow motion instead of fewer frames.
+                const double repeat_ms = thread.split_repeat_ms ? thread.split_repeat_ms : thread.split_first_ms*0.5;
+                if (presented && (behind || clock_ms()+repeat_ms > end) && next_ready()) break;
                 // Sample at the scheduled display time; wake-up jitter is not motion.
                 double elapsed = (thread.split_next-start)/tick_ms;
                 float fraction = static_cast<float>((std::max)(0.0, (std::min)(elapsed, 0.999999)));
@@ -446,7 +470,10 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                 thread.split_camera_draws = thread.split_pose_draws = 0;
                 thread.trace_split_ms = 0; thread.trace_records = 0;
                 execute(thread, backend, *packet, -1, fraction, !presented);
-                render_work += clock_ms()-draw_start; ++render_presents;
+                const double cost = clock_ms()-draw_start;
+                double &average = presented ? thread.split_repeat_ms : thread.split_first_ms;
+                average = average ? average*0.875+cost*0.125 : cost;
+                render_work += cost; ++render_presents;
                 if (thread.split_trace) thread.split_records.push_back({frame, fraction,
                     thread.split_camera_draws, thread.split_pose_draws, deadline, draw_start,
                     clock_ms(), packet->published_ms, picked, thread.trace_split_ms,
@@ -455,10 +482,10 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
                     dump_split_trace(thread);
                 ++thread.split_presents;
                 presented = true;
-                thread.split_next += 1000.0/thread.split_rate;
+                thread.split_next += period;
                 // Do not submit bursts of expired presents when the GPU is late.
                 double now = clock_ms();
-                if (thread.split_next+1000.0/thread.split_rate < now)
+                if (thread.split_next+period < now)
                     thread.split_next = now;
             }
         } else if (thread.verify_at && frame >= thread.verify_at && frame-thread.verify_at < thread.verify_count) {
@@ -635,6 +662,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
             if (thread->split_timer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
         d3d11_backend_set_split_presentation(thread->split_rate != 0);
+        d3d11_backend_set_unlocked_present(thread->split_rate != 0 && recomp_split_unlocked(requested));
         if (thread->split_rate) std::fprintf(stderr, "recomp split rate: target=%.6g gameplay=60 visual_delay_ticks=1\n", thread->split_rate);
         if (const char *at = std::getenv("RECOMP_REPLAY_VERIFY_AT")) {
             thread->verify_at = static_cast<uint32_t>(std::strtoul(at, nullptr, 10));

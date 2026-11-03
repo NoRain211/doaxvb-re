@@ -35,8 +35,10 @@ typedef struct RecompSplitDraw {
 extern "C" {
 #endif
 double recomp_split_rate(const char *text);
-/* True for a numeric rate or "auto" (the display's refresh rate). */
+/* True for a numeric rate, "auto" (the display's refresh rate) or "unlocked". */
 bool recomp_split_requested(const char *text);
+/* "unlocked": present as fast as the GPU allows, tearing instead of waiting for vblank. */
+bool recomp_split_unlocked(const char *text);
 /* The present rate for RECOMP_SPLIT_RATE on a display refreshing at
    display_hz (0 when unknown). Presents wait for vblank when vsync is set.
    Sets *note to a reason when the result differs from the request. */

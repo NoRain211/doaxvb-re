@@ -37,6 +37,11 @@ struct SunShadow {
     ID3D11PixelShader *caster_alpha = nullptr;
     std::vector<SunCasterLayout> caster_layouts;
     bool caster_failed = false, caster_bound = false;
+    /* Split presentation replays one tick several times. Its first replay draws
+       the map; later replays keep that map, its projection, casters and compact
+       flags, so shadows move at the game's 60 Hz while bodies are interpolated. */
+    bool map_current = false;
+    unsigned map_casters = 0;
 };
 
 bool sunShadowRequested()
