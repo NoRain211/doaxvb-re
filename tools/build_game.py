@@ -104,9 +104,14 @@ def adapt_modified_xbe(path):
     if hashlib.sha256(data).hexdigest() != known["result_sha256"]:
         raise ValueError("Adapted executable differs from the expected result")
     # Replace atomically: an interrupted run leaves the original or the result.
-    temporary = path.with_name(path.name + ".adapting")
-    temporary.write_bytes(data)
-    temporary.replace(path)
+    # A unique, exclusively created sibling never overwrites another file.
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.adapting")
+    try:
+        with temporary.open("xb") as output:
+            output.write(data)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return True
 
 

@@ -1976,7 +1976,8 @@ void releaseDlss(RecompD3dPresenter *presenter)
 
 /* Loads dlss_bridge.dll beside the runner and builds the scene input set at
    DLSS's optimal size for the chosen mode. Any failure leaves DLSS off and the
-   frame renders as before. Called after the full-size main set exists. */
+   frame renders at full size, with the effects DLSS replaced (MSAA, SMAA, RTGI,
+   the G-buffer) still off. Called after the full-size main set exists. */
 void createDlss(RecompD3dPresenter *presenter)
 {
     if (presenter->dlss_mode < 0) return;
@@ -2285,7 +2286,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     if (FAILED(result)) return result;
     createDlss(presenter);    // switches to the scene set, which motion vectors measure
     createMotion(presenter);
-    // DLSS reads the motion target every frame; without it, render as before.
+    // DLSS reads the motion target every frame. Without it DLSS is off, and MSAA,
+    // SMAA, RTGI and the G-buffer stay off as d3d11_backend_create set them.
     if (presenter->dlss_active && (!presenter->motion_requested || presenter->motion_target == nullptr)) {
         std::fprintf(stderr, "recomp dlss: motion vectors unavailable; off\n");
         releaseDlss(presenter);
