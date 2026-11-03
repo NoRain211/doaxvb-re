@@ -7,7 +7,6 @@
 #include <d3d12sdklayers.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
-#include <DirectXMath.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -21,9 +20,9 @@
 #include <vector>
 
 #include "d3d_rtgi.h"
+#include "d3d_matrix.h"
 
 using Microsoft::WRL::ComPtr;
-using namespace DirectX;
 
 static void check(HRESULT result, const char *operation)
 {
@@ -36,6 +35,47 @@ static void check(HRESULT result, const char *operation)
 static void require(bool passed, const char *message)
 {
     if (!passed) throw std::runtime_error(message);
+}
+
+constexpr float pi = 3.14159265358979f;
+
+// Left-handed camera and projection builders with the D3DX/DirectXMath formulas.
+static Float4x4 lookAtLH(Float4 eye, Float4 at, Float4 up)
+{
+    const auto dot = [](Float4 a, Float4 b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+    const auto cross = [](Float4 a, Float4 b) {
+        return Float4{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x, 0};
+    };
+    const auto normalize = [&](Float4 v) {
+        const float length = std::sqrt(dot(v, v));
+        return Float4{v.x / length, v.y / length, v.z / length, 0};
+    };
+    const Float4 z = normalize({at.x - eye.x, at.y - eye.y, at.z - eye.z, 0});
+    const Float4 x = normalize(cross(up, z)), y = cross(z, x);
+    return {{{x.x, y.x, z.x, 0}, {x.y, y.y, z.y, 0}, {x.z, y.z, z.z, 0},
+        {-dot(x, eye), -dot(y, eye), -dot(z, eye), 1}}};
+}
+
+static Float4x4 orthographicLH(float w, float h, float zn, float zf)
+{
+    return {{{2 / w, 0, 0, 0}, {0, 2 / h, 0, 0}, {0, 0, 1 / (zf - zn), 0}, {0, 0, zn / (zn - zf), 1}}};
+}
+
+static Float4x4 perspectiveFovLH(float fovY, float aspect, float zn, float zf)
+{
+    const float y = 1 / std::tan(fovY / 2), q = zf / (zf - zn);
+    return {{{y / aspect, 0, 0, 0}, {0, y, 0, 0}, {0, 0, q, 1}, {0, 0, -q * zn, 0}}};
+}
+
+static Float4x4 rotationY(float angle)
+{
+    const float c = std::cos(angle), s = std::sin(angle);
+    return {{{c, 0, -s, 0}, {0, 1, 0, 0}, {s, 0, c, 0}, {0, 0, 0, 1}}};
+}
+
+static Float4x4 translation(float x, float y, float z)
+{
+    return {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {x, y, z, 1}}};
 }
 
 using Rtgi = std::unique_ptr<D3dRtgi, decltype(&d3d_rtgi_destroy)>;
@@ -51,13 +91,10 @@ struct Mesh {
     bool colorMaterial = false;
 };
 
-static XMFLOAT4X4 camera(float shift = 0)
+static Float4x4 camera(float shift = 0)
 {
-    XMFLOAT4X4 result;
-    XMStoreFloat4x4(&result, XMMatrixMultiply(
-        XMMatrixLookAtLH(XMVectorSet(9 + shift, 8, -13, 1), XMVectorSet(3 + shift, 0, 0, 1), XMVectorSet(0, 1, 0, 0)),
-        XMMatrixOrthographicLH(21, 21 * float(height) / width, 0.1f, 60)));
-    return result;
+    return lookAtLH({9 + shift, 8, -13, 1}, {3 + shift, 0, 0, 1}, {0, 1, 0, 0}) *
+        orthographicLH(21, 21 * float(height) / width, 0.1f, 60);
 }
 
 static std::array<Mesh, 3> scene(bool baked)
@@ -401,16 +438,16 @@ static Pixels runFrames(Renderer &renderer, std::array<Mesh, 3> &meshes, bool ex
     return pixels;
 }
 
-static size_t pixelAt(float x, float y, float z, const XMFLOAT4X4 &matrix)
+static size_t pixelAt(float x, float y, float z, const Float4x4 &matrix)
 {
-    const auto clip = XMVector3TransformCoord(XMVectorSet(x, y, z, 1), XMLoadFloat4x4(&matrix));
-    const int px = int((XMVectorGetX(clip) * 0.5f + 0.5f) * width);
-    const int py = int((-XMVectorGetY(clip) * 0.5f + 0.5f) * height);
+    const Float4 clip = Float4{x, y, z, 1} * matrix;
+    const int px = int((clip.x / clip.w * 0.5f + 0.5f) * width);
+    const int py = int((-clip.y / clip.w * 0.5f + 0.5f) * height);
     require(px >= 0 && px < int(width) && py >= 0 && py < int(height), "sample outside scene");
     return size_t(py) * width + px;
 }
 
-static bool verifyImage(const Pixels &input, const Pixels &output, UINT samples, const XMFLOAT4X4 &matrix)
+static bool verifyImage(const Pixels &input, const Pixels &output, UINT samples, const Float4x4 &matrix)
 {
     double nearGain[3]{}, farGain[3]{};
     unsigned floorCount = 0;
@@ -514,7 +551,7 @@ static bool verifyScale(Renderer &renderer)
 }
 
 // Average 8-bit change on lit floor points near the red wall, seen by matrix.
-static double floorGain(const Pixels &input, const Pixels &output, const XMFLOAT4X4 &matrix)
+static double floorGain(const Pixels &input, const Pixels &output, const Float4x4 &matrix)
 {
     double sum = 0;
     for (unsigned z = 0; z < 12; ++z) for (unsigned x = 0; x < 8; ++x) {
@@ -598,16 +635,13 @@ static bool verifyBanding(Renderer &renderer)
     meshes[1].vertices = {{-1000, 0, 95, 0}, {-1000, 100, 95, 0},
         {1000, 0, 95, 0}, {1000, 100, 95, 0}};
     meshes[2].indices.clear();
-    XMFLOAT4X4 matrix;
-    const auto view = XMMatrixLookAtLH(XMVectorSet(0, 2, 0, 1),
-        XMVectorSet(0, 0, 100, 1), XMVectorSet(0, 1, 0, 0));
-    XMStoreFloat4x4(&matrix, view *
-        XMMatrixPerspectiveFovLH(0.16f, float(width) / height, 0.00002f, 2000));
+    const Float4x4 view = lookAtLH({0, 2, 0, 1}, {0, 0, 100, 1}, {0, 1, 0, 0});
+    Float4x4 matrix = view * perspectiveFovLH(0.16f, float(width) / height, 0.00002f, 2000);
     for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &matrix, sizeof matrix);
     renderer.render(meshes);
     const auto input = readTarget(renderer);
     const auto output = runFrames(renderer, meshes, false, 96);
-    XMStoreFloat4x4(&matrix, view * XMMatrixPerspectiveFovLH(0.16f, float(width) / height, 0.1f, 2000));
+    matrix = view * perspectiveFovLH(0.16f, float(width) / height, 0.1f, 2000);
     for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &matrix, sizeof matrix);
     renderer.render(meshes);
     require(readTarget(renderer) == input, "near-plane reference changed raster color");
@@ -655,7 +689,7 @@ static std::array<Mesh, 3> movingScene()
     sphere.indices.clear();
     constexpr unsigned rings = 12, segments = 24;
     for (unsigned y = 0; y <= rings; ++y) for (unsigned x = 0; x <= segments; ++x) {
-        const float latitude = XM_PI * y / rings, longitude = XM_2PI * x / segments;
+        const float latitude = pi * y / rings, longitude = 2 * pi * x / segments;
         sphere.vertices.push_back({1.3f * std::sin(latitude) * std::cos(longitude),
             1.3f * std::cos(latitude), 1.3f * std::sin(latitude) * std::sin(longitude),
             0.5f + 0.4f * std::cos(latitude)});
@@ -669,10 +703,8 @@ static std::array<Mesh, 3> movingScene()
     sphere.draw.triangle_count = UINT(sphere.indices.size() / 3);
     sphere.draw.blend_weight_count = 1;
     sphere.color[0] = 0.32f; sphere.color[1] = 0.24f; sphere.color[2] = 0.18f;
-    XMFLOAT4X4 matrix;
-    XMStoreFloat4x4(&matrix, XMMatrixLookAtLH(XMVectorSet(6, 4, -8, 1),
-        XMVectorSet(2, 1, 0, 1), XMVectorSet(0, 1, 0, 0)) *
-        XMMatrixOrthographicLH(8, 8 * float(height) / width, 0.1f, 40));
+    const Float4x4 matrix = lookAtLH({6, 4, -8, 1}, {2, 1, 0, 1}, {0, 1, 0, 0}) *
+        orthographicLH(8, 8 * float(height) / width, 0.1f, 40);
     for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &matrix, sizeof matrix);
     return meshes;
 }
@@ -680,10 +712,9 @@ static std::array<Mesh, 3> movingScene()
 static void moveSphere(Mesh &sphere, unsigned frame)
 {
     for (unsigned bone = 0; bone < 2; ++bone) {
-        XMFLOAT4X4 world;
-        XMStoreFloat4x4(&world, XMMatrixRotationY(0.07f * frame + 0.12f * bone) *
-            XMMatrixTranslation(2 + 0.35f * std::sin(frame * 0.3f + bone * 0.2f),
-                1.5f + 0.06f * std::sin(frame * 0.4f + bone), 0));
+        const Float4x4 world = rotationY(0.07f * frame + 0.12f * bone) *
+            translation(2 + 0.35f * std::sin(frame * 0.3f + bone * 0.2f),
+                1.5f + 0.06f * std::sin(frame * 0.4f + bone), 0);
         std::memcpy(sphere.draw.world[bone], &world, sizeof world);
     }
 }
@@ -920,9 +951,7 @@ static std::array<Mesh, 3> offscreenScene()
     wall.draw.address_u = wall.draw.address_v = 3;
     wall.colorMaterial = true;
     meshes[2].indices.clear();
-    XMFLOAT4X4 projection;
-    XMStoreFloat4x4(&projection, XMMatrixLookAtLH(XMVectorSet(0, 10, 0, 1),
-        XMVectorZero(), XMVectorSet(0, 0, 1, 0)) * XMMatrixOrthographicLH(10, 10, 0.1f, 60));
+    const Float4x4 projection = lookAtLH({0, 10, 0, 1}, {}, {0, 0, 1, 0}) * orthographicLH(10, 10, 0.1f, 60);
     for (auto &mesh : meshes) std::memcpy(mesh.draw.view_projection, &projection, sizeof projection);
     return meshes;
 }
@@ -952,10 +981,11 @@ static bool verifyOffscreenColor(Renderer &r)
     wall.texture = colorTexture(r.device, 0xffff0000);
     r.render(meshes);
     const auto input = readTarget(r);
-    const auto projection = XMLoadFloat4x4(reinterpret_cast<const XMFLOAT4X4 *>(wall.draw.view_projection));
+    Float4x4 projection;
+    std::memcpy(&projection, wall.draw.view_projection, sizeof projection);
     for (const auto &v : wall.vertices) {
-        const auto clip = XMVector4Transform(XMVectorSet(v.x, v.y, v.z, 1), projection);
-        require(XMVectorGetX(clip) < -XMVectorGetW(clip), "wall is not outside camera view");
+        const Float4 clip = Float4{v.x, v.y, v.z, 1} * projection;
+        require(clip.x < -clip.w, "wall is not outside camera view");
     }
     for (const auto &pixel : input)
         require(pixel[0] >= 127 && pixel[0] <= 128 && pixel[0] == pixel[1] &&
@@ -1156,7 +1186,7 @@ static std::vector<Mesh> benchScene(UINT w, UINT h)
     for (unsigned s = 2; s < meshes.size(); ++s) {
         auto &sphere = meshes[s];
         for (unsigned y = 0; y <= rings; ++y) for (unsigned x = 0; x <= segments; ++x) {
-            const float latitude = XM_PI * y / rings, longitude = XM_2PI * x / segments;
+            const float latitude = pi * y / rings, longitude = 2 * pi * x / segments;
             const float nx = std::sin(latitude) * std::cos(longitude), ny = std::cos(latitude),
                 nz = std::sin(latitude) * std::sin(longitude);
             sphere.vertices.push_back({1.2f * nx, 1.2f * ny, 1.2f * nz, 0.5f + 0.4f * ny, nx, ny, nz});
@@ -1168,9 +1198,8 @@ static std::vector<Mesh> benchScene(UINT w, UINT h)
         sphere.draw.blend_weight_count = s % 2;
         sphere.color[0] = 0.6f; sphere.color[1] = 0.45f; sphere.color[2] = 0.35f;
     }
-    XMFLOAT4X4 matrix;
-    XMStoreFloat4x4(&matrix, XMMatrixLookAtLH(XMVectorSet(0, 5, -14, 1), XMVectorSet(0, 1, 2, 1),
-        XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(0.9f, float(w) / h, 0.1f, 400));
+    const Float4x4 matrix = lookAtLH({0, 5, -14, 1}, {0, 1, 2, 1}, {0, 1, 0, 0}) *
+        perspectiveFovLH(0.9f, float(w) / h, 0.1f, 400);
     for (auto &mesh : meshes) {
         mesh.color[3] = 1;
         auto &draw = mesh.draw;
@@ -1196,9 +1225,8 @@ static void moveBench(std::vector<Mesh> &meshes, unsigned frame)
 {
     for (unsigned s = 2; s < meshes.size(); ++s) for (unsigned bone = 0; bone < 2; ++bone) {
         const float x = -10 + 4.0f * ((s - 2) % 6), z = (s - 2) < 6 ? 0.0f : 5.0f;
-        XMFLOAT4X4 world;
-        XMStoreFloat4x4(&world, XMMatrixRotationY(0.05f * frame + 0.1f * bone) *
-            XMMatrixTranslation(x + 0.3f * std::sin(0.2f * frame + s), 1.2f, z));
+        const Float4x4 world = rotationY(0.05f * frame + 0.1f * bone) *
+            translation(x + 0.3f * std::sin(0.2f * frame + s), 1.2f, z);
         std::memcpy(meshes[s].draw.world[bone], &world, sizeof world);
     }
 }

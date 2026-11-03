@@ -103,6 +103,7 @@ extractor. Setup compiles the game with the free
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) clang compiler. On first
 run it downloads it into the setup folder (190 MB, about 715 MB extracted). This
 needs no administrator approval, Visual Studio or Windows SDK (#115).
+Setup also downloads Microsoft's DXC shader compiler (32 MB) for ray-traced GI.
 Release ZIPs up to 0.6.0 RC1 instead offer to run Microsoft's C++ Build Tools
 installer, which needs administrator approval and several GB of disk space.
 

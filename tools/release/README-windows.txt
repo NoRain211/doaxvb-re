@@ -17,8 +17,8 @@ REQUIREMENTS
 Windows 10/11 x64, a supported USA game ISO, internet access and enough disk
 space for extracted game files and compilation. Python, Capstone, Git,
 CMake and extract-xiso are included. Setup downloads the llvm-mingw
-compiler (190 MB, about 715 MB extracted) and SDL3. No administrator
-approval, Visual Studio or Windows SDK is needed.
+compiler (190 MB, about 715 MB extracted), the DXC shader compiler (32 MB)
+and SDL3. No administrator approval, Visual Studio or Windows SDK is needed.
 If extract-xiso reports a missing VCRUNTIME140.dll, install the included
 Prerequisites/vc_redist.x86.exe and retry (it is for the 32-bit extractor).
 
@@ -67,7 +67,6 @@ KNOWN ISSUES
 - A second Hopping Game can be playable before loading finishes (#54).
 - An upside-down map can flash when leaving the pool (#55).
 - Some underwater beach textures may be missing (#56).
-- The launcher's Ray-traced GI option has no effect in this build.
 - PlayStation controllers have not yet been confirmed on physical hardware.
 
 LICENSES AND SOURCE

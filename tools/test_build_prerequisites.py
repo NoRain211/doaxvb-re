@@ -54,9 +54,18 @@ class PrerequisiteTests(unittest.TestCase):
 
     def test_existing_compiler_skips_download(self):
         with mock.patch.object(prerequisites, "find_toolchain", return_value=Path("clang")), \
-                mock.patch.object(prerequisites, "install_llvm_mingw") as install:
+                mock.patch.object(prerequisites, "install_llvm_mingw") as install, \
+                mock.patch.object(prerequisites, "install_dxc") as install_dxc:
             self.assertEqual(prerequisites.ensure_prerequisites(self.root, True), Path("clang"))
             install.assert_not_called()
+            # Windows setup also fetches DXC for RTGI, once, and only when asked to install.
+            self.assertEqual(install_dxc.call_count, int(os.name == "nt"))
+            dxc = self.root / "tools/dxc/bin/x64/dxc.exe"
+            dxc.parent.mkdir(parents=True)
+            dxc.touch()
+            prerequisites.ensure_prerequisites(self.root, True)
+            prerequisites.ensure_prerequisites(self.root)
+            self.assertEqual(install_dxc.call_count, int(os.name == "nt"))
 
     def test_missing_compiler_requires_flag_and_is_rechecked(self):
         with mock.patch.object(prerequisites, "find_toolchain", return_value=None), \
@@ -95,6 +104,20 @@ class PrerequisiteTests(unittest.TestCase):
         self.assertEqual((self.root / "tools/llvm-mingw" / self.deep_name).read_bytes(), b"deep")
         self.assertEqual(list((self.root / "private").iterdir()), [])
         self.download.assert_called_once_with(prerequisites.LLVM_MINGW_URL, timeout=60)
+
+    def test_download_installs_verified_dxc(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:  # the DXC ZIP has no top-level folder
+            archive.writestr("bin/x64/dxc.exe", b"dxc")
+            archive.writestr("LICENSE-MS.txt", b"license")
+        payload = data.getvalue()
+        self.download.side_effect = lambda *args, **kwargs: io.BytesIO(payload)
+        with mock.patch.object(prerequisites, "DXC_SHA256", hashlib.sha256(payload).hexdigest()):
+            prerequisites.install_dxc(self.root)
+        self.assertEqual((self.root / "tools/dxc/bin/x64/dxc.exe").read_bytes(), b"dxc")
+        self.assertTrue((self.root / "tools/dxc/LICENSE-MS.txt").is_file())
+        self.assertEqual(list((self.root / "private").iterdir()), [])
+        self.download.assert_called_once_with(prerequisites.DXC_URL, timeout=60)
 
     def test_extended_path_prefixes_only_windows_paths(self):
         if os.name != "nt":

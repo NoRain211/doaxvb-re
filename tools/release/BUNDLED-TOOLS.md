@@ -27,6 +27,10 @@ and checks its SHA-256 before use.
   https://github.com/mstorsjo/llvm-mingw/releases/tag/20261006. Setup
   extracts it into `tools/llvm-mingw`; its licenses (LLVM's Apache-2.0 with
   LLVM exceptions, and mingw-w64's) are in that folder.
+- **DXC v1.9.2609** (`dxc_2026_09_29.zip`), the shader compiler for
+  ray-traced GI: https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609.
+  Setup extracts it into `tools/dxc`; its licenses are `LICENSE-LLVM.txt`,
+  `LICENSE-MS.txt` and `LICENCE-MIT.txt` in that folder.
 - **SDL 3.4.16** (zlib license): `SDL3-devel-3.4.16-VC.zip` from
   https://github.com/libsdl-org/SDL/releases/tag/release-3.4.16. Setup copies
   `SDL3.dll` beside the game runner; its license is `LICENSE.txt` in the
