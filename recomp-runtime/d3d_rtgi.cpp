@@ -301,7 +301,11 @@ float surfaceSlope(int2 p, float depth) {
     int2 last = int2(fullSize) - 1;
     float2 before = float2(readDepth(max(p - int2(1, 0), 0)), readDepth(max(p - int2(0, 1), 0)));
     float2 after = float2(readDepth(min(p + int2(1, 0), last)), readDepth(min(p + int2(0, 1), last)));
-    float2 change = min(abs(before - depth), abs(after - depth));
+    float2 toBefore = abs(before - depth), toAfter = abs(after - depth);
+    // At the frame edge the clamped neighbour is this pixel; use the other side.
+    toBefore = p > 0 ? toBefore : toAfter;
+    toAfter = p < last ? toAfter : toBefore;
+    float2 change = min(toBefore, toAfter);
     return change.x + change.y;
 }
 Gain shade(Vertex v, int2 p, float depth, float slope) {
