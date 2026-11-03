@@ -1,6 +1,8 @@
 #ifndef DOAXBV_D3D_SUN_SHADOW_H
 #define DOAXBV_D3D_SUN_SHADOW_H
 
+#include "d3d_matrix.h"
+
 // Internal D3D11 experiment; all GPU objects are created only on explicit opt-in.
 namespace {
 
@@ -259,37 +261,6 @@ struct SunPalmTarget {
     bool valid() const { return cleared && silhouette; }
 };
 
-bool sunInverse(const float matrix[16], float inverse[16])
-{
-    double rows[4][8]{};
-    for (unsigned r = 0; r < 4; ++r) {
-        for (unsigned c = 0; c < 4; ++c) {
-            if (!std::isfinite(matrix[r*4+c])) return false;
-            rows[r][c] = matrix[r*4+c];
-        }
-        rows[r][r+4] = 1;
-    }
-    for (unsigned c = 0; c < 4; ++c) {
-        unsigned pivot = c;
-        for (unsigned r = c+1; r < 4; ++r)
-            if (std::fabs(rows[r][c]) > std::fabs(rows[pivot][c])) pivot = r;
-        if (std::fabs(rows[pivot][c]) < 1e-12) return false;
-        for (unsigned i = 0; i < 8; ++i) std::swap(rows[c][i], rows[pivot][i]);
-        const double scale = rows[c][c];
-        for (double &v : rows[c]) v /= scale;
-        for (unsigned r = 0; r < 4; ++r) {
-            if (r == c) continue;
-            const double factor = rows[r][c];
-            for (unsigned i = 0; i < 8; ++i) rows[r][i] -= factor*rows[c][i];
-        }
-    }
-    for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c) {
-        inverse[r*4+c] = static_cast<float>(rows[r][c+4]);
-        if (!std::isfinite(inverse[r*4+c])) return false;
-    }
-    return true;
-}
-
 // The net keeps its legacy shadow; the posts and vines beside it cast into the sun map.
 // shortcut: the captured courts place the net assembly at world Z=0; use object identity if layouts change.
 bool sunNetPart(const RecompD3dPresenterDrawCommand &draw, const float minimum[3], const float maximum[3])
@@ -393,7 +364,7 @@ void sunSelectCamera(SunShadow &sun, const RecompD3dPresenterDrawCommand &draw)
     if (draw.triangle_count <= sun.triangles || !draw.depth.depth_write_enable ||
         !recomp_d3d_fvf_layout(draw.fvf, &layout) || layout.normal_offset == RECOMP_D3D_FVF_ABSENT ||
         layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT || !sunSceneDraw(draw, size) ||
-        sunDirection(draw, direction) < 0 || !sunInverse(draw.view_projection, inverse)) return;
+        sunDirection(draw, direction) < 0 || !matrixInverse(draw.view_projection, inverse)) return;
     sun.triangles = draw.triangle_count;
     sun.camera_epoch = sun.epoch;
     std::memcpy(sun.camera, draw.view_projection, sizeof sun.camera);

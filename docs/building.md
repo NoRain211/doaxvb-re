@@ -21,7 +21,8 @@ For a source checkout or GitHub's automatic source archive, install:
   Linux, `build_game.sh` installs it into `private/venv`)
 - Git with network access
 - CMake 3.20 or newer
-- On Windows, nothing else: setup downloads the llvm-mingw compiler (see below)
+- On Windows, nothing else: setup downloads the llvm-mingw compiler and the
+  DXC shader compiler (see below)
 - XboxDev `extract-xiso` on Windows; on macOS and Linux setup builds it when
   none is on `PATH`
 
@@ -51,8 +52,15 @@ approval and happens once per folder. A release ZIP may already include it. The
 build receipt records the clang version. The runner links the C++ runtime
 statically and needs only Windows system DLLs and `SDL3.dll`.
 
+When `tools/dxc/bin/x64/dxc.exe` is missing, `BuildGame.cmd` also downloads
+the pinned [DXC](https://github.com/microsoft/DirectXShaderCompiler) v1.9.2609
+release (32 MB), checks its SHA-256 and extracts it to `tools/dxc`. The build
+uses it to compile the ray-traced GI shaders. Without it the build still
+succeeds, but without ray-traced GI.
+
 Direct `tools/build_game.py` invocations only check for the compiler by
-default. Add `--install-prerequisites` to download it as `BuildGame.cmd` does.
+default. Add `--install-prerequisites` to download it and DXC as
+`BuildGame.cmd` does.
 `--generate-only` does not need the compiler.
 
 If the extractor reports a missing `VCRUNTIME140.dll`, install the included

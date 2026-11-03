@@ -5,7 +5,6 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
-#include <DirectXMath.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -21,15 +20,15 @@
 
 #include "d3d_rtgi.h"
 #include "d3d_draw_model.h"
+#include "d3d_matrix.h"
 #include "d3d_tuning.h"
 #include "rtgi_trace_shader.h"
 #include "rtgi_temporal_shader.h"
 #include "rtgi_spatial_shader.h"
 
 using Microsoft::WRL::ComPtr;
-using DirectX::XMFLOAT2;
-using DirectX::XMFLOAT3;
-using DirectX::XMFLOAT4X4;
+struct Float2 { float x, y; };
+struct Float3 { float x, y, z; };
 
 constexpr UINT alphaSize = 256, alphaSlices = 256, frameDescriptors = 26;
 constexpr uint32_t opaqueMaterial = UINT32_MAX;
@@ -100,7 +99,7 @@ static_assert(sizeof(RtgiMaterial) == 20, "HLSL material layout");
 struct CompositeConstants {
     float fullSize[2], strength, split, traceSize[2], texelPixels;
     uint32_t reproject;
-    XMFLOAT4X4 reprojection;
+    Float4x4 reprojection;
 };
 static_assert(sizeof(CompositeConstants) == 96, "HLSL composite layout");
 
@@ -131,23 +130,23 @@ struct D3dRtgi {
     RtgiTexture alpha, albedo;
     RtgiCacheSlice alphaCache[alphaSlices], colorCache[alphaSlices];
     RtgiSlot slots[3];
-    std::vector<XMFLOAT3> positions;
-    std::vector<XMFLOAT3> normals;  // skinned vertex normals; zero when the draw has none
+    std::vector<Float3> positions;
+    std::vector<Float3> normals;  // skinned vertex normals; zero when the draw has none
     // World motion since the previous frame, so moving meshes keep their GI history.
     // A mesh is its guest vertex buffer, shape and order among same-buffer draws.
     using MeshKey = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
-    std::vector<XMFLOAT3> motions, previousPositions;
+    std::vector<Float3> motions, previousPositions;
     std::map<MeshKey, size_t> meshes, previousMeshes;
     std::vector<uint32_t> indices;
     // A frame whose triangles match the last traced frame's refits that BLAS.
     std::vector<uint32_t> previousIndices;
     RtgiSlot *lastBuilt = nullptr;
     UINT refits = 0;
-    std::vector<XMFLOAT2> uvs;
-    std::vector<XMFLOAT3> tints;
+    std::vector<Float2> uvs;
+    std::vector<Float3> tints;
     std::vector<uint32_t> triangles;
     std::vector<RtgiMaterial> materials;
-    XMFLOAT4X4 camera{}, previousCamera{};
+    Float4x4 camera{}, previousCamera{};
     size_t cameraTriangles = 0;
     UINT width = 0, height = 0, scale = 2, traceWidth = 0, traceHeight = 0;
     UINT64 frame = 0, readyValue = 0, doneValue = 0;
@@ -784,11 +783,11 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
     try {
         bool alphaTest = draw.depth.alpha_test_enable && texture &&
             (!draw.has_alpha_mask || alphaMask) && layout.texcoord_count &&
-            uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
+            uint64_t(layout.texcoord_offset) + sizeof(Float2) <= draw.vertex_stride &&
             unsigned(draw.depth.alpha_func) < 8 && draw.depth.alpha_ref <= 255;
         // The caller must classify the original stages/pixel shader, not just the host shader.
         colorMaterial &= r->hitColor && texture && draw.has_texture && layout.texcoord_count == 1 &&
-            uint64_t(layout.texcoord_offset) + sizeof(XMFLOAT2) <= draw.vertex_stride &&
+            uint64_t(layout.texcoord_offset) + sizeof(Float2) <= draw.vertex_stride &&
             !draw.has_reflection && !draw.four_tap_filter && !draw.has_alpha_mask &&
             !draw.use_texture_factor && !draw.blend.blend_enable && !draw.blend_weight_count &&
             !draw.texture.render_target && !draw.texture_is_backbuffer &&
@@ -806,7 +805,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         // ponytail: reflection and four-tap alpha need more than UV0; keep those draws opaque.
         alphaTest &= !draw.has_reflection && !draw.four_tap_filter;
         const auto &source = draw.has_alpha_mask ? draw.alpha_mask : draw.texture;
-        const XMFLOAT2 scale{source.linear && source.width ? 1.0f / source.width : 1.0f,
+        const Float2 scale{source.linear && source.width ? 1.0f / source.width : 1.0f,
             source.linear && source.height ? 1.0f / source.height : 1.0f};
         // ponytail: CPU skinning is sufficient here; move to compute above roughly 1M vertices/frame.
         // Presized outputs and local copies of the draw's inputs: per-vertex push_back and
@@ -814,10 +813,10 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
         r->positions.resize(base + vertexCount);
         r->normals.resize(base + vertexCount);
         r->uvs.resize(base + vertexCount);
-        r->tints.resize(base + vertexCount, XMFLOAT3{1, 1, 1});
-        XMFLOAT3 *const positions = r->positions.data() + base, *const normals = r->normals.data() + base;
-        XMFLOAT2 *const uvs = r->uvs.data() + base;
-        XMFLOAT3 *const tints = r->tints.data() + base;
+        r->tints.resize(base + vertexCount, Float3{1, 1, 1});
+        Float3 *const positions = r->positions.data() + base, *const normals = r->normals.data() + base;
+        Float2 *const uvs = r->uvs.data() + base;
+        Float3 *const tints = r->tints.data() + base;
         const uint32_t weightCount = draw.blend_weight_count, stride = draw.vertex_stride;
         const uint32_t normalOffset = layout.normal_offset, texcoordOffset = layout.texcoord_offset;
         const bool hasNormal = normalOffset != RECOMP_D3D_FVF_ABSENT && uint64_t(normalOffset) + 12 <= stride;
@@ -832,7 +831,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             for (uint32_t i = 0; i < weightCount; ++i) std::memcpy(&weights[i], bytes + 12 + 4 * i, sizeof(float));
             float n[3]{};
             if (hasNormal) std::memcpy(n, bytes + normalOffset, sizeof n);
-            XMFLOAT3 transformed{}, normal{};
+            Float3 transformed{}, normal{};
             float remainder = 1;
             for (uint32_t i = 0; i <= weightCount; ++i) {
                 const float weight = i == weightCount ? remainder : weights[i];
@@ -857,7 +856,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             if (!finite(normal.x) || !finite(normal.y) || !finite(normal.z)) normal = {};
             normals[v] = normal;
             if (alphaTest || colorMaterial) {
-                XMFLOAT2 uv;
+                Float2 uv;
                 std::memcpy(&uv, bytes + texcoordOffset, sizeof uv);
                 uv.x *= scale.x;
                 uv.y *= scale.y;
@@ -867,7 +866,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                 uvs[v] = uv;
             }
             if (colorMaterial) {
-                XMFLOAT3 tint{1, 1, 1};
+                Float3 tint{1, 1, 1};
                 if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
                     uint32_t diffuse;
                     std::memcpy(&diffuse, bytes + layout.diffuse_offset, sizeof diffuse);
@@ -875,21 +874,21 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
                         ((diffuse >> 8) & 255) / 255.0f, (diffuse & 255) / 255.0f};
                 } else if (draw.directional.enabled) {
                     const auto &light = draw.directional;
-                    auto ln = DirectX::XMVector3TransformNormal(DirectX::XMLoadFloat3(
-                        reinterpret_cast<const XMFLOAT3 *>(n)), DirectX::XMLoadFloat4x4(
-                        reinterpret_cast<const XMFLOAT4X4 *>(light.normal_transforms[0])));
-                    if (light.normalize && DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(ln)) > 0)
-                        ln = DirectX::XMVector3Normalize(ln);
-                    auto rgb = DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.ambient_emissive));
+                    const float *m = light.normal_transforms[0];
+                    float ln[3] = {n[0] * m[0] + n[1] * m[4] + n[2] * m[8],
+                        n[0] * m[1] + n[1] * m[5] + n[2] * m[9], n[0] * m[2] + n[1] * m[6] + n[2] * m[10]};
+                    const float lengthSq = ln[0] * ln[0] + ln[1] * ln[1] + ln[2] * ln[2];
+                    if (light.normalize && lengthSq > 0)
+                        for (float &value : ln) value /= std::sqrt(lengthSq);
+                    tint = {light.ambient_emissive[0], light.ambient_emissive[1], light.ambient_emissive[2]};
                     for (uint32_t i = 0; i < light.count; ++i) {
-                        const float lambert = std::max(0.0f, DirectX::XMVectorGetX(DirectX::XMVector3Dot(ln,
-                            DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.directions[i])))));
-                        const auto diffuse = DirectX::XMVectorMultiply(
-                            DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.material_diffuse)),
-                            DirectX::XMLoadFloat3(reinterpret_cast<const XMFLOAT3 *>(light.colors[i])));
-                        rgb = DirectX::XMVectorAdd(rgb, DirectX::XMVectorScale(diffuse, lambert));
+                        const float *direction = light.directions[i], *color = light.colors[i];
+                        const float lambert = std::max(0.0f,
+                            ln[0] * direction[0] + ln[1] * direction[1] + ln[2] * direction[2]);
+                        tint.x += light.material_diffuse[0] * color[0] * lambert;
+                        tint.y += light.material_diffuse[1] * color[1] * lambert;
+                        tint.z += light.material_diffuse[2] * color[2] * lambert;
                     }
-                    DirectX::XMStoreFloat3(&tint, rgb);
                 }
                 colorMaterial &= std::isfinite(tint.x) && std::isfinite(tint.y) && std::isfinite(tint.z);
                 tint = {std::clamp(tint.x, 0.0f, 1.0f), std::clamp(tint.y, 0.0f, 1.0f), std::clamp(tint.z, 0.0f, 1.0f)};
@@ -987,7 +986,7 @@ bool d3d_rtgi_add_draw(D3dRtgi *r, const RecompD3dPresenterDrawCommand &draw,
             if (previous != r->previousMeshes.end() &&
                 previous->second + vertexCount <= r->previousPositions.size()) {
                 for (uint32_t v = 0; v < vertexCount; ++v) {
-                    const XMFLOAT3 &now = r->positions[base + v], &then = r->previousPositions[previous->second + v];
+                    const Float3 &now = r->positions[base + v], &then = r->previousPositions[previous->second + v];
                     r->motions[base + v] = {now.x - then.x, now.y - then.y, now.z - then.z};
                 }
             }
@@ -1029,12 +1028,12 @@ static void uavBarrier(ID3D12GraphicsCommandList *commands, ID3D12Resource *reso
 
 static void buildScene(D3dRtgi &r, RtgiSlot &slot)
 {
-    upload(r, slot.vertices, r.positions.data(), r.positions.size() * sizeof(XMFLOAT3));
-    upload(r, slot.normals, r.normals.data(), r.normals.size() * sizeof(XMFLOAT3));
-    upload(r, slot.motions, r.motions.data(), r.motions.size() * sizeof(XMFLOAT3));
+    upload(r, slot.vertices, r.positions.data(), r.positions.size() * sizeof(Float3));
+    upload(r, slot.normals, r.normals.data(), r.normals.size() * sizeof(Float3));
+    upload(r, slot.motions, r.motions.data(), r.motions.size() * sizeof(Float3));
     upload(r, slot.indices, r.indices.data(), r.indices.size() * sizeof(uint32_t));
-    upload(r, slot.tints, r.tints.data(), r.tints.size() * sizeof(XMFLOAT3));
-    upload(r, slot.uvs, r.uvs.data(), r.uvs.size() * sizeof(XMFLOAT2));
+    upload(r, slot.tints, r.tints.data(), r.tints.size() * sizeof(Float3));
+    upload(r, slot.uvs, r.uvs.data(), r.uvs.size() * sizeof(Float2));
     upload(r, slot.triangles, r.triangles.data(), r.triangles.size() * sizeof(uint32_t));
     const RtgiMaterial empty{};
     upload(r, slot.materials, r.materials.empty() ? &empty : r.materials.data(),
@@ -1044,7 +1043,7 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
     geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
     geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
     geometry.Triangles.VertexCount = UINT(r.positions.size());
-    geometry.Triangles.VertexBuffer = {slot.vertices->GetGPUVirtualAddress(), sizeof(XMFLOAT3)};
+    geometry.Triangles.VertexBuffer = {slot.vertices->GetGPUVirtualAddress(), sizeof(Float3)};
     geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
     geometry.Triangles.IndexCount = UINT(r.indices.size());
     geometry.Triangles.IndexBuffer = slot.indices->GetGPUVirtualAddress();
@@ -1102,26 +1101,28 @@ static void buildScene(D3dRtgi &r, RtgiSlot &slot)
     uavBarrier(commands, slot.top.Get());
 }
 
-static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
+static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const Float4x4 &inverse)
 {
     struct Constants {
-        XMFLOAT4X4 inverse, camera, previous;
+        Float4x4 inverse, camera, previous;
         UINT width, height, fullWidth, fullHeight, frame, history;
         float padding[2];
-        XMFLOAT4X4 rayInverse;
-        DirectX::XMFLOAT4 eye;
+        Float4x4 rayInverse;
+        Float4 eye;
     };
     static_assert(sizeof(Constants) == 304, "HLSL frame layout");
     Constants constants{inverse, r.camera, r.previousCamera, r.traceWidth, r.traceHeight,
         r.width, r.height, UINT(r.frame), UINT(r.historyValid), {0, 0}};
-    auto eye = DirectX::XMVector4Transform(DirectX::XMVectorSet(0, 0, 1, 0), DirectX::XMLoadFloat4x4(&inverse));
-    const bool perspective = std::abs(DirectX::XMVectorGetW(eye)) > 1e-8f;
-    eye = perspective ? DirectX::XMVectorScale(eye, 1 / DirectX::XMVectorGetW(eye)) : DirectX::XMVectorZero();
-    DirectX::XMStoreFloat4(&constants.eye, eye);
+    Float4 eye = Float4{0, 0, 1, 0} * inverse;
+    if (std::abs(eye.w) > 1e-8f) eye = {eye.x / eye.w, eye.y / eye.w, eye.z / eye.w, 1};
+    else eye = {};
+    constants.eye = eye;
     // Unproject relative to the eye: subtracting two near-plane world points
     // loses the ray direction when the camera is far from the world origin.
-    const auto relative = DirectX::XMMatrixTranslationFromVector(eye) * DirectX::XMLoadFloat4x4(&r.camera);
-    DirectX::XMStoreFloat4x4(&constants.rayInverse, DirectX::XMMatrixInverse(nullptr, relative));
+    const Float4x4 translation{{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {eye.x, eye.y, eye.z, 1}}};
+    // A partial matrix would put NaNs into the GI history; fall back to D3D11 instead.
+    if (!matrixInverse(translation * r.camera, constants.rayInverse))
+        throw RtgiError{E_INVALIDARG, "invert the eye-relative camera"};
     upload(r, slot.constants, &constants, sizeof constants);
     const unsigned current = unsigned(r.frame & 1), previous = current ^ 1;
     ID3D12Resource *reads[] = {r.depth.resource.Get(), r.color.resource.Get(),
@@ -1152,8 +1153,8 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         const UINT counts[] = {UINT(r.positions.size()), UINT(r.indices.size()), UINT(r.uvs.size()),
             UINT(r.triangles.size()), UINT(std::max(size_t(1), r.materials.size())), UINT(r.normals.size()),
             UINT(r.motions.size())};
-        const UINT sizes[] = {sizeof(XMFLOAT3), sizeof(uint32_t), sizeof(XMFLOAT2),
-            sizeof(uint32_t), sizeof(RtgiMaterial), sizeof(XMFLOAT3), sizeof(XMFLOAT3)};
+        const UINT sizes[] = {sizeof(Float3), sizeof(uint32_t), sizeof(Float2),
+            sizeof(uint32_t), sizeof(RtgiMaterial), sizeof(Float3), sizeof(Float3)};
         for (unsigned i = 0; i < 7; ++i) {
             D3D12_SHADER_RESOURCE_VIEW_DESC view{};
             view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -1178,7 +1179,7 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const XMFLOAT4X4 &inverse)
         tint.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         tint.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         tint.Buffer.NumElements = UINT(r.tints.size());
-        tint.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+        tint.Buffer.StructureByteStride = sizeof(Float3);
         r.device12->CreateShaderResourceView(slot.tints.Get(), &tint, descriptor);
         descriptor.ptr += stride;
         for (unsigned i = 0; i < 6; ++i) {
@@ -1254,12 +1255,12 @@ static void fullscreen(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11PixelShad
 }
 
 // reprojection: null for a traced frame, else this frame's clip space to the traced one's.
-static void setConstants(D3dRtgi &r, ID3D11DeviceContext *context, const XMFLOAT4X4 *reprojection)
+static void setConstants(D3dRtgi &r, ID3D11DeviceContext *context, const Float4x4 *reprojection)
 {
     // Hotkeys can change strength and split between frames.
     const CompositeConstants values{{float(r.width), float(r.height)}, recomp_tuning.rtgi_strength.load(),
         recomp_tuning.rtgi_split ? 0.5f : 0.0f, {float(r.traceWidth), float(r.traceHeight)}, float(r.scale),
-        reprojection != nullptr, reprojection ? *reprojection : XMFLOAT4X4{}};
+        reprojection != nullptr, reprojection ? *reprojection : Float4x4{}};
     context->UpdateSubresource(r.constants11.Get(), 0, nullptr, &values, 0, 0);
 }
 
@@ -1272,18 +1273,9 @@ static void composite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11RenderTarg
         fullscreen(r, context, r.composite[pass].Get(), r.width, r.height, inputs, 4, &target, 1, r.blend.Get());
 }
 
-static bool invert(const XMFLOAT4X4 &matrix, XMFLOAT4X4 &inverse)
-{
-    DirectX::XMVECTOR determinant;
-    DirectX::XMStoreFloat4x4(&inverse, DirectX::XMMatrixInverse(&determinant, DirectX::XMLoadFloat4x4(&matrix)));
-    bool invertible = DirectX::XMVectorGetX(determinant) != 0;
-    for (const auto &row : inverse.m) for (float value : row) invertible &= std::isfinite(value);
-    return invertible;
-}
-
 static void traceAndComposite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
     ID3D11ShaderResourceView *color, ID3D11ShaderResourceView *depth, uint32_t depthSamples,
-    const XMFLOAT4X4 &inverse, RtgiTimer11 *timer)
+    const Float4x4 &inverse, RtgiTimer11 *timer)
 {
     setConstants(r, context, nullptr);
     auto &slot = r.slots[r.frame % 3];
@@ -1355,11 +1347,9 @@ static void traceAndComposite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11Re
 // last composite, and the next trace waits for this frame's D3D11 work.
 static void reuseAndComposite(D3dRtgi &r, ID3D11DeviceContext *context, ID3D11RenderTargetView *target,
     ID3D11ShaderResourceView *color, ID3D11ShaderResourceView *depth, uint32_t depthSamples,
-    const XMFLOAT4X4 &inverse, RtgiTimer11 *timer)
+    const Float4x4 &inverse, RtgiTimer11 *timer)
 {
-    XMFLOAT4X4 reprojection;
-    DirectX::XMStoreFloat4x4(&reprojection,
-        DirectX::XMLoadFloat4x4(&inverse) * DirectX::XMLoadFloat4x4(&r.previousCamera));
+    const Float4x4 reprojection = inverse * r.previousCamera;
     setConstants(r, context, &reprojection);
     if (timer) {
         context->Begin(timer->disjoint.Get());
@@ -1387,8 +1377,8 @@ void d3d_rtgi_apply(D3dRtgi *r, ID3D11DeviceContext *context, ID3D11RenderTarget
             if (context != r->context11.Get()) throw RtgiError{E_INVALIDARG, "unexpected D3D11 context"};
             check(r->device12->GetDeviceRemovedReason(), "D3D12 device removed");
             check(r->device11->GetDeviceRemovedReason(), "D3D11 device removed");
-            XMFLOAT4X4 inverse;
-            if (invert(r->camera, inverse)) {
+            Float4x4 inverse;
+            if (matrixInverse(r->camera, inverse)) {
                 RtgiTimer11 *timer = r->timing ? &r->timer11[r->passes++ % timers11] : nullptr;
                 if (timer) readTimer11(*r, *timer);
                 if (r->reuse) reuseAndComposite(*r, context, target, color, depth, depthSamples, inverse, timer);
