@@ -1120,7 +1120,9 @@ static void traceFrame(D3dRtgi &r, RtgiSlot &slot, const Float4x4 &inverse)
     // Unproject relative to the eye: subtracting two near-plane world points
     // loses the ray direction when the camera is far from the world origin.
     const Float4x4 translation{{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {eye.x, eye.y, eye.z, 1}}};
-    matrixInverse(translation * r.camera, constants.rayInverse); // invertible: r.camera passed matrixInverse
+    // A partial matrix would put NaNs into the GI history; fall back to D3D11 instead.
+    if (!matrixInverse(translation * r.camera, constants.rayInverse))
+        throw RtgiError{E_INVALIDARG, "invert the eye-relative camera"};
     upload(r, slot.constants, &constants, sizeof constants);
     const unsigned current = unsigned(r.frame & 1), previous = current ^ 1;
     ID3D12Resource *reads[] = {r.depth.resource.Get(), r.color.resource.Get(),
