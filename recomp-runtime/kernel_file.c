@@ -463,6 +463,14 @@ static int build_host_path(const char *relative, char *host_path, size_t host_pa
     return append_relative_path(relative, host_path, host_path_size);
 }
 
+/* Partition 1's host folder; a netplay session's saves have their own. */
+static bool append_partition1(char *path, size_t size)
+{
+    return append_segment(path, size, ".recomp-storage") &&
+        (recomp_save_session == NULL || append_segment(path, size, recomp_save_session)) &&
+        append_segment(path, size, "partition1");
+}
+
 static bool is_profile_path(const char *path)
 {
     char root[MAX_PATH_LEN];
@@ -470,8 +478,7 @@ static bool is_profile_path(const char *path)
         return false;
     }
     copy_root(root, sizeof root);
-    if (!append_segment(root, sizeof root, ".recomp-storage") ||
-        !append_segment(root, sizeof root, "partition1") ||
+    if (!append_partition1(root, sizeof root) ||
         !append_segment(root, sizeof root, "UDATA")) {
         return false;
     }
@@ -497,8 +504,7 @@ static int build_save_path(
     }
 
     copy_root(host_path, host_path_size);
-    if (!append_segment(host_path, host_path_size, ".recomp-storage") ||
-        !append_segment(host_path, host_path_size, "partition1")) {
+    if (!append_partition1(host_path, host_path_size)) {
         return -1;
     }
 

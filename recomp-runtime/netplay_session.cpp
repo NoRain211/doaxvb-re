@@ -10,7 +10,9 @@
 #include "input_pulse_source.h"
 #include "netplay.h"
 #include "netplay_game.h"
+#include "netplay_profile.h"
 #include "rollback.h"
+#include "save_transaction.h"
 #include "synctest.h"
 #include "xapi_time_adapter.h"
 extern "C" {
@@ -25,7 +27,9 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -438,6 +442,124 @@ bool recomp_netplay_session_read_env()
 bool recomp_netplay_session_enabled()
 {
     return rollback.mode != RollbackMode::Off;
+}
+
+/* Settings that change guest RAM, which the joiner takes from the host. */
+enum : std::uint8_t { LobbyUnlockSwimsuits = 1u, LobbyNormalScreen = 2u, LobbyMusicShuffle = 4u };
+
+static bool settingIs(const char *name, const char *value)
+{
+    const char *set = std::getenv(name);
+    return set != nullptr && std::strcmp(set, value) == 0;
+}
+
+static void putSetting(const char *name, const char *value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+// Each module reads its setting once, after this, as the guest boots.
+static void adoptSettings(std::uint8_t flags, const std::filesystem::path &storage)
+{
+    putSetting("RECOMP_UNLOCK_SWIMSUITS", (flags & LobbyUnlockSwimsuits) != 0u ? "1" : "0");
+    putSetting("RECOMP_D3D_WIDESCREEN", (flags & LobbyNormalScreen) != 0u ? "0" : "1");
+    putSetting("RECOMP_MUSIC_SHUFFLE", (flags & LobbyMusicShuffle) != 0u ? "1" : "0");
+    // Sessions run 60 Hz, start from the game's own title and keep the camera the game's.
+    putSetting("RECOMP_GAME_HZ", "60");
+    putSetting("RECOMP_TITLE_IDLE", "default");
+    putSetting("RECOMP_FREE_CAMERA", "0");
+    // The game lists custom soundtracks in guest RAM; a session's folder has none.
+    putSetting("RECOMP_USER_MUSIC", (storage / "netplay" / "UserMusic").string().c_str());
+}
+
+bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
+{
+    if (const char *mode = std::getenv("RECOMP_ROLLBACK"); mode != nullptr && *mode != '\0') {
+        std::cerr << "recomp runner: RECOMP_ROLLBACK cannot be combined with --netplay-host or --netplay-join\n";
+        return false;
+    }
+    if (launch.digest.size() != RECOMP_NETPLAY_DIGEST_BYTES || launch.delay > RECOMP_ROLLBACK_WINDOW) {
+        std::cerr << "recomp runner: --netplay-delay is at most " << RECOMP_ROLLBACK_WINDOW << " frames\n";
+        return false;
+    }
+    const bool hosting = launch.hostPort != 0u;
+    if (hosting) {
+        const auto port = static_cast<std::uint16_t>(launch.hostPort);
+        if (recomp_netplay_open_router_port(port, nullptr, 0u)) std::atexit(recomp_netplay_close_router_port);
+        std::fprintf(stderr, "recomp netplay: hosting on UDP port %u; waiting for the other player\n", launch.hostPort);
+        if (!recomp_netplay_listen(&rollback.net, port)) {
+            std::cerr << "recomp runner: netplay could not open its UDP port\n";
+            return false;
+        }
+    } else {
+        const std::size_t colon = launch.join.rfind(':');
+        const unsigned long port =
+            colon == std::string::npos ? 0u : std::strtoul(launch.join.c_str() + colon + 1u, nullptr, 10);
+        if (colon == std::string::npos || colon == 0u || port == 0u || port > 65535u) {
+            std::cerr << "recomp runner: --netplay-join needs <host>:<port>\n";
+            return false;
+        }
+        std::fprintf(stderr, "recomp netplay: joining %s\n", launch.join.c_str());
+        if (!recomp_netplay_open(&rollback.net, 0u, launch.join.substr(0u, colon).c_str(),
+                static_cast<std::uint16_t>(port))) {
+            std::cerr << "recomp runner: netplay could not open its UDP port\n";
+            return false;
+        }
+    }
+    /* The game keeps all three vacations in one save, so both sides play
+       from the host's, and the joiner sends none. Recovery first, so an
+       interrupted save is never sent. */
+    const std::filesystem::path storage = launch.disc / ".recomp-storage", partition1 = storage / "partition1";
+    std::vector<std::uint8_t> mine, theirs(RECOMP_NETPLAY_MAX_PROFILE);
+    if (hosting && (!recomp_save_initialize(launch.disc.string().c_str()) ||
+            !recomp_netplay_pack_profile(partition1, recomp_netplay_latest_profile(partition1), true, mine) ||
+            mine.size() > RECOMP_NETPLAY_MAX_PROFILE)) {
+        std::cerr << "recomp runner: cannot read your saves to send, or they are over 1 MiB\n";
+        return false;
+    }
+    RecompNetplayLobby lobby{};
+    std::memcpy(lobby.digest, launch.digest.data(), sizeof lobby.digest);
+    lobby.delay = static_cast<std::uint8_t>(launch.delay);
+    lobby.flags = static_cast<std::uint8_t>((settingIs("RECOMP_UNLOCK_SWIMSUITS", "1") ? LobbyUnlockSwimsuits : 0u) |
+        (settingIs("RECOMP_D3D_WIDESCREEN", "0") ? LobbyNormalScreen : 0u) |
+        (settingIs("RECOMP_MUSIC_SHUFFLE", "1") ? LobbyMusicShuffle : 0u));
+    RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
+    const RecompNetplayLobbyResult result = hosting
+        ? recomp_netplay_host(&rollback.net, &lobby, &profiles, 10u * 60u * 1000u, nullptr)
+        : recomp_netplay_join(&rollback.net, &lobby, &profiles, 2u * 60u * 1000u, nullptr);
+    if (result != RECOMP_NETPLAY_LOBBY_OK) {
+        std::cerr << "recomp runner: netplay " << (result == RECOMP_NETPLAY_LOBBY_CANCELLED
+            ? "cancelled by the other player"
+            : result == RECOMP_NETPLAY_LOBBY_MISMATCH ? "refused: the other player runs a different build"
+            : result == RECOMP_NETPLAY_LOBBY_TIMEOUT ? "timed out" : "could not open its UDP port") << '\n';
+        return false;
+    }
+    // A fresh copy each session, so neither player's own saves change.
+    std::error_code error;
+    std::filesystem::remove_all(storage / "netplay", error);
+    std::vector<std::string> names;
+    const std::vector<std::uint8_t> &saves = hosting ? mine : theirs;
+    const std::size_t size = hosting ? mine.size() : profiles.theirs_size;
+    if (error || !recomp_netplay_unpack_profile(saves.data(), size, storage / "netplay" / "partition1", names)) {
+        std::cerr << "recomp runner: the host's saves are damaged or unsafe\n";
+        return false;
+    }
+    recomp_save_session = "netplay";
+    adoptSettings(lobby.flags, storage);
+    rollback.mode = RollbackMode::Udp;
+    rollback.player = hosting ? 0u : 1u;
+    rollback.delay = lobby.delay;
+    // Test hooks, as for RECOMP_ROLLBACK.
+    if (const char *frames = std::getenv("RECOMP_ROLLBACK_FRAMES"); frames != nullptr && *frames != '\0')
+        rollback.stop = static_cast<std::uint32_t>(std::strtoul(frames, nullptr, 10));
+    rollback.dump = std::getenv("RECOMP_ROLLBACK_DUMP");
+    std::fprintf(stderr, "recomp netplay: connected as player %u with %u frames of input delay\n",
+        rollback.player + 1u, rollback.delay);
+    return true;
 }
 
 void recomp_netplay_session_install(const RecompNetplaySessionHost &runner)

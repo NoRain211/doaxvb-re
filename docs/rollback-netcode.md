@@ -4,9 +4,9 @@ Status: in progress. The rollback core from
 [doa2u-re](https://github.com/NoRain211/doa2u-re) (branch
 `codex/rollback-netcode`) is ported: input prediction, the snapshot ring,
 SyncTest, replays, the UDP transport, the matchmaker client and the shared
-matchmaker server. Two runners play a Two Players Exhibition match over UDP
-with rollback, started from environment settings; the lobby, the profile
-swap and the in-game menus are not wired in yet.
+matchmaker server. Two runners pair with `--netplay-host` and
+`--netplay-join` and play a Two Players Exhibition match over UDP with
+rollback; the in-game room and FIND MATCH menus are not wired in yet.
 
 Game addresses below come from static analysis of the verified USA
 executable in Ghidra unless a section says otherwise.
@@ -157,6 +157,38 @@ In the last run character select showed at frame 182 and the match at 441;
 slots 0 and 1 were people on ports 0 and 1, slots 2 and 3 their CPU
 partners. Every 30th frame's guest RAM hash matched the other side's.
 
+## Hosting and joining
+
+`--netplay-host <port>` waits up to 10 minutes for a joiner, with
+`--netplay-delay <frames>` (default 2, at most 8), and
+`--netplay-join <host>:<port>` says hello for up to 2 minutes. The hello
+carries the joiner's build: a SHA-256 of the Git commit (or
+`RECOMP_NETPLAY_VERSION`), the generated program's manifest and the XBE's
+SHA-256. The host refuses any other build and answers with its input delay
+and the settings that change guest RAM, which the joiner adopts: the
+swimsuit unlock, widescreen and music shuffle. Both sides then run at
+60 Hz from the game's own title with no free camera and no custom
+soundtracks, which the game would list in guest RAM.
+
+The game keeps all three vacations in one save
+(`UDATA/54430007/<save>/doaxuser.dat`), so both players' saves would
+collide. The host recovers its save journal, packs its saves and title
+saves with doa2u-re's `netplay_profile.cpp` (at most 1 MiB, with a
+SHA-256), and the joiner sends none. Each side clears
+`.recomp-storage/netplay`, writes the host's copy there after checking the
+hash and every path, and plays the session from it with its own journal
+(`recomp_save_session`), so neither player's own saves change.
+
+The host asks the router to forward its UDP port with UPnP (miniupnpc
+2.3.3) and removes the forward when the runner exits. The log names the
+public address the other player joins, or says to forward the port by hand.
+
+Two runners on one machine paired this way at delay 2, with the joiner's
+own saves moved away: both walked to character select at frame 182 and
+played the match to frame 3,000 with guest RAM identical at the end and
+every check matching. The router accepted the forward, and its removal at
+exit logged no error.
+
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display
@@ -176,7 +208,6 @@ partners. Every 30th frame's guest RAM hash matched the other side's.
   does, and link `musl_math` into the runner. This recipe already lifts
   RCPSS and RSQRTSS as exact division and square root, so they need no
   change. Moving the lifter pin needs a play test (AGENTS.md).
-- `--netplay-host` and `--netplay-join`, the profile swap into a
-  session save folder, the name check, UPnP, replays, and the lobby, room
-  and FIND MATCH menus, as in doa2u-re.
-- Sessions with input delay and over a lag relay.
+- Replays, and the lobby, room and FIND MATCH menus with the overlay, as in
+  doa2u-re.
+- Sessions over a lag relay.

@@ -21,6 +21,8 @@
 
 namespace fs = std::filesystem;
 
+extern "C" const char *recomp_save_session = nullptr;
+
 namespace {
 fs::path storage, live, journal, undo;
 bool ready, failed;
@@ -479,11 +481,12 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         check_parents(root);
         require(exists_plain(root) && fs::is_directory(root));
         storage = root / ".recomp-storage";
-        live = storage / "partition1" / "UDATA";
-        journal = storage / "save-undo-v1";
+        const fs::path saves = recomp_save_session != nullptr ? storage / recomp_save_session : storage;
+        live = saves / "partition1" / "UDATA";
+        journal = saves / "save-undo-v1";
         undo = journal / "undo";
         check_parents(storage);
-        fs::create_directories(storage);
+        fs::create_directories(saves);
         check_parents(live.parent_path());
         bool created = false;
         bool upgrade_version = false;

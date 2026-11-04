@@ -8,6 +8,10 @@
 extern "C" {
 #endif
 
+/* Set before recomp_save_initialize: the folder below .recomp-storage
+   whose partition 1 and journal a netplay session plays from, or NULL. */
+extern const char *recomp_save_session;
+
 /* Recover before guest startup. Protects process interruption, not power loss.
    On Windows, hold exclusive ownership through save-undo-v1/lock until exit
    or reinitialization. The reserved lock file is empty and persists on disk.

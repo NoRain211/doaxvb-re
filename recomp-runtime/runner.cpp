@@ -18,6 +18,7 @@ extern "C" {
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
 #include "netplay_session.h"
+#include "rollback.h"
 #endif
 #include "runtime.h"
 #include "stop_report.h"
@@ -25,6 +26,7 @@ extern "C" {
 #include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 #include "xbe_parser.h"
+#include "sha.h"
 
 #ifndef RECOMP_FULL_PROGRAM
 #include "runner_imports.h"
@@ -505,6 +507,7 @@ int main(int argc, char **argv)
     std::string expectStop;
     std::string stopAt;
     std::string milestoneLog;
+    RecompNetplayLaunch netplayLaunch;
     bool inputStartPulseEnabled = false;
     bool vsyncPresent = false;
     std::vector<std::uint64_t> inputStartPulsePolls;
@@ -524,7 +527,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
             arg == "--input-a-pulse-at" || arg == "--input-buttons-at" ||
             arg == "--input-analog-at" || arg == "--input-host-after-poll" ||
             arg == "--input-wait-after-poll" || arg == "--input-resume-file" ||
-            arg == "--input-paused-analog-file";
+            arg == "--input-paused-analog-file" || arg == "--netplay-host" ||
+            arg == "--netplay-join" || arg == "--netplay-delay";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -540,6 +544,20 @@ std::vector<AnalogPulse> inputAnalogPulses;
             stopAt = argv[++i];
         } else if (arg == "--milestone-log") {
             milestoneLog = argv[++i];
+        } else if (arg == "--netplay-host" || arg == "--netplay-delay") {
+            const std::string value = argv[++i];
+            std::uint64_t parsed = 0u;
+            const bool host = arg == "--netplay-host";
+            const bool valid = host ? parsePositiveU64(value, parsed) && parsed <= 65535u
+                : value == "0" || (parsePositiveU64(value, parsed) && parsed <= RECOMP_ROLLBACK_WINDOW);
+            if (!valid) {
+                std::cerr << "recomp runner: --netplay-host needs a UDP port and --netplay-delay at most "
+                          << RECOMP_ROLLBACK_WINDOW << " frames\n";
+                return 64;
+            }
+            (host ? netplayLaunch.hostPort : netplayLaunch.delay) = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--netplay-join") {
+            netplayLaunch.join = argv[++i];
         } else if (arg == "--input-wait-after-poll") {
             const std::string value = argv[++i];
             if (!parsePositiveU64(value, inputWaitAfterPoll) ||
@@ -725,7 +743,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
                          " [--input-paused-analog-file <path>]"
                          " [--input-start-pulse-at <poll>]"
                          " [--input-buttons-at <poll>:<hexmask>]"
-                         " [--input-analog-at <poll>:<index>:<value>]\n";
+                         " [--input-analog-at <poll>:<index>:<value>]"
+                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port>]\n";
             return 64;
         }
     }
@@ -777,7 +796,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
                      " [--input-paused-analog-file <path>]"
                      " [--input-start-pulse-at <poll>]"
                      " [--input-buttons-at <poll>:<hexmask>]"
-                     " [--input-analog-at <poll>:<index>:<value>]\n";
+                     " [--input-analog-at <poll>:<index>:<value>]"
+                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port>]\n";
         return 64;
     }
     recomp_stop_configure(
@@ -810,6 +830,20 @@ std::vector<AnalogPulse> inputAnalogPulses;
         static std::string disc_root = parent.string();
         recomp_disc_root_path = disc_root.c_str();
     }
+
+#ifdef RECOMP_FULL_PROGRAM
+    if (netplayLaunch.hostPort != 0u && !netplayLaunch.join.empty()) {
+        std::cerr << "recomp runner: --netplay-host and --netplay-join cannot be combined\n";
+        return 64;
+    }
+    if (netplayLaunch.hostPort != 0u || !netplayLaunch.join.empty()) {
+        // The build and the game image: both runners must simulate alike.
+        const std::string identity = std::string(RECOMP_NETPLAY_BUILD) + "\n" + parsed.metadata.fileSha256 + "\n";
+        netplayLaunch.digest = doaxbv::sha256Hex(std::vector<std::uint8_t>(identity.begin(), identity.end()));
+        netplayLaunch.disc = std::filesystem::path(recomp_disc_root_path);
+        if (!recomp_netplay_session_connect(netplayLaunch)) return 1;
+    }
+#endif
 
     if (!recomp_save_initialize(recomp_disc_root_path)) {
         std::cerr << "recomp runner: save recovery failed; guest not started\n";

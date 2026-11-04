@@ -6,6 +6,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 
 /* Rollback sessions over the running game (docs/rollback-netcode.md),
    adapted from doa2u-re's netplay_session.cpp. The session runs at the top
@@ -20,6 +22,21 @@ struct RecompNetplaySessionHost {
 /* RECOMP_ROLLBACK=loopback or udp:<local port>:<peer host>:<peer port>. False
    with a message when it is malformed or the socket cannot open. */
 bool recomp_netplay_session_read_env();
+
+/* --netplay-host <port> or --netplay-join <host>:<port>, with the host's
+   --netplay-delay. */
+struct RecompNetplayLaunch {
+    std::uint32_t hostPort = 0u;
+    std::string join;
+    std::uint32_t delay = 2u;
+    std::string digest;         // this build; the other runner must match it
+    std::filesystem::path disc; // the play folder
+};
+/* Pairs with the other runner before the guest boots and readies the
+   session: both sides play from a copy of the host's saves, with the host's
+   settings that change the simulation. Call before recomp_save_initialize.
+   False with a message when the lobby fails. */
+bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch);
 bool recomp_netplay_session_enabled();
 /* Turns on the frame clock, the snapshot modules and the frame hook. Call
    before the guest starts. */

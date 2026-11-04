@@ -666,6 +666,31 @@ if(RECOMP_PROGRAM_DIR)
     message(STATUS
         "Generated ${_missing_count} fail-loud stubs for absent snapshot bodies")
 
+    # The netplay host forwards its UDP port through the router with UPnP.
+    set(UPNPC_BUILD_SHARED OFF CACHE INTERNAL "")
+    set(UPNPC_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(UPNPC_BUILD_SAMPLE OFF CACHE INTERNAL "")
+    set(UPNPC_NO_INSTALL ON CACHE INTERNAL "")
+    include(FetchContent)
+    FetchContent_Declare(miniupnpc
+        URL https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_3_3.tar.gz
+        URL_HASH SHA256=8cf2c833b3e76fc4893ff29c2a376e3394962449e5970e373c0a91421724d222
+        SOURCE_SUBDIR miniupnpc)
+    FetchContent_MakeAvailable(miniupnpc)
+    # Two runners pair only when they simulate alike: the same source and generated program.
+    set(RECOMP_NETPLAY_VERSION "" CACHE STRING "Release or commit netplay pairs on; empty reads Git")
+    set(_netplay_version "${RECOMP_NETPLAY_VERSION}")
+    if(NOT _netplay_version)
+        # shortcut: read at configure time; build_game.py configures every build, a bare cmake --build may lag a commit.
+        execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _netplay_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    if(NOT _netplay_version)
+        message(FATAL_ERROR "Netplay needs a Git checkout or RECOMP_NETPLAY_VERSION")
+    endif()
+    string(SHA256 _netplay_build "${_netplay_version}\n${_recomp_program_manifest_sha256}\n")
+    message(STATUS "Netplay build ${_netplay_build} (${_netplay_version})")
+
     add_executable(recomp_program_runner
         runtime.c
         stop_report.c
@@ -791,7 +816,9 @@ if(RECOMP_PROGRAM_DIR)
         rollback.c
         netplay.c
         netplay_names.c
+        netplay_upnp.c
         netplay_game.c
+        netplay_profile.cpp
         netplay_session.cpp
         "${_missing_source}"
         ${_recomp_program_sources}
@@ -800,6 +827,8 @@ if(RECOMP_PROGRAM_DIR)
     target_compile_definitions(recomp_program_runner PRIVATE
         RECOMP_FULL_PROGRAM
         RECOMP_D3D_FRAME_ENABLED)
+    # Only runner.cpp reads it, so a new commit does not recompile the generated program.
+    set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_NETPLAY_BUILD="${_netplay_build}")
     target_include_directories(recomp_program_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
@@ -819,6 +848,7 @@ if(RECOMP_PROGRAM_DIR)
         recomp_use_sdl3(recomp_program_runner)
     endif()
     recomp_use_overlay(recomp_program_runner)
+    target_link_libraries(recomp_program_runner PRIVATE libminiupnpc-static)
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
@@ -969,6 +999,12 @@ add_test(NAME recomp-runtime-netplay COMMAND recomp_netplay_test)
 add_test(NAME recomp-runtime-netplay-lobby COMMAND recomp_netplay_lobby_test)
 add_executable(recomp_netplay_settings_test netplay_settings.cpp netplay_settings_test.cpp)
 add_test(NAME recomp-runtime-netplay-settings COMMAND recomp_netplay_settings_test)
+add_executable(recomp_netplay_profile_test netplay_profile.cpp netplay_profile_test.cpp ../xbe/sha.cpp)
+target_include_directories(recomp_netplay_profile_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+if(WIN32)
+    target_link_libraries(recomp_netplay_profile_test PRIVATE bcrypt)
+endif()
+add_test(NAME recomp-runtime-netplay-profile COMMAND recomp_netplay_profile_test)
 # One x87 transcendental implementation for every host (portable_math.h).
 add_library(recomp_portable_math STATIC
     musl_math/sin.c musl_math/cos.c musl_math/tan.c musl_math/__sin.c musl_math/__cos.c musl_math/__tan.c
