@@ -19,7 +19,8 @@ struct D3dMotion;
 
 /* width x height is the 3D scene's size. multisampled says the depth view is
    a Texture2DMS. objects adds the object vector target, which needs
-   single-sampled targets and a free SV_Target1. Returns null after logging why. */
+   single-sampled targets and a free SV_Target1; if that target fails, the
+   motion logs it and keeps camera vectors only. Returns null after logging why. */
 D3dMotion *d3d_motion_create(ID3D11Device *device, ID3D11DeviceContext *context,
     uint32_t width, uint32_t height, bool multisampled, bool objects);
 void d3d_motion_destroy(D3dMotion *motion);

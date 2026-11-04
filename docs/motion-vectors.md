@@ -43,7 +43,8 @@ in world position, since the game re-sorts repeated meshes such as foliage by
 distance and draw order alone paired the wrong copies. `previous_wvp[]` and
 `motion_flags` in the draw constants carry them to the shader, which writes the
 pixel difference and the fragment depth to `SV_Target1`, an
-`R16G16B16A16_FLOAT` target at the scene size. Only opaque, depth-writing draws
+`R32G32B32A32_FLOAT` target at the scene size, which keeps the depth exact
+enough to match the depth buffer. Only opaque, depth-writing draws
 write it.
 
 The motion pass then uses an object's own vector wherever that object is still

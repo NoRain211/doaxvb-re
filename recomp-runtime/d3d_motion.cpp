@@ -51,7 +51,8 @@ struct D3dMotion {
     ID3D11ShaderResourceView *view = nullptr;
     /* Object vectors: scene draws write rg = pixels moved, b = depth, a = 1
        here; the reprojection keeps them where that surface is still visible. */
-    ID3D11RenderTargetView *object_target = nullptr; // R16G16B16A16_FLOAT
+    // R32G32B32A32_FLOAT: fp16 cannot hold depth within the reprojection's 2e-5 match.
+    ID3D11RenderTargetView *object_target = nullptr;
     ID3D11ShaderResourceView *object_view = nullptr;
     /* Keyed by mesh. A mesh drawn several times (foliage) matches each copy to
        last frame's nearest by world position: draw order changes as the game
@@ -170,7 +171,7 @@ D3dMotion *d3d_motion_create(ID3D11Device *device, ID3D11DeviceContext *context,
         return nullptr;
     }
     if (objects) {
-        desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
         ID3D11Texture2D *texture = nullptr;
         if (SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &texture)) &&
             SUCCEEDED(device->CreateRenderTargetView(texture, nullptr, &motion->object_target)) &&
@@ -178,6 +179,7 @@ D3dMotion *d3d_motion_create(ID3D11Device *device, ID3D11DeviceContext *context,
             const float zero[4] = {};
             context->ClearRenderTargetView(motion->object_target, zero);
         } else {
+            std::fprintf(stderr, "recomp motion: object vectors unavailable; camera vectors only\n");
             release(motion->object_target);
             release(motion->object_view);
         }

@@ -1,7 +1,7 @@
 # Third-Party Tools
 
-Downloaded public tooling can live here locally. Everything except this README
-and the dependency submodules below is ignored.
+Downloaded public tooling can live here locally. Everything except this README,
+the dependency submodules and the copied FSR headers below is ignored.
 
 ## Renderer
 

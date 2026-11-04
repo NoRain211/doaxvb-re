@@ -4171,13 +4171,12 @@ int main()
     }
     // Object motion edits every fixed-function variant after the others; each must still compile.
     object_motion_shaders = true;
-    uint32_t motion_variants = 0u;
     for (const bool coverage : {false, true}) for (const bool pixel : {false, true})
     for (const bool sun : {false, true}) for (const uint32_t fvf : kBootDrawFvfs) {
         RecompD3dVertexLayout layout;
         std::string source;
         bool compiled = drawShaderSource(fvf, DrawPipeline{}, layout, source, coverage, sun, pixel);
-        motion_variants += source.find("SV_Target1") != std::string::npos;
+        compiled = compiled && source.find("SV_Target1") != std::string::npos;
         for (const bool vertex : {true, false}) {
             ID3DBlob *blob = nullptr;
             compiled = compiled && compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
@@ -4191,10 +4190,6 @@ int main()
         }
     }
     object_motion_shaders = false;
-    if (motion_variants == 0u) {
-        std::fprintf(stderr, "FAIL no draw shader took object motion\n");
-        return 1;
-    }
 #ifdef _MSC_VER
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     for (int report : {_CRT_ERROR, _CRT_ASSERT}) {

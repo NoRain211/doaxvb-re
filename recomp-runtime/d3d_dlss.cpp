@@ -61,7 +61,7 @@ D3dDlss *d3d_dlss_create(ID3D11Device *device, ID3D11DeviceContext *context, int
         d3d_dlss_destroy(dlss);
         return nullptr;
     };
-    dlss->module = LoadLibraryW(L"dlss_bridge.dll");
+    dlss->module = LoadLibraryExW(L"dlss_bridge.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
     if (dlss->module == nullptr) return off("dlss_bridge.dll not found beside the runner");
     const auto symbol = [dlss](const char *name) {
         return reinterpret_cast<void *>(GetProcAddress(dlss->module, name));

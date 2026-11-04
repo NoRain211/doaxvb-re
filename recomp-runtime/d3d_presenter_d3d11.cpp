@@ -792,6 +792,7 @@ void releasePresenter(RecompD3dPresenter *presenter)
         UnregisterClassW(kWindowClassName, presenter->instance);
         presenter->owns_window_class = false;
     }
+    object_motion_shaders = false;  // a later presenter may have no object target
 }
 
 bool registerWindowClass(RecompD3dPresenter *presenter);
