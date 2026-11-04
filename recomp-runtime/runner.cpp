@@ -8,6 +8,9 @@
 #include "d3d_presenter.h"
 #include "d3d_frame_adapter.h"
 #include "fiber_adapter.h"
+extern "C" {
+#include "game_scheduler.h"
+}
 #include "input_adapter.h"
 #include "free_camera_adapter.h"
 #include "viewer_menu_adapter.h"
@@ -17,6 +20,8 @@
 #endif
 #include "runtime.h"
 #include "stop_report.h"
+#include "synctest.h"
+#include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 #include "xbe_parser.h"
 
@@ -45,6 +50,22 @@
 #endif
 
 namespace {
+
+#ifdef RECOMP_FULL_PROGRAM
+/* RECOMP_SYNCTEST: saves a frame at the loop top, runs it again and compares
+   (docs/rollback-netcode.md). */
+void synctestBoundary()
+{
+    static std::uint32_t frame;
+    recomp_xapi_frame_clock_advance();
+    const RecompSyncTestResult result = recomp_synctest_frame(++frame);
+    if (result == RECOMP_SYNCTEST_MISMATCH) recomp_stop(3, "synctest:mismatch");
+    if (!recomp_synctest_loop() &&
+        (result == RECOMP_SYNCTEST_MATCH || result == RECOMP_SYNCTEST_SKIP)) {
+        recomp_stop(0, result == RECOMP_SYNCTEST_MATCH ? "synctest:match" : "synctest:skip");
+    }
+}
+#endif
 
 extern "C" const char *recomp_disc_root_path;
 
@@ -916,6 +937,16 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
     }
     recomp_viewer_install();
+    if (recomp_synctest_enabled()) {
+        recomp_xapi_frame_clock_set_enabled(true);
+        recomp_synctest_install_default_modules();
+#ifdef _WIN32
+        recomp_synctest_set_guest_ram(ram, kRamSize, true);
+#else
+        recomp_synctest_set_guest_ram(ram, kRamSize, false);
+#endif
+        recomp_game_set_frame_boundary(synctestBoundary);
+    }
 #endif
 #ifndef RECOMP_FULL_PROGRAM
     recomp_imports_reset();

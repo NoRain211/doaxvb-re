@@ -277,3 +277,7 @@ RecompFunction recomp_input_lookup_manual(uint32_t guest_address)
         return NULL;
     }
 }
+/* Rollback snapshots: open handles, packet numbers and the last pads. */
+size_t recomp_input_adapter_state_size(void) { return sizeof input_model; }
+void recomp_input_adapter_state_save(void *state) { memcpy(state, &input_model, sizeof input_model); }
+void recomp_input_adapter_state_restore(const void *state) { memcpy(&input_model, state, sizeof input_model); }

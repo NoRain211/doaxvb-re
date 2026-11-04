@@ -19,6 +19,7 @@
 #include "screenshot.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
@@ -61,6 +62,11 @@ uint32_t recomp_d3d_frame_adapter_swap_counter(void)
 {
     return frame_state.swap_counter;
 }
+
+/* Present returns the swap counter to the guest, so rollback rewinds it. */
+size_t recomp_d3d_frame_adapter_state_size(void) { return sizeof frame_state; }
+void recomp_d3d_frame_adapter_state_save(void *state) { memcpy(state, &frame_state, sizeof frame_state); }
+void recomp_d3d_frame_adapter_state_restore(const void *state) { memcpy(&frame_state, state, sizeof frame_state); }
 
 void recomp_d3d_frame_adapter_initialize(
     const RecompD3dPresenterConfig *config,

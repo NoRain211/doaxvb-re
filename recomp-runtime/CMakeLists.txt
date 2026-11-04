@@ -328,6 +328,7 @@ add_executable(recomp_runtime_test
     crt_string_adapter_test.c
     fiber_model.c
     fiber_adapter.c
+    native_fiber.c
     fiber_adapter_test.c
     fiber_model_test.c
     flag_macro_test.c
@@ -760,6 +761,7 @@ if(RECOMP_PROGRAM_DIR)
         crt_string_adapter.c
         fiber_model.c
         fiber_adapter.c
+        native_fiber.c
         directory_model.c
         input_model.c
         input_adapter.c
@@ -783,6 +785,9 @@ if(RECOMP_PROGRAM_DIR)
         kernel_thread.c
         kernel_video.c
         host_diagnostics.cpp
+        synctest.c
+        synctest_modules.c
+        guest_snapshot.c
         "${_missing_source}"
         ${_recomp_program_sources}
         ../xbe/sha.cpp

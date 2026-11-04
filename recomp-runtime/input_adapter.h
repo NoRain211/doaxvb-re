@@ -23,6 +23,10 @@ typedef void (*RecompInputFeedbackSink)(
     uint16_t right_motor);
 void recomp_input_adapter_set_feedback_sink(RecompInputFeedbackSink sink);
 const RecompInputModel *recomp_input_adapter_model(void);
+/* Rollback snapshots of the open handles, packet numbers and last pads. */
+size_t recomp_input_adapter_state_size(void);
+void recomp_input_adapter_state_save(void *state);
+void recomp_input_adapter_state_restore(const void *state);
 
 #ifdef __cplusplus
 }

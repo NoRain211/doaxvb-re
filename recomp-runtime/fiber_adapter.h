@@ -16,6 +16,22 @@ void recomp_fiber_adapter_report(void);
    rollback requires the same set of fibres as at the checkpoint. */
 void recomp_fiber_adapter_checkpoint(void);
 void recomp_fiber_adapter_rollback(void);
+/* Guest fiber contexts, the current fiber and each parked fiber's native
+   continuation, for rollback snapshots. Restore only while the fiber that
+   saved runs. */
+size_t recomp_fiber_adapter_state_size(void);
+void recomp_fiber_adapter_state_save(void *state);
+void recomp_fiber_adapter_state_restore(const void *state);
+/* False when a saved fiber's continuation is gone. */
+bool recomp_fiber_adapter_state_restorable(const void *state);
+/* Compares the guest-visible fiber model and slot bookkeeping. */
+bool recomp_fiber_adapter_state_equal(const void *left, const void *right, size_t size);
+/* Guest stacks owned by active XAPI fibers; the stack is scratch, not state. */
+typedef struct RecompFiberStackRange {
+    uint32_t base;
+    uint32_t size;
+} RecompFiberStackRange;
+size_t recomp_fiber_adapter_stack_ranges(RecompFiberStackRange *ranges, size_t capacity);
 
 /* Consulted on every SwitchToFiber with the running fiber and the target.
    Returning true declines the switch: the call returns at once, as if the

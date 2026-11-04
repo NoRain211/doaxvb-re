@@ -168,6 +168,12 @@ bool recomp_dispatch_frame_at(
    knowing how the guest call was intercepted. */
 void recomp_fpu_context_save(RecompFpuContext *context);
 void recomp_fpu_context_restore(const RecompFpuContext *context);
+/* Whole guest CPU context for a frame snapshot. The pointer fields of
+   RecompRuntime stay with the host. */
+size_t recomp_runtime_state_size(void);
+void recomp_runtime_state_save(void *state);
+void recomp_runtime_state_restore(const void *state);
+bool recomp_runtime_state_equal(const void *left, const void *right, size_t size);
 
 extern uint32_t recomp_last_dispatch_address;
 

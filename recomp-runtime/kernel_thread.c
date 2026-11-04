@@ -2,6 +2,7 @@
 #include "xbox_memory_layout.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 enum {
@@ -321,4 +322,31 @@ RecompFunction recomp_kernel_thread(uint32_t ordinal)
     case 250u: return bridge_obf_dereference_object;
     default: return NULL;
     }
+}
+/* Rollback snapshots: the synthetic event table and thread bookkeeping. */
+typedef struct ThreadState {
+    SyntheticEvent events[MAX_EVENTS];
+    uint32_t next_event_handle;
+    int32_t current_base_priority;
+    uint32_t suspend_count;
+} ThreadState;
+
+size_t recomp_kernel_thread_state_size(void) { return sizeof(ThreadState); }
+
+void recomp_kernel_thread_state_save(void *state)
+{
+    ThreadState *out = state;
+    memcpy(out->events, events, sizeof events);
+    out->next_event_handle = next_event_handle;
+    out->current_base_priority = current_base_priority;
+    out->suspend_count = suspend_count;
+}
+
+void recomp_kernel_thread_state_restore(const void *state)
+{
+    const ThreadState *in = state;
+    memcpy(events, in->events, sizeof events);
+    next_event_handle = in->next_event_handle;
+    current_base_priority = in->current_base_priority;
+    suspend_count = in->suspend_count;
 }

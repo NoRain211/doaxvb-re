@@ -2399,3 +2399,49 @@ RecompFunction recomp_kernel_file(uint32_t ordinal)
     default: return NULL;
     }
 }
+/* Rollback snapshots: guest handle cursors. Rewinds happen only inside a
+   rally, so a save is restorable only while the same handles are open. */
+typedef struct FilePositionState {
+    uint32_t next_guest_handle;
+    struct {
+        uint32_t guest_handle;
+        uint64_t cursor;
+        size_t directory_cursor;
+    } entries[MAX_FILE_HANDLES];
+} FilePositionState;
+
+size_t recomp_kernel_file_state_size(void) { return sizeof(FilePositionState); }
+
+void recomp_kernel_file_state_save(void *state)
+{
+    FilePositionState *out = state;
+    memset(out, 0, sizeof *out);
+    out->next_guest_handle = next_guest_handle;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (!file_handles[i].active) continue;
+        out->entries[i].guest_handle = file_handles[i].guest_handle;
+        out->entries[i].cursor = file_handles[i].cursor;
+        out->entries[i].directory_cursor = file_handles[i].directory.cursor;
+    }
+}
+
+bool recomp_kernel_file_state_restorable(const void *state)
+{
+    const FilePositionState *in = state;
+    if (in->next_guest_handle != next_guest_handle) return false;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        const uint32_t live = file_handles[i].active ? file_handles[i].guest_handle : 0u;
+        if (live != in->entries[i].guest_handle) return false;
+    }
+    return true;
+}
+
+void recomp_kernel_file_state_restore(const void *state)
+{
+    const FilePositionState *in = state;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (!file_handles[i].active) continue;
+        file_handles[i].cursor = in->entries[i].cursor;
+        file_handles[i].directory.cursor = in->entries[i].directory_cursor;
+    }
+}

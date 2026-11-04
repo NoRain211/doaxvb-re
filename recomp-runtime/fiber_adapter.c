@@ -4,122 +4,12 @@
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include "win32_compat.h"
-#include <stdlib.h>
-#include <sys/mman.h>
-
-void recomp_fiber_switch(void **from_sp, void *to_sp);
-void recomp_fiber_trampoline(void);
-
-typedef struct RecompNativeFiber {
-    void *sp;
-    void *stack_memory;
-    size_t stack_size;
-} RecompNativeFiber;
-
-static RecompNativeFiber *g_active_native_fiber = NULL;
-
-#define FIBER_FLAG_FLOAT_SWITCH 0x1
-
-static LPVOID ConvertThreadToFiberEx(LPVOID lpParameter, DWORD dwFlags)
-{
-    (void)lpParameter;
-    (void)dwFlags;
-    RecompNativeFiber *fiber = (RecompNativeFiber *)calloc(1, sizeof(RecompNativeFiber));
-    g_active_native_fiber = fiber;
-    return (LPVOID)fiber;
-}
-
-static BOOL ConvertFiberToThread(void)
-{
-    if (g_active_native_fiber) {
-        free(g_active_native_fiber);
-        g_active_native_fiber = NULL;
-    }
-    return TRUE;
-}
-
-static LPVOID CreateFiberEx(
-    SIZE_T dwStackCommit,
-    SIZE_T dwStackReserve,
-    DWORD dwFlags,
-    void (*lpStartAddress)(void *),
-    LPVOID lpParameter)
-{
-    (void)dwStackCommit;
-    (void)dwFlags;
-    size_t stack_size = dwStackReserve ? dwStackReserve : 1024 * 1024;
-    stack_size = (stack_size + 0xfffu) & ~0xfffu;
-    void *stack_mem = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (stack_mem == MAP_FAILED) {
-        return NULL;
-    }
-
-    RecompNativeFiber *fiber = (RecompNativeFiber *)calloc(1, sizeof(RecompNativeFiber));
-    if (!fiber) {
-        munmap(stack_mem, stack_size);
-        return NULL;
-    }
-    fiber->stack_memory = stack_mem;
-    fiber->stack_size = stack_size;
-
-    uintptr_t top = ((uintptr_t)stack_mem + stack_size) & ~15ULL;
-#if defined(__arm64__) || defined(__aarch64__)
-    top -= 160;
-    uint64_t *frame = (uint64_t *)top;
-    frame[8] = 0; // fp
-    frame[9] = (uint64_t)(uintptr_t)recomp_fiber_trampoline; // lr
-    frame[18] = (uint64_t)(uintptr_t)lpParameter; // x19
-    frame[19] = (uint64_t)(uintptr_t)lpStartAddress; // x20
-    fiber->sp = (void *)top;
-#elif defined(__x86_64__) || defined(_M_X64)
-    top -= 64;
-    uint64_t *frame = (uint64_t *)top;
-    frame[0] = 0; // r15
-    frame[1] = 0; // r14
-    frame[2] = (uint64_t)(uintptr_t)lpStartAddress; // r13
-    frame[3] = (uint64_t)(uintptr_t)lpParameter; // r12
-    frame[4] = 0; // rbx
-    frame[5] = 0; // rbp
-    frame[6] = (uint64_t)(uintptr_t)recomp_fiber_trampoline; // ret rip
-    frame[7] = 0; // 16-byte alignment padding
-    fiber->sp = (void *)top;
-#else
-#error "Unsupported architecture for native POSIX fiber switching"
-#endif
-
-    return (LPVOID)fiber;
-}
-
-static void SwitchToFiber(LPVOID lpFiber)
-{
-    RecompNativeFiber *target = (RecompNativeFiber *)lpFiber;
-    RecompNativeFiber *from = g_active_native_fiber;
-    g_active_native_fiber = target;
-    recomp_fiber_switch(&from->sp, target->sp);
-}
-
-static void DeleteFiber(LPVOID lpFiber)
-{
-    if (!lpFiber) return;
-    RecompNativeFiber *fiber = (RecompNativeFiber *)lpFiber;
-    if (fiber->stack_memory) {
-        munmap(fiber->stack_memory, fiber->stack_size);
-    }
-    if (g_active_native_fiber == fiber) {
-        g_active_native_fiber = NULL;
-    }
-    free(fiber);
-}
-#endif
+#include "native_fiber.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum {
     XAPI_CREATE_FIBER_ADDRESS = 0x00182fbbu,
@@ -127,7 +17,6 @@ enum {
     XAPI_SWITCH_TO_FIBER_ADDRESS = 0x0018305au,
     XAPI_CONVERT_THREAD_TO_FIBER_ADDRESS = 0x00183099u,
     XAPI_MINIMUM_FIBER_STACK = 0x3000u,
-    NATIVE_FIBER_STACK_RESERVE = 0x100000u,
 };
 
 typedef struct RecompHostFiber {
@@ -137,7 +26,7 @@ typedef struct RecompHostFiber {
     uint32_t guest_stack_size;
     uint32_t entry;
     uint64_t switch_count;
-    LPVOID native_fiber;
+    void *native_fiber;
 } RecompHostFiber;
 
 static RecompFiberModel fiber_model;
@@ -199,7 +88,7 @@ static RecompHostFiber *host_fiber_find(uint32_t guest_handle)
 
 static RecompHostFiber *host_fiber_add(
     uint32_t guest_handle,
-    LPVOID native_fiber)
+    void *native_fiber)
 {
     if (native_fiber == NULL || host_fiber_find(guest_handle) != NULL) {
         return NULL;
@@ -213,6 +102,18 @@ static RecompHostFiber *host_fiber_add(
             };
             return &host_fibers[i];
         }
+    }
+    return NULL;
+}
+
+/* A deleted fiber stays parked so a snapshot that still contains it can
+   rewind the delete; its native context is still suspended at the switch.
+   The native fiber outlives handle reuse, so snapshots find slots by it. */
+static RecompHostFiber *host_fiber_find_native(void *native_fiber)
+{
+    if (native_fiber == NULL) return NULL;
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (host_fibers[i].native_fiber == native_fiber) return &host_fibers[i];
     }
     return NULL;
 }
@@ -242,11 +143,12 @@ void recomp_fiber_adapter_reset(void)
         for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
             RecompHostFiber *host = &host_fibers[i];
 
-            if (host->active && host != current_host_fiber) {
-                DeleteFiber(host->native_fiber);
+            /* Parked fibers own native stacks too; the converted thread's is the runner's. */
+            if (host->native_fiber != NULL && host != current_host_fiber) {
+                recomp_native_fiber_delete(host->native_fiber);
             }
         }
-        (void)ConvertFiberToThread();
+        recomp_native_fiber_release_thread();
     }
     recomp_fiber_model_reset(&fiber_model);
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
@@ -259,6 +161,148 @@ void recomp_fiber_adapter_reset(void)
 const RecompFiberModel *recomp_fiber_adapter_model(void)
 {
     return &fiber_model;
+}
+
+/* Adapted from doa2u-re's fiber_adapter.c. */
+typedef struct FiberHostState {
+    uint32_t guest_handle;
+    /* Slot bookkeeping decides whether a create allocates a guest stack or
+       reuses one, so a rewind has to put it back. */
+    uint32_t guest_stack_base;
+    uint32_t guest_stack_size;
+    uint32_t entry;
+    /* Identity check: a reused slot owns a different native fiber. */
+    void *native_fiber;
+    RecompNativeFiberState native;
+} FiberHostState;
+
+typedef struct FiberAdapterState {
+    RecompFiberModel model;
+    uint32_t current_host_handle;
+    bool converted_thread;
+    FiberHostState hosts[RECOMP_FIBER_MAX_COUNT];
+} FiberAdapterState;
+
+size_t recomp_fiber_adapter_state_size(void)
+{
+    return sizeof(FiberAdapterState);
+}
+
+void recomp_fiber_adapter_state_save(void *state)
+{
+    FiberAdapterState *out = state;
+    RecompHostFiber *running = current_host_fiber;
+
+    memset(out, 0, sizeof *out);
+    out->model = fiber_model;
+    out->current_host_handle = running != NULL ? running->guest_handle : 0u;
+    out->converted_thread = converted_thread;
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        RecompHostFiber *host = &host_fibers[i];
+
+        if (host->guest_handle == 0u || host->native_fiber == NULL) continue;
+        out->hosts[i].guest_handle = host->guest_handle;
+        out->hosts[i].guest_stack_base = host->guest_stack_base;
+        out->hosts[i].guest_stack_size = host->guest_stack_size;
+        out->hosts[i].entry = host->entry;
+        out->hosts[i].native_fiber = host->native_fiber;
+        /* The running fiber's host stack is the caller's own live stack, and
+           a snapshot only restores while that same fiber runs. */
+        if (host == running) continue;
+        recomp_native_fiber_state_save(host->native_fiber, &out->hosts[i].native);
+    }
+}
+
+bool recomp_fiber_adapter_state_restorable(const void *state)
+{
+    const FiberAdapterState *in = state;
+
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (in->hosts[i].guest_handle == 0u) continue;
+        if (host_fiber_find_native(in->hosts[i].native_fiber) == NULL) return false;
+        if (in->hosts[i].guest_handle == in->current_host_handle) continue;
+        if ((in->hosts[i].native.flags & RECOMP_NATIVE_STATE_UNAVAILABLE) != 0u) return false;
+    }
+    return true;
+}
+
+bool recomp_fiber_adapter_state_equal(const void *left, const void *right, size_t size)
+{
+    const FiberAdapterState *a = left, *b = right;
+
+    (void)size;
+    if (memcmp(&a->model, &b->model, sizeof a->model) != 0) return false;
+    if (a->current_host_handle != b->current_host_handle) return false;
+    if (a->converted_thread != b->converted_thread) return false;
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (a->hosts[i].guest_handle != b->hosts[i].guest_handle ||
+            a->hosts[i].guest_stack_base != b->hosts[i].guest_stack_base ||
+            a->hosts[i].guest_stack_size != b->hosts[i].guest_stack_size) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void recomp_fiber_adapter_state_restore(const void *state)
+{
+    const FiberAdapterState *in = state;
+    RecompHostFiber *running = current_host_fiber;
+    RecompHostFiber *target = NULL;
+
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT && in->current_host_handle != 0u; ++i) {
+        if (in->hosts[i].guest_handle != in->current_host_handle) continue;
+        target = host_fiber_find_native(in->hosts[i].native_fiber);
+        break;
+    }
+    if (target != running) fail_fiber("restore-not-running", in->current_host_handle);
+    fiber_model = in->model;
+    converted_thread = in->converted_thread;
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        const FiberHostState *saved = &in->hosts[i];
+        RecompHostFiber *host;
+
+        if (saved->guest_handle == 0u) continue;
+        host = host_fiber_find_native(saved->native_fiber);
+        if (host == NULL) fail_fiber("restore-missing-host", saved->guest_handle);
+        host->guest_handle = saved->guest_handle;
+        host->guest_stack_base = saved->guest_stack_base;
+        host->guest_stack_size = saved->guest_stack_size;
+        host->entry = saved->entry;
+        /* The caller's own stack is live; only parked fibers are rewritten. */
+        if (host == running || !recomp_native_fiber_owns_stack(host->native_fiber)) continue;
+        if (!recomp_native_fiber_state_restore(host->native_fiber, &saved->native))
+            fail_fiber("restore-context", saved->guest_handle);
+    }
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        RecompHostFiber *host = &host_fibers[i];
+
+        if (in->hosts[i].guest_handle == 0u) {
+            /* Slots the snapshot did not have are free again; the native
+               stack stays for a later create to restart. */
+            host->guest_handle = 0u;
+            host->guest_stack_base = 0u;
+            host->guest_stack_size = 0u;
+            host->active = false;
+        }
+        if (host->guest_handle == 0u) continue;
+        host->active = recomp_fiber_find(&fiber_model, host->guest_handle) != NULL;
+    }
+}
+
+size_t recomp_fiber_adapter_stack_ranges(RecompFiberStackRange *ranges, size_t capacity)
+{
+    size_t count = 0u;
+
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (!host_fibers[i].active || host_fibers[i].guest_stack_base == 0u) continue;
+        if (count < capacity) {
+            ranges[count].base = host_fibers[i].guest_stack_base;
+            ranges[count].size = host_fibers[i].guest_stack_size;
+        }
+        ++count;
+    }
+    return count;
 }
 
 void recomp_fiber_adapter_report(void)
@@ -286,17 +330,14 @@ static void convert_thread_to_fiber_adapter(void)
     uint32_t fiber_data = stack_argument(entry_esp, 0u);
     uint32_t guest_handle = main_fiber_handle();
     RecompRegisters registers = recomp_runtime.registers;
-    LPVOID native_fiber;
+    void *native_fiber;
     RecompFiber *fiber;
     RecompHostFiber *host;
 
     if (converted_thread || current_host_fiber != NULL) {
         fail_fiber("duplicate-convert", guest_handle);
     }
-    native_fiber = ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH);
-    if (native_fiber == NULL) {
-        fail_fiber("convert-failed", guest_handle);
-    }
+    native_fiber = recomp_native_fiber_current();
     fiber = recomp_fiber_add(
         &fiber_model,
         guest_handle,
@@ -333,7 +374,7 @@ static void create_fiber_adapter(void)
     RecompRegisters registers = {0};
     RecompFiber *fiber;
     RecompHostFiber *host;
-    LPVOID native_fiber;
+    void *native_fiber;
 
     if (!converted_thread || entry == 0u) {
         fail_fiber("create-context", entry);
@@ -384,12 +425,14 @@ static void create_fiber_adapter(void)
     if (fiber == NULL) {
         fail_fiber("create-state", guest_handle);
     }
-    native_fiber = CreateFiberEx(
-        0u,
-        NATIVE_FIBER_STACK_RESERVE,
-        FIBER_FLAG_FLOAT_SWITCH,
-        fiber_entry,
-        host);
+    /* A reused slot keeps its native stack so a snapshot that still names
+       the deleted fiber can rewind it. */
+    native_fiber = host->native_fiber;
+    if (native_fiber != NULL) {
+        recomp_native_fiber_restart(native_fiber, fiber_entry, host);
+    } else {
+        native_fiber = recomp_native_fiber_create(fiber_entry, host);
+    }
     if (native_fiber == NULL) {
         fail_fiber("create-host", guest_handle);
     }
@@ -737,7 +780,7 @@ static void switch_to_fiber_adapter(void)
     *recomp_memory_u32(0u) = target->exception_list;
     publish_current_fiber(target_handle);
     current_host_fiber = target_host;
-    SwitchToFiber(target_host->native_fiber);
+    recomp_native_fiber_switch(target_host->native_fiber);
 
     if (current_host_fiber != outgoing_host ||
         fiber_model.current_handle != outgoing->guest_handle) {
@@ -752,21 +795,14 @@ static void delete_fiber_adapter(void)
     uint32_t guest_handle = stack_argument(entry_esp, 0u);
     RecompFiber *fiber = recomp_fiber_find(&fiber_model, guest_handle);
     RecompHostFiber *host = host_fiber_find(guest_handle);
-    uint32_t stack_base;
-    uint32_t stack_size;
 
     if (fiber == NULL || host == NULL || host == current_host_fiber) {
         fail_fiber("invalid-delete", guest_handle);
     }
-    stack_base = host->guest_stack_base;
-    stack_size = host->guest_stack_size;
-    DeleteFiber(host->native_fiber);
     /* The guest allocator is monotonic. Keep one stack per host slot so a
-       delete/create cycle reuses its address instead of exhausting the heap. */
-    *host = (RecompHostFiber){
-        .guest_stack_base = stack_base,
-        .guest_stack_size = stack_size,
-    };
+       delete/create cycle reuses its address instead of exhausting the heap,
+       and keep the native context parked for a snapshot rewind. */
+    host->active = false;
     if (!recomp_fiber_remove(&fiber_model, guest_handle)) {
         fail_fiber("delete-state", guest_handle);
     }
