@@ -1,4 +1,5 @@
 #include "kernel_abi.h"
+#include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 
 #include <stdio.h>
@@ -116,7 +117,10 @@ static void bridge_ke_query_system_time(void)
         struct timespec now;
         uint64_t file_time = 0u;
 
-        if (timespec_get(&now, TIME_UTC) == TIME_UTC) {
+        if (recomp_xapi_frame_clock_enabled()) {
+            /* Netplay runners must read the same date, in 100 ns units. */
+            file_time = RECOMP_FRAME_CLOCK_EPOCH_FILETIME + recomp_xapi_performance_counter() / 100u;
+        } else if (timespec_get(&now, TIME_UTC) == TIME_UTC) {
             file_time = ((uint64_t)now.tv_sec + 11644473600ull) *
                 10000000ull + (uint64_t)now.tv_nsec / 100ull;
         }

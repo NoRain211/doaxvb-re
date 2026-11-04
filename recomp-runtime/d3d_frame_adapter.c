@@ -407,7 +407,7 @@ void recomp_d3d_swap_adapter(void)
     }
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
-    recomp_d3d_wait_vblank();
+    if ((present_held & RECOMP_PRESENT_HOLD_ROLLBACK) == 0u) recomp_d3d_wait_vblank();
     /* A held frame is still presented, so its draws run now while the
        textures they borrow from guest memory are this frame's, and the
        presenter keeps handling window events. */

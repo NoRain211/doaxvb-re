@@ -39,6 +39,8 @@ void recomp_d3d_frame_adapter_state_restore(const void *state);
 enum {
     RECOMP_PRESENT_HOLD_SCENE = 1u,
     RECOMP_PRESENT_HOLD_VIEWER = 2u,
+    /* A rollback replay: no vblank wait either, so the frames run unpaced. */
+    RECOMP_PRESENT_HOLD_ROLLBACK = 4u,
 };
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold);
 /* Called at the first Clear of each frame, from the guest's drawing, where

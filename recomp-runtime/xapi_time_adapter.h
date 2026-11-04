@@ -21,6 +21,9 @@ typedef struct RecompFrameClockState {
     bool enabled;
 } RecompFrameClockState;
 bool recomp_xapi_frame_clock_enabled(void);
+/* 2003-01-01 00:00 UTC as a FILETIME: the date netplay runners share, since
+   host dates and file times differ between machines. */
+#define RECOMP_FRAME_CLOCK_EPOCH_FILETIME UINT64_C(126858528000000000)
 void recomp_xapi_frame_clock_set_enabled(bool enabled);
 void recomp_xapi_frame_clock_reset(void);
 void recomp_xapi_frame_clock_advance(void);

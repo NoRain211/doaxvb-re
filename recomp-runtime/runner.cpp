@@ -17,6 +17,7 @@ extern "C" {
 #include "scene_freeze_adapter.h"
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
+#include "netplay_session.h"
 #endif
 #include "runtime.h"
 #include "stop_report.h"
@@ -64,6 +65,14 @@ void synctestBoundary()
         (result == RECOMP_SYNCTEST_MATCH || result == RECOMP_SYNCTEST_SKIP)) {
         recomp_stop(0, result == RECOMP_SYNCTEST_MATCH ? "synctest:match" : "synctest:skip");
     }
+}
+
+// A running netplay session decides the guest's pads; before it starts, the usual sources do.
+bool sessionSample(std::uint32_t port, RecompInputGamepad *gamepad)
+{
+    bool present = false;
+    if (recomp_netplay_session_pad(port, gamepad, &present)) return present;
+    return recomp_free_camera_sample(port, gamepad);
 }
 #endif
 
@@ -937,7 +946,20 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
     }
     recomp_viewer_install();
-    if (recomp_synctest_enabled()) {
+    if (!recomp_netplay_session_read_env()) return 2;
+    if (recomp_netplay_session_enabled()) {
+        if (recomp_synctest_enabled()) {
+            std::cerr << "recomp runner: RECOMP_SYNCTEST and RECOMP_ROLLBACK cannot run together\n";
+            return 2;
+        }
+#ifdef _WIN32
+        recomp_netplay_session_install({ram, kRamSize, true});
+#else
+        recomp_netplay_session_install({ram, kRamSize, false});
+#endif
+        recomp_input_adapter_set_source(sessionSample);
+        std::atexit(recomp_netplay_session_exit);
+    } else if (recomp_synctest_enabled()) {
         recomp_xapi_frame_clock_set_enabled(true);
         recomp_synctest_install_default_modules();
 #ifdef _WIN32

@@ -5,6 +5,7 @@
 #include "symbolic_link_model.h"
 #include "save_transaction.h"
 #include "stop_report.h"
+#include "xapi_time_adapter.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "fiber_adapter.h"
 #endif
@@ -262,6 +263,10 @@ static uint32_t register_file_handle(
                             (uint64_t)data.ftLastWriteTime.dwLowDateTime |
                             (uint64_t)data.ftLastWriteTime.dwHighDateTime << 32u;
                         entry.change_time = entry.last_write_time;
+                        if (recomp_xapi_frame_clock_enabled()) {
+                            entry.creation_time = entry.last_access_time = entry.last_write_time =
+                                entry.change_time = RECOMP_FRAME_CLOCK_EPOCH_FILETIME;
+                        }
                         size = (uint64_t)data.nFileSizeLow |
                             (uint64_t)data.nFileSizeHigh << 32u;
                         entry.size = size;
@@ -1446,9 +1451,11 @@ static void bridge_nt_query_information_file(void)
         if (profile_metadata && file_information != 0u &&
             ((file_information_class == FILE_BASIC_INFORMATION && length >= 0x28u) ||
              (file_information_class == FILE_NETWORK_OPEN_INFORMATION && length >= 0x38u))) {
-            const LARGE_INTEGER times[4] = {host.CreationTime, host.LastAccessTime,
+            LARGE_INTEGER times[4] = {host.CreationTime, host.LastAccessTime,
                 host.LastWriteTime, host.ChangeTime};
             for (uint32_t t = 0u; t < 4u; ++t) {
+                if (recomp_xapi_frame_clock_enabled())
+                    times[t].QuadPart = (LONGLONG)RECOMP_FRAME_CLOCK_EPOCH_FILETIME;
                 *recomp_memory_u32(file_information + t * 8u) = times[t].LowPart;
                 *recomp_memory_u32(file_information + t * 8u + 4u) = (uint32_t)times[t].HighPart;
             }

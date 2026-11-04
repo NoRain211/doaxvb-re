@@ -46,6 +46,7 @@
     "docs/public-status.md",
     "docs/recomp-controls.md",
     "docs/recomp-save-contract.md",
+    "docs/rollback-netcode.md",
     "docs/wayfinder/research/audio-movie-replacements.md",
     "docs/wayfinder/research/game-ui-construction.md",
     "docs/wayfinder/research/sofdec-player-api.md",
@@ -119,6 +120,8 @@
     "tools/test_build_game.py",
     "tools/update_lifter_pin.py",
     "tools/test_update_lifter_pin.py",
+    "tools/matchmaker.py",
+    "tools/test_matchmaker.py",
     "tools/game-recipe/**",
     "CHANGELOG.md"
   ],

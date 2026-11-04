@@ -74,6 +74,8 @@ unsigned recomp_game_substep(void) { return pass_substep; }
 
 static void (*frame_boundary)(void);
 void recomp_game_set_frame_boundary(void (*hook)(void)) { frame_boundary = hook; }
+static bool paced = true;
+void recomp_game_set_paced(bool on) { paced = on; }
 
 typedef struct SchedulerState {
     uint32_t game_pass, game_tick;
@@ -457,7 +459,7 @@ static bool next_pass_is_tick(void)
         return false;
     }
     /* Hidden ticks have no vblank wait of their own. */
-    while ((now = now_ns()) < next_tick_ns) {
+    while (paced && (now = now_ns()) < next_tick_ns) {
         if (next_tick_ns - now > 2000000) Sleep(1);
         else YieldProcessor();
     }

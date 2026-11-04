@@ -35,6 +35,8 @@ void recomp_game_test_clock_begin(bool enabled);
    guest fiber is parked in the scheduler and the main thread's native stack
    is always the same: the frame boundary rollback saves and loads at. */
 void recomp_game_set_frame_boundary(void (*hook)(void));
+/* Off while a netplay session paces each frame itself. */
+void recomp_game_set_paced(bool paced);
 /* The pass and tick counters, for rollback snapshots. */
 size_t recomp_game_scheduler_state_size(void);
 void recomp_game_scheduler_state_save(void *state);
