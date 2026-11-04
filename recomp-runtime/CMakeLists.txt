@@ -159,9 +159,8 @@ if(EXISTS "${_fsr1_dir}/ffx_fsr1.h" AND EXISTS "${_fsr1_dir}/ffx_a.h")
         string(REGEX REPLACE "(..)" "'\\\\x\\1'," _fsr1_hex "${_fsr1_hex}")
         file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${_fsr1_file}_hlsl.inc" CONTENT "${_fsr1_hex}")
     endforeach()
-    set_property(SOURCE d3d_presenter_d3d11.cpp d3d_presenter_d3d11_test.cpp
-        APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_FSR1)
-    set_property(SOURCE d3d_presenter_d3d11.cpp d3d_presenter_d3d11_test.cpp
+    set_property(SOURCE d3d_fsr.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_FSR1)
+    set_property(SOURCE d3d_fsr.cpp
         APPEND PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR};${_fsr1_dir}")
 endif()
 
@@ -747,6 +746,10 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_adapter.c
         d3d_vblank.cpp
         $<$<PLATFORM_ID:Windows>:d3d_presenter_d3d11.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_draw_shader.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_fsr.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_motion.cpp>
+        $<$<PLATFORM_ID:Windows>:d3d_dlss.cpp>
         $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
         $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
         $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
@@ -878,6 +881,10 @@ if(WIN32)
     add_test(NAME recomp-runtime-texture-replacement COMMAND recomp_texture_replacement_test)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        d3d_draw_shader.cpp
+        d3d_fsr.cpp
+        d3d_motion.cpp
+        d3d_dlss.cpp
         texture_replacement.cpp
         ../xbe/sha.cpp
         d3d_vblank.cpp
@@ -904,6 +911,10 @@ if(WIN32)
         animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
+        d3d_draw_shader.cpp
+        d3d_fsr.cpp
+        d3d_motion.cpp
+        d3d_dlss.cpp
         texture_replacement.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp

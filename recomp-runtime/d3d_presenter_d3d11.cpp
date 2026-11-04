@@ -1,5 +1,6 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
+#include "d3d_draw_shader.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 #include "overlay_d3d11.h"
@@ -26,7 +27,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cwchar>
 #include <atomic>
 #include <mutex>
 #include <new>
@@ -39,7 +39,9 @@
 
 #include "d3d_sun_shadow.h"
 #include "d3d_gbuffer.h"
-#include "dlss_bridge.h"
+#include "d3d_dlss.h"
+#include "d3d_fsr.h"
+#include "d3d_motion.h"
 
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
@@ -49,30 +51,13 @@ static const char kSmaaSource[] = {
 };
 #endif
 
-#ifdef RECOMP_FSR1
-// AMD FidelityFX FSR 1.0 (third_party/fsr1, MIT): the CPU half sets the
-// shader constants; the GPU half is embedded and compiled at startup.
-#include <math.h>
-#include <stdlib.h>
-#define A_CPU 1
-#include "ffx_a.h"
-#include "ffx_fsr1.h"
-#undef A_CPU
-static const char kFfxASource[] = {
-#include "ffx_a_hlsl.inc"
-};
-static const char kFfxFsr1Source[] = {
-#include "ffx_fsr1_hlsl.inc"
-};
-#endif
-
 namespace {
 
 constexpr wchar_t kWindowClassName[] = L"DOAXBVRecompPresenterWindow";
 constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
 
 // Float indices of taa_jitter, previous_wvp and motion_flags in the draw
-// constant buffer (kDrawShaderPrologue), and its size.
+// constant buffer (kDrawShaderPrologue in d3d_draw_shader.cpp), and its size.
 constexpr size_t kJitterConstant = 140u + 192u * 4u + 336u + 76u + 16u;
 constexpr size_t kPreviousWvpConstant = kJitterConstant + 4u;
 constexpr size_t kMotionFlagsConstant = kPreviousWvpConstant + 64u;
@@ -107,334 +92,6 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
     return true;
 }
 
-
-/* Untransformed positions with a host-side world-view-projection composite.
-
-   Vertex components other than position vary by FVF: this title draws both
-   XYZ|NORMAL|TEX1 and XYZ|DIFFUSE|TEX1, whose texcoords sit at different
-   offsets and whose colors come from different sources. One shader cannot
-   serve both, so the shader is assembled per FVF from the decoded layout and
-   cached with its matching input layout.
-
-   Vertex color comes from the stream or the admitted fixed-function lighting
-   path. Unsupported lighting configurations retain the earlier texture/normal
-   fallback. Texture alpha remains independent of lit diffuse RGB. */
-constexpr char kDrawShaderPrologue[] =
-    "cbuffer Transform : register(b0) {\n"
-    "    row_major float4x4 wvp[4];\n"
-    "    float4 draw_flags;\n"
-    "    float4 blend_flags;\n"
-    "    float4 texture_factor;\n"
-    "    float4 lighting_flags;\n"
-    "    float4 texture_flags;\n"
-    "    row_major float4x4 reflection_world_view;\n"
-    "    row_major float4x4 reflection_normal;\n"
-    "    row_major float4x4 reflection_transform;\n"
-    "    float4 reflection_diffuse;\n"
-    "    float4 reflection_flags;\n"
-    "    float4 vc[192];\n"
-    "    row_major float4x4 directional_normals[4];\n"
-    "    float4 directional_base;\n"
-    "    float4 directional_material;\n"
-    "    float4 directional_directions[8];\n"
-    "    float4 directional_colors[8];\n"
-    "    float4 directional_flags;\n"
-    "    row_major float4x4 light_world[4];\n"
-    "    float4 light_positions[8];\n"
-    "    float4 light_attenuation[8];\n"
-    "    float4 light_ambient[8];\n"
-    "    float4 light_specular[8];\n"
-    "    float4 light_view;\n"
-    "    float4 fog_color;\n"
-    "    float4 fog_params; // start, end, density, mode\n"
-    "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
-    "    row_major float4x4 fog_world_view[4];\n"
-    "    float4 combiner[4];\n"
-    "    float4 taa_jitter; // xy: clip-space offset of 3D scene draws, else zero\n"
-    "    row_major float4x4 previous_wvp[4]; // last frame's wvp[], for object motion\n"
-    "    float4 motion_flags; // x: write object motion; zw: scene size in pixels\n"
-    "}\n"
-    "float fogFactor(float depth) {\n"
-    "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
-    "    if (fog_params.w == 2) { float d = depth * fog_params.z; return saturate(exp(-d*d)); }\n"
-    "    if (fog_params.w == 3) {\n"
-    "        float span = fog_params.y - fog_params.x;\n"
-    "        return span == 0 ? (depth < fog_params.y ? 1 : 0) : saturate((fog_params.y-depth)/span);\n"
-    "    }\n"
-    "    return saturate(depth);\n"
-    "}\n"
-    "Texture2D guest_texture : register(t0);\n"
-    "SamplerState guest_sampler : register(s0);\n"
-    "Texture2D alpha_mask : register(t1);\n"
-    "SamplerState mask_sampler : register(s1);\n"
-    /* Xbox D3DTA selectors 0-4 with COMPLEMENT (0x10) and ALPHAREPLICATE
-       (0x20); absent specular is black. */
-    "float4 ff_arg(int a, float4 cur, float4 dif, float4 tex) {\n"
-    "    int s = a & 15;\n"
-    "    float4 v = s == 0 ? dif : s == 2 ? tex : s == 3 ? texture_factor\n"
-    "        : s == 4 ? float4(0, 0, 0, 0) : cur;\n"
-    "    if (a & 0x20) v = v.aaaa;\n"
-    "    if (a & 0x10) v = 1.0f - v;\n"
-    "    return v;\n"
-    "}\n"
-    /* Xbox values differ from PC D3D8: BLENDCURRENTALPHA=13,
-       DOTPRODUCT3=22, MULTIPLYADD=23, LERP=24. See Cxbx XbD3D8Types.h:
-       https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/hle/D3D8/XbD3D8Types.h
-       PREMODULATE is declined by the adapter. */
-    "float4 ff_op(float4 o, float4 cur, float4 dif, float4 tex) {\n"
-    "    float4 a0 = ff_arg((int)o.y, cur, dif, tex);\n"
-    "    float4 a1 = ff_arg((int)o.z, cur, dif, tex);\n"
-    "    float4 a2 = ff_arg((int)o.w, cur, dif, tex);\n"
-    "    float4 r = cur;\n"
-    "    switch ((int)o.x) {\n"
-    "    case 2: r = a1; break;\n"
-    "    case 3: r = a2; break;\n"
-    "    case 4: r = a1 * a2; break;\n"
-    "    case 5: r = 2.0f * a1 * a2; break;\n"
-    "    case 6: r = 4.0f * a1 * a2; break;\n"
-    "    case 7: r = a1 + a2; break;\n"
-    "    case 8: r = a1 + a2 - 0.5f; break;\n"
-    "    case 9: r = 2.0f * (a1 + a2 - 0.5f); break;\n"
-    "    case 10: r = a1 - a2; break;\n"
-    "    case 11: r = a1 + a2 - a1 * a2; break;\n"
-    "    case 12: r = lerp(a2, a1, dif.a); break;\n"
-    "    case 13: r = lerp(a2, a1, cur.a); break;\n"
-    "    case 14: r = lerp(a2, a1, tex.a); break;\n"
-    "    case 15: r = lerp(a2, a1, texture_factor.a); break;\n"
-    "    case 16: r = a1 + a2 * (1.0f - tex.a); break;\n"
-    "    case 18: r = a1 + a1.a * a2; break;\n"
-    "    case 19: r = a1 * a2 + a1.a; break;\n"
-    "    case 20: r = a1 + (1.0f - a1.a) * a2; break;\n"
-    "    case 21: r = (1.0f - a1) * a2 + a1.a; break;\n"
-    "    case 22: r = saturate(4.0f * dot(a1.rgb - 0.5f, a2.rgb - 0.5f)).xxxx; break;\n"
-    "    case 23: r = a0 + a1 * a2; break;\n"
-    "    case 24: r = lerp(a2, a1, a0); break;\n"
-    "    }\n"
-    "    return saturate(r);\n"
-    "}\n"
-    "float4 ff_combine(float4 dif, float4 t0, float4 t1) {\n"
-    "    float4 cur = dif;\n"
-    "    [unroll] for (int s = 0; s < 2; ++s) {\n"
-    "        float4 c = combiner[s * 2], a = combiner[s * 2 + 1];\n"
-    "        if (c.x < 1.5f) break;\n"
-    "        float4 tex = s == 0 ? t0 : t1;\n"
-    "        float4 next = ff_op(c, cur, dif, tex);\n"
-    "        if (a.x > 1.5f) next.a = ff_op(a, cur, dif, tex).a; else next.a = cur.a;\n"
-    "        cur = next;\n"
-    "    }\n"
-    "    return cur;\n"
-    "}\n";
-
-/* Builds the draw shader for one decoded vertex layout. Only the components
-   the layout actually carries appear in VSIn, so the input layout and the
-   shader signature always agree. */
-void buildDrawShaderSource(
-    const RecompD3dVertexLayout &layout,
-    char *out,
-    size_t out_size)
-{
-    const bool has_normal =
-        layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
-    const bool has_diffuse =
-        layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
-    const bool has_texcoord =
-        layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
-    const bool four_coords = layout.texcoord_count == 4u;
-    const char *extra_coords = four_coords
-        ? "    float2 texcoord1 : TEXCOORD1;\n"
-          "    float2 texcoord2 : TEXCOORD2;\n"
-          "    float2 texcoord3 : TEXCOORD3;\n"
-        : layout.texcoord_count == 2u ? "    float2 texcoord1 : TEXCOORD1;\n" : "";
-
-    char position[768];
-    if (layout.pretransformed) {
-        std::snprintf(position, sizeof position,
-            "    output.position = mul(float4(input.position.xyz, 1.0f), wvp[0]) / input.position.w;\n");
-    } else if (layout.blend_weight_count != 0u) {
-        std::snprintf(position, sizeof position,
-            "    if (blend_flags.x > 0.5f) {\n"
-            "    output.position = float4(0, 0, 0, 0);\n"
-            "    float remainder = 1.0f;\n"
-            "    [unroll] for (uint i = 0; i < %u; ++i) {\n"
-            "        output.position += input.weights[i] * mul(float4(input.position, 1), wvp[i]);\n"
-            "        remainder -= input.weights[i];\n"
-            "    }\n"
-            "    output.position += remainder * mul(float4(input.position, 1), wvp[%u]);\n"
-            "    } else { output.position = mul(float4(input.position, 1), wvp[0]); }\n",
-            layout.blend_weight_count, layout.blend_weight_count);
-    } else {
-        std::snprintf(position, sizeof position,
-            "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
-    }
-    std::snprintf(
-        out,
-        out_size,
-        "%s"
-        "struct VSIn {\n"
-        "    %s position : POSITION;\n"
-        "%s%s%s%s%s"
-        "};\n"
-        "struct VSOut {\n"
-        "    float4 position : SV_POSITION;\n"
-        "    float4 color : COLOR0;\n"
-        "    float3 lit_specular : TEXCOORD15;\n"
-        "    float2 texcoord : TEXCOORD0;\n"
-        "    float2 reflection_coord : TEXCOORD4;\n"
-        "%s"
-        "};\n"
-        "VSOut vs_main(VSIn input) {\n"
-        "    VSOut output; output.lit_specular=0;\n"
-        "%s"
-        "    output.position.xy += taa_jitter.xy * output.position.w;\n"
-        "%s"
-        "%s"
-        "%s"
-        "    output.reflection_coord = float2(0, 0);\n"
-        "%s"
-        "    return output;\n"
-        "}\n"
-        "float4 ps_main(VSOut input) : SV_TARGET {\n"
-        "    float4 shaded = input.color;\n"
-        "    if (reflection_flags.x > 2.5f) {\n"
-        "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
-        "        if (lighting_flags.y > 0.5f) t0.rgb = 1.0f;\n"
-        "        float4 t1 = alpha_mask.Sample(mask_sampler, input.reflection_coord * lighting_flags.zw);\n"
-        "        if (reflection_flags.y > 0.5f) t1.rgb = 1.0f;\n"
-        "        float4 dif = input.color;\n"
-        "        if (directional_flags.x > 0.5f) dif.a *= blend_flags.z;\n"
-        "        shaded = ff_combine(dif, t0, t1);\n"
-        "    } else if (reflection_flags.x > 0.5f) {\n"
-        "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
-        "        base.a *= reflection_diffuse.a;\n"
-        "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
-        "        float4 diffuse = reflection_diffuse;\n"
-        "        if (directional_flags.x > 0.5f) diffuse.rgb = input.color.rgb;\n"
-        "        shaded = lerp(base, env, env.a) * diffuse;\n"
-        "    } else\n"
-        "%s"
-        "    if (blend_flags.y == 1.0f) {\n"
-        "        shaded = texture_factor;\n"
-        "    } else if (draw_flags.x > 0.5f) {\n"
-        "        float4 sampled = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
-        "        if (lighting_flags.y > 0.5f) sampled.rgb = 1.0f;\n"
-        "        shaded %s sampled;\n"
-        "        if (directional_flags.x > 0.5f) shaded.rgb *= input.color.rgb;\n"
-        "        if (lighting_flags.x > 0.5f) shaded.rgb = 0.0f;\n"
-        "        shaded.a = blend_flags.w > 0.5f\n"
-        "            ? blend_flags.z : shaded.a * blend_flags.z;\n"
-        "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
-        "    }\n"
-        "    if (reflection_flags.z > 0.5f) shaded.a *= alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
-        "    if (directional_flags.x > 0.5f && light_view.w > 0) shaded.rgb += input.lit_specular;\n"
-        /* NV2A compares rounded 8-bit alpha. Function values follow
-           RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
-        "    if (draw_flags.y > 0.5f) {\n"
-        "        float alpha = round(saturate(shaded.a) * 255.0f);\n"
-        "        float ref = draw_flags.w;\n"
-        "        int func = (int)draw_flags.z;\n"
-        "        bool alpha_pass = func == 7 ||\n"
-        "            (func == 1 && alpha < ref) ||\n"
-        "            (func == 2 && alpha == ref) ||\n"
-        "            (func == 3 && alpha <= ref) ||\n"
-        "            (func == 4 && alpha > ref) ||\n"
-        "            (func == 5 && alpha != ref) ||\n"
-        "            (func == 6 && alpha >= ref);\n"
-        "#ifdef EXPLICIT_COVERAGE\n"
-        "        if (draw_flags.y > 1.5f) {\n"
-        /* Coverage is independent of stored alpha, including flat hard passes. */
-        "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
-        "            float width = fwidth(shaded.a);\n"
-        "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
-        "            coverage = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
-        "                ? (alpha_pass ? 1.0f : 0.0f)\n"
-        "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
-        "            uint count = (uint)round(coverage * draw_flags.y);\n"
-        "            sample_coverage = count >= 32 ? 0xffffffffu : (1u << count) - 1u;\n"
-        "        } else\n"
-        "#endif\n"
-        "        if (!alpha_pass) discard;\n"
-        "    }\n"
-        "    if (fog_flags.x > 0.5f) {\n"
-        "        float depth = fog_flags.y > 0.5f && fog_flags.z < 0.5f ? abs(input.position.z) : input.fog_depth;\n"
-        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(depth);\n"
-        "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
-        "    }\n"
-        /* Dither before the first UNORM quantization; post-process input is already 8-bit. */
-        "    if (directional_flags.w > 0.5f) {\n"
-        "        uint2 p = (uint2)input.position.xy;\n"
-        "        uint b = ((p.x ^ p.y) & 1) * 8 + (p.y & 1) * 4\n"
-        "            + (((p.x ^ p.y) >> 1) & 1) * 2 + ((p.y >> 1) & 1);\n"
-        "        shaded.rgb += ((b + 0.5f) / 16.0f - 0.5f) / 255.0f;\n"
-        "    }\n"
-        "    return shaded;\n"
-        "}\n",
-        kDrawShaderPrologue,
-        layout.pretransformed ? "float4" : "float3",
-        layout.blend_weight_count ? "    float3 weights : BLENDWEIGHT;\n" : "",
-        has_normal ? "    float3 normal : NORMAL;\n" : "",
-        has_diffuse ? "    float4 diffuse : COLOR0;\n" : "",
-        has_texcoord ? "    float2 texcoord : TEXCOORD0;\n" : "",
-        extra_coords,
-        extra_coords,
-        position,
-        /* Guest vertex color when the stream has one; otherwise the normal
-           stands in so surfaces remain distinguishable. */
-        has_diffuse
-            ? "    output.color = input.diffuse;\n"
-            : (has_normal
-                   ? "    output.color = "
-                     "float4(abs(normalize(input.normal)), 1.0f);\n"
-                   : "    output.color = float4(0.75f, 0.75f, 0.78f, 1.0f);\n"),
-        has_texcoord
-            ? "    output.texcoord = input.texcoord;\n"
-            : "    output.texcoord = float2(0.0f, 0.0f);\n",
-        four_coords
-            ? "    output.texcoord1 = input.texcoord1;\n"
-              "    output.texcoord2 = input.texcoord2;\n"
-              "    output.texcoord3 = input.texcoord3;\n"
-            : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
-        has_texcoord && !layout.pretransformed
-            ? (has_normal
-                ? "    if (reflection_flags.x > 2.5f) {\n"
-                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
-                  "    } else if (reflection_flags.x > 1.5f) {\n"
-                  "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f) {\n"
-                  "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
-                  "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
-                  "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
-                  "        float3 r = reflect(normalize(eye), n);\n"
-                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
-                  "    }\n"
-                : "    if (reflection_flags.x > 2.5f) {\n"
-                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
-                  "    } else if (reflection_flags.x > 1.5f) {\n"
-                  "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f) {\n"
-                  "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
-                  "        float3 r = normalize(eye);\n"
-                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
-                  "    }\n")
-            : "",
-        four_coords
-            ? "    if (texture_flags.z > 0.5f) {\n"
-              "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
-              "        float4 t1 = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy);\n"
-              "        float4 t2 = guest_texture.Sample(guest_sampler, input.texcoord2 * texture_flags.xy);\n"
-              "        float4 t3 = guest_texture.Sample(guest_sampler, input.texcoord3 * texture_flags.xy);\n"
-              "        shaded = 0.5f * (saturate((128.0f / 255.0f) * (t0 + t1))\n"
-              "                        + saturate((128.0f / 255.0f) * (t2 + t3)));\n"
-              "    } else\n"
-            : layout.texcoord_count == 2u
-            ? "    if (texture_flags.w > 0.5f) {\n"
-              "        float3 rgb = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy).rgb;\n"
-              "        float alpha = alpha_mask.Sample(mask_sampler, input.texcoord * lighting_flags.zw).a;\n"
-              "        shaded = input.color * float4(rgb, alpha);\n"
-              "    } else\n" : "",
-        /* The fixed-function diffuse default is white. Preserve texture alpha
-           before the shared alpha test and SRC_ALPHA blending. */
-        has_diffuse ? "*=" : "=");
-}
 
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
@@ -639,13 +296,7 @@ struct RecompD3dPresenter {
     // RECOMP_D3D_UPSCALE=fsr: FSR 1.0 EASU upscale and RCAS sharpen into the window.
     bool fsr_requested = false;
     float fsr_sharpness = 0.2f;  // RECOMP_D3D_SHARPNESS 0..1, mapped to RCAS stops
-    ID3D11VertexShader *fsr_vs = nullptr;
-    ID3D11PixelShader *fsr_easu = nullptr;
-    ID3D11PixelShader *fsr_rcas = nullptr;
-    ID3D11Buffer *fsr_constants = nullptr;
-    ID3D11RenderTargetView *fsr_target = nullptr; // EASU output at the letterbox size
-    ID3D11ShaderResourceView *fsr_source = nullptr;
-    uint32_t fsr_width = 0u, fsr_height = 0u;
+    D3dFsr *fsr = nullptr;
     uint32_t anisotropy = 0u;    // RECOMP_D3D_ANISOTROPY: force anisotropic filtering, 2..16
     /* Temporal upscaler inputs (docs/motion-vectors.md). Camera motion comes
        from scene depth reprojected with the previous frame's camera. */
@@ -662,27 +313,7 @@ struct RecompD3dPresenter {
     bool has_previous_camera = false;
     bool scene_pending = false;    // 3D scene drawn since the last motion pass
     bool motion_done = false;
-    ID3D11VertexShader *motion_vs = nullptr;
-    ID3D11PixelShader *motion_ps = nullptr;
-    ID3D11PixelShader *motion_debug_ps = nullptr;
-    ID3D11BlendState *motion_debug_blend = nullptr;
-    ID3D11Buffer *motion_constants = nullptr;
-    ID3D11RenderTargetView *motion_target = nullptr; // R16G16_FLOAT, render pixels
-    ID3D11ShaderResourceView *motion_view = nullptr;
-    /* Object vectors: scene draws write rg = pixels moved, b = depth, a = 1
-       here; the motion pass keeps them where that surface is still visible. */
-    ID3D11RenderTargetView *object_motion_target = nullptr; // R16G16B16A16_FLOAT, scene size
-    ID3D11ShaderResourceView *object_motion_view = nullptr;
-    struct ObjectHistory {
-        float world[4][16];
-        float view_projection[16];
-        uint32_t matrices;
-    };
-    /* Keyed by mesh. A mesh drawn several times (foliage) matches each copy to
-       last frame's nearest by world position: draw order changes as the game
-       sorts by distance, so order alone pairs the wrong copies. */
-    std::unordered_map<uint64_t, std::vector<ObjectHistory>> objects_previous, objects_current;
-    size_t objects_recorded = 0u;
+    D3dMotion *motion = nullptr;  // d3d_motion.h, while motion_requested
     /* RECOMP_D3D_DLSS (docs/dlss.md): the 3D scene renders into a smaller
        target set, DLSS reconstructs it into the full-size set, and the HUD
        draws there. The fields above always name the set in use; `other`
@@ -700,17 +331,8 @@ struct RecompD3dPresenter {
     bool scene_phase = false;      // drawing the 3D scene into the DLSS input set
     bool dlss_reset = true;
     uint32_t dlss_render_width = 0u, dlss_render_height = 0u;
-    HMODULE dlss_module = nullptr;
-    DlssBridgeEvaluate dlss_evaluate = nullptr;
-    DlssBridgeShutdown dlss_shutdown = nullptr;
-    DlssBridgeError dlss_error = nullptr;
+    D3dDlss *dlss = nullptr;
     ID3D11ShaderResourceView *scene_color = nullptr;  // scene-set colour, for the fallback copy
-    ID3D11Texture2D *dlss_output = nullptr;           // full-size RGBA8 with unordered access
-    ID3D11ShaderResourceView *dlss_output_view = nullptr;
-    ID3D11VertexShader *dlss_copy_vs = nullptr;
-    ID3D11PixelShader *dlss_copy_ps = nullptr;
-    ID3D11SamplerState *dlss_sampler = nullptr;
-    double dlss_last_ms = 0.0;
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -1031,24 +653,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->vrr_vs);
     releaseCom(presenter->vrr_ps);
     releaseCom(presenter->vrr_sampler);
-    releaseCom(presenter->fsr_vs);
-    releaseCom(presenter->fsr_easu);
-    releaseCom(presenter->fsr_rcas);
-    releaseCom(presenter->fsr_constants);
-    releaseCom(presenter->fsr_target);
-    releaseCom(presenter->fsr_source);
-    presenter->fsr_width = presenter->fsr_height = 0u;
-    releaseCom(presenter->motion_vs);
-    releaseCom(presenter->motion_ps);
-    releaseCom(presenter->motion_debug_ps);
-    releaseCom(presenter->motion_debug_blend);
-    releaseCom(presenter->motion_constants);
-    releaseCom(presenter->motion_target);
-    releaseCom(presenter->motion_view);
-    releaseCom(presenter->object_motion_target);
-    releaseCom(presenter->object_motion_view);
-    presenter->objects_previous.clear();
-    presenter->objects_current.clear();
+    d3d_fsr_destroy(presenter->fsr);
+    presenter->fsr = nullptr;
+    d3d_motion_destroy(presenter->motion);
+    presenter->motion = nullptr;
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -1184,8 +792,6 @@ void releasePresenter(RecompD3dPresenter *presenter)
         UnregisterClassW(kWindowClassName, presenter->instance);
         presenter->owns_window_class = false;
     }
-    if (presenter->dlss_module != nullptr) FreeLibrary(presenter->dlss_module);
-    presenter->dlss_module = nullptr;
 }
 
 bool registerWindowClass(RecompD3dPresenter *presenter);
@@ -1233,6 +839,7 @@ bool registerWindowClass(RecompD3dPresenter *presenter)
     window_class.hInstance = presenter->instance;
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
     window_class.hIcon = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
         IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
     window_class.hIconSm = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
@@ -1249,7 +856,6 @@ bool createWindow(RecompD3dPresenter *presenter)
     /* Screen metrics and the borderless window must be physical pixels; a
        DPI-virtualized window is downsampled and then stretched by DWM. */
     if (presenter->scale > 1.0f) SetProcessDPIAware();
-    WNDCLASSEXW window_class{};
     const uint32_t client_width = presentClientWidth(presenter, windowHeight(presenter));
     RECT window_rect = {
         0,
@@ -1263,26 +869,7 @@ bool createWindow(RecompD3dPresenter *presenter)
     const DWORD style = borderless
         ? WS_POPUP : WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
 
-    presenter->instance = GetModuleHandleW(nullptr);
-    window_class.cbSize = sizeof window_class;
-    window_class.lpfnWndProc = presenterWindowProc;
-    window_class.hInstance = presenter->instance;
-    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
-    window_class.hIcon = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
-        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
-    window_class.hIconSm = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
-        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
-    window_class.lpszClassName = kWindowClassName;
-
-    const ATOM window_class_atom = RegisterClassExW(&window_class);
-    if (window_class_atom == 0u) {
-        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-            return false;
-        }
-    } else {
-        presenter->owns_window_class = true;
-    }
+    if (!registerWindowClass(presenter)) return false;
     if (!AdjustWindowRectEx(&window_rect, style, FALSE, 0u)) {
         return false;
     }
@@ -1456,85 +1043,6 @@ HRESULT createMainDepth(RecompD3dPresenter *presenter)
     return result;
 }
 
-struct FsrConstants {
-    uint32_t con[4][4];
-    int32_t origin[2];  // output pixel of the pass's first texel
-    int32_t limit[2];   // RCAS source size minus one, for edge clamping
-};
-
-/* FSR 1.0 needs Gather (feature level 11_0). EASU and RCAS share one source:
-   the input callbacks the FFX headers declare are defined between them. */
-void createFsr(RecompD3dPresenter *presenter)
-{
-#ifdef RECOMP_FSR1
-    if (presenter->device->GetFeatureLevel() < D3D_FEATURE_LEVEL_11_0) {
-        std::fprintf(stderr, "recomp d3d presenter: fsr needs feature level 11_0; using bilinear\n");
-        return;
-    }
-    std::string source = "#define A_GPU 1\n#define A_HLSL 1\n";
-    source.append(kFfxASource, sizeof kFfxASource);
-    source +=
-        "\nTexture2D<float4> pixels : register(t0);\n"
-        "SamplerState bilinear : register(s0);\n"
-        "cbuffer Fsr : register(b0) { uint4 con0, con1, con2, con3; int2 origin, limit; };\n"
-        "#define FSR_EASU_F 1\n#define FSR_RCAS_F 1\n"
-        "AF4 FsrEasuRF(AF2 p) { return pixels.GatherRed(bilinear, p); }\n"
-        "AF4 FsrEasuGF(AF2 p) { return pixels.GatherGreen(bilinear, p); }\n"
-        "AF4 FsrEasuBF(AF2 p) { return pixels.GatherBlue(bilinear, p); }\n"
-        "AF4 FsrRcasLoadF(ASU2 p) { return pixels.Load(int3(clamp(p, int2(0, 0), limit), 0)); }\n"
-        "void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}\n";
-    source.append(kFfxFsr1Source, sizeof kFfxFsr1Source);
-    source +=
-        "\nfloat4 vs(uint id : SV_VertexID) : SV_Position {\n"
-        " float2 uv = float2((id << 1) & 2, id & 2);\n"
-        " return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }\n"
-        "float4 easu(float4 p : SV_Position) : SV_Target {\n"
-        " AF3 c; FsrEasuF(c, AU2(int2(p.xy) - origin), con0, con1, con2, con3); return float4(c, 1); }\n"
-        "float4 rcas(float4 p : SV_Position) : SV_Target {\n"
-        " AF1 r, g, b; FsrRcasF(r, g, b, AU2(int2(p.xy) - origin), con0); return float4(r, g, b, 1); }\n";
-    auto *device = presenter->device;
-    ID3DBlob *code[3]{}, *errors = nullptr;
-    const char *entries[3] = {"vs", "easu", "rcas"};
-    const char *profiles[3] = {"vs_5_0", "ps_5_0", "ps_5_0"};
-    HRESULT result = S_OK;
-    for (int i = 0; i < 3 && SUCCEEDED(result); ++i) {
-        result = D3DCompile(source.data(), source.size(), "fsr1.hlsl", nullptr, nullptr,
-            entries[i], profiles[i], D3DCOMPILE_OPTIMIZATION_LEVEL3, 0u, &code[i], &errors);
-        if (FAILED(result) && errors != nullptr) {
-            std::fprintf(stderr, "recomp d3d presenter: fsr %s: %.*s\n", entries[i],
-                static_cast<int>(errors->GetBufferSize()),
-                static_cast<const char *>(errors->GetBufferPointer()));
-        }
-        releaseCom(errors);
-    }
-    if (SUCCEEDED(result)) result = device->CreateVertexShader(
-        code[0]->GetBufferPointer(), code[0]->GetBufferSize(), nullptr, &presenter->fsr_vs);
-    if (SUCCEEDED(result)) result = device->CreatePixelShader(
-        code[1]->GetBufferPointer(), code[1]->GetBufferSize(), nullptr, &presenter->fsr_easu);
-    if (SUCCEEDED(result)) result = device->CreatePixelShader(
-        code[2]->GetBufferPointer(), code[2]->GetBufferSize(), nullptr, &presenter->fsr_rcas);
-    for (auto *blob : code) releaseCom(blob);
-    D3D11_BUFFER_DESC buffer{};
-    buffer.ByteWidth = sizeof(FsrConstants);
-    buffer.Usage = D3D11_USAGE_DEFAULT;
-    buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    if (SUCCEEDED(result)) result = device->CreateBuffer(&buffer, nullptr, &presenter->fsr_constants);
-    if (FAILED(result)) {
-        std::fprintf(stderr, "recomp d3d presenter: fsr unavailable hr=0x%08lX; using bilinear\n",
-            static_cast<unsigned long>(result));
-        releaseCom(presenter->fsr_vs);
-        releaseCom(presenter->fsr_easu);
-        releaseCom(presenter->fsr_rcas);
-        releaseCom(presenter->fsr_constants);
-        return;
-    }
-    std::fprintf(stderr, "recomp d3d presenter: fsr 1.0 on, sharpness %.2f\n", presenter->fsr_sharpness);
-#else
-    (void)presenter;
-    std::fprintf(stderr, "recomp d3d presenter: fsr not built into this runner; using bilinear\n");
-#endif
-}
-
 /* After a window resize: the back buffer view is the only swap chain
    reference held between frames. A minimized window keeps its old buffers. */
 bool resizeSwapChain(RecompD3dPresenter *presenter)
@@ -1598,75 +1106,8 @@ void scaleOutput(RecompD3dPresenter *presenter)
     }
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
-#ifdef RECOMP_FSR1
-    // The source is the full-size output, whichever main target set is bound.
-    uint32_t source_width = 0u, source_height = 0u;
-    {
-        ID3D11Resource *resource = nullptr;
-        presenter->vrr_source->GetResource(&resource);
-        D3D11_TEXTURE2D_DESC desc{};
-        static_cast<ID3D11Texture2D *>(resource)->GetDesc(&desc);
-        releaseCom(resource);
-        source_width = desc.Width;
-        source_height = desc.Height;
-    }
-    if (presenter->fsr_easu != nullptr && width >= source_width && height >= source_height &&
-        (width > source_width || height > source_height)) {
-        if (presenter->fsr_width != width || presenter->fsr_height != height) {
-            releaseCom(presenter->fsr_target);
-            releaseCom(presenter->fsr_source);
-            presenter->fsr_width = presenter->fsr_height = 0u;
-            D3D11_TEXTURE2D_DESC desc{};
-            desc.Width = width;
-            desc.Height = height;
-            desc.MipLevels = desc.ArraySize = 1u;
-            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            desc.SampleDesc.Count = 1u;
-            desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-            ID3D11Texture2D *texture = nullptr;
-            if (SUCCEEDED(presenter->device->CreateTexture2D(&desc, nullptr, &texture)) &&
-                SUCCEEDED(presenter->device->CreateRenderTargetView(texture, nullptr, &presenter->fsr_target)) &&
-                SUCCEEDED(presenter->device->CreateShaderResourceView(texture, nullptr, &presenter->fsr_source))) {
-                presenter->fsr_width = width;
-                presenter->fsr_height = height;
-            }
-            releaseCom(texture);
-        }
-        if (presenter->fsr_width != 0u) {
-            FsrConstants constants{};
-            FsrEasuCon(constants.con[0], constants.con[1], constants.con[2], constants.con[3],
-                static_cast<AF1>(source_width), static_cast<AF1>(source_height),
-                static_cast<AF1>(source_width), static_cast<AF1>(source_height),
-                static_cast<AF1>(width), static_cast<AF1>(height));
-            context->UpdateSubresource(presenter->fsr_constants, 0u, nullptr, &constants, 0u, 0u);
-            const D3D11_VIEWPORT easu_viewport = {0.0f, 0.0f,
-                static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
-            context->RSSetViewports(1u, &easu_viewport);
-            context->OMSetRenderTargets(1u, &presenter->fsr_target, nullptr);
-            context->VSSetShader(presenter->fsr_vs, nullptr, 0u);
-            context->PSSetShader(presenter->fsr_easu, nullptr, 0u);
-            context->PSSetConstantBuffers(0u, 1u, &presenter->fsr_constants);
-            context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
-            context->Draw(3u, 0u);
-            // UI sharpness 1 is RCAS's maximum (0 stops); 0 is two stops softer.
-            FsrRcasCon(constants.con[0], 2.0f * (1.0f - presenter->fsr_sharpness));
-            constants.origin[0] = left;
-            constants.origin[1] = top;
-            constants.limit[0] = static_cast<int32_t>(width) - 1;
-            constants.limit[1] = static_cast<int32_t>(height) - 1;
-            context->UpdateSubresource(presenter->fsr_constants, 0u, nullptr, &constants, 0u, 0u);
-            ID3D11ShaderResourceView *none = nullptr;
-            context->PSSetShaderResources(0u, 1u, &none);
-            context->RSSetViewports(1u, &viewport);
-            context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
-            context->PSSetShader(presenter->fsr_rcas, nullptr, 0u);
-            context->PSSetShaderResources(0u, 1u, &presenter->fsr_source);
-            context->Draw(3u, 0u);
-            context->ClearState();
-            return;
-        }
-    }
-#endif
+    if (d3d_fsr_scale(presenter->fsr, context, presenter->vrr_source, presenter->present_target_view, viewport))
+        return;
     context->RSSetViewports(1u, &viewport);
     context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
     context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
@@ -1674,63 +1115,6 @@ void scaleOutput(RecompD3dPresenter *presenter)
     context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
     context->Draw(3u, 0u);
     context->ClearState();
-}
-
-struct MotionConstants {
-    float inverse_camera[16];   // this frame's unjittered clip space to world
-    float previous_camera[16];  // world to the previous frame's clip space
-    float jitter[2];            // clip-space jitter baked into this frame's depth
-    float size[2];              // render target pixels
-};
-
-// Row-vector product a * b, as the draw transforms compose.
-void multiply4x4(const float a[16], const float b[16], float result[16])
-{
-    for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c) {
-            float sum = 0.0f;
-            for (int k = 0; k < 4; ++k) sum += a[r * 4 + k] * b[k * 4 + c];
-            result[r * 4 + c] = sum;
-        }
-}
-
-// Gauss-Jordan with partial pivoting; false for a singular or non-finite matrix.
-bool invert4x4(const float source[16], float result[16])
-{
-    double m[4][8];
-    for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 8; ++c) m[r][c] = c < 4 ? source[r * 4 + c] : (c - 4 == r ? 1.0 : 0.0);
-    for (int c = 0; c < 4; ++c) {
-        int pivot = c;
-        for (int r = c + 1; r < 4; ++r) if (std::fabs(m[r][c]) > std::fabs(m[pivot][c])) pivot = r;
-        if (!(std::fabs(m[pivot][c]) > 1e-12)) return false;
-        if (pivot != c) for (int k = 0; k < 8; ++k) std::swap(m[c][k], m[pivot][k]);
-        const double scale = 1.0 / m[c][c];
-        for (int k = 0; k < 8; ++k) m[c][k] *= scale;
-        for (int r = 0; r < 4; ++r) {
-            if (r == c) continue;
-            const double factor = m[r][c];
-            for (int k = 0; k < 8; ++k) m[r][k] -= factor * m[c][k];
-        }
-    }
-    for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c) {
-            result[r * 4 + c] = static_cast<float>(m[r][c + 4]);
-            if (!std::isfinite(result[r * 4 + c])) return false;
-        }
-    return true;
-}
-
-// Halton low-discrepancy sequence, the jitter pattern temporal upscalers expect.
-float halton(uint32_t index, uint32_t base)
-{
-    float fraction = 1.0f, result = 0.0f;
-    while (index > 0u) {
-        fraction /= static_cast<float>(base);
-        result += fraction * static_cast<float>(index % base);
-        index /= base;
-    }
-    return result;
 }
 
 void setFrameJitter(RecompD3dPresenter *presenter)
@@ -1747,199 +1131,57 @@ void setFrameJitter(RecompD3dPresenter *presenter)
         return std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
     }();
     const uint32_t phase = presenter->jitter_index % presenter->jitter_phases + 1u;
-    presenter->jitter_pixels[0] = (halton(phase, 2u) - 0.5f) * exaggerate;
-    presenter->jitter_pixels[1] = (halton(phase, 3u) - 0.5f) * exaggerate;
+    presenter->jitter_pixels[0] = (d3d_motion_halton(phase, 2u) - 0.5f) * exaggerate;
+    presenter->jitter_pixels[1] = (d3d_motion_halton(phase, 3u) - 0.5f) * exaggerate;
     presenter->jitter[0] = presenter->jitter_pixels[0] * 2.0f / static_cast<float>(sceneWidth(presenter));
     presenter->jitter[1] = -presenter->jitter_pixels[1] * 2.0f / static_cast<float>(sceneHeight(presenter));
 }
 
-/* Motion vectors in render pixels, current to previous position (the DLSS
-   convention). Depth reprojection covers the camera's motion; objects moving
-   on their own read as still until per-object vectors exist. */
-HRESULT createMotion(RecompD3dPresenter *presenter)
+// Motion vectors at the 3D scene's size, which createDlss has already set.
+void createMotion(RecompD3dPresenter *presenter)
 {
-    if (!presenter->motion_requested) return S_OK;
+    if (!presenter->motion_requested) return;
     if (presenter->depth_sample == nullptr) {
         std::fprintf(stderr, "recomp motion: readable depth unavailable; disabled\n");
+    } else {
+        // Object vectors share SV_Target1 with the G-buffer and need single-sampled targets.
+        presenter->motion = d3d_motion_create(presenter->device, presenter->context,
+            sceneWidth(presenter), sceneHeight(presenter), presenter->msaa > 1u,
+            !presenter->gbuffer.enabled && presenter->msaa == 1u);
+    }
+    if (presenter->motion == nullptr) {
         presenter->motion_requested = presenter->motion_debug = presenter->jitter_enabled = false;
-        return S_OK;
+        return;
     }
-    const bool multisampled = presenter->msaa > 1u;
-    std::string source = multisampled
-        ? "Texture2DMS<float> scene_depth : register(t0);\n"
-          "float loadDepth(int2 p) { return scene_depth.Load(p, 0); }\n"
-        : "Texture2D<float> scene_depth : register(t0);\n"
-          "float loadDepth(int2 p) { return scene_depth.Load(int3(p, 0)); }\n";
-    source +=
-        "Texture2D<float2> motion : register(t1);\n"
-        "Texture2D<float4> object_motion : register(t2);\n"
-        "cbuffer Motion : register(b0) {\n"
-        "    row_major float4x4 inverse_camera;\n"
-        "    row_major float4x4 previous_camera;\n"
-        "    float2 jitter;\n"
-        "    float2 size;\n"
-        "};\n"
-        "float4 vs(uint id : SV_VertexID) : SV_Position {\n"
-        "    float2 uv = float2((id << 1) & 2, id & 2);\n"
-        "    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }\n"
-        "float2 reproject(float4 p : SV_Position) : SV_Target {\n"
-        "    float depth = loadDepth(int2(p.xy));\n"
-        // An object's own vector, if it is still the surface the depth buffer kept.
-        "    float4 object = object_motion.Load(int3(p.xy, 0));\n"
-        "    if (object.a > 0.5 && abs(object.b - depth) < 2e-5) return object.rg;\n"
-        "    float2 ndc = p.xy / size * float2(2, -2) + float2(-1, 1) - jitter;\n"
-        "    float4 world = mul(float4(ndc, depth, 1), inverse_camera);\n"
-        "    float4 previous = mul(world / world.w, previous_camera);\n"
-        "    if (!(previous.w > 0)) return float2(0, 0);\n"
-        "    float2 delta = (previous.xy / previous.w - ndc) * float2(0.5, -0.5) * size;\n"
-        "    return all(isfinite(delta)) ? delta : float2(0, 0); }\n"
-        // Hue is the direction, brightness the length; 16 pixels saturates.
-        // size is the output's here; the vectors may be at the smaller DLSS input size.
-        "float4 debug(float4 p : SV_Position) : SV_Target {\n"
-        "    uint w, h; motion.GetDimensions(w, h);\n"
-        "    float2 v = motion.Load(int3(p.xy * float2(w, h) / size, 0));\n"
-        "    float length = saturate(sqrt(dot(v, v)) / 16);\n"
-        "    float hue = atan2(v.y, v.x) / 6.2831853 + 0.5;\n"
-        "    float3 rgb = saturate(abs(frac(hue + float3(0, 2, 1) / 3) * 6 - 3) - 1);\n"
-        "    return float4(lerp(float3(0.2, 0.2, 0.2), rgb, length), 0.8); }\n";
-    auto *device = presenter->device;
-    ID3DBlob *code[3]{}, *errors = nullptr;
-    const char *entries[3] = {"vs", "reproject", "debug"};
-    const char *profiles[3] = {"vs_4_1", "ps_4_1", "ps_4_1"};
-    HRESULT result = S_OK;
-    for (int i = 0; i < 3 && SUCCEEDED(result); ++i) {
-        result = D3DCompile(source.data(), source.size(), "motion.hlsl", nullptr, nullptr,
-            entries[i], profiles[i], 0u, 0u, &code[i], &errors);
-        if (FAILED(result) && errors != nullptr) {
-            std::fprintf(stderr, "recomp motion: %s: %.*s\n", entries[i],
-                static_cast<int>(errors->GetBufferSize()),
-                static_cast<const char *>(errors->GetBufferPointer()));
-        }
-        releaseCom(errors);
-    }
-    if (SUCCEEDED(result)) result = device->CreateVertexShader(
-        code[0]->GetBufferPointer(), code[0]->GetBufferSize(), nullptr, &presenter->motion_vs);
-    if (SUCCEEDED(result)) result = device->CreatePixelShader(
-        code[1]->GetBufferPointer(), code[1]->GetBufferSize(), nullptr, &presenter->motion_ps);
-    if (SUCCEEDED(result)) result = device->CreatePixelShader(
-        code[2]->GetBufferPointer(), code[2]->GetBufferSize(), nullptr, &presenter->motion_debug_ps);
-    for (auto *blob : code) releaseCom(blob);
-    D3D11_BUFFER_DESC buffer{};
-    buffer.ByteWidth = sizeof(MotionConstants);
-    buffer.Usage = D3D11_USAGE_DEFAULT;
-    buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    if (SUCCEEDED(result)) result = device->CreateBuffer(&buffer, nullptr, &presenter->motion_constants);
-    D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = sceneWidth(presenter);
-    desc.Height = sceneHeight(presenter);
-    desc.MipLevels = desc.ArraySize = 1u;
-    desc.Format = DXGI_FORMAT_R16G16_FLOAT;
-    desc.SampleDesc.Count = 1u;
-    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    ID3D11Texture2D *texture = nullptr;
-    if (SUCCEEDED(result)) result = device->CreateTexture2D(&desc, nullptr, &texture);
-    if (SUCCEEDED(result)) result = device->CreateRenderTargetView(texture, nullptr, &presenter->motion_target);
-    if (SUCCEEDED(result)) result = device->CreateShaderResourceView(texture, nullptr, &presenter->motion_view);
-    releaseCom(texture);
-    D3D11_BLEND_DESC blend{};
-    blend.RenderTarget[0].BlendEnable = TRUE;
-    blend.RenderTarget[0].SrcBlend = blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA;
-    blend.RenderTarget[0].DestBlend = blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-    blend.RenderTarget[0].BlendOp = blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-    blend.RenderTarget[0].RenderTargetWriteMask =
-        D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
-    if (SUCCEEDED(result)) result = device->CreateBlendState(&blend, &presenter->motion_debug_blend);
-    if (FAILED(result)) {
-        std::fprintf(stderr, "recomp motion: unavailable hr=0x%08lX\n", static_cast<unsigned long>(result));
-        presenter->motion_requested = presenter->motion_debug = presenter->jitter_enabled = false;
-        return S_OK;
-    }
-    // Object vectors share SV_Target1 with the G-buffer and need single-sampled targets.
-    if (!presenter->gbuffer.enabled && presenter->msaa == 1u) {
-        desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        ID3D11Texture2D *objects = nullptr;
-        if (SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &objects)) &&
-            SUCCEEDED(device->CreateRenderTargetView(objects, nullptr, &presenter->object_motion_target)) &&
-            SUCCEEDED(device->CreateShaderResourceView(objects, nullptr, &presenter->object_motion_view))) {
-            const float zero[4] = {};
-            presenter->context->ClearRenderTargetView(presenter->object_motion_target, zero);
-            object_motion_shaders = true;
-        } else {
-            releaseCom(presenter->object_motion_target);
-            releaseCom(presenter->object_motion_view);
-        }
-        releaseCom(objects);
-    }
+    const bool objects = d3d_motion_object_target(presenter->motion) != nullptr;
+    if (objects) object_motion_shaders = true;
     setFrameJitter(presenter);
-    std::fprintf(stderr, "recomp motion: camera%s vectors on%s%s\n",
-        presenter->object_motion_view != nullptr ? " and object" : "",
+    std::fprintf(stderr, "recomp motion: camera%s vectors on%s%s\n", objects ? " and object" : "",
         presenter->jitter_enabled ? ", jitter" : "", presenter->motion_debug ? ", debug view" : "");
-    return S_OK;
 }
 
 /* Once per frame, after the 3D scene and before its screen-space UI. A frame
    without a camera, or the first one, reports no motion. */
 void runMotionPass(RecompD3dPresenter *presenter)
 {
-    if (!presenter->motion_requested || presenter->motion_done || presenter->motion_target == nullptr) return;
+    if (presenter->motion == nullptr || presenter->motion_done) return;
     presenter->motion_done = true;
-    auto *context = presenter->context;
-    context->ClearState();
-    const float zero[4] = {};
-    MotionConstants constants{};
-    const float *previous = presenter->has_previous_camera ? presenter->previous_camera : presenter->camera;
-    if (!presenter->scene_pending || presenter->camera_weight == 0u ||
-        !invert4x4(presenter->camera, constants.inverse_camera)) {
-        context->ClearRenderTargetView(presenter->motion_target, zero);
-        return;
-    }
-    std::memcpy(constants.previous_camera, previous, sizeof constants.previous_camera);
-    constants.jitter[0] = presenter->jitter[0];
-    constants.jitter[1] = presenter->jitter[1];
-    constants.size[0] = static_cast<float>(sceneWidth(presenter));
-    constants.size[1] = static_cast<float>(sceneHeight(presenter));
-    context->UpdateSubresource(presenter->motion_constants, 0u, nullptr, &constants, 0u, 0u);
-    const D3D11_VIEWPORT viewport = {0.0f, 0.0f, constants.size[0], constants.size[1], 0.0f, 1.0f};
-    context->RSSetViewports(1u, &viewport);
-    context->OMSetRenderTargets(1u, &presenter->motion_target, nullptr);
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(presenter->motion_vs, nullptr, 0u);
-    context->PSSetShader(presenter->motion_ps, nullptr, 0u);
-    context->PSSetConstantBuffers(0u, 1u, &presenter->motion_constants);
-    ID3D11ShaderResourceView *views[3] = {presenter->depth_sample, nullptr, presenter->object_motion_view};
-    context->PSSetShaderResources(0u, 3u, views);
-    context->Draw(3u, 0u);
-    context->ClearState();
+    const bool camera = presenter->scene_pending && presenter->camera_weight != 0u;
+    d3d_motion_reproject(presenter->motion, presenter->context, presenter->depth_sample,
+        camera ? presenter->camera : nullptr,
+        presenter->has_previous_camera ? presenter->previous_camera : presenter->camera,
+        presenter->jitter);
 }
 
 // RECOMP_D3D_MOTION_DEBUG: blends the vectors over the frame's main-sized output.
 void drawMotionDebug(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
 {
-    if (!presenter->motion_debug || presenter->motion_view == nullptr) return;
-    auto *context = presenter->context;
-    context->ClearState();
-    const D3D11_VIEWPORT viewport = {0.0f, 0.0f, static_cast<float>(mainWidth(presenter)),
-        static_cast<float>(mainHeight(presenter)), 0.0f, 1.0f};
-    MotionConstants constants{};
-    constants.size[0] = viewport.Width;
-    constants.size[1] = viewport.Height;
-    context->UpdateSubresource(presenter->motion_constants, 0u, nullptr, &constants, 0u, 0u);
-    context->PSSetConstantBuffers(0u, 1u, &presenter->motion_constants);
-    context->RSSetViewports(1u, &viewport);
-    context->OMSetRenderTargets(1u, &output, nullptr);
-    context->OMSetBlendState(presenter->motion_debug_blend, nullptr, 0xffffffffu);
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(presenter->motion_vs, nullptr, 0u);
-    context->PSSetShader(presenter->motion_debug_ps, nullptr, 0u);
-    ID3D11ShaderResourceView *views[2] = {nullptr, presenter->motion_view};
-    context->PSSetShaderResources(0u, 2u, views);
-    context->Draw(3u, 0u);
-    context->ClearState();
+    if (!presenter->motion_debug || presenter->motion == nullptr) return;
+    d3d_motion_draw_debug(presenter->motion, presenter->context, output,
+        mainWidth(presenter), mainHeight(presenter));
 }
 
-double steadyMs();
-
-// Exchanges the main target set in use with `other` (scene input <-> full size).
+// Exchanges the main target set in use with the other one (scene input <-> full size).
 void swapMainTargets(RecompD3dPresenter *presenter)
 {
     auto &other = presenter->other;
@@ -1963,58 +1205,27 @@ void releaseDlss(RecompD3dPresenter *presenter)
     releaseCom(other.back_copy);
     releaseCom(other.back_sample);
     releaseCom(presenter->scene_color);
-    releaseCom(presenter->dlss_output);
-    releaseCom(presenter->dlss_output_view);
-    releaseCom(presenter->dlss_copy_vs);
-    releaseCom(presenter->dlss_copy_ps);
-    releaseCom(presenter->dlss_sampler);
-    if (presenter->dlss_shutdown != nullptr) presenter->dlss_shutdown();
-    presenter->dlss_evaluate = nullptr;
-    presenter->dlss_shutdown = nullptr;
+    d3d_dlss_destroy(presenter->dlss);
+    presenter->dlss = nullptr;
     presenter->dlss_active = false;
 }
 
-/* Loads dlss_bridge.dll beside the runner and builds the scene input set at
-   DLSS's optimal size for the chosen mode. Any failure leaves DLSS off and the
-   frame renders at full size, with the effects DLSS replaced (MSAA, SMAA, RTGI,
-   the G-buffer) still off. Called after the full-size main set exists. */
+/* Loads the DLSS bridge and builds the scene input set at DLSS's optimal size
+   for the chosen mode. Any failure leaves DLSS off and the frame renders at
+   full size, with the effects DLSS replaced (MSAA, SMAA, RTGI, the G-buffer)
+   still off. Called after the full-size main set exists. */
 void createDlss(RecompD3dPresenter *presenter)
 {
     if (presenter->dlss_mode < 0) return;
-    const auto off = [presenter](const char *why) {
-        std::fprintf(stderr, "recomp dlss: %s; off\n", why);
-        releaseDlss(presenter);
-        presenter->dlss_mode = -1;
-    };
-    if (presenter->dlss_module == nullptr) presenter->dlss_module = LoadLibraryW(L"dlss_bridge.dll");
-    if (presenter->dlss_module == nullptr) return off("dlss_bridge.dll not found beside the runner");
-    const auto symbol = [presenter](const char *name) {
-        return reinterpret_cast<void *>(GetProcAddress(presenter->dlss_module, name));
-    };
-    const auto init = reinterpret_cast<DlssBridgeInit>(symbol("dlss_bridge_init"));
-    const auto render_size = reinterpret_cast<DlssBridgeRenderSize>(symbol("dlss_bridge_render_size"));
-    const auto create = reinterpret_cast<DlssBridgeCreate>(symbol("dlss_bridge_create"));
-    presenter->dlss_evaluate = reinterpret_cast<DlssBridgeEvaluate>(symbol("dlss_bridge_evaluate"));
-    presenter->dlss_error = reinterpret_cast<DlssBridgeError>(symbol("dlss_bridge_error"));
-    const auto shutdown = reinterpret_cast<DlssBridgeShutdown>(symbol("dlss_bridge_shutdown"));
-    if (!init || !render_size || !create || !presenter->dlss_evaluate || !presenter->dlss_error || !shutdown)
-        return off("dlss_bridge.dll is incomplete");
-    wchar_t directory[MAX_PATH] = L".";
-    const DWORD length = GetModuleFileNameW(nullptr, directory, MAX_PATH);
-    if (length != 0u && length < MAX_PATH) {
-        wchar_t *slash = std::wcsrchr(directory, L'\\');
-        if (slash != nullptr) *slash = L'\0';
-    }
-    if (!init(presenter->device, directory)) return off(presenter->dlss_error());
-    presenter->dlss_shutdown = shutdown;
-
     const uint32_t output_width = mainWidth(presenter), output_height = mainHeight(presenter);
-    unsigned render_width = output_width, render_height = output_height;
-    if (presenter->dlss_mode != DLSS_BRIDGE_DLAA &&
-        !render_size(output_width, output_height, presenter->dlss_mode, &render_width, &render_height))
-        return off(presenter->dlss_error());
-
+    uint32_t render_width = 0u, render_height = 0u;
     auto *device = presenter->device;
+    presenter->dlss = d3d_dlss_create(device, presenter->context, presenter->dlss_mode,
+        output_width, output_height, &render_width, &render_height);
+    if (presenter->dlss == nullptr) {
+        presenter->dlss_mode = -1;
+        return;
+    }
     auto &other = presenter->other;
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = render_width;
@@ -2040,39 +1251,12 @@ void createDlss(RecompD3dPresenter *presenter)
     sample_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     sample_desc.Texture2D.MipLevels = 1u;
     if (SUCCEEDED(result)) result = device->CreateShaderResourceView(other.depth_texture, &sample_desc, &other.depth_sample);
-    desc.Width = output_width;
-    desc.Height = output_height;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-    if (SUCCEEDED(result)) result = device->CreateTexture2D(&desc, nullptr, &presenter->dlss_output);
-    if (SUCCEEDED(result)) result = device->CreateShaderResourceView(presenter->dlss_output, nullptr, &presenter->dlss_output_view);
-    static const char shader[] =
-        "Texture2D pixels : register(t0);\n"
-        "SamplerState bilinear : register(s0);\n"
-        "float4 vs(uint id : SV_VertexID, out float2 uv : TEXCOORD0) : SV_Position {\n"
-        " uv = float2((id << 1) & 2, id & 2);\n"
-        " return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }\n"
-        "float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
-        " return float4(pixels.SampleLevel(bilinear, uv, 0).rgb, 1); }\n";
-    ID3DBlob *vertex = nullptr, *pixel = nullptr;
-    if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr, nullptr, nullptr,
-        "vs", "vs_4_0", 0u, 0u, &vertex, nullptr);
-    if (SUCCEEDED(result)) result = D3DCompile(shader, sizeof shader - 1u, nullptr, nullptr, nullptr,
-        "ps", "ps_4_0", 0u, 0u, &pixel, nullptr);
-    if (SUCCEEDED(result)) result = device->CreateVertexShader(
-        vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &presenter->dlss_copy_vs);
-    if (SUCCEEDED(result)) result = device->CreatePixelShader(
-        pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr, &presenter->dlss_copy_ps);
-    releaseCom(vertex);
-    releaseCom(pixel);
-    D3D11_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampler.MaxLOD = D3D11_FLOAT32_MAX;
-    if (SUCCEEDED(result)) result = device->CreateSamplerState(&sampler, &presenter->dlss_sampler);
-    if (FAILED(result)) return off("could not create its targets");
-    if (!create(presenter->context, render_width, render_height, output_width, output_height, presenter->dlss_mode))
-        return off(presenter->dlss_error());
+    if (FAILED(result)) {
+        std::fprintf(stderr, "recomp dlss: could not create its targets; off\n");
+        releaseDlss(presenter);
+        presenter->dlss_mode = -1;
+        return;
+    }
 
     presenter->dlss_render_width = render_width;
     presenter->dlss_render_height = render_height;
@@ -2089,55 +1273,32 @@ void createDlss(RecompD3dPresenter *presenter)
 }
 
 /* Ends the frame's 3D scene: motion vectors, then DLSS reconstructs the scene
-   into the full-size set, which the HUD and the output pass use. A failed
-   evaluation scales the scene bilinearly instead, so the frame still shows. */
+   into the full-size set, which the HUD and the output pass use. */
 void finishScene(RecompD3dPresenter *presenter)
 {
     runMotionPass(presenter);
     if (!presenter->dlss_active || !presenter->scene_phase) return;
-    auto *context = presenter->context;
-    context->ClearState();
     ID3D11Resource *color = nullptr, *motion = nullptr;
     presenter->render_target_view->GetResource(&color);
-    presenter->motion_target->GetResource(&motion);
-    const double now = steadyMs();
+    d3d_motion_target(presenter->motion)->GetResource(&motion);
     DlssBridgeFrame frame{};
     frame.color = color;
     frame.depth = presenter->depth_texture;
     frame.motion = motion;
-    frame.output = presenter->dlss_output;
     frame.jitter_x = presenter->jitter_pixels[0];
     frame.jitter_y = presenter->jitter_pixels[1];
     frame.render_width = presenter->dlss_render_width;
     frame.render_height = presenter->dlss_render_height;
     frame.reset = presenter->dlss_reset || !presenter->has_previous_camera ? 1 : 0;
-    frame.frame_ms = presenter->dlss_last_ms != 0.0 ? static_cast<float>(now - presenter->dlss_last_ms) : 16.7f;
-    presenter->dlss_last_ms = now;
-    const bool upscaled = presenter->dlss_evaluate(context, &frame) != 0;
+    swapMainTargets(presenter);
+    d3d_dlss_resolve(presenter->dlss, presenter->context, frame, presenter->scene_color,
+        presenter->render_target_view);
     releaseCom(color);
     releaseCom(motion);
-    static bool reported = false;
-    if (!upscaled && !reported) {
-        reported = true;
-        std::fprintf(stderr, "recomp dlss: %s; scaling the scene bilinearly\n", presenter->dlss_error());
-    }
     presenter->dlss_reset = false;
-    context->ClearState();
-    swapMainTargets(presenter);
-    const D3D11_VIEWPORT viewport = {0.0f, 0.0f, static_cast<float>(mainWidth(presenter)),
-        static_cast<float>(mainHeight(presenter)), 0.0f, 1.0f};
-    context->RSSetViewports(1u, &viewport);
-    context->OMSetRenderTargets(1u, &presenter->render_target_view, nullptr);
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(presenter->dlss_copy_vs, nullptr, 0u);
-    context->PSSetShader(presenter->dlss_copy_ps, nullptr, 0u);
-    context->PSSetSamplers(0u, 1u, &presenter->dlss_sampler);
-    ID3D11ShaderResourceView *source = upscaled ? presenter->dlss_output_view : presenter->scene_color;
-    context->PSSetShaderResources(0u, 1u, &source);
-    context->Draw(3u, 0u);
     // The HUD draws over the reconstructed scene with no scene depth left.
-    context->ClearDepthStencilView(presenter->depth_view, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0u);
-    context->ClearState();
+    presenter->context->ClearDepthStencilView(presenter->depth_view,
+        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0u);
 }
 
 // After a present: this frame's camera becomes the previous one and the jitter advances.
@@ -2151,16 +1312,11 @@ void endMotionFrame(RecompD3dPresenter *presenter)
     }
     presenter->camera_weight = 0u;
     presenter->scene_pending = presenter->motion_done = false;
-    if (presenter->object_motion_target != nullptr) {
-        std::swap(presenter->objects_previous, presenter->objects_current);
-        presenter->objects_current.clear();
-        presenter->objects_recorded = 0u;
-        const float zero[4] = {};
-        presenter->context->ClearRenderTargetView(presenter->object_motion_target, zero);
-    }
+    d3d_motion_end_frame(presenter->motion, presenter->context);
     ++presenter->jitter_index;
     setFrameJitter(presenter);
 }
+
 
 HRESULT createGraphics(RecompD3dPresenter *presenter)
 {
@@ -2275,7 +1431,8 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
             &sampler, &presenter->vrr_sampler);
         // FSR is optional: a failure here leaves the bilinear scale.
-        if (SUCCEEDED(result) && presenter->fsr_requested) createFsr(presenter);
+        if (SUCCEEDED(result) && presenter->fsr_requested)
+            presenter->fsr = d3d_fsr_create(presenter->device, presenter->fsr_sharpness);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -2288,7 +1445,7 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     createMotion(presenter);
     // DLSS reads the motion target every frame. Without it DLSS is off, and MSAA,
     // SMAA, RTGI and the G-buffer stay off as d3d11_backend_create set them.
-    if (presenter->dlss_active && (!presenter->motion_requested || presenter->motion_target == nullptr)) {
+    if (presenter->dlss_active && (!presenter->motion_requested || presenter->motion == nullptr)) {
         std::fprintf(stderr, "recomp dlss: motion vectors unavailable; off\n");
         releaseDlss(presenter);
         presenter->dlss_mode = -1;
@@ -2599,10 +1756,10 @@ RecompD3dPresenterError bindTarget(
         depth_view == presenter->depth_view) {
         ID3D11RenderTargetView *targets[] = {color_view, presenter->gbuffer.target};
         presenter->context->OMSetRenderTargets(2u, targets, depth_view);
-    } else if (presenter->object_motion_target != nullptr && !presenter->sun.casting &&
+    } else if (d3d_motion_object_target(presenter->motion) != nullptr && !presenter->sun.casting &&
         !target.offscreen && depth_view == presenter->depth_view &&
         (!presenter->dlss_active || presenter->scene_phase)) {
-        ID3D11RenderTargetView *targets[] = {color_view, presenter->object_motion_target};
+        ID3D11RenderTargetView *targets[] = {color_view, d3d_motion_object_target(presenter->motion)};
         presenter->context->OMSetRenderTargets(2u, targets, depth_view);
     } else {
         presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
@@ -2737,61 +1894,6 @@ bool pixelLightingEnabled()
     return enabled;
 }
 
-void replaceAll(std::string &text, const std::string &from, const std::string &to)
-{
-    for (size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size()))
-        text.replace(at, from.size(), to);
-}
-
-/* Object motion vectors (docs/motion-vectors.md). Fixed-function vertex
-   shaders also place the vertex with last frame's matrices; the pixel shader
-   writes the difference in pixels and its depth to SV_Target1 when
-   motion_flags.x is set. Vertex programs keep camera vectors.
-   Other variants (sun shadows, per-pixel lighting, vertex programs) edit the
-   same source first, so every anchor is checked before anything changes; a
-   source without them is left as it was and its draws keep camera vectors.
-   Edits run from the end of the source back, so earlier offsets stay valid. */
-void objectMotionShaderSource(std::string &source)
-{
-    constexpr size_t npos = std::string::npos;
-    const std::string fields = "struct VSOut {", output = "VSOut output;";
-    const std::string lit = "output.lit_specular=0;\n";
-    const std::string jitter = "    output.position.xy += taa_jitter.xy * output.position.w;\n";
-    const size_t fields_at = source.find(fields);
-    const size_t output_at = source.find(output);
-    const size_t pixel = source.find("float4 ps_main(");
-    const size_t signature_end = pixel == npos ? npos : source.find(") : SV_TARGET", pixel);
-    const size_t body = signature_end == npos ? npos : source.find('{', signature_end);
-    if (fields_at == npos || output_at == npos || body == npos ||
-        fields_at > output_at || output_at > pixel) return;
-
-    source.insert(body + 1, R"(
-    motion_output = 0;
-    if (motion_flags.x > 0.5f && input.motion_current.w > 0 && input.motion_previous.w > 0) {
-        float2 now = input.motion_current.xy / input.motion_current.w;
-        float2 before = input.motion_previous.xy / input.motion_previous.w;
-        motion_output = float4((before - now) * float2(0.5f, -0.5f) * motion_flags.zw, input.position.z, 1);
-    }
-)");
-    source.insert(signature_end, ", out float4 motion_output : SV_Target1");
-    // Fixed function: repeat the position code with last frame's matrices.
-    const size_t jitter_at = source.find(jitter, output_at);
-    const size_t lit_at = source.find(lit, output_at);
-    if (jitter_at != npos && jitter_at < pixel && lit_at != npos && lit_at < jitter_at) {
-        const size_t position_at = lit_at + lit.size();
-        std::string previous = source.substr(position_at, jitter_at - position_at);
-        replaceAll(previous, "wvp[", "previous_wvp[");
-        replaceAll(previous, "output.position", "motion_previous");
-        source.insert(jitter_at, "    output.motion_current = output.position;\n"
-            "    float4 motion_previous;\n" + previous +
-            "    output.motion_previous = motion_previous;\n");
-    }
-    source.insert(output_at + output.size(), " output.motion_current = 0; output.motion_previous = 0;");
-    // TEXCOORD9/10: the slots no other variant (pixel lighting, sun, G-buffer) uses.
-    source.insert(fields_at + fields.size(),
-        "\n    float4 motion_current : TEXCOORD9;\n    float4 motion_previous : TEXCOORD10;\n");
-}
-
 /* Builds the HLSL for one FVF, plus its vertex program when it has one. */
 bool drawShaderSource(
     uint32_t fvf,
@@ -2805,7 +1907,7 @@ bool drawShaderSource(
     }
 
     char source[12288];
-    buildDrawShaderSource(layout, source, sizeof source);
+    recomp_d3d_draw_shader_source(layout, source, sizeof source);
     compiled_source = source;
     const auto fields = compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {");
     compiled_source.insert(fields, "\n    float fog_depth : TEXCOORD6;\n"
@@ -2937,7 +2039,7 @@ bool drawShaderSource(
         compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
     }
     if (gbuffer) gbufferShaderSource(compiled_source, layout, pipeline.program_count != 0);
-    else if (object_motion_shaders) objectMotionShaderSource(compiled_source);
+    else if (object_motion_shaders) d3d_motion_shader_source(compiled_source);
     return true;
 }
 
@@ -4467,48 +3569,15 @@ RecompD3dPresenterError submitDraw(
             std::memcpy(presenter->camera, draw.view_projection, sizeof presenter->camera);
         }
     }
-    /* Object motion: last frame's draw of the same mesh, nearest in world
-       position, supplies its previous world and camera matrices. */
+    // Object motion: last frame's draw of the same mesh supplies its previous matrices.
     bool object_write = false;
-    if (scene_draw && presenter->object_motion_view != nullptr && !draw.program_count &&
-        draw.has_transform && draw.vertex_address != 0u && draw.blend_weight_count < 4u) {
-        const uint64_t mesh = (static_cast<uint64_t>(draw.vertex_address) << 32) ^
-            (static_cast<uint64_t>(draw.index_count) * 0x9E3779B1u) ^
-            (static_cast<uint64_t>(draw.vertex_count) << 12) ^ draw.fvf;
-        const uint32_t matrices = draw.blend_weight_count + 1u;
-        const RecompD3dPresenter::ObjectHistory *match = nullptr;
-        const auto previous = presenter->objects_previous.find(mesh);
-        if (previous != presenter->objects_previous.end()) {
-            float nearest = INFINITY;
-            for (const auto &candidate : previous->second) {
-                if (candidate.matrices != matrices) continue;
-                float distance = 0.0f;
-                for (int axis = 12; axis < 15; ++axis) {
-                    const float delta = candidate.world[0][axis] - draw.world[0][axis];
-                    distance += delta * delta;
-                }
-                if (distance < nearest) { nearest = distance; match = &candidate; }
-            }
-        }
-        if (match != nullptr) {
-            for (uint32_t i = 0u; i < matrices; ++i) {
-                multiply4x4(match->world[i], match->view_projection,
-                    draw_constants + kPreviousWvpConstant + 16u * i);
-            }
-            draw_constants[kMotionFlagsConstant] = 1.0f;
-            draw_constants[kMotionFlagsConstant + 2] = static_cast<float>(sceneWidth(presenter));
-            draw_constants[kMotionFlagsConstant + 3] = static_cast<float>(sceneHeight(presenter));
-            // Opaque surfaces only; blended ones would overwrite what shows through them.
-            object_write = draw.depth.depth_write_enable && !draw.blend.blend_enable;
-        }
-        if (presenter->objects_recorded < 16384u) {
-            ++presenter->objects_recorded;
-            RecompD3dPresenter::ObjectHistory history{};
-            std::memcpy(history.world, draw.world, sizeof(float) * 16u * matrices);
-            std::memcpy(history.view_projection, draw.view_projection, sizeof history.view_projection);
-            history.matrices = matrices;
-            presenter->objects_current[mesh].push_back(history);
-        }
+    if (scene_draw && presenter->motion != nullptr &&
+        d3d_motion_object(presenter->motion, draw, draw_constants + kPreviousWvpConstant)) {
+        draw_constants[kMotionFlagsConstant] = 1.0f;
+        draw_constants[kMotionFlagsConstant + 2] = static_cast<float>(sceneWidth(presenter));
+        draw_constants[kMotionFlagsConstant + 3] = static_cast<float>(sceneHeight(presenter));
+        // Opaque surfaces only; blended ones would overwrite what shows through them.
+        object_write = draw.depth.depth_write_enable && !draw.blend.blend_enable;
     }
 
     UINT index_offset = 0u;
