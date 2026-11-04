@@ -2,6 +2,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#include "input_text.h"
 #include "overlay_d3d11.h"
 #include "screenshot.h"
 #include "texture_replacement.h"
@@ -756,6 +757,7 @@ LRESULT CALLBACK presenterWindowProc(
         SetWindowLongPtrW(window, GWLP_USERDATA,
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
+    if (message == WM_CHAR) recomp_input_text_char(static_cast<uint32_t>(wparam));
     // Shift+F12 is the screenshot key (screenshot.h).
     if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30)) &&
         (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
@@ -4365,7 +4367,7 @@ RecompD3dPresenterError submitPresent(
         // the front buffer the game reads back has been copied.
         RecompOverlayText overlay;
         recomp_overlay_take(&overlay);
-        if (!recomp_overlay_empty(&overlay)) {
+        {
             ID3D11Texture2D *back_buffer = nullptr;
             presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
             if (back_buffer != nullptr) {

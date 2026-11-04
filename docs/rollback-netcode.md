@@ -4,9 +4,9 @@ Status: in progress. The rollback core from
 [doa2u-re](https://github.com/NoRain211/doa2u-re) (branch
 `codex/rollback-netcode`) is ported: input prediction, the snapshot ring,
 SyncTest, replays, the UDP transport, the matchmaker client and the shared
-matchmaker server. Two runners pair with `--netplay-host` and
-`--netplay-join` and play a Two Players Exhibition match over UDP with
-rollback; the in-game room and FIND MATCH menus are not wired in yet.
+matchmaker server. Players pair through the runner's online menu, or with
+`--netplay-host` and `--netplay-join`, and play a Two Players Exhibition
+match over UDP with rollback.
 
 Game addresses below come from static analysis of the verified USA
 executable in Ghidra unless a section says otherwise.
@@ -189,6 +189,45 @@ played the match to frame 3,000 with guest RAM identical at the end and
 every check matching. The router accepted the forward, and its removal at
 exit logged no error.
 
+## The online menu
+
+Pressing A on EXHIBITION in the game's main menu opens doa2u-re's menu
+(`netplay_menu.cpp`, `netplay_menu_room.cpp`, `netplay_menu_find.cpp`)
+over the game: LOCAL, HOST ONLINE, JOIN ONLINE, FIND MATCH and NETPLAY
+SETTINGS. LOCAL hands the game the A press, so Exhibition starts as before;
+B closes the menu. The menu opens while the main menu runs with its cursor
+on EXHIBITION (`0x9D9E0C` 1, `viewer_menu_adapter.c`) and list 0 is open.
+The rooms, chat, blocks, FIND MATCH, the shared matchmaker and
+`.recomp-storage/netplay.txt` work as in doa2u-re
+([matchmaking](https://github.com/NoRain211/doa2u-re/blob/codex/rollback-netcode/docs/matchmaking.md)).
+
+The menu draws with doa2u-re's quads and 5 x 7 font (`overlay_screen.c`).
+The game thread publishes each frame's quads, and the presenter's thread
+draws them with Dear ImGui into a 640 x 480 area centered on the window,
+in the same pass as the overlay text (`overlay_imgui_panel.cpp`). Typed
+characters come from the window's `WM_CHAR` (`input_text.c`); the SDL
+presenter does not feed them yet, so its address editor takes the pad only.
+
+When both players are ready, doa2u-re reboots the game in the same process.
+Here each runner starts again instead (`recomp_runner_relaunch`) with its
+own arguments plus `--netplay-host` or `--netplay-join` and the room
+socket's port, peer and matchmaker (`--netplay-room-socket`), so the path
+the routers opened and a relay stay in use. Resetting every adapter that
+keeps state between boots would be needed for an in-process reboot. The
+window closes and opens again. A session started from a room that ends
+(the other player left or went quiet, a desync, a failed lobby) starts the
+runner offline again with `--netplay-return`, and the menu opens by itself
+with the reason once the main menu has EXHIBITION chosen. The room is not
+reopened; the players host or join again.
+
+Two runners on one machine, each driven by an input script, went through
+the menu: the host opened a private room, the joiner joined it from its
+recent address, both pressed READY, and both runners started again into the
+session, walked to character select at frame 182 and played to frame 1,500
+with guest RAM identical at the end. Killing the joiner's session ended the
+host's after 15 s (`rollback:peer-timeout`), and the host's runner came
+back to the menu.
+
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display
@@ -208,6 +247,6 @@ exit logged no error.
   does, and link `musl_math` into the runner. This recipe already lifts
   RCPSS and RSQRTSS as exact division and square root, so they need no
   change. Moving the lifter pin needs a play test (AGENTS.md).
-- Replays, and the lobby, room and FIND MATCH menus with the overlay, as in
-  doa2u-re.
+- Replays, the session's network display, and reopening the room after a
+  session, as in doa2u-re.
 - Sessions over a lag relay.

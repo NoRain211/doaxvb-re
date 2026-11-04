@@ -88,9 +88,10 @@ if(WIN32 OR SDL3_FOUND)
         recomp_use_sdl3(recomp_imgui)
     endif()
 endif()
-# Adds the presenter's overlay drawer; the text model, overlay_text.c, is
-# added where the game side is.
+# Adds the presenter's overlay drawer and the screen queue it draws; the text
+# model, overlay_text.c, is added where the game side is.
 function(recomp_use_overlay target)
+    target_sources(${target} PRIVATE overlay_screen.c)
     if(WIN32)
         target_sources(${target} PRIVATE overlay_d3d11.cpp overlay_imgui_panel.cpp screenshot.c)
         # screenshot.c asks the shell for the Pictures folder.
@@ -746,6 +747,7 @@ if(RECOMP_PROGRAM_DIR)
         suit_switch.c
         suit_switch_adapter.c
         overlay_text.c
+        input_text.c
         unlock_swimsuits.c
         ui_log.c
         d3d_creation_model.c
@@ -819,6 +821,10 @@ if(RECOMP_PROGRAM_DIR)
         netplay_upnp.c
         netplay_game.c
         netplay_profile.cpp
+        netplay_settings.cpp
+        netplay_menu.cpp
+        netplay_menu_room.cpp
+        netplay_menu_find.cpp
         netplay_session.cpp
         "${_missing_source}"
         ${_recomp_program_sources}
@@ -912,7 +918,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_d3d11_test)
-    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
@@ -937,7 +943,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_thread_test)
-    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c

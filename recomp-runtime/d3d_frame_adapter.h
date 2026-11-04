@@ -19,6 +19,8 @@ void recomp_d3d_frame_adapter_initialize(
     const RecompD3dPresenterConfig *config,
     uint32_t device_address);
 void recomp_d3d_frame_adapter_reset(void);
+/* Runs once a Swap on the game's thread, after the frame is presented, when set. */
+extern void (*recomp_d3d_swap_hook)(void);
 /* Applies the normal host-window exit to any presenter operation. */
 void recomp_d3d_frame_adapter_exit_if_closed(RecompD3dPresenterError error);
 void recomp_d3d_frame_adapter_reset_buffers(void);

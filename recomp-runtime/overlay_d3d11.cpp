@@ -36,8 +36,8 @@ bool start(ID3D11Device *device, ID3D11DeviceContext *context, UINT height)
 void recomp_overlay_d3d11_draw(ID3D11Device *device, ID3D11DeviceContext *context,
     ID3D11RenderTargetView *target, UINT width, UINT height, const RecompOverlayText *text)
 {
-    if (device == nullptr || context == nullptr || target == nullptr ||
-        width == 0u || height == 0u || recomp_overlay_empty(text)) {
+    if (device == nullptr || context == nullptr || target == nullptr || width == 0u || height == 0u ||
+        (recomp_overlay_imgui_take_screen() == 0u && recomp_overlay_empty(text))) {
         return;
     }
     if (!start(device, context, height)) return;

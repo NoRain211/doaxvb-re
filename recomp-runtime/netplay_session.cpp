@@ -10,6 +10,7 @@
 #include "input_pulse_source.h"
 #include "netplay.h"
 #include "netplay_game.h"
+#include "netplay_menu.h"
 #include "netplay_profile.h"
 #include "rollback.h"
 #include "save_transaction.h"
@@ -48,6 +49,7 @@ struct RollbackRun {
     bool hidden = false;
     bool interrupted = false;
     bool walking = false; // the menus are walked to Two Players for both sides
+    bool fromRoom = false; // a room started this runner, so an ending session goes back to the menu
     std::uint32_t pass = 0u; // loop passes since boot
     std::uint32_t start = 0u, stop = UINT32_MAX, lag = 4u, delay = 0u, player = 0u;
     std::uint32_t frontier = 0u; // first session frame never run
@@ -108,10 +110,18 @@ static void receivePads()
     }
 }
 
+static void restoreSettings();
+
+/* Sessions from the command line stop with exit code 4; a room's session
+   starts the runner again offline, back on the online menu. */
 static void endSession(const char *reason)
 {
     if (rollback.mode == RollbackMode::Udp) recomp_netplay_send_goodbye(&rollback.net);
-    recomp_stop(4, "%s", reason);
+    if (!rollback.fromRoom) recomp_stop(4, "%s", reason);
+    std::fprintf(stderr, "recomp netplay: session ended (%s); back to the online menu\n", reason);
+    recomp_netplay_close(&rollback.net);
+    restoreSettings();
+    recomp_runner_relaunch({"--netplay-return", reason});
 }
 
 /* A stalled session ends after its grace: 15 s once the other player has
@@ -122,7 +132,7 @@ static void stalled(std::chrono::steady_clock::time_point began)
     using namespace std::chrono;
     if (rollback.net.peer_left) {
         std::fprintf(stderr, "recomp netplay: the other player left at frame %u\n", rollback.session.frame);
-        recomp_stop(4, "rollback:peer-left");
+        endSession("rollback:peer-left");
     }
     const bool heard = rollback.net.peer_seen;
     const auto waited = steady_clock::now() - began;
@@ -453,13 +463,33 @@ static bool settingIs(const char *name, const char *value)
     return set != nullptr && std::strcmp(set, value) == 0;
 }
 
+// The player's own values, put back before a room's session starts the runner offline again.
+static std::vector<std::pair<std::string, std::string>> ownSettings;
+
 static void putSetting(const char *name, const char *value)
 {
+    if (std::none_of(ownSettings.begin(), ownSettings.end(), [name](const auto &own) { return own.first == name; })) {
+        const char *own = std::getenv(name);
+        ownSettings.emplace_back(name, own != nullptr ? own : "");
+    }
 #ifdef _WIN32
     _putenv_s(name, value);
 #else
     setenv(name, value, 1);
 #endif
+}
+
+static void restoreSettings()
+{
+    for (const auto &[name, value] : ownSettings) {
+#ifdef _WIN32
+        _putenv_s(name.c_str(), value.c_str()); // an empty value removes it
+#else
+        if (value.empty()) unsetenv(name.c_str());
+        else setenv(name.c_str(), value.c_str(), 1);
+#endif
+    }
+    ownSettings.clear();
 }
 
 // Each module reads its setting once, after this, as the guest boots.
@@ -487,8 +517,17 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
         return false;
     }
     const bool hosting = launch.hostPort != 0u;
+    // A room's socket: <local port>,<peer address>,<peer port>,<server address>,<server port>,<relay>, network order.
+    unsigned long room[6] = {};
+    rollback.fromRoom = !launch.roomSocket.empty();
+    if (rollback.fromRoom && std::sscanf(launch.roomSocket.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu", &room[0], &room[1],
+            &room[2], &room[3], &room[4], &room[5]) != 6) {
+        std::cerr << "recomp runner: bad --netplay-room-socket\n";
+        return false;
+    }
     if (hosting) {
         const auto port = static_cast<std::uint16_t>(launch.hostPort);
+        // A room's runner removes its forward before starting this one, so this asks again.
         if (recomp_netplay_open_router_port(port, nullptr, 0u)) std::atexit(recomp_netplay_close_router_port);
         std::fprintf(stderr, "recomp netplay: hosting on UDP port %u; waiting for the other player\n", launch.hostPort);
         if (!recomp_netplay_listen(&rollback.net, port)) {
@@ -504,11 +543,19 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
             return false;
         }
         std::fprintf(stderr, "recomp netplay: joining %s\n", launch.join.c_str());
-        if (!recomp_netplay_open(&rollback.net, 0u, launch.join.substr(0u, colon).c_str(),
+        if (!recomp_netplay_open(&rollback.net, static_cast<std::uint16_t>(room[0]), launch.join.substr(0u, colon).c_str(),
                 static_cast<std::uint16_t>(port))) {
             std::cerr << "recomp runner: netplay could not open its UDP port\n";
             return false;
         }
+    }
+    if (rollback.fromRoom) {
+        // The room's peer and matchmaker, so relayed packets keep arriving through it.
+        rollback.net.peer_address = static_cast<std::uint32_t>(room[1]);
+        rollback.net.peer_port = static_cast<std::uint16_t>(room[2]);
+        rollback.net.match.server_address = static_cast<std::uint32_t>(room[3]);
+        rollback.net.match.server_port = static_cast<std::uint16_t>(room[4]);
+        rollback.net.match.relay = room[5] != 0u;
     }
     /* The game keeps all three vacations in one save, so both sides play
        from the host's, and the joiner sends none. Recovery first, so an
@@ -559,6 +606,36 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
     rollback.dump = std::getenv("RECOMP_ROLLBACK_DUMP");
     std::fprintf(stderr, "recomp netplay: connected as player %u with %u frames of input delay\n",
         rollback.player + 1u, rollback.delay);
+    return true;
+}
+
+bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
+{
+    std::uint32_t port = 0u, delay = 0u;
+    std::string join; // the address typed, when any; the socket's peer stands for every joiner
+    RecompNetplay socket;
+    if (!recomp_netplay_menu_take_launch(port, delay, join, socket)) return false;
+    const std::uint16_t local = recomp_netplay_local_port(&socket);
+    const auto *peer = reinterpret_cast<const std::uint8_t *>(&socket.peer_address); // network order
+    const unsigned peerPort = (socket.peer_port & 0xffu) << 8 | socket.peer_port >> 8;
+    char text[80];
+    std::snprintf(text, sizeof text, "%u.%u.%u.%u:%u", peer[0], peer[1], peer[2], peer[3], peerPort);
+    const std::string endpoint = text;
+    std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u", local, static_cast<unsigned long>(socket.peer_address),
+        socket.peer_port, static_cast<unsigned long>(socket.match.server_address), socket.match.server_port,
+        socket.match.relay ? 1u : 0u);
+    args = {"--netplay-room-socket", text};
+    if (port != 0u) {
+        args.insert(args.end(), {"--netplay-host", std::to_string(port), "--netplay-delay", std::to_string(delay)});
+    } else {
+        // A joiner FIND MATCH paired has no address of its own; the room's peer is the host.
+        args.insert(args.end(), {"--netplay-join", endpoint});
+    }
+    // The new runner takes the port; the router forward goes with this one.
+    recomp_netplay_close(&socket);
+    recomp_netplay_close_router_port();
+    std::fprintf(stderr, "recomp netplay: the room starts the match; starting again as the %s\n",
+        port != 0u ? "host" : "joiner");
     return true;
 }
 

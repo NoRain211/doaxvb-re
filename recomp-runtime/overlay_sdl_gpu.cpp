@@ -61,7 +61,8 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
     Uint32 width, Uint32 height, const RecompOverlayText *text)
 {
     if (device == nullptr || window == nullptr || command_buffer == nullptr || target == nullptr ||
-        width == 0u || height == 0u || recomp_overlay_empty(text)) {
+        width == 0u || height == 0u ||
+        (recomp_overlay_imgui_take_screen() == 0u && recomp_overlay_empty(text))) {
         return;
     }
     if (!start(device, window, height)) return;

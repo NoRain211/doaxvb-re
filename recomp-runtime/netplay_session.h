@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 /* Rollback sessions over the running game (docs/rollback-netcode.md),
    adapted from doa2u-re's netplay_session.cpp. The session runs at the top
@@ -29,6 +30,10 @@ struct RecompNetplayLaunch {
     std::uint32_t hostPort = 0u;
     std::string join;
     std::uint32_t delay = 2u;
+    /* Set when a room started this runner (recomp_netplay_session_room_launch):
+       the room socket's port, peer and matchmaker, so the path the room's
+       routers opened stays; a session that ends goes back to the menu. */
+    std::string roomSocket;
     std::string digest;         // this build; the other runner must match it
     std::filesystem::path disc; // the play folder
 };
@@ -37,6 +42,13 @@ struct RecompNetplayLaunch {
    settings that change the simulation. Call before recomp_save_initialize.
    False with a message when the lobby fails. */
 bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch);
+/* Once a frame offline: when the menu's room starts a match, the arguments
+   that start this runner again as the room's session. The room's socket and
+   router forward are closed, so the new runner can take the port. */
+bool recomp_netplay_session_room_launch(std::vector<std::string> &args);
+/* Starts this runner again with its own arguments plus extra, and exits.
+   The runner implements it. */
+[[noreturn]] void recomp_runner_relaunch(const std::vector<std::string> &extra);
 bool recomp_netplay_session_enabled();
 /* Turns on the frame clock, the snapshot modules and the frame hook. Call
    before the guest starts. */

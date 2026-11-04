@@ -51,6 +51,7 @@ static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 }
 
 static uint32_t present_held;
+void (*recomp_d3d_swap_hook)(void);
 
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
 {
@@ -442,6 +443,7 @@ void recomp_d3d_swap_adapter(void)
     recomp_title_idle_frame();
     recomp_unlock_swimsuits_frame();
     recomp_ui_log_frame();
+    if (recomp_d3d_swap_hook != NULL) recomp_d3d_swap_hook();
     recomp_screenshot_poll_trigger();
     /* Scene state machine at 0x000A3820: 0x5DECE0 is the scene currently
        running and 0x5DED55 is the scene requested for the next iteration.

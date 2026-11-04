@@ -18,6 +18,8 @@ extern "C" {
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
 #include "netplay_session.h"
+#include "netplay_menu.h"
+#include "netplay_profile.h"
 #include "rollback.h"
 #endif
 #include "runtime.h"
@@ -50,6 +52,8 @@ extern "C" {
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace {
@@ -76,7 +80,32 @@ bool sessionSample(std::uint32_t port, RecompInputGamepad *gamepad)
     if (recomp_netplay_session_pad(port, gamepad, &present)) return present;
     return recomp_free_camera_sample(port, gamepad);
 }
+
+// Offline runs: the online menu sees each pad first (netplay_menu.cpp).
+bool menuSample(std::uint32_t port, RecompInputGamepad *gamepad)
+{
+    const bool present = recomp_free_camera_sample(port, gamepad);
+    if (present) recomp_netplay_menu_filter(port, gamepad);
+    return present;
+}
+
+void menuFrame()
+{
+    recomp_netplay_menu_frame();
+    std::vector<std::string> session;
+    if (recomp_netplay_session_room_launch(session)) recomp_runner_relaunch(session);
+}
 #endif
+
+// The runner's own arguments without the netplay ones, to start it again (recomp_runner_relaunch).
+std::string runnerPath;
+std::vector<std::string> runnerArguments;
+
+bool isNetplayArgument(const std::string &arg)
+{
+    return arg == "--netplay-host" || arg == "--netplay-join" || arg == "--netplay-delay" ||
+        arg == "--netplay-room-socket" || arg == "--netplay-return";
+}
 
 extern "C" const char *recomp_disc_root_path;
 
@@ -494,6 +523,72 @@ const char *importName(RecompImportKind kind)
 
 } // namespace
 
+#ifdef RECOMP_FULL_PROGRAM
+#ifdef _WIN32
+static std::wstring commandLineArgument(const std::string &arg)
+{
+    const int size = MultiByteToWideChar(CP_ACP, 0, arg.c_str(), -1, nullptr, 0);
+    std::wstring wide(size > 0 ? static_cast<std::size_t>(size - 1) : 0u, L'\0');
+    if (size > 1) MultiByteToWideChar(CP_ACP, 0, arg.c_str(), -1, wide.data(), size);
+    if (!wide.empty() && wide.find_first_of(L" \t\"") == std::wstring::npos) return wide;
+    // CommandLineToArgvW's rules: backslashes double before a quote.
+    std::wstring quoted = L"\"";
+    std::size_t slashes = 0u;
+    for (const wchar_t c : wide) {
+        if (c == L'\\') {
+            ++slashes;
+            continue;
+        }
+        quoted.append(c == L'"' ? slashes * 2u + 1u : slashes, L'\\');
+        slashes = 0u;
+        quoted += c;
+    }
+    quoted.append(slashes * 2u, L'\\');
+    return quoted + L"\"";
+}
+#endif
+
+void recomp_runner_relaunch(const std::vector<std::string> &extra)
+{
+    std::vector<std::string> args{runnerPath};
+    args.insert(args.end(), runnerArguments.begin(), runnerArguments.end());
+    args.insert(args.end(), extra.begin(), extra.end());
+    std::fflush(stderr);
+    std::cout.flush();
+#ifdef _WIN32
+    wchar_t exe[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring line;
+    for (const std::string &arg : args) line += (line.empty() ? L"" : L" ") + commandLineArgument(arg);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof startup;
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    // The new runner writes where this one did.
+    const DWORD streams[3] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    HANDLE *handles[3] = {&startup.hStdInput, &startup.hStdOutput, &startup.hStdError};
+    for (int i = 0; i < 3; ++i) {
+        *handles[i] = GetStdHandle(streams[i]);
+        if (*handles[i] != nullptr && *handles[i] != INVALID_HANDLE_VALUE)
+            SetHandleInformation(*handles[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    }
+    PROCESS_INFORMATION process{};
+    if (length == 0u || length == MAX_PATH ||
+        !CreateProcessW(exe, line.data(), nullptr, nullptr, TRUE, 0u, nullptr, nullptr, &startup, &process))
+        recomp_stop(4, "netplay:relaunch");
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    recomp_stop(0, "netplay:relaunch");
+#else
+    std::vector<char *> argv;
+    for (std::string &arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+    execv(runnerPath.c_str(), argv.data());
+    recomp_stop(4, "netplay:relaunch");
+#endif
+    std::abort(); // recomp_stop exits
+}
+#endif
+
 int main(int argc, char **argv)
 {
     recomp_install_host_diagnostics();
@@ -508,6 +603,12 @@ int main(int argc, char **argv)
     std::string stopAt;
     std::string milestoneLog;
     RecompNetplayLaunch netplayLaunch;
+    std::string netplayReturn;
+    runnerPath = argv[0];
+    for (int i = 1; i < argc; ++i) {
+        if (isNetplayArgument(argv[i])) ++i;
+        else runnerArguments.emplace_back(argv[i]);
+    }
     bool inputStartPulseEnabled = false;
     bool vsyncPresent = false;
     std::vector<std::uint64_t> inputStartPulsePolls;
@@ -528,7 +629,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
             arg == "--input-analog-at" || arg == "--input-host-after-poll" ||
             arg == "--input-wait-after-poll" || arg == "--input-resume-file" ||
             arg == "--input-paused-analog-file" || arg == "--netplay-host" ||
-            arg == "--netplay-join" || arg == "--netplay-delay";
+            arg == "--netplay-join" || arg == "--netplay-delay" ||
+            arg == "--netplay-room-socket" || arg == "--netplay-return";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -558,6 +660,10 @@ std::vector<AnalogPulse> inputAnalogPulses;
             (host ? netplayLaunch.hostPort : netplayLaunch.delay) = static_cast<std::uint32_t>(parsed);
         } else if (arg == "--netplay-join") {
             netplayLaunch.join = argv[++i];
+        } else if (arg == "--netplay-room-socket") {
+            netplayLaunch.roomSocket = argv[++i]; // from a room's runner (recomp_netplay_session_room_launch)
+        } else if (arg == "--netplay-return") {
+            netplayReturn = argv[++i]; // why the room's session ended
         } else if (arg == "--input-wait-after-poll") {
             const std::string value = argv[++i];
             if (!parsePositiveU64(value, inputWaitAfterPoll) ||
@@ -836,12 +942,18 @@ std::vector<AnalogPulse> inputAnalogPulses;
         std::cerr << "recomp runner: --netplay-host and --netplay-join cannot be combined\n";
         return 64;
     }
-    if (netplayLaunch.hostPort != 0u || !netplayLaunch.join.empty()) {
+    {
         // The build and the game image: both runners must simulate alike.
         const std::string identity = std::string(RECOMP_NETPLAY_BUILD) + "\n" + parsed.metadata.fileSha256 + "\n";
         netplayLaunch.digest = doaxbv::sha256Hex(std::vector<std::uint8_t>(identity.begin(), identity.end()));
         netplayLaunch.disc = std::filesystem::path(recomp_disc_root_path);
-        if (!recomp_netplay_session_connect(netplayLaunch)) return 1;
+    }
+    if (netplayLaunch.hostPort != 0u || !netplayLaunch.join.empty()) {
+        if (!recomp_netplay_session_connect(netplayLaunch)) {
+            // A room's runner goes back to the menu; one from the command line stops.
+            if (!netplayLaunch.roomSocket.empty()) recomp_runner_relaunch({"--netplay-return", "netplay:session-failed"});
+            return 1;
+        }
     }
 #endif
 
@@ -1002,6 +1114,13 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_synctest_set_guest_ram(ram, kRamSize, false);
 #endif
         recomp_game_set_frame_boundary(synctestBoundary);
+    } else {
+        const std::filesystem::path storage = netplayLaunch.disc / ".recomp-storage";
+        recomp_netplay_menu_install(storage, netplayLaunch.digest,
+            [storage] { return recomp_netplay_own_profile_name(storage / "partition1"); });
+        recomp_input_adapter_set_source(menuSample);
+        recomp_d3d_swap_hook = menuFrame;
+        if (!netplayReturn.empty()) recomp_netplay_menu_reopen(netplayReturn);
     }
 #endif
 #ifndef RECOMP_FULL_PROGRAM

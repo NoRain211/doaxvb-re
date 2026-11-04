@@ -17,6 +17,12 @@ enum {
     RESULTS_OPEN = 0x005D89ECu,
     MATCH_OVER = 0x004D6FC8u,
     MENU_SCREEN = 0x009D9D80u,
+    /* The menu screen's phase, 1 while it runs, and the main menu's cursor
+       (viewer_menu_adapter.c): 1 is EXHIBITION. */
+    MENU_PHASE = 0x009D9DA0u,
+    MENU_PHASE_RUNNING = 1,
+    MAIN_MENU_CURSOR = 0x009D9E0Cu,
+    ITEM_EXHIBITION = 1,
     SCREEN_MAIN = 0,
     SCREEN_EXHIBITION_SETUP = 2,
     SCREEN_CHARACTER_SELECT = 4,
@@ -44,6 +50,14 @@ bool recomp_netplay_game_rally_live(void)
 bool recomp_netplay_game_character_select(void)
 {
     return byte(SCENE) == SCENE_MENU && (int8_t)byte(MENU_SCREEN) == SCREEN_CHARACTER_SELECT;
+}
+
+bool recomp_netplay_game_exhibition_chosen(void)
+{
+    return byte(SCENE) == SCENE_MENU && (int8_t)byte(MENU_SCREEN) == SCREEN_MAIN &&
+        *recomp_memory_u32(MENU_PHASE) == MENU_PHASE_RUNNING &&
+        *recomp_memory_u32(MAIN_MENU_CURSOR) == ITEM_EXHIBITION &&
+        *recomp_memory_u32(LIST_BASE + LIST_PHASE) == LIST_OPEN;
 }
 
 /* A on the open list's item that reads target, otherwise Down; nothing

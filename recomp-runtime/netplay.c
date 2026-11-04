@@ -717,6 +717,14 @@ static void put_lan(const RecompNetplay *net, uint8_t *out)
     memcpy(out + 4u, &local.sin_port, 2u);
 }
 
+uint16_t recomp_netplay_local_port(const RecompNetplay *net)
+{
+    struct sockaddr_in local;
+    SocketLength length = sizeof local;
+    if (getsockname((SOCKET)net->socket, (struct sockaddr *)&local, &length) != 0) return 0u;
+    return ntohs(local.sin_port);
+}
+
 void recomp_netplay_match_host(RecompNetplay *net, const char *digest, uint8_t delay, bool open,
     const char *name)
 {

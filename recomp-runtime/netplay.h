@@ -129,6 +129,8 @@ bool recomp_netplay_open(RecompNetplay *net, uint16_t local_port,
     const char *peer_host, uint16_t peer_port);
 /* Binds port on all interfaces with no peer yet, for a room's host. */
 bool recomp_netplay_listen(RecompNetplay *net, uint16_t port);
+/* The port the socket is bound to, host order; 0 when unknown. */
+uint16_t recomp_netplay_local_port(const RecompNetplay *net);
 
 /* The room two players wait in, from the Versus menu, before the runners
    restart into a session. Each side says its build, name and readiness ten
