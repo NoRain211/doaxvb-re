@@ -791,6 +791,7 @@ if(RECOMP_PROGRAM_DIR)
         rollback.c
         netplay.c
         netplay_names.c
+        netplay_game.c
         netplay_session.cpp
         "${_missing_source}"
         ${_recomp_program_sources}

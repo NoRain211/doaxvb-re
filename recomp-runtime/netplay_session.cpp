@@ -7,12 +7,16 @@
 #include "d3d_frame_adapter.h"
 #include "d3d_vblank.h"
 #include "input_host_win32.h"
+#include "input_pulse_source.h"
 #include "netplay.h"
+#include "netplay_game.h"
 #include "rollback.h"
 #include "synctest.h"
 #include "xapi_time_adapter.h"
 extern "C" {
 #include "game_scheduler.h"
+#include "kernel_abi.h"
+#include "runtime.h"
 #include "stop_report.h"
 }
 
@@ -39,6 +43,7 @@ struct RollbackRun {
     bool active = false;
     bool hidden = false;
     bool interrupted = false;
+    bool walking = false; // the menus are walked to Two Players for both sides
     std::uint32_t pass = 0u; // loop passes since boot
     std::uint32_t start = 0u, stop = UINT32_MAX, lag = 4u, delay = 0u, player = 0u;
     std::uint32_t frontier = 0u; // first session frame never run
@@ -73,8 +78,14 @@ static RecompInputGamepad localPad(std::uint32_t frame)
 {
     RecompInputGamepad pad{};
     if (rollback.mode == RollbackMode::Loopback) return pad;
-    // shortcut: scripted two-runner tests give each player its own generated stream; a lobby reads the host pad.
-    if (std::getenv("RECOMP_ROLLBACK_GENERATED") != nullptr) return generatedPad(frame * 2u + rollback.player);
+    /* Scripted two-runner tests give each player its own stream in live
+       rallies and press A now and then in character select, so both pick. */
+    if (std::getenv("RECOMP_ROLLBACK_GENERATED") != nullptr) {
+        if (recomp_netplay_game_rally_live()) return generatedPad(frame * 2u + rollback.player);
+        if (recomp_netplay_game_character_select() && frame % 30u == rollback.player * 15u)
+            pad.analog_buttons[RECOMP_INPUT_ANALOG_A] = RECOMP_INPUT_ANALOG_PRESSED;
+        return pad;
+    }
     (void)recomp_input_host_sample(0u, &pad);
     return pad;
 }
@@ -284,6 +295,37 @@ static void setHidden(bool hidden)
     recomp_d3d_frame_adapter_hold_present(RECOMP_PRESENT_HOLD_ROLLBACK, hidden);
 }
 
+static void setWindow(std::uint32_t window)
+{
+    RecompRollbackSession &s = rollback.session;
+    if (s.window == window) return;
+    s.window = window;
+    std::fprintf(stderr, "recomp netplay: %s from frame %u\n", window != 0u ? "rollback" : "lockstep", s.frame);
+}
+
+/* A profile write cannot be rewound (synctest_modules.c), so it waits until
+   the other player's pads through the running frame have arrived. The window
+   is normally closed long before, and this never waits. A pad that differs
+   from the prediction means the frame is already wrong; the session then
+   ends before the write. */
+static void confirmSaveFrame()
+{
+    RecompRollbackSession &s = rollback.session;
+    if (!rollback.active || rollback.mode != RollbackMode::Udp || s.frame == 0u) return;
+    const std::uint32_t running = s.frame - 1u;
+    if (s.remote_count <= running)
+        std::fprintf(stderr, "recomp netplay: save in frame %u waits for the other player's input\n", running);
+    const auto began = std::chrono::steady_clock::now();
+    while (s.remote_count <= running) {
+        recomp_netplay_receive(&rollback.net, &s);
+        recomp_netplay_send(&rollback.net, &s, rollback.advantage);
+        stalled(began);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    resumed(began);
+    if (s.rewind_to <= running) endSession("rollback:save-mispredicted");
+}
+
 static void onFrame()
 {
     recomp_xapi_frame_clock_advance();
@@ -293,6 +335,7 @@ static void onFrame()
         recomp_rollback_init(&s, rollback.delay);
         if (!recomp_rollback_ring_init(RECOMP_ROLLBACK_WINDOW)) recomp_stop(4, "rollback:ring");
         rollback.active = true;
+        rollback.walking = rollback.mode == RollbackMode::Udp && rollback.start <= 1u;
         rollback.started = std::chrono::steady_clock::now();
         // The session paces every frame; the scheduler's own 60 Hz wait would only add lag.
         recomp_game_set_paced(false);
@@ -301,6 +344,8 @@ static void onFrame()
     }
     bool saved = true;
     if (s.frame == rollback.frontier) {
+        if (rollback.mode == RollbackMode::Udp)
+            setWindow(recomp_netplay_game_rally_live() ? RECOMP_ROLLBACK_WINDOW : 0u);
         if (rollback.mode == RollbackMode::Udp && rollback.paced != s.frame) {
             scheduleFrame();
             rollback.paced = s.frame;
@@ -334,6 +379,14 @@ static void onFrame()
     // Frames run again were already shown and heard with the predicted pads.
     setHidden(s.frame < rollback.frontier);
     recomp_rollback_run(&s, &rollback.pads[rollback.player], &rollback.pads[1u - rollback.player]);
+    // Both sides set the walk's pads the same way from the same guest state.
+    if (rollback.walking) {
+        if (recomp_netplay_game_walk(s.frame, &rollback.pads[0])) {
+            rollback.walking = false;
+            std::fprintf(stderr, "recomp netplay: Two Players character select from frame %u\n", s.frame);
+        }
+        rollback.pads[1] = RecompInputGamepad{};
+    }
     if (s.frame > rollback.frontier) rollback.frontier = s.frame;
 }
 
@@ -395,6 +448,7 @@ void recomp_netplay_session_install(const RecompNetplaySessionHost &runner)
     recomp_synctest_install_default_modules();
     recomp_synctest_set_guest_ram(host.guestRam, host.guestRamSize, host.writeWatch);
     recomp_game_set_frame_boundary(onFrame);
+    recomp_kernel_profile_mutation_hook = confirmSaveFrame;
 }
 
 bool recomp_netplay_session_pad(std::uint32_t port, RecompInputGamepad *pad, bool *present)

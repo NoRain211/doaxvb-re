@@ -67,6 +67,16 @@ static uint32_t next_guest_handle = 1u;
 static RecompSymbolicLinkModel symbolic_links;
 static int symbolic_links_initialized;
 static bool is_profile_path(const char *path);
+static uint32_t profile_mutation_count;
+void (*recomp_kernel_profile_mutation_hook)(void);
+
+uint32_t recomp_kernel_profile_mutations(void) { return profile_mutation_count; }
+
+static void note_profile_mutation(void)
+{
+    ++profile_mutation_count;
+    if (recomp_kernel_profile_mutation_hook != NULL) recomp_kernel_profile_mutation_hook();
+}
 
 static void ensure_symbolic_links_initialized(void)
 {
@@ -1129,6 +1139,7 @@ static void bridge_nt_open_file(void)
     bool profile_path = is_profile_path(host_path);
     bool required_save_io = requested_write ||
         (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u);
+    if (required_save_io && profile_path) note_profile_mutation();
     if (required_save_io && recomp_save_pending() &&
         ((profile_path && !recomp_save_active(save_owner)) ||
          (recomp_save_active(save_owner) && !profile_path))) {
@@ -1224,6 +1235,7 @@ static void bridge_nt_create_file(void)
     bool mutation = (desired_access & GENERIC_WRITE_ACCESS) != 0u ||
         (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u) ||
         create_disposition != FILE_OPEN_DISPOSITION;
+    if (mutation && profile_path) note_profile_mutation();
     if (mutation && recomp_save_pending() &&
         ((profile_path && !recomp_save_active(save_owner)) ||
          (recomp_save_active(save_owner) && !profile_path))) {

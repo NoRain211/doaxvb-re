@@ -4,8 +4,9 @@ Status: in progress. The rollback core from
 [doa2u-re](https://github.com/NoRain211/doa2u-re) (branch
 `codex/rollback-netcode`) is ported: input prediction, the snapshot ring,
 SyncTest, replays, the UDP transport, the matchmaker client and the shared
-matchmaker server. Online sessions are not wired into the game yet. SyncTest
-rewinds and replays live Exhibition rallies with matching state.
+matchmaker server. Two runners play a Two Players Exhibition match over UDP
+with rollback, started from environment settings; the lobby, the profile
+swap and the in-game menus are not wired in yet.
 
 Game addresses below come from static analysis of the verified USA
 executable in Ghidra unless a section says otherwise.
@@ -99,6 +100,63 @@ A check during the boot's loading (frame 200) differed in 2.5 MB of guest
 RAM and the fiber state. Sessions roll back only inside a match, so loading
 runs in lockstep, as in doa2u-re.
 
+## Sessions
+
+`netplay_session.cpp` is doa2u-re's session driver on this runtime's
+frame boundary. `RECOMP_ROLLBACK=loopback` plays a generated remote player
+on port 0 whose pads arrive `RECOMP_ROLLBACK_LAG` frames late, so every
+frame is predicted and most are run again. `RECOMP_ROLLBACK=udp:<local
+port>:<peer host>:<peer port>` plays a second runner, with
+`RECOMP_ROLLBACK_PLAYER` (0 or 1, the guest port) and
+`RECOMP_ROLLBACK_DELAY` matching on both sides. `RECOMP_ROLLBACK_START`
+is the loop pass the session starts at, `RECOMP_ROLLBACK_FRAMES` where it
+stops with every pad confirmed, and `RECOMP_ROLLBACK_DUMP` receives guest
+RAM there. `RECOMP_ROLLBACK_GENERATED=1` gives each UDP player a
+generated stream for scripted runs: new pads every frame in live rallies,
+and A now and then in character select. Frames run again are not presented
+and skip the vblank wait, and the scheduler's own 60 Hz pacing is off while
+the session paces frames.
+
+Two runners must read the same host values. While the frame clock runs,
+`KeQuerySystemTime` returns 2003-01-01 plus frame-locked guest time, and
+directory listings and save-file queries return that date as every file
+time. Before this, two runners in different play folders differed in 20
+pages after 3,000 frames: CPU Exhibition picks its cast from the date. The
+last difference was 20 bytes of stale stack holding the `\Fonts` folder's
+host times.
+
+A UDP session predicts only while a rally is live
+(`recomp_netplay_game_rally_live` in `netplay_game.c`): the match scene
+(`0x5DECE0` 0) runs and has not asked for another (`0x5DED55`), the
+game is not paused (`0x4D56EF`), and neither the results menu
+(`0x5D89EC`) nor the end of the match (`0x4D6FC8`) has come. Menus,
+loads, pauses and results run in lockstep. A profile write waits, inside
+its frame, until the other player's pads through that frame have arrived
+(`recomp_kernel_profile_mutation_hook`), and a mispredicted frame ends
+the session before the write. SyncTest and the snapshot ring refuse to
+rewind past a save (`save_storage` in `synctest_modules.c`).
+
+A UDP session that starts at boot walks the menus for both sides with
+port 0's pad, computed from guest state, so both runners press the same
+button on the same frame: START through the movies and the title,
+EXHIBITION on the main menu (list 0) and Two Players on Exhibition's setup
+(list 2), which lists it because the session connects both ports. Character
+select (menu screen 4) ends the walk, and each player picks with their own
+pad.
+
+Results on one Windows machine, clang Release runner, two play folders:
+
+| Run | Frames | Rollbacks | Guest RAM at the end |
+|---|---|---|---|
+| Loopback, CPU match from pass 2400, lag 8 against lag 0 | 600 | 590 | identical |
+| Loopback from boot with random remote pads in the menus, lag 8 against lag 0 | 3,000 | 2,984 | identical |
+| UDP, CPU match from pass 2400, delay 0 | 1,200 | 600 per side | identical |
+| UDP from boot: walk, both pick, Two Players match, delay 0 | 4,000 | about 1,760 per side | identical |
+
+In the last run character select showed at frame 182 and the match at 441;
+slots 0 and 1 were people on ports 0 and 1, slots 2 and 3 their CPU
+partners. Every 30th frame's guest RAM hash matched the other side's.
+
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display
@@ -118,8 +176,7 @@ runs in lockstep, as in doa2u-re.
   does, and link `musl_math` into the runner. This recipe already lifts
   RCPSS and RSQRTSS as exact division and square root, so they need no
   change. Moving the lifter pin needs a play test (AGENTS.md).
-- Session driver, the lobby and room menus, the walk to Two Players
-  character select, and the conditions for rollback (a live rally) and for
-  lockstep (menus, pauses, results, saves).
-- Two runners on one machine, scripted, comparing guest RAM hashes; then a
-  lag relay.
+- `--netplay-host` and `--netplay-join`, the profile swap into a
+  session save folder, the name check, UPnP, replays, and the lobby, room
+  and FIND MATCH menus, as in doa2u-re.
+- Sessions with input delay and over a lag relay.

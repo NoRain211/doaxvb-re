@@ -10,6 +10,7 @@
 #include "input_adapter.h"
 #include "kernel_abi.h"
 #include "runtime.h"
+#include "save_transaction.h"
 #include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 
@@ -86,6 +87,25 @@ static bool files_restorable(const void *state, size_t size)
     (void)size;
     return recomp_kernel_file_state_restorable(state);
 }
+/* Save storage and its journal live on the host disk, outside the snapshot.
+   A replay after a save sees the files the first pass wrote, and a rewind
+   into an open transaction would never commit. Neither frame is rewound. */
+typedef struct SaveStorageState {
+    bool pending;
+    uint32_t mutations;
+} SaveStorageState;
+static void save_storage_save(void *state)
+{
+    *(SaveStorageState *)state = (SaveStorageState){
+        recomp_save_pending(), recomp_kernel_profile_mutations()};
+}
+static void save_storage_restore(const void *state) { (void)state; }
+static bool save_storage_restorable(const void *state, size_t size)
+{
+    const SaveStorageState *saved = state;
+    (void)size;
+    return !saved->pending && saved->mutations == recomp_kernel_profile_mutations();
+}
 
 void recomp_synctest_install_default_modules(void)
 {
@@ -117,5 +137,7 @@ void recomp_synctest_install_default_modules(void)
         recomp_d3d_frame_adapter_state_save, recomp_d3d_frame_adapter_state_restore};
     table[count++] = (RecompSyncTestModule){"dsound", recomp_dsound_service_adapter_state_size(),
         recomp_dsound_service_adapter_state_save, recomp_dsound_service_adapter_state_restore};
+    table[count++] = (RecompSyncTestModule){"save_storage", sizeof(SaveStorageState),
+        save_storage_save, save_storage_restore, NULL, save_storage_restorable, true};
     recomp_synctest_set_modules(table, count);
 }
