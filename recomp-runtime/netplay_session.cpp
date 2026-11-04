@@ -12,6 +12,8 @@
 #include "netplay_game.h"
 #include "netplay_menu.h"
 #include "netplay_profile.h"
+#include "overlay_screen.h"
+#include "replay.h"
 #include "rollback.h"
 #include "save_transaction.h"
 #include "synctest.h"
@@ -28,6 +30,7 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -42,7 +45,7 @@ extern "C" {
    Sessions start at loop pass RECOMP_ROLLBACK_START. At session frame
    RECOMP_ROLLBACK_FRAMES every pad is confirmed and guest RAM goes to
    RECOMP_ROLLBACK_DUMP. */
-enum class RollbackMode { Off, Loopback, Udp };
+enum class RollbackMode { Off, Loopback, Udp, Replay };
 struct RollbackRun {
     RollbackMode mode = RollbackMode::Off;
     bool active = false;
@@ -65,6 +68,21 @@ struct RollbackRun {
     RecompRollbackSession session;
     RecompNetplay net;
     RecompInputGamepad pads[2]{}; // the running frame's pads by guest port
+    // A lobby session's play folder, build, host options and saves; a replay keeps them.
+    bool lobby = false;
+    std::filesystem::path disc;
+    std::string digest;
+    std::uint8_t flags = 0u;
+    std::vector<std::uint8_t> hostSaves;
+    std::ofstream replayFile; // the replay being recorded (startReplay)
+    RecompReplayWriter replayWriter{};
+    std::uint32_t replayFrames = 0u;
+    std::vector<std::uint8_t> replayData; // --replay's file
+    RecompReplayReader replayReader{};
+    // The corner display (drawSessionOverlay).
+    int networkDisplay = 0;
+    std::uint32_t rewindDepth = 0u;
+    std::chrono::steady_clock::time_point rewoundAt{};
 };
 static RollbackRun rollback;
 static RecompNetplaySessionHost host;
@@ -111,12 +129,14 @@ static void receivePads()
 }
 
 static void restoreSettings();
+static void closeReplay();
 
 /* Sessions from the command line stop with exit code 4; a room's session
    starts the runner again offline, back on the online menu. */
 static void endSession(const char *reason)
 {
     if (rollback.mode == RollbackMode::Udp) recomp_netplay_send_goodbye(&rollback.net);
+    closeReplay();
     if (!rollback.fromRoom) recomp_stop(4, "%s", reason);
     std::fprintf(stderr, "recomp netplay: session ended (%s); back to the online menu\n", reason);
     recomp_netplay_close(&rollback.net);
@@ -152,6 +172,75 @@ static void resumed(std::chrono::steady_clock::time_point began)
 }
 
 static void compareChecks();
+
+/* Each lobby session records a replay into the player's own
+   .recomp-storage/replays. It stays on this computer: it holds the host's
+   saves. Frames go in once they have run and both pads have arrived, so the
+   file holds only confirmed input. */
+static void startReplay()
+{
+    namespace fs = std::filesystem;
+    const fs::path folder = rollback.disc / ".recomp-storage" / "replays";
+    char name[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(name, sizeof name, "%Y%m%d-%H%M%S.dxbr", std::localtime(&now));
+    std::error_code error;
+    fs::create_directories(folder, error);
+    rollback.replayFile.open(folder / name, std::ios::binary | std::ios::trunc);
+    RecompReplayInfo info{};
+    std::memcpy(info.digest, rollback.digest.data(), std::min(rollback.digest.size(), sizeof info.digest));
+    info.player = static_cast<std::uint8_t>(rollback.player);
+    info.delay = static_cast<std::uint8_t>(rollback.delay);
+    info.flags = rollback.flags;
+    info.start_swap = rollback.pass;
+    info.blob_size[0] = static_cast<std::uint32_t>(rollback.hostSaves.size()); // the joiner sends none
+    std::vector<std::uint8_t> header(RECOMP_REPLAY_HEADER_BYTES + rollback.hostSaves.size());
+    header.resize(recomp_replay_header(&rollback.replayWriter, &info, rollback.hostSaves.data(),
+        rollback.hostSaves.data(), header.data()));
+    rollback.replayFile.write(reinterpret_cast<const char *>(header.data()),
+        static_cast<std::streamsize>(header.size()));
+    rollback.replayFile.flush();
+    rollback.replayFrames = 0u;
+    if (rollback.replayFile) {
+        std::fprintf(stderr, "recomp netplay: recording replay %s\n", name);
+        return;
+    }
+    std::fprintf(stderr, "recomp netplay: cannot write replay %s; playing without one\n", name);
+    rollback.replayFile.close();
+}
+
+static void recordReplay()
+{
+    if (!rollback.replayFile.is_open()) return;
+    const RecompRollbackSession &s = rollback.session;
+    const std::uint32_t confirmed = std::min({s.local_count, s.remote_count, rollback.frontier});
+    std::uint8_t bytes[RECOMP_REPLAY_FRAME_BYTES];
+    for (; rollback.replayFrames < confirmed; ++rollback.replayFrames) {
+        RecompInputGamepad pads[2];
+        pads[rollback.player] = s.local[rollback.replayFrames % RECOMP_ROLLBACK_HISTORY];
+        pads[1u - rollback.player] = s.remote[rollback.replayFrames % RECOMP_ROLLBACK_HISTORY];
+        rollback.replayFile.write(reinterpret_cast<const char *>(bytes),
+            static_cast<std::streamsize>(recomp_replay_frame(&rollback.replayWriter, pads, bytes)));
+        // About once a second, so a crash loses little.
+        if (rollback.replayFrames % 60u == 59u) {
+            rollback.replayFile.write(reinterpret_cast<const char *>(bytes),
+                static_cast<std::streamsize>(recomp_replay_flush(&rollback.replayWriter, bytes)));
+            rollback.replayFile.flush();
+        }
+    }
+}
+
+static void closeReplay()
+{
+    if (!rollback.replayFile.is_open()) return;
+    recordReplay();
+    std::uint8_t bytes[RECOMP_REPLAY_FRAME_BYTES];
+    rollback.replayFile.write(reinterpret_cast<const char *>(bytes),
+        static_cast<std::streamsize>(recomp_replay_flush(&rollback.replayWriter, bytes)));
+    rollback.replayFile.close();
+    std::fprintf(stderr, "recomp netplay: replay %s with %u frames\n", rollback.replayFile ? "kept" : "cut short",
+        rollback.replayFrames);
+}
 
 /* At the newest frame: gathers pads until the frame may run or a rewind is
    due, and returns the frame to load or RECOMP_ROLLBACK_NONE. */
@@ -217,6 +306,7 @@ static void finishRollback()
         "(%u frames run again, %u waited, %u saves) in %.1f s\n",
         rollback.session.frame, rollback.rollbacks, rollback.replayed, rollback.waited, rollback.saves, seconds);
     writeDump();
+    closeReplay();
     if (rollback.mode == RollbackMode::Udp) {
         // shortcut: the peer may still need our acknowledgement; repeat it briefly instead of a close handshake.
         for (int i = 0; i < 50; ++i) {
@@ -340,6 +430,17 @@ static void confirmSaveFrame()
     if (s.rewind_to <= running) endSession("rollback:save-mispredicted");
 }
 
+// Both sides, and a replay, set the walk's pads the same way from the same guest state.
+static void walkPads()
+{
+    if (!rollback.walking) return;
+    if (recomp_netplay_game_walk(rollback.session.frame, &rollback.pads[0])) {
+        rollback.walking = false;
+        std::fprintf(stderr, "recomp netplay: Two Players character select from frame %u\n", rollback.session.frame);
+    }
+    rollback.pads[1] = RecompInputGamepad{};
+}
+
 static void onFrame()
 {
     recomp_xapi_frame_clock_advance();
@@ -355,7 +456,9 @@ static void onFrame()
         recomp_game_set_paced(false);
         std::fprintf(stderr, "recomp rollback: session starts at pass %u as player %u\n",
             rollback.pass, rollback.player);
+        if (rollback.lobby) startReplay();
     }
+    recordReplay();
     bool saved = true;
     if (s.frame == rollback.frontier) {
         if (rollback.mode == RollbackMode::Udp)
@@ -369,6 +472,11 @@ static void onFrame()
             if (!recomp_rollback_ring_load(target)) endSession("rollback:unrestorable");
             ++rollback.rollbacks;
             rollback.replayed += rollback.frontier - target;
+            const auto now = std::chrono::steady_clock::now();
+            const std::uint32_t depth = rollback.frontier - target;
+            const bool recent = now - rollback.rewoundAt < std::chrono::seconds(1);
+            rollback.rewindDepth = recent ? std::max(rollback.rewindDepth, depth) : depth;
+            rollback.rewoundAt = now;
         } else if (s.frame == rollback.stop) {
             finishRollback();
             return;
@@ -393,15 +501,54 @@ static void onFrame()
     // Frames run again were already shown and heard with the predicted pads.
     setHidden(s.frame < rollback.frontier);
     recomp_rollback_run(&s, &rollback.pads[rollback.player], &rollback.pads[1u - rollback.player]);
-    // Both sides set the walk's pads the same way from the same guest state.
-    if (rollback.walking) {
-        if (recomp_netplay_game_walk(s.frame, &rollback.pads[0])) {
-            rollback.walking = false;
-            std::fprintf(stderr, "recomp netplay: Two Players character select from frame %u\n", s.frame);
-        }
-        rollback.pads[1] = RecompInputGamepad{};
-    }
+    walkPads();
     if (s.frame > rollback.frontier) rollback.frontier = s.frame;
+}
+
+/* --replay plays a recorded session's pads from the same first pass, as
+   onFrame runs confirmed ones, at the scheduler's own 60 Hz, and stops at
+   the end of the file. */
+static void onReplayFrame()
+{
+    recomp_xapi_frame_clock_advance();
+    RecompRollbackSession &s = rollback.session;
+    if (!rollback.active) {
+        if (++rollback.pass < rollback.start) return;
+        recomp_rollback_init(&s, 0u);
+        rollback.active = true;
+        rollback.walking = rollback.start <= 1u;
+        rollback.started = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "recomp rollback: replay starts at pass %u as player %u\n",
+            rollback.pass, rollback.player);
+    }
+    if (s.frame == rollback.stop) finishRollback();
+    if (!recomp_replay_next(&rollback.replayReader, rollback.pads)) {
+        std::fprintf(stderr, "recomp netplay: replay ends at frame %u\n", s.frame);
+        writeDump();
+        recomp_stop(0, "replay:end");
+    }
+    ++s.frame;
+    walkPads();
+}
+
+/* The corner display from NETPLAY SETTINGS: ping, or also the input delay,
+   the deepest rewind of the last second and how many frames this side runs
+   ahead of the other. */
+static void drawSessionOverlay()
+{
+    const RecompNetplay &net = rollback.net;
+    std::string text = "PING " + (net.rtt_known ? std::to_string(net.rtt_ms) + " MS" : std::string("--"));
+    if (rollback.networkDisplay == 2) {
+        const bool recent = std::chrono::steady_clock::now() - rollback.rewoundAt < std::chrono::seconds(1);
+        text += "  DELAY " + std::to_string(rollback.delay) + "  ROLLBACK " +
+            std::to_string(recent ? rollback.rewindDepth : 0u) + "F  AHEAD " + std::to_string(rollback.advantage) + 'F';
+    }
+    const std::uint32_t color = !net.rtt_known || net.rtt_ms < 80u ? 0xff60e080u
+        : net.rtt_ms < 150u ? 0xffffd040u : 0xffff5050u;
+    const float width = recomp_overlay_text_width(text.c_str(), 2.0f);
+    recomp_overlay_rect(628.0f - width - 12.0f, 446.0f, width + 12.0f, 24.0f, 0xa0000000u);
+    recomp_overlay_text(628.0f - width - 6.0f, 451.0f, 2.0f, color, text.c_str());
+    recomp_overlay_screen_publish();
 }
 
 bool recomp_netplay_session_read_env()
@@ -506,6 +653,29 @@ static void adoptSettings(std::uint8_t flags, const std::filesystem::path &stora
     putSetting("RECOMP_USER_MUSIC", (storage / "netplay" / "UserMusic").string().c_str());
 }
 
+// A fresh copy of the host's saves each session, so neither player's own saves change.
+static bool useSessionSaves(const std::uint8_t *saves, std::size_t size, const std::filesystem::path &storage)
+{
+    std::error_code error;
+    std::filesystem::remove_all(storage / "netplay", error);
+    std::vector<std::string> names;
+    if (error || !recomp_netplay_unpack_profile(saves, size, storage / "netplay" / "partition1", names)) {
+        std::cerr << "recomp runner: the host's saves are damaged or unsafe\n";
+        return false;
+    }
+    recomp_save_session = "netplay";
+    rollback.hostSaves.assign(saves, saves + size);
+    return true;
+}
+
+// Test hooks, as for RECOMP_ROLLBACK.
+static void readTestHooks()
+{
+    if (const char *frames = std::getenv("RECOMP_ROLLBACK_FRAMES"); frames != nullptr && *frames != '\0')
+        rollback.stop = static_cast<std::uint32_t>(std::strtoul(frames, nullptr, 10));
+    rollback.dump = std::getenv("RECOMP_ROLLBACK_DUMP");
+}
+
 bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
 {
     if (const char *mode = std::getenv("RECOMP_ROLLBACK"); mode != nullptr && *mode != '\0') {
@@ -585,27 +755,50 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
             : result == RECOMP_NETPLAY_LOBBY_TIMEOUT ? "timed out" : "could not open its UDP port") << '\n';
         return false;
     }
-    // A fresh copy each session, so neither player's own saves change.
-    std::error_code error;
-    std::filesystem::remove_all(storage / "netplay", error);
-    std::vector<std::string> names;
-    const std::vector<std::uint8_t> &saves = hosting ? mine : theirs;
-    const std::size_t size = hosting ? mine.size() : profiles.theirs_size;
-    if (error || !recomp_netplay_unpack_profile(saves.data(), size, storage / "netplay" / "partition1", names)) {
-        std::cerr << "recomp runner: the host's saves are damaged or unsafe\n";
+    if (!useSessionSaves(hosting ? mine.data() : theirs.data(), hosting ? mine.size() : profiles.theirs_size, storage))
         return false;
-    }
-    recomp_save_session = "netplay";
     adoptSettings(lobby.flags, storage);
     rollback.mode = RollbackMode::Udp;
     rollback.player = hosting ? 0u : 1u;
     rollback.delay = lobby.delay;
-    // Test hooks, as for RECOMP_ROLLBACK.
-    if (const char *frames = std::getenv("RECOMP_ROLLBACK_FRAMES"); frames != nullptr && *frames != '\0')
-        rollback.stop = static_cast<std::uint32_t>(std::strtoul(frames, nullptr, 10));
-    rollback.dump = std::getenv("RECOMP_ROLLBACK_DUMP");
+    rollback.lobby = true;
+    rollback.disc = launch.disc;
+    rollback.digest = launch.digest;
+    rollback.flags = lobby.flags;
+    readTestHooks();
     std::fprintf(stderr, "recomp netplay: connected as player %u with %u frames of input delay\n",
         rollback.player + 1u, rollback.delay);
+    return true;
+}
+
+bool recomp_netplay_session_load_replay(const std::string &path, const RecompNetplayLaunch &launch)
+{
+    if (const char *mode = std::getenv("RECOMP_ROLLBACK"); mode != nullptr && *mode != '\0') {
+        std::cerr << "recomp runner: RECOMP_ROLLBACK cannot be combined with --replay\n";
+        return false;
+    }
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    rollback.replayData.assign(std::istreambuf_iterator<char>(file), {});
+    RecompReplayInfo info;
+    const std::uint8_t *hostSaves = nullptr, *joinerSaves = nullptr;
+    if (!recomp_replay_open(&rollback.replayReader, rollback.replayData.data(), rollback.replayData.size(), &info,
+            &hostSaves, &joinerSaves) || info.player > 1u) {
+        std::cerr << "recomp runner: --replay needs a replay file this runner can read\n";
+        return false;
+    }
+    if (std::string(info.digest, sizeof info.digest) != launch.digest) {
+        std::cerr << "recomp runner: the replay was recorded by another build\n";
+        return false;
+    }
+    const std::filesystem::path storage = launch.disc / ".recomp-storage";
+    if (!useSessionSaves(hostSaves, info.blob_size[0], storage)) return false;
+    adoptSettings(info.flags, storage);
+    rollback.mode = RollbackMode::Replay;
+    rollback.player = info.player;
+    rollback.delay = info.delay;
+    rollback.start = info.start_swap;
+    readTestHooks();
+    std::fprintf(stderr, "recomp netplay: replaying a session as player %u\n", rollback.player + 1u);
     return true;
 }
 
@@ -646,8 +839,12 @@ void recomp_netplay_session_install(const RecompNetplaySessionHost &runner)
     recomp_xapi_frame_clock_set_enabled(true);
     recomp_synctest_install_default_modules();
     recomp_synctest_set_guest_ram(host.guestRam, host.guestRamSize, host.writeWatch);
-    recomp_game_set_frame_boundary(onFrame);
+    recomp_game_set_frame_boundary(rollback.mode == RollbackMode::Replay ? onReplayFrame : onFrame);
     recomp_kernel_profile_mutation_hook = confirmSaveFrame;
+    if (rollback.lobby) {
+        rollback.networkDisplay = recomp_netplay_menu_display(rollback.disc / ".recomp-storage");
+        if (rollback.networkDisplay != 0) recomp_d3d_swap_hook = drawSessionOverlay;
+    }
 }
 
 bool recomp_netplay_session_pad(std::uint32_t port, RecompInputGamepad *pad, bool *present)
@@ -664,4 +861,5 @@ void recomp_netplay_session_exit()
 {
     if (rollback.mode == RollbackMode::Udp && rollback.active && rollback.session.frame < rollback.stop)
         recomp_netplay_send_goodbye(&rollback.net);
+    closeReplay();
 }

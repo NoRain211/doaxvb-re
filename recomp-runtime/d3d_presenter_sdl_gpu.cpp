@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "d3d_presenter.h"
+#include "input_text.h"
 #include "overlay_sdl_gpu.h"
 #include "screenshot.h"
 #include "d3d_draw_model.h"
@@ -458,6 +459,14 @@ void pumpEvents(RecompD3dPresenter *presenter)
                 event.window.windowID == SDL_GetWindowID(presenter->window)) {
                 presenter->close_requested = true;
             }
+        } else if (event.type == SDL_EVENT_TEXT_INPUT) {
+            for (const char *c = event.text.text; *c != '\0'; ++c)
+                if (static_cast<unsigned char>(*c) < 0x80u) recomp_input_text_char(static_cast<unsigned char>(*c));
+        } else if (event.type == SDL_EVENT_KEY_DOWN) {
+            // Text events carry no control keys; the text fields read them as WM_CHAR gives them.
+            if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) recomp_input_text_char('\r');
+            else if (event.key.key == SDLK_BACKSPACE) recomp_input_text_char('\b');
+            else if (event.key.key == SDLK_ESCAPE) recomp_input_text_char(0x1bu);
         }
     }
 }
@@ -2216,6 +2225,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
+    SDL_StartTextInput(window); // the online menu's address and chat fields
 
     SDL_GPUPresentMode present_mode = SDL_GPU_PRESENTMODE_VSYNC;
     if (preferMailbox(immediate_present_setting) &&

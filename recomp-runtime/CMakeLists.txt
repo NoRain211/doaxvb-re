@@ -816,6 +816,7 @@ if(RECOMP_PROGRAM_DIR)
         synctest_modules.c
         guest_snapshot.c
         rollback.c
+        replay.c
         netplay.c
         netplay_names.c
         netplay_upnp.c
@@ -832,7 +833,8 @@ if(RECOMP_PROGRAM_DIR)
         ../xbe/xbe_parser.cpp)
     target_compile_definitions(recomp_program_runner PRIVATE
         RECOMP_FULL_PROGRAM
-        RECOMP_D3D_FRAME_ENABLED)
+        RECOMP_D3D_FRAME_ENABLED
+        RECOMP_PORTABLE_MATH) # every host computes the same transcendentals
     # Only runner.cpp reads it, so a new commit does not recompile the generated program.
     set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_NETPLAY_BUILD="${_netplay_build}")
     target_include_directories(recomp_program_runner PRIVATE
@@ -854,7 +856,7 @@ if(RECOMP_PROGRAM_DIR)
         recomp_use_sdl3(recomp_program_runner)
     endif()
     recomp_use_overlay(recomp_program_runner)
-    target_link_libraries(recomp_program_runner PRIVATE libminiupnpc-static)
+    target_link_libraries(recomp_program_runner PRIVATE libminiupnpc-static recomp_portable_math)
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
@@ -970,7 +972,7 @@ else()
         d3d_texture_model.c)
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
     recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test)
-    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)

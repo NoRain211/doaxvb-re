@@ -100,6 +100,16 @@ A check during the boot's loading (frame 200) differed in 2.5 MB of guest
 RAM and the fiber state. Sessions roll back only inside a match, so loading
 runs in lockstep, as in doa2u-re.
 
+Two machines must also compute the same floating point results. The lifter
+(`4500b88` on the recipe branch) emits the x87 transcendentals (fsin,
+fcos, fsincos, fptan, fpatan, fyl2x, fyl2xp1 and f2xm1, as
+`expm1(x ln 2)`) as calls to `recomp_sin` and the rest. The runner
+defines `RECOMP_PORTABLE_MATH`, so `recomp_types.h` maps them to musl's
+(`musl_math/`), built the same on every host; tests keep the host's libm.
+125 game functions changed. RCPSS and RSQRTSS already lift as exact
+division and square root. A UDP session from boot on this program matched
+guest RAM to frame 4,000.
+
 ## Sessions
 
 `netplay_session.cpp` is doa2u-re's session driver on this runtime's
@@ -206,7 +216,8 @@ The game thread publishes each frame's quads, and the presenter's thread
 draws them with Dear ImGui into a 640 x 480 area centered on the window,
 in the same pass as the overlay text (`overlay_imgui_panel.cpp`). Typed
 characters come from the window's `WM_CHAR` (`input_text.c`); the SDL
-presenter does not feed them yet, so its address editor takes the pad only.
+presenter feeds its text events and Enter, Backspace and Esc the same way.
+Pasting uses the Windows clipboard only.
 
 When both players are ready, doa2u-re reboots the game in the same process.
 Here each runner starts again instead (`recomp_runner_relaunch`) with its
@@ -228,6 +239,24 @@ with guest RAM identical at the end. Killing the joiner's session ended the
 host's after 15 s (`rollback:peer-timeout`), and the host's runner came
 back to the menu.
 
+## Replays and the network display
+
+Each session started by `--netplay-host` or `--netplay-join`, and so
+each room's session, records a replay in the player's own
+`.recomp-storage/replays` (doa2u-re's `replay.c`, tag `DXBR`). It holds
+the build digest, the side, the input delay, the host's options and saves,
+the loop pass the session started at and both ports' confirmed pads, so it
+stays on this computer. `--replay <file>` plays it again at 60 Hz from the
+same saves and options, walks the menus as the session did, and stops at
+the end of the file; another build's replay is refused.
+
+A 3,000-frame session recorded on both sides; the joiner's replay, played
+in its own play folder, ended with the same guest RAM as both live runners.
+
+NETPLAY SETTINGS' network display draws in the window's bottom right
+corner during a session: the ping, or also the input delay, the deepest
+rewind of the last second and how many frames this side runs ahead.
+
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display
@@ -242,11 +271,9 @@ back to the menu.
 
 ## Still to do
 
-- Route the lifter's x87 transcendentals through `recomp_sin` and the
-  rest on this game's recipe branch, as doa2u-re's lifter commit `f122d6d`
-  does, and link `musl_math` into the runner. This recipe already lifts
-  RCPSS and RSQRTSS as exact division and square root, so they need no
-  change. Moving the lifter pin needs a play test (AGENTS.md).
-- Replays, the session's network display, and reopening the room after a
-  session, as in doa2u-re.
-- Sessions over a lag relay.
+- Reopening the room after a session, as doa2u-re does; the runner comes
+  back to the online menu.
+- A notice over the last frame while the other player is quiet. The
+  presenter has no way to show a held frame again, so a stall only logs
+  and ends the session after its grace.
+- Sessions over a lag relay, between two machines, and between hosts.

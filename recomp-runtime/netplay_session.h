@@ -42,6 +42,11 @@ struct RecompNetplayLaunch {
    settings that change the simulation. Call before recomp_save_initialize.
    False with a message when the lobby fails. */
 bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch);
+/* --replay <file>: plays a session a lobby runner recorded in
+   .recomp-storage/replays again, from the host's saves and settings it keeps.
+   Call before recomp_save_initialize. False with a message for another
+   build's or a damaged file. */
+bool recomp_netplay_session_load_replay(const std::string &path, const RecompNetplayLaunch &launch);
 /* Once a frame offline: when the menu's room starts a match, the arguments
    that start this runner again as the room's session. The room's socket and
    router forward are closed, so the new runner can take the port. */

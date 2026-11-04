@@ -604,6 +604,7 @@ int main(int argc, char **argv)
     std::string milestoneLog;
     RecompNetplayLaunch netplayLaunch;
     std::string netplayReturn;
+    std::string replayPath;
     runnerPath = argv[0];
     for (int i = 1; i < argc; ++i) {
         if (isNetplayArgument(argv[i])) ++i;
@@ -630,7 +631,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
             arg == "--input-wait-after-poll" || arg == "--input-resume-file" ||
             arg == "--input-paused-analog-file" || arg == "--netplay-host" ||
             arg == "--netplay-join" || arg == "--netplay-delay" ||
-            arg == "--netplay-room-socket" || arg == "--netplay-return";
+            arg == "--netplay-room-socket" || arg == "--netplay-return" || arg == "--replay";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -664,6 +665,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
             netplayLaunch.roomSocket = argv[++i]; // from a room's runner (recomp_netplay_session_room_launch)
         } else if (arg == "--netplay-return") {
             netplayReturn = argv[++i]; // why the room's session ended
+        } else if (arg == "--replay") {
+            replayPath = argv[++i];
         } else if (arg == "--input-wait-after-poll") {
             const std::string value = argv[++i];
             if (!parsePositiveU64(value, inputWaitAfterPoll) ||
@@ -850,7 +853,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
                          " [--input-start-pulse-at <poll>]"
                          " [--input-buttons-at <poll>:<hexmask>]"
                          " [--input-analog-at <poll>:<index>:<value>]"
-                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port>]\n";
+                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]\n";
             return 64;
         }
     }
@@ -903,7 +906,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
                      " [--input-start-pulse-at <poll>]"
                      " [--input-buttons-at <poll>:<hexmask>]"
                      " [--input-analog-at <poll>:<index>:<value>]"
-                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port>]\n";
+                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]\n";
         return 64;
     }
     recomp_stop_configure(
@@ -938,8 +941,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
     }
 
 #ifdef RECOMP_FULL_PROGRAM
-    if (netplayLaunch.hostPort != 0u && !netplayLaunch.join.empty()) {
-        std::cerr << "recomp runner: --netplay-host and --netplay-join cannot be combined\n";
+    if ((netplayLaunch.hostPort != 0u) + !netplayLaunch.join.empty() + !replayPath.empty() > 1) {
+        std::cerr << "recomp runner: --netplay-host, --netplay-join and --replay cannot be combined\n";
         return 64;
     }
     {
@@ -955,6 +958,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
             return 1;
         }
     }
+    if (!replayPath.empty() && !recomp_netplay_session_load_replay(replayPath, netplayLaunch)) return 1;
 #endif
 
     if (!recomp_save_initialize(recomp_disc_root_path)) {
