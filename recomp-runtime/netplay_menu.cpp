@@ -528,14 +528,19 @@ void recomp_netplay_menu_frame()
     onFrame();
 }
 
-void recomp_netplay_menu_reopen(const std::string &reason)
+static std::string endedBecause(const std::string &reason)
 {
-    std::lock_guard<std::mutex> guard(menu.lock);
-    menu.reopenMessage = reason == "rollback:peer-left" ? "THE OTHER PLAYER LEFT THE MATCH."
+    return reason == "rollback:peer-left" ? "THE OTHER PLAYER LEFT THE MATCH."
         : reason == "rollback:peer-timeout" ? "THE OTHER PLAYER STOPPED ANSWERING."
         : reason == "rollback:desync" ? "THE TWO GAMES WENT OUT OF STEP."
         : reason == "netplay:session-failed" ? "THE MATCH COULD NOT START."
         : "THE MATCH ENDED.";
+}
+
+void recomp_netplay_menu_reopen(const std::string &reason)
+{
+    std::lock_guard<std::mutex> guard(menu.lock);
+    menu.reopenMessage = endedBecause(reason);
 }
 
 void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad)
@@ -573,7 +578,7 @@ void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad)
 }
 
 bool recomp_netplay_menu_take_launch(std::uint32_t &hostPort, std::uint32_t &delay, std::string &join,
-    RecompNetplay &socket)
+    RecompNetplayRoomState &room, RecompNetplay &socket)
 {
     std::lock_guard<std::mutex> guard(menu.lock);
     if (!menu.launched) return false;
@@ -581,6 +586,7 @@ bool recomp_netplay_menu_take_launch(std::uint32_t &hostPort, std::uint32_t &del
     hostPort = menu.lobby.hosting ? menu.port : 0u;
     delay = menu.delay;
     join = menu.lobby.hosting ? std::string() : menu.lobby.peerAddress;
+    room = {menu.lobby.hosting, menu.lobby.listing, menu.lobby.found, menu.lobby.peerAddress};
     socket = menu.net; // the menu reopens nothing until the session hands it back
     return true;
 }
@@ -593,9 +599,14 @@ int recomp_netplay_menu_display(const std::filesystem::path &storage)
     return settings.display;
 }
 
-void recomp_netplay_menu_return_to_room(const RecompNetplay &socket)
+void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const RecompNetplayRoomState &room,
+    const std::string &reason)
 {
     std::lock_guard<std::mutex> guard(menu.lock);
+    menu.lobby.hosting = room.hosting;
+    menu.lobby.listing = room.listing;
+    menu.lobby.found = room.found;
+    menu.lobby.peerAddress = room.peerAddress;
     menu.openedBy = 0u;
     menu.message.clear();
     menu.covering = true;
@@ -618,4 +629,5 @@ void recomp_netplay_menu_return_to_room(const RecompNetplay &socket)
         join(true);
     }
     if (menu.screen != Screen::Room) recomp_netplay_close(&menu.net);
+    else menu.message = endedBecause(reason);
 }

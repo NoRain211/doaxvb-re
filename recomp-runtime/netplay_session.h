@@ -34,6 +34,7 @@ struct RecompNetplayLaunch {
        the room socket's port, peer and matchmaker, so the path the room's
        routers opened stays; a session that ends goes back to the menu. */
     std::string roomSocket;
+    std::string room;           // the room's state (--netplay-room), handed back when the session ends
     std::string digest;         // this build; the other runner must match it
     std::filesystem::path disc; // the play folder
 };
@@ -51,6 +52,14 @@ bool recomp_netplay_session_load_replay(const std::string &path, const RecompNet
    that start this runner again as the room's session. The room's socket and
    router forward are closed, so the new runner can take the port. */
 bool recomp_netplay_session_room_launch(std::vector<std::string> &args);
+/* The arguments that start this runner again after a room's session,
+   with the stop reason, so the room opens again. */
+std::vector<std::string> recomp_netplay_session_return_args(const RecompNetplayLaunch &launch,
+    const std::string &reason);
+/* Offline after a room's session: opens the room again on the session's
+   port, through the menu. False when the launch names no room or the port
+   cannot be had; the menu then only says why the match ended. */
+bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const std::string &reason);
 /* Starts this runner again with its own arguments plus extra, and exits.
    The runner implements it. */
 [[noreturn]] void recomp_runner_relaunch(const std::vector<std::string> &extra);

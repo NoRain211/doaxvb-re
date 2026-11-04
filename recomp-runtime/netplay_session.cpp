@@ -53,6 +53,7 @@ struct RollbackRun {
     bool interrupted = false;
     bool walking = false; // the menus are walked to Two Players for both sides
     bool fromRoom = false; // a room started this runner, so an ending session goes back to the menu
+    RecompNetplayLaunch launch; // a room's session hands its socket and state back (recomp_netplay_session_return_args)
     std::uint32_t pass = 0u; // loop passes since boot
     std::uint32_t start = 0u, stop = UINT32_MAX, lag = 4u, delay = 0u, player = 0u;
     std::uint32_t frontier = 0u; // first session frame never run
@@ -138,10 +139,10 @@ static void endSession(const char *reason)
     if (rollback.mode == RollbackMode::Udp) recomp_netplay_send_goodbye(&rollback.net);
     closeReplay();
     if (!rollback.fromRoom) recomp_stop(4, "%s", reason);
-    std::fprintf(stderr, "recomp netplay: session ended (%s); back to the online menu\n", reason);
+    std::fprintf(stderr, "recomp netplay: session ended (%s); back to the room\n", reason);
     recomp_netplay_close(&rollback.net);
     restoreSettings();
-    recomp_runner_relaunch({"--netplay-return", reason});
+    recomp_runner_relaunch(recomp_netplay_session_return_args(rollback.launch, reason));
 }
 
 /* A stalled session ends after its grace: 15 s once the other player has
@@ -687,6 +688,7 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
         return false;
     }
     const bool hosting = launch.hostPort != 0u;
+    rollback.launch = launch;
     // A room's socket: <local port>,<peer address>,<peer port>,<server address>,<server port>,<relay>, network order.
     unsigned long room[6] = {};
     rollback.fromRoom = !launch.roomSocket.empty();
@@ -802,12 +804,20 @@ bool recomp_netplay_session_load_replay(const std::string &path, const RecompNet
     return true;
 }
 
+/* A room's socket: <local port>,<peer address>,<peer port>,<server address>,<server port>,<relay>, network order. */
+static bool readRoomSocket(const std::string &text, unsigned long (&room)[6])
+{
+    return std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu", &room[0], &room[1], &room[2], &room[3], &room[4],
+               &room[5]) == 6 && room[0] != 0u && room[0] <= 65535u;
+}
+
 bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
 {
     std::uint32_t port = 0u, delay = 0u;
     std::string join; // the address typed, when any; the socket's peer stands for every joiner
+    RecompNetplayRoomState state;
     RecompNetplay socket;
-    if (!recomp_netplay_menu_take_launch(port, delay, join, socket)) return false;
+    if (!recomp_netplay_menu_take_launch(port, delay, join, state, socket)) return false;
     const std::uint16_t local = recomp_netplay_local_port(&socket);
     const auto *peer = reinterpret_cast<const std::uint8_t *>(&socket.peer_address); // network order
     const unsigned peerPort = (socket.peer_port & 0xffu) << 8 | socket.peer_port >> 8;
@@ -817,7 +827,9 @@ bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
     std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u", local, static_cast<unsigned long>(socket.peer_address),
         socket.peer_port, static_cast<unsigned long>(socket.match.server_address), socket.match.server_port,
         socket.match.relay ? 1u : 0u);
-    args = {"--netplay-room-socket", text};
+    args = {"--netplay-room-socket", text, "--netplay-room",
+        std::string(state.hosting ? "1," : "0,") + (state.listing ? "1," : "0,") + (state.found ? "1," : "0,") +
+            state.peerAddress};
     if (port != 0u) {
         args.insert(args.end(), {"--netplay-host", std::to_string(port), "--netplay-delay", std::to_string(delay)});
     } else {
@@ -829,6 +841,47 @@ bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
     recomp_netplay_close_router_port();
     std::fprintf(stderr, "recomp netplay: the room starts the match; starting again as the %s\n",
         port != 0u ? "host" : "joiner");
+    return true;
+}
+
+std::vector<std::string> recomp_netplay_session_return_args(const RecompNetplayLaunch &launch,
+    const std::string &reason)
+{
+    std::vector<std::string> args{"--netplay-return", reason};
+    if (!launch.room.empty())
+        args.insert(args.end(), {"--netplay-room-socket", launch.roomSocket, "--netplay-room", launch.room});
+    return args;
+}
+
+bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const std::string &reason)
+{
+    // <hosting>,<listing>,<found>,<peer address>, from recomp_netplay_session_room_launch.
+    unsigned long room[6] = {};
+    if (launch.room.size() < 6u || launch.room[1] != ',' || launch.room[3] != ',' || launch.room[5] != ',' ||
+        !readRoomSocket(launch.roomSocket, room))
+        return false;
+    const RecompNetplayRoomState state{launch.room[0] == '1', launch.room[2] == '1', launch.room[4] == '1',
+        launch.room.substr(6u)};
+    RecompNetplay socket;
+    // The session's runner may still hold the port while it exits.
+    bool open = false;
+    for (int tries = 0; tries < 20 && !(open = recomp_netplay_listen(&socket, static_cast<std::uint16_t>(room[0])));
+         ++tries) {
+        recomp_netplay_close(&socket);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!open) {
+        recomp_netplay_close(&socket);
+        std::fprintf(stderr, "recomp netplay: cannot open UDP port %lu again; the room stays closed\n", room[0]);
+        return false;
+    }
+    socket.peer_address = static_cast<std::uint32_t>(room[1]);
+    socket.peer_port = static_cast<std::uint16_t>(room[2]);
+    socket.match.server_address = static_cast<std::uint32_t>(room[3]);
+    socket.match.server_port = static_cast<std::uint16_t>(room[4]);
+    socket.match.relay = room[5] != 0u;
+    std::fprintf(stderr, "recomp netplay: back in the room as the %s\n", state.hosting ? "host" : "joiner");
+    recomp_netplay_menu_return_to_room(socket, state, reason);
     return true;
 }
 

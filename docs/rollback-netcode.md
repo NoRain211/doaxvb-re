@@ -162,6 +162,7 @@ Results on one Windows machine, clang Release runner, two play folders:
 | Loopback from boot with random remote pads in the menus, lag 8 against lag 0 | 3,000 | 2,984 | identical |
 | UDP, CPU match from pass 2400, delay 0 | 1,200 | 600 per side | identical |
 | UDP from boot: walk, both pick, Two Players match, delay 0 | 4,000 | about 1,760 per side | identical |
+| UDP from boot through a relay adding 50 ms each way, 10 ms jitter and 2% loss, delay 3 | 4,000 | about 1,220 per side | identical |
 
 In the last run character select showed at frame 182 and the match at 441;
 slots 0 and 1 were people on ports 0 and 1, slots 2 and 3 their CPU
@@ -227,9 +228,14 @@ the routers opened and a relay stay in use. Resetting every adapter that
 keeps state between boots would be needed for an in-process reboot. The
 window closes and opens again. A session started from a room that ends
 (the other player left or went quiet, a desync, a failed lobby) starts the
-runner offline again with `--netplay-return`, and the menu opens by itself
-with the reason once the main menu has EXHIBITION chosen. The room is not
-reopened; the players host or join again.
+runner offline again with `--netplay-return`, the room socket and the
+room's state (`--netplay-room`: hosting, listed, found by FIND MATCH, the
+peer's address), which the room's runner passed to the session. The room
+opens again at once over the game on the same port, and the reason shows in
+it; the host lists it again and waits, and the joiner calls the host again.
+A runner that cannot have the port back within 2 s opens the menu with the
+reason once the main menu has EXHIBITION chosen. Leaving the room leaves
+the game where it booted to.
 
 Two runners on one machine, each driven by an input script, went through
 the menu: the host opened a private room, the joiner joined it from its
@@ -238,6 +244,12 @@ session, walked to character select at frame 182 and played to frame 1,500
 with guest RAM identical at the end. Killing the joiner's session ended the
 host's after 15 s (`rollback:peer-timeout`), and the host's runner came
 back to the menu.
+
+With the room reopening, the same test went on: the host's runner came
+back into its room, a new joiner joined it from the menu, both pressed
+READY and the second session played with every check matching. Killing the
+host instead brought the joiner back into its room, and it joined a new
+host's room on the same port for a second session.
 
 ## Replays and the network display
 
@@ -276,4 +288,4 @@ rewind of the last second and how many frames this side runs ahead.
 - A notice over the last frame while the other player is quiet. The
   presenter has no way to show a held frame again, so a stall only logs
   and ends the session after its grace.
-- Sessions over a lag relay, between two machines, and between hosts.
+- Sessions between two machines and between operating systems.

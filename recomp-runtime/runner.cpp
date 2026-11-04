@@ -104,7 +104,7 @@ std::vector<std::string> runnerArguments;
 bool isNetplayArgument(const std::string &arg)
 {
     return arg == "--netplay-host" || arg == "--netplay-join" || arg == "--netplay-delay" ||
-        arg == "--netplay-room-socket" || arg == "--netplay-return";
+        arg == "--netplay-room-socket" || arg == "--netplay-room" || arg == "--netplay-return";
 }
 
 extern "C" const char *recomp_disc_root_path;
@@ -631,7 +631,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
             arg == "--input-wait-after-poll" || arg == "--input-resume-file" ||
             arg == "--input-paused-analog-file" || arg == "--netplay-host" ||
             arg == "--netplay-join" || arg == "--netplay-delay" ||
-            arg == "--netplay-room-socket" || arg == "--netplay-return" || arg == "--replay";
+            arg == "--netplay-room-socket" || arg == "--netplay-room" || arg == "--netplay-return" ||
+            arg == "--replay";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -663,6 +664,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
             netplayLaunch.join = argv[++i];
         } else if (arg == "--netplay-room-socket") {
             netplayLaunch.roomSocket = argv[++i]; // from a room's runner (recomp_netplay_session_room_launch)
+        } else if (arg == "--netplay-room") {
+            netplayLaunch.room = argv[++i];
         } else if (arg == "--netplay-return") {
             netplayReturn = argv[++i]; // why the room's session ended
         } else if (arg == "--replay") {
@@ -954,7 +957,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
     if (netplayLaunch.hostPort != 0u || !netplayLaunch.join.empty()) {
         if (!recomp_netplay_session_connect(netplayLaunch)) {
             // A room's runner goes back to the menu; one from the command line stops.
-            if (!netplayLaunch.roomSocket.empty()) recomp_runner_relaunch({"--netplay-return", "netplay:session-failed"});
+            if (!netplayLaunch.roomSocket.empty())
+                recomp_runner_relaunch(recomp_netplay_session_return_args(netplayLaunch, "netplay:session-failed"));
             return 1;
         }
     }
@@ -1124,7 +1128,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
             [storage] { return recomp_netplay_own_profile_name(storage / "partition1"); });
         recomp_input_adapter_set_source(menuSample);
         recomp_d3d_swap_hook = menuFrame;
-        if (!netplayReturn.empty()) recomp_netplay_menu_reopen(netplayReturn);
+        if (!netplayReturn.empty() && !recomp_netplay_session_reopen_room(netplayLaunch, netplayReturn))
+            recomp_netplay_menu_reopen(netplayReturn);
     }
 #endif
 #ifndef RECOMP_FULL_PROGRAM

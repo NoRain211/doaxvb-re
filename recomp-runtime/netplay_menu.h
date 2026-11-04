@@ -26,15 +26,22 @@ void recomp_netplay_menu_frame();
 void recomp_netplay_menu_reopen(const std::string &reason);
 /* Sees each sampled pad first; while the menu is open the game gets an idle pad. */
 void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad);
+/* What a room keeps through its session, so it can open again after it. */
+struct RecompNetplayRoomState {
+    bool hosting = false, listing = false, found = false;
+    std::string peerAddress;
+};
 /* Takes a room's launch, once: hostPort and delay for the host, or join as
-   host:port for the joiner, and the room's open socket, which the caller
-   now owns. */
+   host:port for the joiner, the room's state, and the room's open socket,
+   which the caller now owns. */
 bool recomp_netplay_menu_take_launch(std::uint32_t &hostPort, std::uint32_t &delay, std::string &join,
-    RecompNetplay &socket);
+    RecompNetplayRoomState &room, RecompNetplay &socket);
 /* The session's network display from NETPLAY SETTINGS: 0 off, 1 ping, 2 full. */
 int recomp_netplay_menu_display(const std::filesystem::path &storage);
 /* Opens the room a session came from again on the session's socket, which
-   the menu takes back: the host listens, the joiner calls the host. */
-void recomp_netplay_menu_return_to_room(const RecompNetplay &socket);
+   the menu takes back: the host listens, the joiner calls the host. reason
+   is the session's stop reason, shown in the room. */
+void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const RecompNetplayRoomState &room,
+    const std::string &reason);
 
 #endif
