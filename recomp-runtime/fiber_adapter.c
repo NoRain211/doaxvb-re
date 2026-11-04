@@ -7,6 +7,7 @@
 #include "native_fiber.h"
 
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,6 @@ enum {
 };
 
 typedef struct RecompHostFiber {
-    bool active;
     uint32_t guest_handle;
     uint32_t guest_stack_base;
     uint32_t guest_stack_size;
@@ -30,7 +30,6 @@ typedef struct RecompHostFiber {
 } RecompHostFiber;
 
 static RecompFiberModel fiber_model;
-static RecompFiberModel checkpoint_model;
 static RecompHostFiber host_fibers[RECOMP_FIBER_MAX_COUNT];
 static RecompHostFiber *current_host_fiber;
 static bool converted_thread;
@@ -75,11 +74,18 @@ static void fail_fiber(const char *reason, uint32_t guest_handle)
     recomp_stop(2, "fiber:%s:0x%08" PRIx32, reason, guest_handle);
 }
 
+/* A deleted fiber's slot keeps its handle while parked; the model decides
+   whether the fiber still exists. */
+static bool host_fiber_live(const RecompHostFiber *host)
+{
+    return recomp_fiber_find(&fiber_model, host->guest_handle) != NULL;
+}
+
 static RecompHostFiber *host_fiber_find(uint32_t guest_handle)
 {
+    if (recomp_fiber_find(&fiber_model, guest_handle) == NULL) return NULL;
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        if (host_fibers[i].active &&
-            host_fibers[i].guest_handle == guest_handle) {
+        if (host_fibers[i].guest_handle == guest_handle) {
             return &host_fibers[i];
         }
     }
@@ -94,9 +100,8 @@ static RecompHostFiber *host_fiber_add(
         return NULL;
     }
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        if (!host_fibers[i].active) {
+        if (!host_fiber_live(&host_fibers[i])) {
             host_fibers[i] = (RecompHostFiber){
-                .active = true,
                 .guest_handle = guest_handle,
                 .native_fiber = native_fiber,
             };
@@ -118,7 +123,7 @@ static RecompHostFiber *host_fiber_find_native(void *native_fiber)
     return NULL;
 }
 
-static VOID WINAPI fiber_entry(void *parameter)
+static void fiber_entry(void *parameter)
 {
     RecompHostFiber *host = parameter;
     RecompFiber *fiber = recomp_fiber_find(&fiber_model, host->guest_handle);
@@ -193,13 +198,15 @@ void recomp_fiber_adapter_state_save(void *state)
     FiberAdapterState *out = state;
     RecompHostFiber *running = current_host_fiber;
 
-    memset(out, 0, sizeof *out);
-    out->model = fiber_model;
+    /* Only slot headers are cleared: equal and restore never read a native
+       stack past its saved bytes, and the 32 stack buffers total ~2 MiB. */
+    memcpy(&out->model, &fiber_model, sizeof out->model);
     out->current_host_handle = running != NULL ? running->guest_handle : 0u;
     out->converted_thread = converted_thread;
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
         RecompHostFiber *host = &host_fibers[i];
 
+        memset(&out->hosts[i], 0, offsetof(FiberHostState, native));
         if (host->guest_handle == 0u || host->native_fiber == NULL) continue;
         out->hosts[i].guest_handle = host->guest_handle;
         out->hosts[i].guest_stack_base = host->guest_stack_base;
@@ -262,7 +269,14 @@ void recomp_fiber_adapter_state_restore(const void *state)
         const FiberHostState *saved = &in->hosts[i];
         RecompHostFiber *host;
 
-        if (saved->guest_handle == 0u) continue;
+        if (saved->guest_handle == 0u) {
+            /* Slots the snapshot did not have are free again; the native
+               stack stays for a later create to restart. */
+            host_fibers[i].guest_handle = 0u;
+            host_fibers[i].guest_stack_base = 0u;
+            host_fibers[i].guest_stack_size = 0u;
+            continue;
+        }
         host = host_fiber_find_native(saved->native_fiber);
         if (host == NULL) fail_fiber("restore-missing-host", saved->guest_handle);
         host->guest_handle = saved->guest_handle;
@@ -274,20 +288,6 @@ void recomp_fiber_adapter_state_restore(const void *state)
         if (!recomp_native_fiber_state_restore(host->native_fiber, &saved->native))
             fail_fiber("restore-context", saved->guest_handle);
     }
-    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        RecompHostFiber *host = &host_fibers[i];
-
-        if (in->hosts[i].guest_handle == 0u) {
-            /* Slots the snapshot did not have are free again; the native
-               stack stays for a later create to restart. */
-            host->guest_handle = 0u;
-            host->guest_stack_base = 0u;
-            host->guest_stack_size = 0u;
-            host->active = false;
-        }
-        if (host->guest_handle == 0u) continue;
-        host->active = recomp_fiber_find(&fiber_model, host->guest_handle) != NULL;
-    }
 }
 
 size_t recomp_fiber_adapter_stack_ranges(RecompFiberStackRange *ranges, size_t capacity)
@@ -295,7 +295,7 @@ size_t recomp_fiber_adapter_stack_ranges(RecompFiberStackRange *ranges, size_t c
     size_t count = 0u;
 
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        if (!host_fibers[i].active || host_fibers[i].guest_stack_base == 0u) continue;
+        if (!host_fiber_live(&host_fibers[i]) || host_fibers[i].guest_stack_base == 0u) continue;
         if (count < capacity) {
             ranges[count].base = host_fibers[i].guest_stack_base;
             ranges[count].size = host_fibers[i].guest_stack_size;
@@ -310,7 +310,7 @@ void recomp_fiber_adapter_report(void)
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
         const RecompHostFiber *host = &host_fibers[i];
 
-        if (!host->active) {
+        if (!host_fiber_live(host)) {
             continue;
         }
         fprintf(
@@ -385,7 +385,7 @@ static void create_fiber_adapter(void)
     stack_size = (stack_size + 0xfffu) & 0xfffff000u;
     host = NULL;
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        if (!host_fibers[i].active) {
+        if (!host_fiber_live(&host_fibers[i])) {
             host = &host_fibers[i];
             break;
         }
@@ -437,7 +437,6 @@ static void create_fiber_adapter(void)
         fail_fiber("create-host", guest_handle);
     }
     *host = (RecompHostFiber){
-        .active = true,
         .guest_handle = guest_handle,
         .guest_stack_base = stack_base,
         .guest_stack_size = stack_size,
@@ -802,7 +801,6 @@ static void delete_fiber_adapter(void)
     /* The guest allocator is monotonic. Keep one stack per host slot so a
        delete/create cycle reuses its address instead of exhausting the heap,
        and keep the native context parked for a snapshot rewind. */
-    host->active = false;
     if (!recomp_fiber_remove(&fiber_model, guest_handle)) {
         fail_fiber("delete-state", guest_handle);
     }
@@ -823,20 +821,4 @@ RecompFunction recomp_fiber_lookup_manual(uint32_t guest_address)
     default:
         return NULL;
     }
-}
-
-void recomp_fiber_adapter_checkpoint(void)
-{
-    checkpoint_model = fiber_model;
-}
-
-void recomp_fiber_adapter_rollback(void)
-{
-    for (unsigned i = 0; i < RECOMP_FIBER_MAX_COUNT; ++i) {
-        if (checkpoint_model.fibers[i].active != fiber_model.fibers[i].active ||
-            checkpoint_model.fibers[i].guest_handle != fiber_model.fibers[i].guest_handle) {
-            fail_fiber("display-pass-changed-fibers", fiber_model.fibers[i].guest_handle);
-        }
-    }
-    fiber_model = checkpoint_model;
 }

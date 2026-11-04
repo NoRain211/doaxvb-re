@@ -88,8 +88,8 @@ if(WIN32 OR SDL3_FOUND)
         recomp_use_sdl3(recomp_imgui)
     endif()
 endif()
-# Adds the presenter's overlay drawer and the screen queue it draws; the text
-# model, overlay_text.c, is added where the game side is.
+# Adds the presenter's overlay drawer; the text model and screen queue,
+# overlay_text.c, are added where the game side is.
 function(recomp_use_overlay target)
     target_sources(${target} PRIVATE overlay_screen.c)
     if(WIN32)
@@ -347,6 +347,7 @@ add_executable(recomp_runtime_test
     game_scheduler.c
     game_display.c
     game_rollback.c
+    guest_snapshot.c
     game_frame_replay.c
     game_scene.c
     game_world.c
@@ -491,6 +492,7 @@ if(RECOMP_ENTRY_SOURCE)
         runtime.c
         stop_report.c
         runner.cpp
+        guest_snapshot.c
         runner_imports.c
         kernel_ordinals.c
         kernel_dispatch.c
@@ -823,6 +825,7 @@ if(RECOMP_PROGRAM_DIR)
         rollback.c
         replay.c
         netplay.c
+        netplay_room.c
         netplay_names.c
         netplay_upnp.c
         netplay_game.c
@@ -832,14 +835,14 @@ if(RECOMP_PROGRAM_DIR)
         netplay_menu_room.cpp
         netplay_menu_find.cpp
         netplay_session.cpp
+        netplay_launch.cpp
         "${_missing_source}"
         ${_recomp_program_sources}
         ../xbe/sha.cpp
         ../xbe/xbe_parser.cpp)
     target_compile_definitions(recomp_program_runner PRIVATE
         RECOMP_FULL_PROGRAM
-        RECOMP_D3D_FRAME_ENABLED
-        RECOMP_PORTABLE_MATH) # every host computes the same transcendentals
+        RECOMP_D3D_FRAME_ENABLED)
     # Only runner.cpp reads it, so a new commit does not recompile the generated program.
     set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_NETPLAY_BUILD="${_netplay_build}")
     target_include_directories(recomp_program_runner PRIVATE
@@ -1002,8 +1005,8 @@ add_executable(recomp_rollback_test rollback.c rollback_test.c)
 add_test(NAME recomp-runtime-rollback COMMAND recomp_rollback_test)
 add_executable(recomp_replay_test replay.c replay_test.c)
 add_test(NAME recomp-runtime-replay COMMAND recomp_replay_test)
-add_executable(recomp_netplay_test netplay.c netplay_names.c rollback.c netplay_test.c)
-add_executable(recomp_netplay_lobby_test netplay.c netplay_names.c rollback.c netplay_lobby_test.cpp)
+add_executable(recomp_netplay_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_test.c)
+add_executable(recomp_netplay_lobby_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_lobby_test.cpp)
 if(WIN32)
     target_link_libraries(recomp_netplay_test PRIVATE ws2_32)
     target_link_libraries(recomp_netplay_lobby_test PRIVATE ws2_32)
@@ -1022,7 +1025,7 @@ add_test(NAME recomp-runtime-netplay-profile COMMAND recomp_netplay_profile_test
 add_library(recomp_portable_math STATIC
     musl_math/sin.c musl_math/cos.c musl_math/tan.c musl_math/__sin.c musl_math/__cos.c musl_math/__tan.c
     musl_math/__rem_pio2.c musl_math/__rem_pio2_large.c musl_math/atan.c musl_math/atan2.c
-    musl_math/log2.c musl_math/log1p.c musl_math/expm1.c)
+    musl_math/log2.c musl_math/expm1.c)
 target_include_directories(recomp_portable_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 if(NOT WIN32)
     target_link_libraries(recomp_portable_math PUBLIC m)

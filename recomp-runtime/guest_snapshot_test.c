@@ -143,6 +143,14 @@ int main(void)
     uint8_t *ram = recomp_guest_ram_allocate(RAM_SIZE, &write_watch);
     if (ram == NULL) return fail("allocate", "guest RAM");
     int result = run(ram, write_watch, write_watch ? "write watch" : "page compare");
+    if (result == 0 && write_watch) {
+        /* Both would reset the same tracking, so the second must be refused. */
+        RecompGuestSnapshots a, b;
+        if (!recomp_snapshots_init(&a, ram, RAM_SIZE, true, 1u)) result = fail("exclusion", "first init");
+        else if (recomp_snapshots_init(&b, ram, RAM_SIZE, true, 1u)) result = fail("exclusion", "second write watch");
+        recomp_snapshots_free(&a);
+        recomp_snapshots_free(&b);
+    }
     recomp_guest_ram_free(ram);
     if (result != 0) return result;
     /* The page-compare path runs on every host. */

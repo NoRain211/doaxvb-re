@@ -24,7 +24,7 @@ typedef struct RecompNativeFiber {
     size_t stack_allocation;
     uint8_t *stack_base;
     uint8_t *stack_limit;
-    LPFIBER_START_ROUTINE entry;
+    RecompNativeFiberEntry entry;
     void *parameter;
     bool started;
     bool suspended;
@@ -59,7 +59,7 @@ static void fiber_trampoline(void *parameter)
     recomp_stop(2, "fiber:trampoline-returned");
 }
 
-static RecompNativeFiber *current_fiber(void)
+void *recomp_native_fiber_current(void)
 {
     if (active_fiber == NULL) {
         RecompNativeFiber *fiber = calloc(1u, sizeof *fiber);
@@ -89,12 +89,7 @@ static void start_fiber(RecompNativeFiber *fiber)
     RtlRestoreContext(&context, NULL);
 }
 
-static void *native_current(void)
-{
-    return current_fiber();
-}
-
-void *recomp_native_fiber_create(LPFIBER_START_ROUTINE entry, void *parameter)
+void *recomp_native_fiber_create(RecompNativeFiberEntry entry, void *parameter)
 {
     RecompNativeFiber *fiber = calloc(1u, sizeof *fiber);
     const size_t allocation = NATIVE_STACK_BYTES + NATIVE_STACK_GUARD;
@@ -121,9 +116,9 @@ void *recomp_native_fiber_create(LPFIBER_START_ROUTINE entry, void *parameter)
     return fiber;
 }
 
-static void native_switch(void *target)
+void recomp_native_fiber_switch(void *target)
 {
-    RecompNativeFiber *from = current_fiber();
+    RecompNativeFiber *from = recomp_native_fiber_current();
     RecompNativeFiber *to = target;
 
     memset(&from->context, 0, sizeof from->context);
@@ -158,7 +153,7 @@ void recomp_native_fiber_delete(void *handle)
     free(fiber);
 }
 
-void recomp_native_fiber_restart(void *handle, LPFIBER_START_ROUTINE entry, void *parameter)
+void recomp_native_fiber_restart(void *handle, RecompNativeFiberEntry entry, void *parameter)
 {
     RecompNativeFiber *fiber = handle;
     if (fiber == NULL) return;
@@ -178,11 +173,6 @@ void recomp_native_fiber_release_thread(void)
     }
 }
 
-size_t recomp_native_fiber_state_size(void)
-{
-    return sizeof(RecompNativeFiberState);
-}
-
 bool recomp_native_fiber_owns_stack(void *handle)
 {
     const RecompNativeFiber *fiber = handle;
@@ -195,7 +185,8 @@ void recomp_native_fiber_state_save(void *handle, RecompNativeFiberState *state)
     const uint8_t *rsp;
     size_t used;
 
-    memset(state, 0, sizeof *state);
+    state->flags = 0u;
+    state->stack_bytes = 0u;
     if (fiber == NULL || fiber->stack_memory == NULL) return;
     if (fiber->started) state->flags |= RECOMP_NATIVE_STATE_STARTED;
     if (!fiber->started) return;
@@ -259,15 +250,16 @@ typedef struct RecompNativeFiber {
 
 static _Thread_local RecompNativeFiber *active_fiber;
 
-static void *native_current(void)
+void *recomp_native_fiber_current(void)
 {
     if (active_fiber == NULL) {
         active_fiber = calloc(1u, sizeof(*active_fiber));
+        if (active_fiber == NULL) recomp_stop(2, "fiber:convert-failed");
     }
     return active_fiber;
 }
 
-void *recomp_native_fiber_create(LPFIBER_START_ROUTINE entry, void *parameter)
+void *recomp_native_fiber_create(RecompNativeFiberEntry entry, void *parameter)
 {
     /* The lowest page stays inaccessible, so an overflow faults here as it
        does against a Windows fiber's guard page. */
@@ -293,7 +285,7 @@ void *recomp_native_fiber_create(LPFIBER_START_ROUTINE entry, void *parameter)
     return fiber;
 }
 
-void recomp_native_fiber_restart(void *handle, LPFIBER_START_ROUTINE entry, void *parameter)
+void recomp_native_fiber_restart(void *handle, RecompNativeFiberEntry entry, void *parameter)
 {
     RecompNativeFiber *fiber = handle;
     uintptr_t top = ((uintptr_t)fiber->stack_memory + fiber->stack_size) & ~(uintptr_t)15u;
@@ -321,9 +313,9 @@ void recomp_native_fiber_restart(void *handle, LPFIBER_START_ROUTINE entry, void
     fiber->sp = (void *)top;
 }
 
-static void native_switch(void *target)
+void recomp_native_fiber_switch(void *target)
 {
-    RecompNativeFiber *from = native_current();
+    RecompNativeFiber *from = recomp_native_fiber_current();
 
     active_fiber = target;
     recomp_fiber_switch(&from->sp, active_fiber->sp);
@@ -350,11 +342,6 @@ void recomp_native_fiber_release_thread(void)
 /* shortcut: POSIX switches keep the continuation on the fiber stack, but it
    is not captured, so every parked fiber reports itself unrewindable and
    SyncTest skips; add stack capture when rollback targets Linux or macOS. */
-size_t recomp_native_fiber_state_size(void)
-{
-    return sizeof(RecompNativeFiberState);
-}
-
 bool recomp_native_fiber_owns_stack(void *fiber)
 {
     const RecompNativeFiber *native = fiber;
@@ -363,8 +350,8 @@ bool recomp_native_fiber_owns_stack(void *fiber)
 
 void recomp_native_fiber_state_save(void *fiber, RecompNativeFiberState *state)
 {
-    memset(state, 0, sizeof *state);
-    if (recomp_native_fiber_owns_stack(fiber)) state->flags = RECOMP_NATIVE_STATE_UNAVAILABLE;
+    state->stack_bytes = 0u;
+    state->flags = recomp_native_fiber_owns_stack(fiber) ? RECOMP_NATIVE_STATE_UNAVAILABLE : 0u;
 }
 
 bool recomp_native_fiber_state_restore(void *fiber, const RecompNativeFiberState *state)
@@ -375,15 +362,3 @@ bool recomp_native_fiber_state_restore(void *fiber, const RecompNativeFiberState
 }
 
 #endif
-
-void *recomp_native_fiber_current(void)
-{
-    void *fiber = native_current();
-    if (fiber == NULL) recomp_stop(2, "fiber:convert-failed");
-    return fiber;
-}
-
-void recomp_native_fiber_switch(void *target)
-{
-    native_switch(target);
-}

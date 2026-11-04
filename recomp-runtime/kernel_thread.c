@@ -4,7 +4,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 enum {
     DISPATCHER_SIGNAL_STATE = 0x04u,
@@ -114,17 +113,7 @@ static void bridge_ke_query_system_time(void)
     uint32_t current_time = kernel_arg(1u);
 
     if (current_time != 0u) {
-        struct timespec now;
-        uint64_t file_time = 0u;
-
-        if (recomp_xapi_frame_clock_enabled()) {
-            /* Netplay runners must read the same date, in 100 ns units. */
-            file_time = RECOMP_FRAME_CLOCK_EPOCH_FILETIME + recomp_xapi_performance_counter() / 100u;
-        } else if (timespec_get(&now, TIME_UTC) == TIME_UTC) {
-            file_time = ((uint64_t)now.tv_sec + 11644473600ull) *
-                10000000ull + (uint64_t)now.tv_nsec / 100ull;
-        }
-        *recomp_memory_u64(current_time) = file_time;
+        *recomp_memory_u64(current_time) = recomp_xapi_system_filetime();
     }
     kernel_return(1u, 0u);
 }

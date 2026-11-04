@@ -8,24 +8,17 @@
 #include "d3d_presenter.h"
 #include "d3d_frame_adapter.h"
 #include "fiber_adapter.h"
-extern "C" {
-#include "game_scheduler.h"
-}
 #include "input_adapter.h"
 #include "free_camera_adapter.h"
 #include "viewer_menu_adapter.h"
 #include "scene_freeze_adapter.h"
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
-#include "netplay_session.h"
-#include "netplay_menu.h"
-#include "netplay_profile.h"
-#include "rollback.h"
+#include "netplay_launch.h"
 #endif
+#include "guest_snapshot.h"
 #include "runtime.h"
 #include "stop_report.h"
-#include "synctest.h"
-#include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 #include "xbe_parser.h"
 #include "sha.h"
@@ -52,60 +45,21 @@ extern "C" {
 #define NOMINMAX
 #endif
 #include <windows.h>
-#else
-#include <unistd.h>
 #endif
 
 namespace {
 
-#ifdef RECOMP_FULL_PROGRAM
-/* RECOMP_SYNCTEST: saves a frame at the loop top, runs it again and compares
-   (docs/rollback-netcode.md). */
-void synctestBoundary()
-{
-    static std::uint32_t frame;
-    recomp_xapi_frame_clock_advance();
-    const RecompSyncTestResult result = recomp_synctest_frame(++frame);
-    if (result == RECOMP_SYNCTEST_MISMATCH) recomp_stop(3, "synctest:mismatch");
-    if (!recomp_synctest_loop() &&
-        (result == RECOMP_SYNCTEST_MATCH || result == RECOMP_SYNCTEST_SKIP)) {
-        recomp_stop(0, result == RECOMP_SYNCTEST_MATCH ? "synctest:match" : "synctest:skip");
-    }
-}
-
-// A running netplay session decides the guest's pads; before it starts, the usual sources do.
-bool sessionSample(std::uint32_t port, RecompInputGamepad *gamepad)
-{
-    bool present = false;
-    if (recomp_netplay_session_pad(port, gamepad, &present)) return present;
-    return recomp_free_camera_sample(port, gamepad);
-}
-
-// Offline runs: the online menu sees each pad first (netplay_menu.cpp).
-bool menuSample(std::uint32_t port, RecompInputGamepad *gamepad)
-{
-    const bool present = recomp_free_camera_sample(port, gamepad);
-    if (present) recomp_netplay_menu_filter(port, gamepad);
-    return present;
-}
-
-void menuFrame()
-{
-    recomp_netplay_menu_frame();
-    std::vector<std::string> session;
-    if (recomp_netplay_session_room_launch(session)) recomp_runner_relaunch(session);
-}
-#endif
-
-// The runner's own arguments without the netplay ones, to start it again (recomp_runner_relaunch).
-std::string runnerPath;
-std::vector<std::string> runnerArguments;
-
-bool isNetplayArgument(const std::string &arg)
-{
-    return arg == "--netplay-host" || arg == "--netplay-join" || arg == "--netplay-delay" ||
-        arg == "--netplay-room-socket" || arg == "--netplay-room" || arg == "--netplay-return";
-}
+const char kUsage[] = "usage: recomp_runner --xbe <path>"
+                      " [--expect-stop <id>] [--stop-at <id>]"
+                      " [--milestone-log <path>]"
+                      " [--vsync]"
+                      " [--input-host-after-poll <poll>]"
+                      " [--input-wait-after-poll <poll> --input-resume-file <path>]"
+                      " [--input-paused-analog-file <path>]"
+                      " [--input-start-pulse-at <poll>]"
+                      " [--input-buttons-at <poll>:<hexmask>]"
+                      " [--input-analog-at <poll>:<index>:<value>]"
+                      " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]\n";
 
 extern "C" const char *recomp_disc_root_path;
 
@@ -523,72 +477,6 @@ const char *importName(RecompImportKind kind)
 
 } // namespace
 
-#ifdef RECOMP_FULL_PROGRAM
-#ifdef _WIN32
-static std::wstring commandLineArgument(const std::string &arg)
-{
-    const int size = MultiByteToWideChar(CP_ACP, 0, arg.c_str(), -1, nullptr, 0);
-    std::wstring wide(size > 0 ? static_cast<std::size_t>(size - 1) : 0u, L'\0');
-    if (size > 1) MultiByteToWideChar(CP_ACP, 0, arg.c_str(), -1, wide.data(), size);
-    if (!wide.empty() && wide.find_first_of(L" \t\"") == std::wstring::npos) return wide;
-    // CommandLineToArgvW's rules: backslashes double before a quote.
-    std::wstring quoted = L"\"";
-    std::size_t slashes = 0u;
-    for (const wchar_t c : wide) {
-        if (c == L'\\') {
-            ++slashes;
-            continue;
-        }
-        quoted.append(c == L'"' ? slashes * 2u + 1u : slashes, L'\\');
-        slashes = 0u;
-        quoted += c;
-    }
-    quoted.append(slashes * 2u, L'\\');
-    return quoted + L"\"";
-}
-#endif
-
-void recomp_runner_relaunch(const std::vector<std::string> &extra)
-{
-    std::vector<std::string> args{runnerPath};
-    args.insert(args.end(), runnerArguments.begin(), runnerArguments.end());
-    args.insert(args.end(), extra.begin(), extra.end());
-    std::fflush(stderr);
-    std::cout.flush();
-#ifdef _WIN32
-    wchar_t exe[MAX_PATH];
-    const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring line;
-    for (const std::string &arg : args) line += (line.empty() ? L"" : L" ") + commandLineArgument(arg);
-    STARTUPINFOW startup{};
-    startup.cb = sizeof startup;
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    // The new runner writes where this one did.
-    const DWORD streams[3] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
-    HANDLE *handles[3] = {&startup.hStdInput, &startup.hStdOutput, &startup.hStdError};
-    for (int i = 0; i < 3; ++i) {
-        *handles[i] = GetStdHandle(streams[i]);
-        if (*handles[i] != nullptr && *handles[i] != INVALID_HANDLE_VALUE)
-            SetHandleInformation(*handles[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    }
-    PROCESS_INFORMATION process{};
-    if (length == 0u || length == MAX_PATH ||
-        !CreateProcessW(exe, line.data(), nullptr, nullptr, TRUE, 0u, nullptr, nullptr, &startup, &process))
-        recomp_stop(4, "netplay:relaunch");
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    recomp_stop(0, "netplay:relaunch");
-#else
-    std::vector<char *> argv;
-    for (std::string &arg : args) argv.push_back(arg.data());
-    argv.push_back(nullptr);
-    execv(runnerPath.c_str(), argv.data());
-    recomp_stop(4, "netplay:relaunch");
-#endif
-    std::abort(); // recomp_stop exits
-}
-#endif
-
 int main(int argc, char **argv)
 {
     recomp_install_host_diagnostics();
@@ -602,14 +490,9 @@ int main(int argc, char **argv)
     std::string expectStop;
     std::string stopAt;
     std::string milestoneLog;
-    RecompNetplayLaunch netplayLaunch;
-    std::string netplayReturn;
-    std::string replayPath;
-    runnerPath = argv[0];
-    for (int i = 1; i < argc; ++i) {
-        if (isNetplayArgument(argv[i])) ++i;
-        else runnerArguments.emplace_back(argv[i]);
-    }
+#ifdef RECOMP_FULL_PROGRAM
+    if (!recomp_netplay_launch_parse(argc, argv)) return 64;
+#endif
     bool inputStartPulseEnabled = false;
     bool vsyncPresent = false;
     std::vector<std::uint64_t> inputStartPulsePolls;
@@ -629,10 +512,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
             arg == "--input-a-pulse-at" || arg == "--input-buttons-at" ||
             arg == "--input-analog-at" || arg == "--input-host-after-poll" ||
             arg == "--input-wait-after-poll" || arg == "--input-resume-file" ||
-            arg == "--input-paused-analog-file" || arg == "--netplay-host" ||
-            arg == "--netplay-join" || arg == "--netplay-delay" ||
-            arg == "--netplay-room-socket" || arg == "--netplay-room" || arg == "--netplay-return" ||
-            arg == "--replay";
+            arg == "--input-paused-analog-file";
 
         if (wantsValue && i + 1 >= argc) {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
@@ -648,28 +528,6 @@ std::vector<AnalogPulse> inputAnalogPulses;
             stopAt = argv[++i];
         } else if (arg == "--milestone-log") {
             milestoneLog = argv[++i];
-        } else if (arg == "--netplay-host" || arg == "--netplay-delay") {
-            const std::string value = argv[++i];
-            std::uint64_t parsed = 0u;
-            const bool host = arg == "--netplay-host";
-            const bool valid = host ? parsePositiveU64(value, parsed) && parsed <= 65535u
-                : value == "0" || (parsePositiveU64(value, parsed) && parsed <= RECOMP_ROLLBACK_WINDOW);
-            if (!valid) {
-                std::cerr << "recomp runner: --netplay-host needs a UDP port and --netplay-delay at most "
-                          << RECOMP_ROLLBACK_WINDOW << " frames\n";
-                return 64;
-            }
-            (host ? netplayLaunch.hostPort : netplayLaunch.delay) = static_cast<std::uint32_t>(parsed);
-        } else if (arg == "--netplay-join") {
-            netplayLaunch.join = argv[++i];
-        } else if (arg == "--netplay-room-socket") {
-            netplayLaunch.roomSocket = argv[++i]; // from a room's runner (recomp_netplay_session_room_launch)
-        } else if (arg == "--netplay-room") {
-            netplayLaunch.room = argv[++i];
-        } else if (arg == "--netplay-return") {
-            netplayReturn = argv[++i]; // why the room's session ended
-        } else if (arg == "--replay") {
-            replayPath = argv[++i];
         } else if (arg == "--input-wait-after-poll") {
             const std::string value = argv[++i];
             if (!parsePositiveU64(value, inputWaitAfterPoll) ||
@@ -846,17 +704,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
                 AnalogPulse{parsedPoll, parsedIndex, parsedValue});
             inputStartPulseEnabled = true;
         } else {
-            std::cerr << "usage: recomp_runner --xbe <path>"
-                         " [--expect-stop <id>] [--stop-at <id>]"
-                         " [--milestone-log <path>]"
-                         " [--vsync]"
-                         " [--input-host-after-poll <poll>]"
-                         " [--input-wait-after-poll <poll> --input-resume-file <path>]"
-                         " [--input-paused-analog-file <path>]"
-                         " [--input-start-pulse-at <poll>]"
-                         " [--input-buttons-at <poll>:<hexmask>]"
-                         " [--input-analog-at <poll>:<index>:<value>]"
-                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]\n";
+            std::cerr << kUsage;
             return 64;
         }
     }
@@ -900,16 +748,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
         }
     }
     if (xbePath.empty()) {
-        std::cerr << "usage: recomp_runner --xbe <path>"
-                     " [--expect-stop <id>] [--stop-at <id>]"
-                     " [--milestone-log <path>]"
-                     " [--input-host-after-poll <poll>]"
-                     " [--input-wait-after-poll <poll> --input-resume-file <path>]"
-                     " [--input-paused-analog-file <path>]"
-                     " [--input-start-pulse-at <poll>]"
-                     " [--input-buttons-at <poll>:<hexmask>]"
-                     " [--input-analog-at <poll>:<index>:<value>]"
-                         " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]\n";
+        std::cerr << kUsage;
         return 64;
     }
     recomp_stop_configure(
@@ -944,25 +783,13 @@ std::vector<AnalogPulse> inputAnalogPulses;
     }
 
 #ifdef RECOMP_FULL_PROGRAM
-    if ((netplayLaunch.hostPort != 0u) + !netplayLaunch.join.empty() + !replayPath.empty() > 1) {
-        std::cerr << "recomp runner: --netplay-host, --netplay-join and --replay cannot be combined\n";
-        return 64;
-    }
     {
         // The build and the game image: both runners must simulate alike.
         const std::string identity = std::string(RECOMP_NETPLAY_BUILD) + "\n" + parsed.metadata.fileSha256 + "\n";
-        netplayLaunch.digest = doaxbv::sha256Hex(std::vector<std::uint8_t>(identity.begin(), identity.end()));
-        netplayLaunch.disc = std::filesystem::path(recomp_disc_root_path);
+        const int code = recomp_netplay_launch_configure(
+            doaxbv::sha256Hex(std::vector<std::uint8_t>(identity.begin(), identity.end())), recomp_disc_root_path);
+        if (code != 0) return code;
     }
-    if (netplayLaunch.hostPort != 0u || !netplayLaunch.join.empty()) {
-        if (!recomp_netplay_session_connect(netplayLaunch)) {
-            // A room's runner goes back to the menu; one from the command line stops.
-            if (!netplayLaunch.roomSocket.empty())
-                recomp_runner_relaunch(recomp_netplay_session_return_args(netplayLaunch, "netplay:session-failed"));
-            return 1;
-        }
-    }
-    if (!replayPath.empty() && !recomp_netplay_session_load_replay(replayPath, netplayLaunch)) return 1;
 #endif
 
     if (!recomp_save_initialize(recomp_disc_root_path)) {
@@ -976,21 +803,16 @@ std::vector<AnalogPulse> inputAnalogPulses;
         std::cerr << "recomp runner: " << error << '\n';
         return 1;
     }
-#ifdef _WIN32
-    /* Whole-game display passes find and undo their guest writes through
-       write tracking, which only VirtualAlloc can provide. */
-    auto *ram = static_cast<std::uint8_t *>(VirtualAlloc(nullptr, memory.size(),
-        MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
+    /* Whole-game display passes and rollback find guest writes through write
+       tracking (Windows only); without it game_rollback.c reports no display passes. */
+    bool writeWatch = false;
+    std::uint8_t *ram = recomp_guest_ram_allocate(memory.size(), &writeWatch);
     if (ram == nullptr) {
         std::cerr << "recomp runner: guest RAM allocation failed\n";
         return 1;
     }
     std::memcpy(ram, memory.data(), memory.size());
     std::vector<std::uint8_t>().swap(memory);
-#else
-    // Without write tracking, game_rollback.c reports no display passes.
-    std::uint8_t *ram = memory.data();
-#endif
 
     const RecompMemoryRegion region = {
         0u,
@@ -1100,37 +922,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
     }
     recomp_viewer_install();
-    if (!recomp_netplay_session_read_env()) return 2;
-    if (recomp_netplay_session_enabled()) {
-        if (recomp_synctest_enabled()) {
-            std::cerr << "recomp runner: RECOMP_SYNCTEST and RECOMP_ROLLBACK cannot run together\n";
-            return 2;
-        }
-#ifdef _WIN32
-        recomp_netplay_session_install({ram, kRamSize, true});
-#else
-        recomp_netplay_session_install({ram, kRamSize, false});
-#endif
-        recomp_input_adapter_set_source(sessionSample);
-        std::atexit(recomp_netplay_session_exit);
-    } else if (recomp_synctest_enabled()) {
-        recomp_xapi_frame_clock_set_enabled(true);
-        recomp_synctest_install_default_modules();
-#ifdef _WIN32
-        recomp_synctest_set_guest_ram(ram, kRamSize, true);
-#else
-        recomp_synctest_set_guest_ram(ram, kRamSize, false);
-#endif
-        recomp_game_set_frame_boundary(synctestBoundary);
-    } else {
-        const std::filesystem::path storage = netplayLaunch.disc / ".recomp-storage";
-        recomp_netplay_menu_install(storage, netplayLaunch.digest,
-            [storage] { return recomp_netplay_own_profile_name(storage / "partition1"); });
-        recomp_input_adapter_set_source(menuSample);
-        recomp_d3d_swap_hook = menuFrame;
-        if (!netplayReturn.empty() && !recomp_netplay_session_reopen_room(netplayLaunch, netplayReturn))
-            recomp_netplay_menu_reopen(netplayReturn);
-    }
+    recomp_netplay_launch_install(ram, kRamSize, writeWatch);
 #endif
 #ifndef RECOMP_FULL_PROGRAM
     recomp_imports_reset();

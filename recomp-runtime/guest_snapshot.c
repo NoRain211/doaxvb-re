@@ -1,5 +1,6 @@
 #include "guest_snapshot.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,6 +13,10 @@ enum { PAGE = RECOMP_SNAPSHOT_PAGE_SIZE };
 
 static void rehash_page(RecompGuestSnapshots *s, size_t page);
 static void rehash_all(RecompGuestSnapshots *s);
+
+/* Each instance resets the write tracking, so a second one would lose the
+   first one's pages. */
+static const RecompGuestSnapshots *write_watcher;
 
 uint8_t *recomp_guest_ram_allocate(size_t size, bool *write_watch)
 {
@@ -33,13 +38,14 @@ void recomp_guest_ram_free(uint8_t *ram)
 #endif
 }
 
-static void reset_tracking(RecompGuestSnapshots *s)
+static bool reset_tracking(RecompGuestSnapshots *s)
 {
 #ifdef _WIN32
-    if (s->write_watch) ResetWriteWatch(s->ram, s->size);
+    if (s->write_watch) return ResetWriteWatch(s->ram, s->size) == 0u;
 #else
     (void)s;
 #endif
+    return true;
 }
 
 /* Fills dirty_pages with the pages written since the newest save and resets
@@ -76,9 +82,14 @@ static size_t collect_dirty(RecompGuestSnapshots *s)
 bool recomp_snapshots_init(RecompGuestSnapshots *s, uint8_t *ram, size_t size,
     bool write_watch, size_t slot_count)
 {
+    if (write_watcher == s) write_watcher = NULL;
     memset(s, 0, sizeof *s);
     if (ram == NULL || size == 0u || size % PAGE != 0u || size / PAGE > UINT32_MAX ||
         slot_count == 0u) {
+        return false;
+    }
+    if (write_watch && write_watcher != NULL) {
+        fprintf(stderr, "recomp snapshots: guest RAM write watch is already in use\n");
         return false;
     }
     const size_t page_count = size / PAGE;
@@ -97,8 +108,12 @@ bool recomp_snapshots_init(RecompGuestSnapshots *s, uint8_t *ram, size_t size,
         return false;
     }
     /* Reset before copying: a write in between is only reported, never lost. */
-    reset_tracking(s);
+    if (!reset_tracking(s)) {
+        recomp_snapshots_free(s);
+        return false;
+    }
     memcpy(s->shadow, ram, size);
+    if (write_watch) write_watcher = s;
     return true;
 }
 
@@ -253,6 +268,7 @@ bool recomp_snapshots_hash(RecompGuestSnapshots *s, const RecompRamRange *ignore
 
 void recomp_snapshots_free(RecompGuestSnapshots *s)
 {
+    if (write_watcher == s) write_watcher = NULL;
     if (s->records != NULL) {
         for (size_t i = 0u; i < s->slot_count; ++i) {
             free(s->records[i].pages);

@@ -1,6 +1,5 @@
 #include "synctest.h"
 #include "guest_snapshot.h"
-#include "xapi_time_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,15 +233,6 @@ static bool compare_block(const RecompSyncTestModule *module, const void *left, 
     fprintf(stderr, "recomp synctest: %s differs at +0x%zx (%zu bytes)\n",
         name, first, differing);
     if (verbose) {
-        if (strcmp(name, "clock") == 0) {
-            const RecompFrameClockState *a = left, *b = right;
-            fprintf(stderr, "recomp synctest: clock left base=%llu offset=%llu frame=%llu enabled=%d\n",
-                (unsigned long long)a->base_ns, (unsigned long long)a->offset_ns,
-                (unsigned long long)a->frame, a->enabled);
-            fprintf(stderr, "recomp synctest: clock right base=%llu offset=%llu frame=%llu enabled=%d\n",
-                (unsigned long long)b->base_ns, (unsigned long long)b->offset_ns,
-                (unsigned long long)b->frame, b->enabled);
-        }
         const size_t start = first > 64u ? first - 64u : 0u;
         const size_t end = first + 96u < size ? first + 96u : size;
         for (size_t row = start; row < end; row += 16u) {
@@ -363,19 +353,19 @@ bool recomp_rollback_ring_hash(const RecompRamRange *ignored, size_t count, uint
     return ring_ram.ram != NULL && recomp_snapshots_hash(&ring_ram, ignored, count, hash);
 }
 
-RecompSyncTestResult recomp_synctest_frame(uint32_t swap_counter)
+RecompSyncTestResult recomp_synctest_frame(uint32_t frame)
 {
     read_env();
     if (!enabled || module_count == 0u) return RECOMP_SYNCTEST_RUNNING;
     ensure_allocated();
     switch (phase) {
     case PHASE_IDLE:
-        if (swap_counter < start_frame) return RECOMP_SYNCTEST_RUNNING;
+        if (frame < start_frame) return RECOMP_SYNCTEST_RUNNING;
         from_settle = settle_retries != 0u;
         save_snapshot(&baseline);
         ram_mark();
         fprintf(stderr, "recomp synctest: saved frame %u; replaying %u frame(s)\n",
-            swap_counter, interval);
+            frame, interval);
         phase = PHASE_COUNT;
         countdown = interval;
         return RECOMP_SYNCTEST_RUNNING;
@@ -385,7 +375,7 @@ RecompSyncTestResult recomp_synctest_frame(uint32_t swap_counter)
         save_snapshot(&reference);
         if (!snapshots_restorable(&baseline)) {
             fprintf(stderr, "recomp synctest: frame %u skip: saved state cannot be rewound\n",
-                swap_counter);
+                frame);
             Snapshot swap = baseline;
             baseline = reference;
             reference = swap;
@@ -393,7 +383,7 @@ RecompSyncTestResult recomp_synctest_frame(uint32_t swap_counter)
                 phase = PHASE_DONE;
                 return RECOMP_SYNCTEST_SKIP;
             }
-            start_frame = swap_counter + SETTLE_FRAMES;
+            start_frame = frame + SETTLE_FRAMES;
             if (settle_retries < SETTLE_RETRIES) ++settle_retries;
             phase = PHASE_IDLE;
             return RECOMP_SYNCTEST_RUNNING;
@@ -414,7 +404,7 @@ RecompSyncTestResult recomp_synctest_frame(uint32_t swap_counter)
         check_ms = now_ms() - check_start;
         if (match) {
             fprintf(stderr, "recomp synctest: frame %u match (snapshot %.1f ms, check %.1f ms)\n",
-                swap_counter, snapshot_ms, check_ms);
+                frame, snapshot_ms, check_ms);
             settle_retries = 0u;
             from_settle = false;
             if (loop_mode) {
@@ -431,13 +421,13 @@ RecompSyncTestResult recomp_synctest_frame(uint32_t swap_counter)
         }
         if (from_settle && settle_retries < SETTLE_RETRIES) {
             fprintf(stderr, "recomp synctest: frame %u unsettled after a fiber change; waiting\n",
-                swap_counter);
-            start_frame = swap_counter + SETTLE_FRAMES;
+                frame);
+            start_frame = frame + SETTLE_FRAMES;
             ++settle_retries;
             phase = PHASE_IDLE;
             return RECOMP_SYNCTEST_RUNNING;
         }
-        fprintf(stderr, "recomp synctest: frame %u MISMATCH\n", swap_counter);
+        fprintf(stderr, "recomp synctest: frame %u MISMATCH\n", frame);
         phase = PHASE_DONE;
         return RECOMP_SYNCTEST_MISMATCH;
     case PHASE_DONE:

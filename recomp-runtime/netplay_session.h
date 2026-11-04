@@ -20,9 +20,10 @@ struct RecompNetplaySessionHost {
     bool writeWatch;         // guest RAM reports its written pages
 };
 
-/* RECOMP_ROLLBACK=loopback or udp:<local port>:<peer host>:<peer port>. False
-   with a message when it is malformed or the socket cannot open. */
-bool recomp_netplay_session_read_env();
+/* mode is RECOMP_ROLLBACK's value: loopback or udp:<local port>:<peer
+   host>:<peer port>. False with a message when it is malformed or the socket
+   cannot open. */
+bool recomp_netplay_session_read_env(const char *mode);
 
 /* --netplay-host <port> or --netplay-join <host>:<port>, with the host's
    --netplay-delay. */
@@ -60,9 +61,6 @@ std::vector<std::string> recomp_netplay_session_return_args(const RecompNetplayL
    port, through the menu. False when the launch names no room or the port
    cannot be had; the menu then only says why the match ended. */
 bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const std::string &reason);
-/* Starts this runner again with its own arguments plus extra, and exits.
-   The runner implements it. */
-[[noreturn]] void recomp_runner_relaunch(const std::vector<std::string> &extra);
 bool recomp_netplay_session_enabled();
 /* Turns on the frame clock, the snapshot modules and the frame hook. Call
    before the guest starts. */

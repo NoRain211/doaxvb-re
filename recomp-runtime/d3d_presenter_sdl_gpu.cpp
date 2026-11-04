@@ -340,6 +340,8 @@ struct PipelineKeyHash {
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
+    RecompOverlayQuad overlay_screen[RECOMP_OVERLAY_MAX_QUADS]{}; // the presenter's copy of the menu's screen
+    Uint64 text_asked_ms = 0; // when a text field last read typed keys
     std::thread::id owner_thread;
     SDL_Window *window = nullptr;
     SDL_GPUDevice *device = nullptr;
@@ -449,6 +451,13 @@ bool preferMailbox(bool immediate)
 
 void pumpEvents(RecompD3dPresenter *presenter)
 {
+    // Text input, which can raise an IME or a screen keyboard, stays on only while a text field reads it.
+    if (recomp_input_text_asked()) presenter->text_asked_ms = SDL_GetTicks();
+    const bool wanted = presenter->text_asked_ms != 0 && SDL_GetTicks() - presenter->text_asked_ms < 500u;
+    if (wanted != SDL_TextInputActive(presenter->window)) {
+        if (wanted) SDL_StartTextInput(presenter->window);
+        else SDL_StopTextInput(presenter->window);
+    }
     SDL_PumpEvents();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -2225,7 +2234,6 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
-    SDL_StartTextInput(window); // the online menu's address and chat fields
 
     SDL_GPUPresentMode present_mode = SDL_GPU_PRESENTMODE_VSYNC;
     if (preferMailbox(immediate_present_setting) &&
@@ -2611,8 +2619,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // buffer.
                 RecompOverlayText overlay;
                 recomp_overlay_take(&overlay);
+                const uint32_t screen_count =
+                    recomp_overlay_screen_take(presenter->overlay_screen, RECOMP_OVERLAY_MAX_QUADS);
                 recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
-                    swapchain_tex, swap_w, swap_h, &overlay);
+                    swapchain_tex, swap_w, swap_h, &overlay, presenter->overlay_screen, screen_count);
             }
         }
 

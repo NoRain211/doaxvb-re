@@ -19,7 +19,6 @@
 #include "screenshot.h"
 
 #include <stdio.h>
-#include <string.h>
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>

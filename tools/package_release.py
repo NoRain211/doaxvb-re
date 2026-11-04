@@ -23,8 +23,6 @@ RELEASE = ROOT / "tools/release"
 BUNDLED_REF = "v0.6.0-rc1"
 # Packaging inputs stay in the repository, like CI and export tooling.
 PACKAGING = ("tools/package_release.py", "tools/test_package_release.py", "tools/release/")
-# The netplay matchmaker runs on a server, as in doa2u-re's releases; players only need its address.
-SERVER_ONLY = ("tools/matchmaker.py", "tools/test_matchmaker.py")
 GAME_DATA = {".xbe", ".iso", ".xiso", ".afs", ".xpr", ".xbx", ".sav", ".jsonl"}
 UNIX_PLATFORMS = {
     "macOS": ("macOS (arm64, x64)", "README-macos.txt",
@@ -82,7 +80,6 @@ def check(kept, recipe, gitlinks, allowed_private, banned_suffixes):
     require(not any("checksum" in Path(n).name.lower() or Path(n).name.upper().startswith("SHA256SUM") for n in kept),
             "a checksum file would ship")
     require(not any(is_packaging(n) for n in kept), "packaging inputs would ship")
-    require(not any(n in SERVER_ONLY for n in kept), "the matchmaker server would ship")
     for name, digest in recipe["files"].items():
         require(name in kept and sha(kept[name]) == digest, f"{name} differs from the recipe")
 
@@ -122,7 +119,7 @@ def main():
     extras = {n: d for n, d in shipped.items() if n not in old and n not in ("README.txt", "package.json")}
 
     def source(ref):
-        return {n: d for n, d in tree(ref).items() if n not in excluded and not is_packaging(n) and n not in SERVER_ONLY}
+        return {n: d for n, d in tree(ref).items() if n not in excluded and not is_packaging(n)}
 
     if args.check:
         kept = source(BUNDLED_REF)

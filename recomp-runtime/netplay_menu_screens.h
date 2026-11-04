@@ -8,6 +8,7 @@
 
 #include "input_model.h"
 #include "netplay.h"
+#include "netplay_menu.h"
 #include "netplay_settings.h"
 
 #include <atomic>
@@ -45,13 +46,11 @@ struct ChatLine {
     bool mine;
 };
 
-/* The lobby room. hosting, listing, found and peerAddress outlive a session,
-   which reopens the same room. */
-struct LobbyState {
-    bool hosting = false, ready = false, starting = false;
-    bool listing = false; // this host asked to be listed
-    bool found = false;   // this joiner's room came from FIND MATCH
-    std::string peerAddress;
+/* The lobby room. The room state part outlives a session, which reopens the
+   same room: listing is a host that asked to be listed, found a joiner whose
+   room came from FIND MATCH. */
+struct LobbyState : RecompNetplayRoomState {
+    bool ready = false, starting = false;
     RecompNetplayRoom room{};
     Clock::time_point opened, startAt, saidAt, checkedIn;
     // Room chat: the last few lines as name and text, and the line being typed.

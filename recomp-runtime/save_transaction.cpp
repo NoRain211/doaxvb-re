@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -21,10 +22,9 @@
 
 namespace fs = std::filesystem;
 
-extern "C" const char *recomp_save_session = nullptr;
-
 namespace {
 fs::path storage, live, journal, undo;
+std::optional<std::string> session;
 bool ready, failed;
 uint32_t active_owner, depth;
 const char legacy_version[] = "recomp-save-undo-v1\n";
@@ -451,6 +451,16 @@ bool check_journal()
 }
 }
 
+extern "C" void recomp_save_set_session(const char *name)
+{
+    session = name != nullptr ? std::optional<std::string>(name) : std::nullopt;
+}
+
+extern "C" const char *recomp_save_get_session(void)
+{
+    return session ? session->c_str() : nullptr;
+}
+
 extern "C" bool recomp_save_initialize(const char *disc_root)
 {
 #ifdef _WIN32
@@ -481,12 +491,12 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
         check_parents(root);
         require(exists_plain(root) && fs::is_directory(root));
         storage = root / ".recomp-storage";
-        const fs::path saves = recomp_save_session != nullptr ? storage / recomp_save_session : storage;
-        live = saves / "partition1" / "UDATA";
-        journal = saves / "save-undo-v1";
+        const fs::path partition1 = recomp_save_partition1(storage, recomp_save_get_session());
+        live = partition1 / "UDATA";
+        journal = partition1.parent_path() / "save-undo-v1";
         undo = journal / "undo";
         check_parents(storage);
-        fs::create_directories(saves);
+        fs::create_directories(partition1.parent_path());
         check_parents(live.parent_path());
         bool created = false;
         bool upgrade_version = false;

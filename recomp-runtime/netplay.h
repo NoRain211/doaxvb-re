@@ -18,7 +18,7 @@ enum {
     RECOMP_NETPLAY_PAD_BYTES = 18u,
     RECOMP_NETPLAY_HEADER_BYTES = 33u,
     RECOMP_NETPLAY_MAX_PADS = RECOMP_ROLLBACK_HISTORY,
-    /* At most the 1,200 bytes the matchmaker relays (tools/matchmaker.py). */
+    /* At most the 1,200 bytes the matchmaker relays (doa2u-re's tools/matchmaker.py). */
     RECOMP_NETPLAY_MAX_PACKET =
         RECOMP_NETPLAY_HEADER_BYTES + RECOMP_NETPLAY_MAX_PADS * RECOMP_NETPLAY_PAD_BYTES,
     RECOMP_NETPLAY_SYNC_FRAMES = 32u,
@@ -72,7 +72,7 @@ typedef struct RecompNetplayListedRoom {
     bool pinged;
 } RecompNetplayListedRoom;
 
-/* What a socket heard from the matchmaker (tools/matchmaker.py), which the
+/* What a socket heard from the matchmaker (doa2u-re's tools/matchmaker.py), which the
    socket's receives record on their way, and how it reaches its peer. */
 typedef struct RecompNetplayMatch {
     uint32_t server_address; /* network order; port 0 means none */

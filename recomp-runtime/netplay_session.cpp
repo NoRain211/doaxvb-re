@@ -10,8 +10,10 @@
 #include "input_pulse_source.h"
 #include "netplay.h"
 #include "netplay_game.h"
+#include "netplay_launch.h"
 #include "netplay_menu.h"
 #include "netplay_profile.h"
+#include "netplay_settings.h"
 #include "overlay_screen.h"
 #include "replay.h"
 #include "rollback.h"
@@ -226,7 +228,7 @@ static void startReplay()
     info.player = static_cast<std::uint8_t>(rollback.player);
     info.delay = static_cast<std::uint8_t>(rollback.delay);
     info.flags = rollback.flags;
-    info.start_swap = rollback.pass;
+    info.start_frame = rollback.pass;
     info.blob_size[0] = static_cast<std::uint32_t>(rollback.hostSaves.size()); // the joiner sends none
     std::vector<std::uint8_t> header(RECOMP_REPLAY_HEADER_BYTES + rollback.hostSaves.size());
     header.resize(recomp_replay_header(&rollback.replayWriter, &info, rollback.hostSaves.data(),
@@ -380,7 +382,7 @@ static void hashCheckFrame()
     if (!isCheckFrame(frame)) return;
     const auto began = std::chrono::steady_clock::now();
     RecompRamRange ignored[RECOMP_SNAPSHOT_HASH_RANGES];
-    const std::size_t count = recomp_synctest_ignored_ranges(ignored, RECOMP_SNAPSHOT_HASH_RANGES);
+    const std::size_t count = recomp_synctest_ignored_ranges(ignored);
     if (!recomp_rollback_ring_hash(ignored, count, &rollback.checkHash)) recomp_stop(4, "rollback:hash");
     rollback.checkFrame = frame;
     rollback.slowestHashMs = std::max(rollback.slowestHashMs,
@@ -476,25 +478,31 @@ static void walkPads()
     rollback.pads[1] = RecompInputGamepad{};
 }
 
+/* Starts the session or replay at loop pass RECOMP_ROLLBACK_START; false
+   before that pass. */
+static bool startSession()
+{
+    if (rollback.active) return true;
+    if (++rollback.pass < rollback.start) return false;
+    const bool replay = rollback.mode == RollbackMode::Replay;
+    recomp_rollback_init(&rollback.session, replay ? 0u : rollback.delay);
+    if (!replay && !recomp_rollback_ring_init(RECOMP_ROLLBACK_WINDOW)) recomp_stop(4, "rollback:ring");
+    rollback.active = true;
+    rollback.walking = rollback.mode != RollbackMode::Loopback && rollback.start <= 1u;
+    // The walk to character select is neither seen (drawSessionOverlay) nor heard.
+    recomp_dsound_service_adapter_set_muted(rollback.walking);
+    rollback.started = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "recomp rollback: %s starts at pass %u as player %u\n", replay ? "replay" : "session",
+        rollback.pass, rollback.player);
+    if (rollback.lobby) startReplay();
+    return true;
+}
+
 static void onFrame()
 {
     recomp_xapi_frame_clock_advance();
+    if (!startSession()) return;
     RecompRollbackSession &s = rollback.session;
-    if (!rollback.active) {
-        if (++rollback.pass < rollback.start) return;
-        recomp_rollback_init(&s, rollback.delay);
-        if (!recomp_rollback_ring_init(RECOMP_ROLLBACK_WINDOW)) recomp_stop(4, "rollback:ring");
-        rollback.active = true;
-        rollback.walking = rollback.mode == RollbackMode::Udp && rollback.start <= 1u;
-        // The walk to character select is neither seen (drawSessionOverlay) nor heard.
-        recomp_dsound_service_adapter_set_muted(rollback.walking);
-        rollback.started = std::chrono::steady_clock::now();
-        // The session paces every frame; the scheduler's own 60 Hz wait would only add lag.
-        recomp_game_set_paced(false);
-        std::fprintf(stderr, "recomp rollback: session starts at pass %u as player %u\n",
-            rollback.pass, rollback.player);
-        if (rollback.lobby) startReplay();
-    }
     recordReplay();
     bool saved = true;
     if (s.frame == rollback.frontier) {
@@ -548,17 +556,8 @@ static void onFrame()
 static void onReplayFrame()
 {
     recomp_xapi_frame_clock_advance();
+    if (!startSession()) return;
     RecompRollbackSession &s = rollback.session;
-    if (!rollback.active) {
-        if (++rollback.pass < rollback.start) return;
-        recomp_rollback_init(&s, 0u);
-        rollback.active = true;
-        rollback.walking = rollback.start <= 1u;
-        recomp_dsound_service_adapter_set_muted(rollback.walking);
-        rollback.started = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "recomp rollback: replay starts at pass %u as player %u\n",
-            rollback.pass, rollback.player);
-    }
     if (s.frame == rollback.stop) finishRollback();
     if (!recomp_replay_next(&rollback.replayReader, rollback.pads)) {
         std::fprintf(stderr, "recomp netplay: replay ends at frame %u\n", s.frame);
@@ -608,22 +607,28 @@ static void drawSessionOverlay()
     recomp_overlay_screen_publish();
 }
 
-bool recomp_netplay_session_read_env()
+static void envNumber(const char *name, std::uint32_t &value)
 {
-    const char *mode = std::getenv("RECOMP_ROLLBACK");
-    if (mode == nullptr || *mode == '\0' || std::strcmp(mode, "0") == 0) return true;
-    const auto number = [](const char *name, std::uint32_t &value) {
-        if (const char *text = std::getenv(name); text != nullptr && *text != '\0')
-            value = static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10));
-    };
-    number("RECOMP_ROLLBACK_START", rollback.start);
-    number("RECOMP_ROLLBACK_FRAMES", rollback.stop);
+    if (const char *text = std::getenv(name); text != nullptr && *text != '\0')
+        value = static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10));
+}
+
+// Test hooks for every kind of session.
+static void readTestHooks()
+{
+    envNumber("RECOMP_ROLLBACK_FRAMES", rollback.stop);
     rollback.dump = std::getenv("RECOMP_ROLLBACK_DUMP");
+}
+
+bool recomp_netplay_session_read_env(const char *mode)
+{
+    envNumber("RECOMP_ROLLBACK_START", rollback.start);
+    readTestHooks();
     if (std::strcmp(mode, "loopback") == 0) {
         rollback.mode = RollbackMode::Loopback;
         rollback.player = 1u;
         if (std::getenv("RECOMP_ROLLBACK_FRAMES") == nullptr) rollback.stop = 600u;
-        number("RECOMP_ROLLBACK_LAG", rollback.lag);
+        envNumber("RECOMP_ROLLBACK_LAG", rollback.lag);
         if (rollback.lag <= RECOMP_ROLLBACK_WINDOW) return true;
         std::fprintf(stderr, "recomp runner: RECOMP_ROLLBACK_LAG is at most %u\n", RECOMP_ROLLBACK_WINDOW);
         return false;
@@ -638,8 +643,8 @@ bool recomp_netplay_session_read_env()
     const unsigned long localPort = std::strtoul(spec.substr(0u, hostAt).c_str(), nullptr, 10);
     const unsigned long peerPort = std::strtoul(spec.substr(portAt + 1u).c_str(), nullptr, 10);
     const std::string peerHost = spec.substr(hostAt + 1u, portAt - hostAt - 1u);
-    number("RECOMP_ROLLBACK_PLAYER", rollback.player);
-    number("RECOMP_ROLLBACK_DELAY", rollback.delay);
+    envNumber("RECOMP_ROLLBACK_PLAYER", rollback.player);
+    envNumber("RECOMP_ROLLBACK_DELAY", rollback.delay);
     if (localPort == 0u || localPort > 65535u || peerPort == 0u || peerPort > 65535u ||
         rollback.player > 1u || rollback.delay > RECOMP_ROLLBACK_WINDOW) {
         std::fprintf(stderr, "recomp runner: bad RECOMP_ROLLBACK ports, player or delay\n");
@@ -716,40 +721,67 @@ static bool useSessionSaves(const std::uint8_t *saves, std::size_t size, const s
     std::error_code error;
     std::filesystem::remove_all(storage / "netplay", error);
     std::vector<std::string> names;
-    if (error || !recomp_netplay_unpack_profile(saves, size, storage / "netplay" / "partition1", names)) {
+    if (error || !recomp_netplay_unpack_profile(saves, size, recomp_save_partition1(storage, "netplay"), names)) {
         std::cerr << "recomp runner: the host's saves are damaged or unsafe\n";
         return false;
     }
-    recomp_save_session = "netplay";
+    recomp_save_set_session("netplay");
     rollback.hostSaves.assign(saves, saves + size);
     return true;
 }
 
-// Test hooks, as for RECOMP_ROLLBACK.
-static void readTestHooks()
-{
-    if (const char *frames = std::getenv("RECOMP_ROLLBACK_FRAMES"); frames != nullptr && *frames != '\0')
-        rollback.stop = static_cast<std::uint32_t>(std::strtoul(frames, nullptr, 10));
-    rollback.dump = std::getenv("RECOMP_ROLLBACK_DUMP");
-}
+/* A room's socket, as --netplay-room-socket carries it to the session's
+   runner and back: <local port>,<peer address>,<peer port>,<server
+   address>,<server port>,<relay>, all but the local port in network order. */
+struct RoomSocket {
+    std::uint16_t localPort = 0u;
+    std::uint32_t peerAddress = 0u, serverAddress = 0u;
+    std::uint16_t peerPort = 0u, serverPort = 0u;
+    bool relay = false;
+
+    bool parse(const std::string &text)
+    {
+        unsigned long field[6] = {};
+        if (std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu", &field[0], &field[1], &field[2], &field[3],
+                &field[4], &field[5]) != 6 || field[0] == 0u || field[0] > 65535u)
+            return false;
+        localPort = static_cast<std::uint16_t>(field[0]);
+        peerAddress = static_cast<std::uint32_t>(field[1]);
+        peerPort = static_cast<std::uint16_t>(field[2]);
+        serverAddress = static_cast<std::uint32_t>(field[3]);
+        serverPort = static_cast<std::uint16_t>(field[4]);
+        relay = field[5] != 0u;
+        return true;
+    }
+
+    static std::string format(const RecompNetplay &socket)
+    {
+        char text[80];
+        std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u", recomp_netplay_local_port(&socket),
+            static_cast<unsigned long>(socket.peer_address), socket.peer_port,
+            static_cast<unsigned long>(socket.match.server_address), socket.match.server_port,
+            socket.match.relay ? 1u : 0u);
+        return text;
+    }
+
+    // The room's peer and matchmaker, so relayed packets keep arriving through it.
+    void applyTo(RecompNetplay &net) const
+    {
+        net.peer_address = peerAddress;
+        net.peer_port = peerPort;
+        net.match.server_address = serverAddress;
+        net.match.server_port = serverPort;
+        net.match.relay = relay;
+    }
+};
 
 bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
 {
-    if (const char *mode = std::getenv("RECOMP_ROLLBACK"); mode != nullptr && *mode != '\0') {
-        std::cerr << "recomp runner: RECOMP_ROLLBACK cannot be combined with --netplay-host or --netplay-join\n";
-        return false;
-    }
-    if (launch.digest.size() != RECOMP_NETPLAY_DIGEST_BYTES || launch.delay > RECOMP_ROLLBACK_WINDOW) {
-        std::cerr << "recomp runner: --netplay-delay is at most " << RECOMP_ROLLBACK_WINDOW << " frames\n";
-        return false;
-    }
     const bool hosting = launch.hostPort != 0u;
     rollback.launch = launch;
-    // A room's socket: <local port>,<peer address>,<peer port>,<server address>,<server port>,<relay>, network order.
-    unsigned long room[6] = {};
     rollback.fromRoom = !launch.roomSocket.empty();
-    if (rollback.fromRoom && std::sscanf(launch.roomSocket.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu", &room[0], &room[1],
-            &room[2], &room[3], &room[4], &room[5]) != 6) {
+    RoomSocket room;
+    if (rollback.fromRoom && !room.parse(launch.roomSocket)) {
         std::cerr << "recomp runner: bad --netplay-room-socket\n";
         return false;
     }
@@ -771,24 +803,18 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
             return false;
         }
         std::fprintf(stderr, "recomp netplay: joining %s\n", launch.join.c_str());
-        if (!recomp_netplay_open(&rollback.net, static_cast<std::uint16_t>(room[0]), launch.join.substr(0u, colon).c_str(),
+        if (!recomp_netplay_open(&rollback.net, room.localPort, launch.join.substr(0u, colon).c_str(),
                 static_cast<std::uint16_t>(port))) {
             std::cerr << "recomp runner: netplay could not open its UDP port\n";
             return false;
         }
     }
-    if (rollback.fromRoom) {
-        // The room's peer and matchmaker, so relayed packets keep arriving through it.
-        rollback.net.peer_address = static_cast<std::uint32_t>(room[1]);
-        rollback.net.peer_port = static_cast<std::uint16_t>(room[2]);
-        rollback.net.match.server_address = static_cast<std::uint32_t>(room[3]);
-        rollback.net.match.server_port = static_cast<std::uint16_t>(room[4]);
-        rollback.net.match.relay = room[5] != 0u;
-    }
+    if (rollback.fromRoom) room.applyTo(rollback.net);
     /* The game keeps all three vacations in one save, so both sides play
        from the host's, and the joiner sends none. Recovery first, so an
        interrupted save is never sent. */
-    const std::filesystem::path storage = launch.disc / ".recomp-storage", partition1 = storage / "partition1";
+    const std::filesystem::path storage = launch.disc / ".recomp-storage",
+        partition1 = recomp_save_partition1(storage, nullptr);
     std::vector<std::uint8_t> mine, theirs(RECOMP_NETPLAY_MAX_PROFILE);
     if (hosting && (!recomp_save_initialize(launch.disc.string().c_str()) ||
             !recomp_netplay_pack_profile(partition1, recomp_netplay_latest_profile(partition1), true, mine) ||
@@ -831,10 +857,6 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
 
 bool recomp_netplay_session_load_replay(const std::string &path, const RecompNetplayLaunch &launch)
 {
-    if (const char *mode = std::getenv("RECOMP_ROLLBACK"); mode != nullptr && *mode != '\0') {
-        std::cerr << "recomp runner: RECOMP_ROLLBACK cannot be combined with --replay\n";
-        return false;
-    }
     std::ifstream file(std::filesystem::path(path), std::ios::binary);
     rollback.replayData.assign(std::istreambuf_iterator<char>(file), {});
     RecompReplayInfo info;
@@ -854,49 +876,35 @@ bool recomp_netplay_session_load_replay(const std::string &path, const RecompNet
     rollback.mode = RollbackMode::Replay;
     rollback.player = info.player;
     rollback.delay = info.delay;
-    rollback.start = info.start_swap;
+    rollback.start = info.start_frame;
     readTestHooks();
     std::fprintf(stderr, "recomp netplay: replaying a session as player %u\n", rollback.player + 1u);
     return true;
 }
 
-/* A room's socket: <local port>,<peer address>,<peer port>,<server address>,<server port>,<relay>, network order. */
-static bool readRoomSocket(const std::string &text, unsigned long (&room)[6])
-{
-    return std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu", &room[0], &room[1], &room[2], &room[3], &room[4],
-               &room[5]) == 6 && room[0] != 0u && room[0] <= 65535u;
-}
-
 bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
 {
-    std::uint32_t port = 0u, delay = 0u;
-    std::string join; // the address typed, when any; the socket's peer stands for every joiner
     RecompNetplayRoomState state;
+    std::uint32_t port = 0u, delay = 0u;
     RecompNetplay socket;
-    if (!recomp_netplay_menu_take_launch(port, delay, join, state, socket)) return false;
-    const std::uint16_t local = recomp_netplay_local_port(&socket);
-    const auto *peer = reinterpret_cast<const std::uint8_t *>(&socket.peer_address); // network order
-    const unsigned peerPort = (socket.peer_port & 0xffu) << 8 | socket.peer_port >> 8;
-    char text[80];
-    std::snprintf(text, sizeof text, "%u.%u.%u.%u:%u", peer[0], peer[1], peer[2], peer[3], peerPort);
-    const std::string endpoint = text;
-    std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u", local, static_cast<unsigned long>(socket.peer_address),
-        socket.peer_port, static_cast<unsigned long>(socket.match.server_address), socket.match.server_port,
-        socket.match.relay ? 1u : 0u);
-    args = {"--netplay-room-socket", text, "--netplay-room",
-        std::string(state.hosting ? "1," : "0,") + (state.listing ? "1," : "0,") + (state.found ? "1," : "0,") +
-            state.peerAddress};
-    if (port != 0u) {
+    if (!recomp_netplay_menu_take_launch(state, port, delay, socket)) return false;
+    args = {"--netplay-room-socket", RoomSocket::format(socket), "--netplay-room",
+        recomp_netplay_room_state_format(state)};
+    if (state.hosting) {
         args.insert(args.end(), {"--netplay-host", std::to_string(port), "--netplay-delay", std::to_string(delay)});
     } else {
-        // A joiner FIND MATCH paired has no address of its own; the room's peer is the host.
+        // The socket's peer is the host, also for a joiner FIND MATCH paired, who typed no address.
+        const auto *peer = reinterpret_cast<const std::uint8_t *>(&socket.peer_address); // network order
+        const unsigned peerPort = (socket.peer_port & 0xffu) << 8 | socket.peer_port >> 8;
+        char endpoint[32];
+        std::snprintf(endpoint, sizeof endpoint, "%u.%u.%u.%u:%u", peer[0], peer[1], peer[2], peer[3], peerPort);
         args.insert(args.end(), {"--netplay-join", endpoint});
     }
     // The new runner takes the port; the router forward goes with this one.
     recomp_netplay_close(&socket);
     recomp_netplay_close_router_port();
     std::fprintf(stderr, "recomp netplay: the room starts the match; starting again as the %s\n",
-        port != 0u ? "host" : "joiner");
+        state.hosting ? "host" : "joiner");
     return true;
 }
 
@@ -911,31 +919,22 @@ std::vector<std::string> recomp_netplay_session_return_args(const RecompNetplayL
 
 bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const std::string &reason)
 {
-    // <hosting>,<listing>,<found>,<peer address>, from recomp_netplay_session_room_launch.
-    unsigned long room[6] = {};
-    if (launch.room.size() < 6u || launch.room[1] != ',' || launch.room[3] != ',' || launch.room[5] != ',' ||
-        !readRoomSocket(launch.roomSocket, room))
-        return false;
-    const RecompNetplayRoomState state{launch.room[0] == '1', launch.room[2] == '1', launch.room[4] == '1',
-        launch.room.substr(6u)};
+    RecompNetplayRoomState state;
+    RoomSocket room;
+    if (!recomp_netplay_room_state_parse(launch.room, state) || !room.parse(launch.roomSocket)) return false;
     RecompNetplay socket;
     // The session's runner may still hold the port while it exits.
     bool open = false;
-    for (int tries = 0; tries < 20 && !(open = recomp_netplay_listen(&socket, static_cast<std::uint16_t>(room[0])));
-         ++tries) {
+    for (int tries = 0; tries < 20 && !(open = recomp_netplay_listen(&socket, room.localPort)); ++tries) {
         recomp_netplay_close(&socket);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (!open) {
         recomp_netplay_close(&socket);
-        std::fprintf(stderr, "recomp netplay: cannot open UDP port %lu again; the room stays closed\n", room[0]);
+        std::fprintf(stderr, "recomp netplay: cannot open UDP port %u again; the room stays closed\n", room.localPort);
         return false;
     }
-    socket.peer_address = static_cast<std::uint32_t>(room[1]);
-    socket.peer_port = static_cast<std::uint16_t>(room[2]);
-    socket.match.server_address = static_cast<std::uint32_t>(room[3]);
-    socket.match.server_port = static_cast<std::uint16_t>(room[4]);
-    socket.match.relay = room[5] != 0u;
+    room.applyTo(socket);
     std::fprintf(stderr, "recomp netplay: back in the room as the %s\n", state.hosting ? "host" : "joiner");
     recomp_netplay_menu_return_to_room(socket, state, reason);
     return true;
@@ -948,9 +947,16 @@ void recomp_netplay_session_install(const RecompNetplaySessionHost &runner)
     recomp_xapi_frame_clock_set_enabled(true);
     recomp_synctest_install_default_modules();
     recomp_synctest_set_guest_ram(host.guestRam, host.guestRamSize, host.writeWatch);
-    recomp_game_set_frame_boundary(rollback.mode == RollbackMode::Replay ? onReplayFrame : onFrame);
+    /* A replay plays at the scheduler's 60 Hz; a session paces every frame
+       itself, and the scheduler's own wait would only add lag. */
+    if (rollback.mode == RollbackMode::Replay) recomp_game_set_frame_boundary(onReplayFrame, true);
+    else recomp_game_set_frame_boundary(onFrame, false);
     recomp_kernel_profile_mutation_hook = confirmSaveFrame;
-    if (rollback.lobby) rollback.networkDisplay = recomp_netplay_menu_display(rollback.disc / ".recomp-storage");
+    if (rollback.lobby) {
+        RecompNetplaySettings settings;
+        recomp_netplay_settings_load(rollback.disc / ".recomp-storage" / "netplay.txt", settings);
+        rollback.networkDisplay = settings.display;
+    }
     if (rollback.lobby || rollback.mode == RollbackMode::Replay) recomp_d3d_swap_hook = drawSessionOverlay;
 }
 

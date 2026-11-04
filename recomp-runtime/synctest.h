@@ -36,10 +36,6 @@ typedef enum RecompSyncTestResult {
 void recomp_synctest_set_modules(const RecompSyncTestModule *modules, size_t count);
 /* The runtime's real state table; defined beside the runtime, not the core. */
 void recomp_synctest_install_default_modules(void);
-/* Puts the same modules back to power-on state for an in-process reboot,
-   keeping the window. Call on a host fiber no guest thread owns; guest RAM
-   and the CPU state (recomp_runtime_init) are the caller's. */
-void recomp_reset_runtime_modules(void);
 /* Extra state the runner owns (its scripted input schedule). */
 void recomp_synctest_set_extra_state(
     size_t size, void (*save)(void *), void (*restore)(const void *));
@@ -53,8 +49,8 @@ void recomp_synctest_set_ram_equal(bool (*equal)(const void *left, const void *r
 bool recomp_synctest_enabled(void);
 bool recomp_synctest_loop(void);
 void recomp_synctest_configure(bool enabled, unsigned frames, bool loop);
-/* Call at each Swap after the frame-locked clock advances. */
-RecompSyncTestResult recomp_synctest_frame(uint32_t swap_counter);
+/* Call at the top of each scheduler loop, after the frame-locked clock advances. */
+RecompSyncTestResult recomp_synctest_frame(uint32_t frame);
 
 /* Rollback save points of the same modules and guest RAM, for chosen frames.
    SyncTest and the ring share the RAM write tracking, so only one of them
@@ -71,8 +67,8 @@ bool recomp_rollback_ring_load(uint32_t frame);
 bool recomp_rollback_ring_hash(const RecompRamRange *ignored, size_t count, uint64_t *hash);
 /* Zeroes the guest RAM ranges SyncTest ignores (host-scheduled state). */
 void recomp_synctest_mask_ignored(uint8_t *ram, size_t size);
-/* Those ranges, sorted; fewer than capacity. */
-size_t recomp_synctest_ignored_ranges(RecompRamRange *ranges, size_t capacity);
+/* Those ranges, sorted, into RECOMP_FIBER_MAX_COUNT entries (fiber_model.h). */
+size_t recomp_synctest_ignored_ranges(RecompRamRange *ranges);
 
 #ifdef __cplusplus
 }

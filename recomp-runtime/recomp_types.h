@@ -7,18 +7,7 @@
 
 #include <math.h>
 #include <string.h>
-/* Generated x87 transcendentals. Netplay compares guest state across hosts, so
-   the runner links musl_math for identical bits; tests may use the host libm. */
-#ifdef RECOMP_PORTABLE_MATH
 #include "portable_math.h"
-#else
-static inline double recomp_sin(double x) { return sin(x); }
-static inline double recomp_cos(double x) { return cos(x); }
-static inline double recomp_tan(double x) { return tan(x); }
-static inline double recomp_atan2(double y, double x) { return atan2(y, x); }
-static inline double recomp_log2(double x) { return log2(x); }
-static inline double recomp_expm1(double x) { return expm1(x); }
-#endif
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
 #if defined(_MSC_VER)

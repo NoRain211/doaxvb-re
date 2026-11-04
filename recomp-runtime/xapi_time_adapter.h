@@ -14,21 +14,20 @@ uint64_t recomp_xapi_host_ns(void);
 /* Frame-locked guest time for rollback. While enabled, each frame
    boundary advances the counter one 60 Hz frame, so replaying the same
    frames reads the same times. RECOMP_FRAME_CLOCK=1 enables it at startup. */
-typedef struct RecompFrameClockState {
-    uint64_t base_ns;
-    uint64_t offset_ns;
-    uint64_t frame;
-    bool enabled;
-} RecompFrameClockState;
 bool recomp_xapi_frame_clock_enabled(void);
-/* 2003-01-01 00:00 UTC as a FILETIME: the date netplay runners share, since
-   host dates and file times differ between machines. */
-#define RECOMP_FRAME_CLOCK_EPOCH_FILETIME UINT64_C(126858528000000000)
 void recomp_xapi_frame_clock_set_enabled(bool enabled);
 void recomp_xapi_frame_clock_reset(void);
 void recomp_xapi_frame_clock_advance(void);
-void recomp_xapi_frame_clock_save(RecompFrameClockState *state);
-void recomp_xapi_frame_clock_restore(const RecompFrameClockState *state);
+/* Rollback snapshots of the clock's time. Whether it runs is not part of
+   them, so a restore cannot turn it on or off. */
+size_t recomp_xapi_frame_clock_state_size(void);
+void recomp_xapi_frame_clock_state_save(void *state);
+void recomp_xapi_frame_clock_state_restore(const void *state);
+/* The system time as a FILETIME. While frame-locked, netplay runners read
+   the same date, since host dates differ between machines. */
+uint64_t recomp_xapi_system_filetime(void);
+/* A host file's FILETIME as the guest sees it; a fixed date while frame-locked. */
+uint64_t recomp_xapi_guest_file_time(uint64_t host_filetime);
 RecompFunction recomp_xapi_time_lookup_manual(uint32_t guest_address);
 
 #ifdef __cplusplus

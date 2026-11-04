@@ -1221,20 +1221,14 @@ void recomp_fpu_context_restore(const RecompFpuContext *context)
     recomp_runtime.fpu_compare = context->fpu_compare;
 }
 
-typedef struct RuntimeState {
-    RecompRegisters registers;
-    RecompFpuContext fpu;
-    uint32_t last_dispatch_address;
-} RuntimeState;
-
 size_t recomp_runtime_state_size(void)
 {
-    return sizeof(RuntimeState);
+    return sizeof(RecompRuntimeState);
 }
 
 void recomp_runtime_state_save(void *state)
 {
-    RuntimeState *out = state;
+    RecompRuntimeState *out = state;
     out->registers = recomp_runtime.registers;
     recomp_fpu_context_save(&out->fpu);
     out->last_dispatch_address = recomp_last_dispatch_address;
@@ -1242,15 +1236,8 @@ void recomp_runtime_state_save(void *state)
 
 void recomp_runtime_state_restore(const void *state)
 {
-    const RuntimeState *in = state;
+    const RecompRuntimeState *in = state;
     recomp_runtime.registers = in->registers;
     recomp_fpu_context_restore(&in->fpu);
     recomp_last_dispatch_address = in->last_dispatch_address;
-}
-
-bool recomp_runtime_state_equal(const void *left, const void *right, size_t size)
-{
-    const RuntimeState *a = left, *b = right;
-    /* At the frame boundary only esp is defined; the rest is caller scratch. */
-    return size == sizeof(RuntimeState) && a->registers.esp == b->registers.esp;
 }

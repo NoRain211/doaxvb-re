@@ -2,6 +2,7 @@
 #ifndef DOAXBV_RECOMP_INPUT_TEXT_H
 #define DOAXBV_RECOMP_INPUT_TEXT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,6 +15,9 @@ extern "C" {
    wait; take moves them out. From doa2u-re's input_keyboard_win32.c. */
 void recomp_input_text_char(uint32_t character);
 size_t recomp_input_text_take(char *out, size_t capacity);
+/* True when a text field has taken typed keys since the last call, so a
+   window can keep its text input on only while one is open. */
+bool recomp_input_text_asked(void);
 
 #ifdef __cplusplus
 }

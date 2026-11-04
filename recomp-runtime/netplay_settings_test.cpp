@@ -39,7 +39,8 @@ int main()
     first.matchmaker = "127.0.0.1:47713";
     first.privateRoom = true;
     first.blocked = {{0x0123456789abcdefull, "SOME ONE"}, {0xfedcba9876543210ull, "BAD\nNAME"}};
-    recomp_netplay_settings_save(path, first);
+    check("save succeeds", recomp_netplay_settings_save(path, first) && !fs::exists(root / "netplay.txt.tmp"));
+    check("save to a missing folder fails", !recomp_netplay_settings_save(root / "missing" / "netplay.txt", first));
     RecompNetplaySettings read;
     read.blocked = {{1u, "STALE"}};
     recomp_netplay_settings_load(path, read);

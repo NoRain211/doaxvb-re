@@ -8,6 +8,9 @@
 #include <fstream>
 #include <random>
 #include <sstream>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 const char *const RecompNetplayDisplayNames[3] = {"off", "ping", "full"};
 
@@ -59,12 +62,15 @@ void recomp_netplay_settings_load(const std::filesystem::path &path, RecompNetpl
     std::random_device random;
     while (settings.id == 0u) settings.id = static_cast<std::uint64_t>(random()) << 32 | random();
     file.close();
-    recomp_netplay_settings_save(path, settings);
+    if (!recomp_netplay_settings_save(path, settings)) std::fprintf(stderr, "recomp netplay: could not save the new player ID\n");
 }
 
-void recomp_netplay_settings_save(const std::filesystem::path &path, const RecompNetplaySettings &settings)
+bool recomp_netplay_settings_save(const std::filesystem::path &path, const RecompNetplaySettings &settings)
 {
-    std::ofstream file(path, std::ios::trunc);
+    // A new file replaces the old one whole, so a failed write never loses the ID or block list.
+    auto temporary = path;
+    temporary += ".tmp";
+    std::ofstream file(temporary, std::ios::trunc);
     file << "delay " << settings.delay << "\nport " << settings.port << "\ndisplay "
          << RecompNetplayDisplayNames[settings.display] << '\n';
     if (!settings.recent.empty()) file << "recent " << settings.recent << '\n';
@@ -77,4 +83,13 @@ void recomp_netplay_settings_save(const std::filesystem::path &path, const Recom
             if (static_cast<unsigned char>(c) < 0x20u || c == 0x7f) c = '?';
         file << "block " << idText(id) << ' ' << shown << '\n';
     }
+    file.close();
+    if (!file) return false;
+#ifdef _WIN32
+    return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    return !error;
+#endif
 }

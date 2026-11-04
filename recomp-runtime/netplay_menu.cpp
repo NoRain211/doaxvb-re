@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -62,8 +63,6 @@ static std::uint16_t keysOf(const RecompInputGamepad &pad)
     return keys;
 }
 
-static bool exhibitionChosen() { return recomp_netplay_game_exhibition_chosen(); }
-
 #ifdef _WIN32
 static std::string pasteText()
 {
@@ -106,7 +105,8 @@ static void loadSettings()
 
 void saveSettings()
 {
-    recomp_netplay_settings_save(menu.storage / "netplay.txt", menu);
+    if (!recomp_netplay_settings_save(menu.storage / "netplay.txt", menu))
+        std::fprintf(stderr, "recomp netplay: could not save netplay.txt; the old settings are kept\n");
 }
 
 static void close(bool local)
@@ -487,7 +487,7 @@ static void onFrame()
             menu.launched = true;
             return;
         }
-        if (menu.covering && exhibitionChosen()) menu.covering = false;
+        if (menu.covering && recomp_netplay_game_exhibition_chosen()) menu.covering = false;
         draw();
         recomp_overlay_screen_publish();
         menu.drawn = true;
@@ -517,7 +517,7 @@ void recomp_netplay_menu_frame()
     if (!menu.installed) return;
     {
         std::lock_guard<std::mutex> guard(menu.lock);
-        if (menu.screen == Screen::Closed && !menu.reopenMessage.empty() && exhibitionChosen()) {
+        if (menu.screen == Screen::Closed && !menu.reopenMessage.empty() && recomp_netplay_game_exhibition_chosen()) {
             menu.screen = Screen::Online;
             menu.cursor = OnlineHost;
             menu.message = menu.reopenMessage;
@@ -565,7 +565,7 @@ void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad)
             pad->analog_buttons[RECOMP_INPUT_ANALOG_A] = RECOMP_INPUT_ANALOG_PRESSED;
             return;
         }
-        if ((edges & A) == 0u || !exhibitionChosen()) return;
+        if ((edges & A) == 0u || !recomp_netplay_game_exhibition_chosen()) return;
         menu.screen = Screen::Online;
         menu.cursor = OnlineLocal;
         menu.message.clear();
@@ -577,36 +577,37 @@ void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad)
     *pad = RecompInputGamepad{};
 }
 
-bool recomp_netplay_menu_take_launch(std::uint32_t &hostPort, std::uint32_t &delay, std::string &join,
-    RecompNetplayRoomState &room, RecompNetplay &socket)
+std::string recomp_netplay_room_state_format(const RecompNetplayRoomState &room)
+{
+    return std::string(room.hosting ? "1," : "0,") + (room.listing ? "1," : "0,") + (room.found ? "1," : "0,") +
+        room.peerAddress;
+}
+
+bool recomp_netplay_room_state_parse(const std::string &text, RecompNetplayRoomState &room)
+{
+    if (text.size() < 6u || text[1] != ',' || text[3] != ',' || text[5] != ',') return false;
+    room = {text[0] == '1', text[2] == '1', text[4] == '1', text.substr(6u)};
+    return true;
+}
+
+bool recomp_netplay_menu_take_launch(RecompNetplayRoomState &room, std::uint32_t &port, std::uint32_t &delay,
+    RecompNetplay &socket)
 {
     std::lock_guard<std::mutex> guard(menu.lock);
     if (!menu.launched) return false;
     menu.launched = false;
-    hostPort = menu.lobby.hosting ? menu.port : 0u;
+    room = menu.lobby;
+    port = menu.port;
     delay = menu.delay;
-    join = menu.lobby.hosting ? std::string() : menu.lobby.peerAddress;
-    room = {menu.lobby.hosting, menu.lobby.listing, menu.lobby.found, menu.lobby.peerAddress};
     socket = menu.net; // the menu reopens nothing until the session hands it back
     return true;
-}
-
-int recomp_netplay_menu_display(const std::filesystem::path &storage)
-{
-    // A copy, so a delay the host picked in the room survives the session.
-    RecompNetplaySettings settings;
-    recomp_netplay_settings_load(storage / "netplay.txt", settings);
-    return settings.display;
 }
 
 void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const RecompNetplayRoomState &room,
     const std::string &reason)
 {
     std::lock_guard<std::mutex> guard(menu.lock);
-    menu.lobby.hosting = room.hosting;
-    menu.lobby.listing = room.listing;
-    menu.lobby.found = room.found;
-    menu.lobby.peerAddress = room.peerAddress;
+    static_cast<RecompNetplayRoomState &>(menu.lobby) = room;
     menu.openedBy = 0u;
     menu.message.clear();
     menu.covering = true;

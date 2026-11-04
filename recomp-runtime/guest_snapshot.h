@@ -53,7 +53,9 @@ typedef struct RecompGuestSnapshots {
 uint8_t *recomp_guest_ram_allocate(size_t size, bool *write_watch);
 void recomp_guest_ram_free(uint8_t *ram);
 
-/* Takes the first save point. load can then go up to slot_count saves back. */
+/* Takes the first save point. load can then go up to slot_count saves back.
+   Fails when write_watch is set and the RAM does not track writes, or another
+   live instance already uses the tracking. */
 bool recomp_snapshots_init(RecompGuestSnapshots *snapshots, uint8_t *ram, size_t size,
     bool write_watch, size_t slot_count);
 /* On allocation failure the history is dropped and the current RAM becomes

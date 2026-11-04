@@ -14,25 +14,19 @@
 #include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-enum { MAX_RANGES = 64u };
+/* Fiber stacks are the only ignored ranges, and the rollback hash takes them all. */
+_Static_assert(RECOMP_FIBER_MAX_COUNT <= RECOMP_SNAPSHOT_HASH_RANGES, "ignored ranges fit the hash");
 
-static size_t build_ignore_ranges(RecompRamRange *ranges, size_t capacity)
+size_t recomp_synctest_ignored_ranges(RecompRamRange *ranges)
 {
-    size_t count = 0u;
     /* Parked fibers' guest stacks below their saved esp are dead scratch;
        the snapshot still restores them. */
     RecompFiberStackRange stacks[RECOMP_FIBER_MAX_COUNT];
-    const size_t stack_count = recomp_fiber_adapter_stack_ranges(stacks, RECOMP_FIBER_MAX_COUNT);
-    for (size_t i = 0u; i < stack_count && count < capacity; ++i)
-        ranges[count++] = (RecompRamRange){stacks[i].base, (size_t)stacks[i].base + stacks[i].size};
-    if (count == capacity) {
-        fprintf(stderr, "recomp synctest: ignore range list full\n");
-        exit(2);
-    }
+    const size_t count = recomp_fiber_adapter_stack_ranges(stacks, RECOMP_FIBER_MAX_COUNT);
+    for (size_t i = 0u; i < count; ++i)
+        ranges[i] = (RecompRamRange){stacks[i].base, (size_t)stacks[i].base + stacks[i].size};
     for (size_t i = 1u; i < count; ++i) {
         RecompRamRange value = ranges[i];
         size_t j = i;
@@ -48,8 +42,8 @@ static size_t build_ignore_ranges(RecompRamRange *ranges, size_t capacity)
 static bool ram_equal(const void *left, const void *right, size_t size)
 {
     const uint8_t *a = left, *b = right;
-    RecompRamRange ranges[MAX_RANGES];
-    const size_t range_count = build_ignore_ranges(ranges, MAX_RANGES);
+    RecompRamRange ranges[RECOMP_FIBER_MAX_COUNT];
+    const size_t range_count = recomp_synctest_ignored_ranges(ranges);
     size_t at = 0u;
     for (size_t range = 0u; range <= range_count && at < size; ++range) {
         const size_t end = range < range_count && ranges[range].start < size ? ranges[range].start : size;
@@ -61,8 +55,8 @@ static bool ram_equal(const void *left, const void *right, size_t size)
 
 void recomp_synctest_mask_ignored(uint8_t *ram, size_t size)
 {
-    RecompRamRange ranges[MAX_RANGES];
-    const size_t range_count = build_ignore_ranges(ranges, MAX_RANGES);
+    RecompRamRange ranges[RECOMP_FIBER_MAX_COUNT];
+    const size_t range_count = recomp_synctest_ignored_ranges(ranges);
     for (size_t i = 0u; i < range_count; ++i) {
         if (ranges[i].start >= size) continue;
         const size_t stop = ranges[i].stop < size ? ranges[i].stop : size;
@@ -70,13 +64,13 @@ void recomp_synctest_mask_ignored(uint8_t *ram, size_t size)
     }
 }
 
-size_t recomp_synctest_ignored_ranges(RecompRamRange *ranges, size_t capacity)
+/* At the frame boundary only esp is defined; the rest is caller scratch. */
+static bool cpu_equal(const void *left, const void *right, size_t size)
 {
-    return build_ignore_ranges(ranges, capacity);
+    const RecompRuntimeState *a = left, *b = right;
+    (void)size;
+    return a->registers.esp == b->registers.esp;
 }
-
-static void clock_save(void *state) { recomp_xapi_frame_clock_save(state); }
-static void clock_restore(const void *state) { recomp_xapi_frame_clock_restore(state); }
 static bool fibers_restorable(const void *state, size_t size)
 {
     (void)size;
@@ -113,9 +107,9 @@ void recomp_synctest_install_default_modules(void)
     size_t count = 0u;
     recomp_synctest_set_ram_equal(ram_equal);
     table[count++] = (RecompSyncTestModule){"cpu", recomp_runtime_state_size(),
-        recomp_runtime_state_save, recomp_runtime_state_restore, recomp_runtime_state_equal};
-    table[count++] = (RecompSyncTestModule){"clock", sizeof(RecompFrameClockState),
-        clock_save, clock_restore, NULL, NULL, true};
+        recomp_runtime_state_save, recomp_runtime_state_restore, cpu_equal};
+    table[count++] = (RecompSyncTestModule){"clock", recomp_xapi_frame_clock_state_size(),
+        recomp_xapi_frame_clock_state_save, recomp_xapi_frame_clock_state_restore, NULL, NULL, true};
     table[count++] = (RecompSyncTestModule){"fibers", recomp_fiber_adapter_state_size(),
         recomp_fiber_adapter_state_save, recomp_fiber_adapter_state_restore,
         recomp_fiber_adapter_state_equal, fibers_restorable};

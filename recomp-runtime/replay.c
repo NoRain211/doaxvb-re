@@ -49,7 +49,7 @@ size_t recomp_replay_header(RecompReplayWriter *w, const RecompReplayInfo *info,
     *at++ = info->player;
     *at++ = info->delay;
     *at++ = info->flags;
-    at = put(at, info->start_swap, 4u);
+    at = put(at, info->start_frame, 4u);
     at = put(at, info->blob_size[0], 4u);
     memcpy(at, host_blob, info->blob_size[0]);
     at = put(at + info->blob_size[0], info->blob_size[1], 4u);
@@ -102,7 +102,7 @@ bool recomp_replay_open(RecompReplayReader *r, const uint8_t *data, size_t size,
     info->player = at[0];
     info->delay = at[1];
     info->flags = at[2];
-    info->start_swap = get(at + 3, 4u);
+    info->start_frame = get(at + 3, 4u);
     at += 7;
     for (unsigned i = 0; i < 2u; ++i) {
         if ((size_t)(data + size - at) < 4u) return false;

@@ -3,8 +3,9 @@
 Status: in progress. The rollback core from
 [doa2u-re](https://github.com/NoRain211/doa2u-re) (branch
 `codex/rollback-netcode`) is ported: input prediction, the snapshot ring,
-SyncTest, replays, the UDP transport, the matchmaker client and the shared
-matchmaker server. Players pair through the runner's online menu, or with
+SyncTest, replays, the UDP transport and the matchmaker client. The
+matchmaker server is doa2u-re's `tools/matchmaker.py`, shared by both
+games. Players pair through the runner's online menu, or with
 `--netplay-host` and `--netplay-join`, and play a Two Players Exhibition
 match over UDP with rollback.
 
@@ -39,7 +40,7 @@ Copied with their GPL-3.0-or-later notices and with header guards and the
 replay tag (`DXBR`, `.dxbr`) renamed: `rollback.c`, `replay.c`,
 `netplay.c`, `netplay_names.c`, `netplay_settings.cpp`,
 `netplay_upnp.c`, `guest_snapshot.c`, `synctest.c`, `native_fiber.c`,
-`musl_math/` (MIT, see NOTICE), `tools/matchmaker.py` and their tests.
+`musl_math/` (MIT, see NOTICE) and their tests.
 The matchmaker's packets keep doa2u-re's `D2MM` tag, so both games use one
 server; rooms pair only runners whose build digest matches, and the digest
 includes the XBE hash.
@@ -103,9 +104,9 @@ runs in lockstep, as in doa2u-re.
 Two machines must also compute the same floating point results. The lifter
 (`4500b88` on the recipe branch) emits the x87 transcendentals (fsin,
 fcos, fsincos, fptan, fpatan, fyl2x, fyl2xp1 and f2xm1, as
-`expm1(x ln 2)`) as calls to `recomp_sin` and the rest. The runner
-defines `RECOMP_PORTABLE_MATH`, so `recomp_types.h` maps them to musl's
-(`musl_math/`), built the same on every host; tests keep the host's libm.
+`expm1(x ln 2)`) as calls to `recomp_sin` and the rest, which
+`recomp_types.h` maps to musl's (`musl_math/`), built the same on every
+host.
 125 game functions changed. RCPSS and RSQRTSS already lift as exact
 division and square root. A UDP session from boot on this program matched
 guest RAM to frame 4,000.
@@ -196,7 +197,7 @@ saves with doa2u-re's `netplay_profile.cpp` (at most 1 MiB, with a
 SHA-256), and the joiner sends none. Each side clears
 `.recomp-storage/netplay`, writes the host's copy there after checking the
 hash and every path, and plays the session from it with its own journal
-(`recomp_save_session`), so neither player's own saves change.
+(`recomp_save_set_session`), so neither player's own saves change.
 
 The host asks the router to forward its UDP port with UPnP (miniupnpc
 2.3.3) and removes the forward when the runner exits. The log names the
@@ -294,10 +295,11 @@ the other presented at 10 fps until its 15 s grace ended the session.
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display
-  passes with the same `GetWriteWatch` reset tracking the snapshot ring
-  uses, so the two cannot run together. Sessions run at 60 Hz: the frame
-  boundary hook only runs when every pass is a tick, and SyncTest turns on
-  the hand-written loop without high frame rate.
+  passes with the snapshot ring's own engine (`guest_snapshot.c`), which
+  refuses a second write-watch user, so the two cannot run together.
+  Sessions run at 60 Hz: installing the frame boundary hook at any other
+  rate stops the runner, and SyncTest turns on the hand-written loop
+  without high frame rate.
 - **Guest threads.** Every guest thread is a fiber on the game thread and
   runs at fixed points in the scheduler, so no guest work runs on its own
   timing. The only other host thread that touches game state is the

@@ -58,11 +58,11 @@ void restyle(Uint32 height)
 
 void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
     SDL_GPUCommandBuffer *command_buffer, SDL_GPUTexture *target,
-    Uint32 width, Uint32 height, const RecompOverlayText *text)
+    Uint32 width, Uint32 height, const RecompOverlayText *text,
+    const RecompOverlayQuad *screen, uint32_t screen_count)
 {
     if (device == nullptr || window == nullptr || command_buffer == nullptr || target == nullptr ||
-        width == 0u || height == 0u ||
-        (recomp_overlay_imgui_take_screen() == 0u && recomp_overlay_empty(text))) {
+        width == 0u || height == 0u || (screen_count == 0u && recomp_overlay_empty(text))) {
         return;
     }
     if (!start(device, window, height)) return;
@@ -76,7 +76,7 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
 
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui::NewFrame();
-    recomp_overlay_imgui_build(*text, io.DisplaySize.x, io.DisplaySize.y);
+    recomp_overlay_imgui_build(*text, screen, screen_count, io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
     ImDrawData *draw_data = ImGui::GetDrawData();
     if (draw_data == nullptr || draw_data->CmdListsCount == 0) return;

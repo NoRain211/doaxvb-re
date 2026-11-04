@@ -557,6 +557,7 @@ struct DeferredFrameDump {
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
+    RecompOverlayQuad overlay_screen[RECOMP_OVERLAY_MAX_QUADS]{}; // the presenter's copy of the menu's screen
     SunShadow sun;
     GBuffer gbuffer;
     DWORD owner_thread = 0;
@@ -4367,7 +4368,8 @@ RecompD3dPresenterError submitPresent(
         // the front buffer the game reads back has been copied.
         RecompOverlayText overlay;
         recomp_overlay_take(&overlay);
-        {
+        const uint32_t screen_count = recomp_overlay_screen_take(presenter->overlay_screen, RECOMP_OVERLAY_MAX_QUADS);
+        if (screen_count != 0u || !recomp_overlay_empty(&overlay)) {
             ID3D11Texture2D *back_buffer = nullptr;
             presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
             if (back_buffer != nullptr) {
@@ -4375,7 +4377,8 @@ RecompD3dPresenterError submitPresent(
                 back_buffer->GetDesc(&window);
                 releaseCom(back_buffer);
                 recomp_overlay_d3d11_draw(presenter->device, presenter->context,
-                    presenter->present_target_view, window.Width, window.Height, &overlay);
+                    presenter->present_target_view, window.Width, window.Height, &overlay,
+                    presenter->overlay_screen, screen_count);
             }
         }
     }

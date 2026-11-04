@@ -74,7 +74,7 @@ static RecompNetplayLobby lobby(char build, std::uint8_t delay, std::uint8_t fla
     return value;
 }
 
-// A socket standing in for tools/matchmaker.py: it pairs two rooms on 127.0.0.1 and relays between them.
+// A socket standing in for doa2u-re's tools/matchmaker.py: it pairs two rooms on 127.0.0.1 and relays between them.
 static void sendFrom(const RecompNetplay &from, std::uint16_t port, const std::vector<std::uint8_t> &packet)
 {
     sockaddr_in to{};

@@ -13,7 +13,7 @@ extern "C" {
 
 /* A match replay (.dxbr): what a netplay session needs to run again on the
    same build. Little endian: "DXBR", a 2-byte version, the netplay build, the
-   local player, input delay and lobby flags, the swap the session started
+   local player, input delay and lobby flags, the frame the session started
    at, then the host's and the joiner's profile blobs, each after a 4-byte
    size. Frames follow with both guest ports' pads: a 0 byte and two 18-byte
    pads for a frame with new pads, or a count of 1 to 255 frames that repeat
@@ -28,7 +28,7 @@ enum {
 typedef struct RecompReplayInfo {
     char digest[RECOMP_NETPLAY_DIGEST_BYTES];
     uint8_t player, delay, flags;
-    uint32_t start_swap;
+    uint32_t start_frame;
     uint32_t blob_size[2]; /* the host's, then the joiner's; each at most RECOMP_NETPLAY_MAX_PROFILE */
 } RecompReplayInfo;
 

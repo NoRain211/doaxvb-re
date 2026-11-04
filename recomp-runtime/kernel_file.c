@@ -263,20 +263,16 @@ static uint32_t register_file_handle(
                             continue;
                         }
                         strcpy(entry.name, data.cFileName);
-                        entry.creation_time =
+                        entry.creation_time = recomp_xapi_guest_file_time(
                             (uint64_t)data.ftCreationTime.dwLowDateTime |
-                            (uint64_t)data.ftCreationTime.dwHighDateTime << 32u;
-                        entry.last_access_time =
+                            (uint64_t)data.ftCreationTime.dwHighDateTime << 32u);
+                        entry.last_access_time = recomp_xapi_guest_file_time(
                             (uint64_t)data.ftLastAccessTime.dwLowDateTime |
-                            (uint64_t)data.ftLastAccessTime.dwHighDateTime << 32u;
-                        entry.last_write_time =
+                            (uint64_t)data.ftLastAccessTime.dwHighDateTime << 32u);
+                        entry.last_write_time = recomp_xapi_guest_file_time(
                             (uint64_t)data.ftLastWriteTime.dwLowDateTime |
-                            (uint64_t)data.ftLastWriteTime.dwHighDateTime << 32u;
+                            (uint64_t)data.ftLastWriteTime.dwHighDateTime << 32u);
                         entry.change_time = entry.last_write_time;
-                        if (recomp_xapi_frame_clock_enabled()) {
-                            entry.creation_time = entry.last_access_time = entry.last_write_time =
-                                entry.change_time = RECOMP_FRAME_CLOCK_EPOCH_FILETIME;
-                        }
                         size = (uint64_t)data.nFileSizeLow |
                             (uint64_t)data.nFileSizeHigh << 32u;
                         entry.size = size;
@@ -466,8 +462,9 @@ static int build_host_path(const char *relative, char *host_path, size_t host_pa
 /* Partition 1's host folder; a netplay session's saves have their own. */
 static bool append_partition1(char *path, size_t size)
 {
+    const char *session = recomp_save_get_session();
     return append_segment(path, size, ".recomp-storage") &&
-        (recomp_save_session == NULL || append_segment(path, size, recomp_save_session)) &&
+        (session == NULL || append_segment(path, size, session)) &&
         append_segment(path, size, "partition1");
 }
 
@@ -1469,13 +1466,12 @@ static void bridge_nt_query_information_file(void)
         if (profile_metadata && file_information != 0u &&
             ((file_information_class == FILE_BASIC_INFORMATION && length >= 0x28u) ||
              (file_information_class == FILE_NETWORK_OPEN_INFORMATION && length >= 0x38u))) {
-            LARGE_INTEGER times[4] = {host.CreationTime, host.LastAccessTime,
+            const LARGE_INTEGER times[4] = {host.CreationTime, host.LastAccessTime,
                 host.LastWriteTime, host.ChangeTime};
             for (uint32_t t = 0u; t < 4u; ++t) {
-                if (recomp_xapi_frame_clock_enabled())
-                    times[t].QuadPart = (LONGLONG)RECOMP_FRAME_CLOCK_EPOCH_FILETIME;
-                *recomp_memory_u32(file_information + t * 8u) = times[t].LowPart;
-                *recomp_memory_u32(file_information + t * 8u + 4u) = (uint32_t)times[t].HighPart;
+                const uint64_t time = recomp_xapi_guest_file_time((uint64_t)times[t].QuadPart);
+                *recomp_memory_u32(file_information + t * 8u) = (uint32_t)time;
+                *recomp_memory_u32(file_information + t * 8u + 4u) = (uint32_t)(time >> 32u);
             }
         }
         if (file_information_class == FILE_NETWORK_OPEN_INFORMATION &&

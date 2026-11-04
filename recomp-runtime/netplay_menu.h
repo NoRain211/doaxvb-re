@@ -31,13 +31,13 @@ struct RecompNetplayRoomState {
     bool hosting = false, listing = false, found = false;
     std::string peerAddress;
 };
-/* Takes a room's launch, once: hostPort and delay for the host, or join as
-   host:port for the joiner, the room's state, and the room's open socket,
-   which the caller now owns. */
-bool recomp_netplay_menu_take_launch(std::uint32_t &hostPort, std::uint32_t &delay, std::string &join,
-    RecompNetplayRoomState &room, RecompNetplay &socket);
-/* The session's network display from NETPLAY SETTINGS: 0 off, 1 ping, 2 full. */
-int recomp_netplay_menu_display(const std::filesystem::path &storage);
+/* The state as --netplay-room carries it: <hosting>,<listing>,<found>,<peer address>. */
+std::string recomp_netplay_room_state_format(const RecompNetplayRoomState &room);
+bool recomp_netplay_room_state_parse(const std::string &text, RecompNetplayRoomState &room);
+/* Takes a room's launch, once: the room's state, the port and input delay a
+   host plays with, and the room's open socket, which the caller now owns. */
+bool recomp_netplay_menu_take_launch(RecompNetplayRoomState &room, std::uint32_t &port, std::uint32_t &delay,
+    RecompNetplay &socket);
 /* Opens the room a session came from again on the session's socket, which
    the menu takes back: the host listens, the joiner calls the host. reason
    is the session's stop reason, shown in the room. */

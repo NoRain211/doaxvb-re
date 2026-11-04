@@ -1,7 +1,5 @@
 #include "overlay_imgui_panel.h"
 
-#include "overlay_screen.h"
-
 #include "imgui.h"
 
 namespace {
@@ -13,8 +11,6 @@ constexpr float kReferenceHeight = 600.0f;
 constexpr float kFontPixels = 13.0f;
 constexpr float kMargin = 12.0f;
 float panel_scale = 1.0f;
-RecompOverlayQuad screen[RECOMP_OVERLAY_MAX_QUADS];
-uint32_t screen_count;
 
 }  // namespace
 
@@ -35,13 +31,8 @@ void recomp_overlay_imgui_style(float target_height)
     style.ScaleAllSizes(panel_scale);
 }
 
-uint32_t recomp_overlay_imgui_take_screen(void)
-{
-    screen_count = recomp_overlay_screen_take(screen, RECOMP_OVERLAY_MAX_QUADS);
-    return screen_count;
-}
-
-void recomp_overlay_imgui_build(const RecompOverlayText &text, float width, float height)
+void recomp_overlay_imgui_build(const RecompOverlayText &text, const RecompOverlayQuad *screen,
+    uint32_t screen_count, float width, float height)
 {
     const float scale = panel_scale;
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |

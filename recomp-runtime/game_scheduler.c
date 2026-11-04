@@ -73,9 +73,18 @@ uint32_t recomp_game_tick(void) { return game_tick; }
 unsigned recomp_game_substep(void) { return pass_substep; }
 
 static void (*frame_boundary)(void);
-void recomp_game_set_frame_boundary(void (*hook)(void)) { frame_boundary = hook; }
 static bool paced = true;
-void recomp_game_set_paced(bool on) { paced = on; }
+void recomp_game_set_frame_boundary(void (*hook)(void), bool hook_paced)
+{
+    /* Rollback runs at 60 Hz only, where every pass is a tick. */
+    const unsigned hz = recomp_game_requested_hz();
+    if (hook != NULL && hz != 0u && hz != 60u) {
+        fprintf(stderr, "recomp game scheduler: rollback and SyncTest need RECOMP_GAME_HZ=60, not %u\n", hz);
+        exit(2);
+    }
+    frame_boundary = hook;
+    paced = hook == NULL || hook_paced;
+}
 
 typedef struct SchedulerState {
     uint32_t game_pass, game_tick;
@@ -508,8 +517,7 @@ static void game_loop(void)
     bool displayed = false;
 
     for (;;) {
-        /* Rollback runs at 60 Hz only, where every pass is a tick. */
-        if (frame_boundary != NULL && game_hz == 60u) frame_boundary();
+        if (frame_boundary != NULL) frame_boundary();
         uint64_t timed = timing_now();
         const bool tick = next_pass_is_tick();
         phase_time[6] += timing_now() - timed;
@@ -649,11 +657,10 @@ RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
     static int enabled = -1;
     if (enabled < 0) {
         const char *setting = getenv("RECOMP_GAME_SCHEDULER");
-        /* Rollback needs the hand-written loop for its frame boundary. */
-        enabled = (setting != NULL && strcmp(setting, "1") == 0) || recomp_game_requested_hz() != 0 ||
-            frame_boundary != NULL;
+        enabled = (setting != NULL && strcmp(setting, "1") == 0) || recomp_game_requested_hz() != 0;
     }
-    if (!enabled) {
+    /* Rollback needs the hand-written loop for its frame boundary, installed before the guest starts. */
+    if (!enabled && frame_boundary == NULL) {
 #ifdef RECOMP_FULL_PROGRAM
         if (address == 0x000bb290u && test_clock_enabled()) {
             return generated_game_entry;

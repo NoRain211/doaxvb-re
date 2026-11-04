@@ -39,7 +39,7 @@ int main(void)
     info.player = 1u;
     info.delay = 2u;
     info.flags = 5u;
-    info.start_swap = 77u;
+    info.start_frame = 77u;
     info.blob_size[0] = sizeof host;
     info.blob_size[1] = sizeof joiner;
 
@@ -63,7 +63,7 @@ int main(void)
     const uint8_t *host_blob = NULL, *joiner_blob = NULL;
     check("opens", recomp_replay_open(&reader, file, size, &read, &host_blob, &joiner_blob));
     check("header round trip", memcmp(read.digest, info.digest, sizeof info.digest) == 0 && read.player == 1u &&
-        read.delay == 2u && read.flags == 5u && read.start_swap == 77u);
+        read.delay == 2u && read.flags == 5u && read.start_frame == 77u);
     check("blobs", read.blob_size[0] == sizeof host && memcmp(host_blob, host, sizeof host) == 0 &&
         read.blob_size[1] == sizeof joiner && memcmp(joiner_blob, joiner, sizeof joiner) == 0);
     unsigned frames = 0u;
