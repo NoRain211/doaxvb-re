@@ -85,6 +85,7 @@ struct RollbackRun {
     int networkDisplay = 0;
     std::uint32_t rewindDepth = 0u;
     std::chrono::steady_clock::time_point rewoundAt{};
+    bool padSeen = false; // this player has used a gamepad, so losing it shows a notice
 };
 static RollbackRun rollback;
 static RecompNetplaySessionHost host;
@@ -577,6 +578,15 @@ static void drawSessionOverlay()
         const char *title = "STARTING MATCH";
         recomp_overlay_rect(-1000.0f, 0.0f, 2640.0f, 480.0f, 0xff000000u); // past the edges of a wide window
         recomp_overlay_text(320.0f - recomp_overlay_text_width(title, 3.0f) / 2.0f, 228.0f, 3.0f, 0xffffffffu, title);
+    }
+    // Only this side sees its pad go missing; both guests keep the session's two pads.
+    const bool connected = recomp_input_host_pad_connected(0u);
+    rollback.padSeen = rollback.padSeen || connected;
+    if (rollback.padSeen && !connected && rollback.mode != RollbackMode::Replay) {
+        const char *missing = "CONTROLLER DISCONNECTED";
+        const float width = recomp_overlay_text_width(missing, 2.0f);
+        recomp_overlay_rect(320.0f - width / 2.0f - 6.0f, 410.0f, width + 12.0f, 24.0f, 0xa0000000u);
+        recomp_overlay_text(320.0f - width / 2.0f, 415.0f, 2.0f, 0xffff5050u, missing);
     }
     if (rollback.networkDisplay == 0 || rollback.mode == RollbackMode::Replay) {
         recomp_overlay_screen_publish();

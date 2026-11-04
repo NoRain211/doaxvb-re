@@ -274,6 +274,9 @@ in its own play folder, ended with the same guest RAM as both live runners.
 NETPLAY SETTINGS' network display draws in the window's bottom right
 corner during a session: the ping, or also the input delay, the deepest
 rewind of the last second and how many frames this side runs ahead.
+A player who has used a gamepad in the session sees CONTROLLER
+DISCONNECTED over the game while it is unplugged; the other side and both
+guests keep the session's pads.
 
 When the other player goes quiet for a second at a frame boundary, a
 WAITING FOR OPPONENT panel (CONNECTING before they were first heard)
