@@ -145,29 +145,59 @@ static void endSession(const char *reason)
     recomp_runner_relaunch(recomp_netplay_session_return_args(rollback.launch, reason));
 }
 
-/* A stalled session ends after its grace: 15 s once the other player has
-   been heard, 120 s while their runner may still be booting. A goodbye from
-   the other runner ends it at once. */
-static void stalled(std::chrono::steady_clock::time_point began)
+// When the panel over the last frame was last drawn (showNotice).
+static std::chrono::steady_clock::time_point noticeShown;
+
+// A panel over the last frame, shown again now, while the game waits at a frame boundary.
+static void showNotice(const char *title, const std::string &detail)
+{
+    // opaque, so each redraw looks the same
+    recomp_overlay_rect(120.0f, 194.0f, 400.0f, 92.0f, 0xff181820u);
+    recomp_overlay_rect(120.0f, 194.0f, 400.0f, 4.0f, 0xffd8283cu);
+    recomp_overlay_text(320.0f - recomp_overlay_text_width(title, 3.0f) / 2.0f, 214.0f, 3.0f, 0xffffffffu, title);
+    recomp_overlay_text(320.0f - recomp_overlay_text_width(detail.c_str(), 2.0f) / 2.0f, 252.0f, 2.0f, 0xffa8a8b0u,
+        detail.c_str());
+    recomp_overlay_screen_publish();
+    recomp_d3d_frame_adapter_present_again();
+    noticeShown = std::chrono::steady_clock::now();
+}
+
+/* A stalled session shows a notice over its last frame after 1 s, which also
+   keeps the window answering, and ends after its grace: 15 s once the other
+   player has been heard, 120 s while their runner may still be booting. A
+   goodbye from the other runner ends it at once. Mid-frame waits (atBoundary
+   false) only log: the frame being drawn is not finished. */
+static void stalled(std::chrono::steady_clock::time_point began, bool atBoundary = true)
 {
     using namespace std::chrono;
     if (rollback.net.peer_left) {
         std::fprintf(stderr, "recomp netplay: the other player left at frame %u\n", rollback.session.frame);
+        if (atBoundary) {
+            showNotice("OPPONENT LEFT", "ENDING THE SESSION");
+            std::this_thread::sleep_for(seconds(2));
+        }
         endSession("rollback:peer-left");
     }
+    const auto now = steady_clock::now();
     const bool heard = rollback.net.peer_seen;
-    const auto waited = steady_clock::now() - began;
-    if (waited > seconds(heard ? 15 : 120)) endSession("rollback:peer-timeout");
-    if (waited >= seconds(1) && !rollback.interrupted && heard) {
+    const seconds grace(heard ? 15 : 120);
+    const auto waited = now - began;
+    if (waited > grace) endSession("rollback:peer-timeout");
+    if (waited < seconds(1)) return;
+    if (!rollback.interrupted && heard)
         std::fprintf(stderr, "recomp netplay: the other player went quiet at frame %u\n", rollback.session.frame);
-        rollback.interrupted = true;
-    }
+    rollback.interrupted = true;
+    if (!atBoundary || now - noticeShown < milliseconds(100)) return;
+    showNotice(heard ? "WAITING FOR OPPONENT" : "CONNECTING",
+        "ENDING THE SESSION IN " + std::to_string(duration_cast<seconds>(grace - waited).count() + 1) + " S");
 }
 
 static void resumed(std::chrono::steady_clock::time_point began)
 {
     if (!rollback.interrupted) return;
     rollback.interrupted = false;
+    // Takes the notice down; the network display, when on, draws again at the next Swap.
+    recomp_overlay_screen_publish();
     std::fprintf(stderr, "recomp netplay: the other player is back after %.1f s\n",
         std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
 }
@@ -424,7 +454,7 @@ static void confirmSaveFrame()
     while (s.remote_count <= running) {
         recomp_netplay_receive(&rollback.net, &s);
         recomp_netplay_send(&rollback.net, &s, rollback.advantage);
-        stalled(began);
+        stalled(began, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     resumed(began);

@@ -64,6 +64,17 @@ uint32_t recomp_d3d_frame_adapter_swap_counter(void)
     return frame_state.swap_counter;
 }
 
+void recomp_d3d_frame_adapter_present_again(void)
+{
+    if (presenter == NULL || frame_state.swap_counter == 0u) return;
+    static RecompD3dPresenterCommand command; /* the draw union is large */
+    command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+    command.data.present.effective_flags = 5u;
+    command.data.present.swap_counter = frame_state.swap_counter;
+    command.data.present.hold = false;
+    recomp_d3d_frame_adapter_exit_if_closed(recomp_d3d_presenter_submit(presenter, &command));
+}
+
 /* Present returns the swap counter to the guest, so rollback rewinds it. */
 size_t recomp_d3d_frame_adapter_state_size(void) { return sizeof frame_state; }
 void recomp_d3d_frame_adapter_state_save(void *state) { memcpy(state, &frame_state, sizeof frame_state); }

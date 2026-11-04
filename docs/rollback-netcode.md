@@ -269,6 +269,17 @@ NETPLAY SETTINGS' network display draws in the window's bottom right
 corner during a session: the ping, or also the input delay, the deepest
 rewind of the last second and how many frames this side runs ahead.
 
+When the other player goes quiet for a second at a frame boundary, a
+WAITING FOR OPPONENT panel (CONNECTING before they were first heard)
+counts down the grace over the last frame. The frame adapter presents that
+frame again ten times a second with the panel
+(`recomp_d3d_frame_adapter_present_again`), which also keeps the window
+answering, and leaves guest state alone. OPPONENT LEFT shows for 2 s before
+the session ends on a goodbye. A wait inside a frame, for a profile write,
+only logs. With one runner frozen for 3 s, the other kept presenting at
+10 fps, both went on to frame 3,000 and guest RAM matched; with one killed,
+the other presented at 10 fps until its 15 s grace ended the session.
+
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display
@@ -285,7 +296,4 @@ rewind of the last second and how many frames this side runs ahead.
 
 - Reopening the room after a session, as doa2u-re does; the runner comes
   back to the online menu.
-- A notice over the last frame while the other player is quiet. The
-  presenter has no way to show a held frame again, so a stall only logs
-  and ends the session after its grace.
 - Sessions between two machines and between operating systems.

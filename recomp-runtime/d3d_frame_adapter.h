@@ -45,6 +45,10 @@ enum {
     RECOMP_PRESENT_HOLD_ROLLBACK = 4u,
 };
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold);
+/* Shows the last presented frame again with the current overlay screen,
+   for a notice while the game waits at a frame boundary. Guest state is
+   untouched. */
+void recomp_d3d_frame_adapter_present_again(void);
 /* Called at the first Clear of each frame, from the guest's drawing, where
    the hook may call the game's own code (leaving the registers as they
    were). */
