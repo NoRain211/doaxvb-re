@@ -19,6 +19,7 @@
 #include "synctest.h"
 #include "xapi_time_adapter.h"
 extern "C" {
+#include "dsound_service_adapter.h"
 #include "game_scheduler.h"
 #include "kernel_abi.h"
 #include "runtime.h"
@@ -467,6 +468,7 @@ static void walkPads()
     if (!rollback.walking) return;
     if (recomp_netplay_game_walk(rollback.session.frame, &rollback.pads[0])) {
         rollback.walking = false;
+        recomp_dsound_service_adapter_set_muted(0);
         std::fprintf(stderr, "recomp netplay: Two Players character select from frame %u\n", rollback.session.frame);
     }
     rollback.pads[1] = RecompInputGamepad{};
@@ -482,6 +484,8 @@ static void onFrame()
         if (!recomp_rollback_ring_init(RECOMP_ROLLBACK_WINDOW)) recomp_stop(4, "rollback:ring");
         rollback.active = true;
         rollback.walking = rollback.mode == RollbackMode::Udp && rollback.start <= 1u;
+        // The walk to character select is neither seen (drawSessionOverlay) nor heard.
+        recomp_dsound_service_adapter_set_muted(rollback.walking);
         rollback.started = std::chrono::steady_clock::now();
         // The session paces every frame; the scheduler's own 60 Hz wait would only add lag.
         recomp_game_set_paced(false);
@@ -548,6 +552,7 @@ static void onReplayFrame()
         recomp_rollback_init(&s, 0u);
         rollback.active = true;
         rollback.walking = rollback.start <= 1u;
+        recomp_dsound_service_adapter_set_muted(rollback.walking);
         rollback.started = std::chrono::steady_clock::now();
         std::fprintf(stderr, "recomp rollback: replay starts at pass %u as player %u\n",
             rollback.pass, rollback.player);
@@ -562,11 +567,21 @@ static void onReplayFrame()
     walkPads();
 }
 
-/* The corner display from NETPLAY SETTINGS: ping, or also the input delay,
-   the deepest rewind of the last second and how many frames this side runs
+/* Each Swap: STARTING MATCH over the walk to character select, and the
+   corner display from NETPLAY SETTINGS: ping, or also the input delay, the
+   deepest rewind of the last second and how many frames this side runs
    ahead of the other. */
 static void drawSessionOverlay()
 {
+    if (rollback.walking) {
+        const char *title = "STARTING MATCH";
+        recomp_overlay_rect(-1000.0f, 0.0f, 2640.0f, 480.0f, 0xff000000u); // past the edges of a wide window
+        recomp_overlay_text(320.0f - recomp_overlay_text_width(title, 3.0f) / 2.0f, 228.0f, 3.0f, 0xffffffffu, title);
+    }
+    if (rollback.networkDisplay == 0 || rollback.mode == RollbackMode::Replay) {
+        recomp_overlay_screen_publish();
+        return;
+    }
     const RecompNetplay &net = rollback.net;
     std::string text = "PING " + (net.rtt_known ? std::to_string(net.rtt_ms) + " MS" : std::string("--"));
     if (rollback.networkDisplay == 2) {
@@ -924,10 +939,8 @@ void recomp_netplay_session_install(const RecompNetplaySessionHost &runner)
     recomp_synctest_set_guest_ram(host.guestRam, host.guestRamSize, host.writeWatch);
     recomp_game_set_frame_boundary(rollback.mode == RollbackMode::Replay ? onReplayFrame : onFrame);
     recomp_kernel_profile_mutation_hook = confirmSaveFrame;
-    if (rollback.lobby) {
-        rollback.networkDisplay = recomp_netplay_menu_display(rollback.disc / ".recomp-storage");
-        if (rollback.networkDisplay != 0) recomp_d3d_swap_hook = drawSessionOverlay;
-    }
+    if (rollback.lobby) rollback.networkDisplay = recomp_netplay_menu_display(rollback.disc / ".recomp-storage");
+    if (rollback.lobby || rollback.mode == RollbackMode::Replay) recomp_d3d_swap_hook = drawSessionOverlay;
 }
 
 bool recomp_netplay_session_pad(std::uint32_t port, RecompInputGamepad *pad, bool *present)

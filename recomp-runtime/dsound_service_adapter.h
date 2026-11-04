@@ -13,5 +13,7 @@ const RecompDsoundServiceModel *recomp_dsound_service_adapter_model(void);
 size_t recomp_dsound_service_adapter_state_size(void);
 void recomp_dsound_service_adapter_state_save(void *state);
 void recomp_dsound_service_adapter_state_restore(const void *state);
+/* Host output only: guest buffers keep their clocks while muted. */
+void recomp_dsound_service_adapter_set_muted(int muted);
 
 #endif

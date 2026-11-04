@@ -153,6 +153,12 @@ EXHIBITION on the main menu (list 0) and Two Players on Exhibition's setup
 (list 2), which lists it because the session connects both ports. Character
 select (menu screen 4) ends the walk, and each player picks with their own
 pad.
+Sessions from a lobby, and replays, cover the walk with a black STARTING
+MATCH screen drawn each Swap and mute host audio until it ends
+(`recomp_dsound_service_adapter_set_muted`), as doa2u-re hides its walks
+to Versus. Both are host output only: a lobby session with them ran the same
+number of kernel calls to frame 3,000 as one without, with guest RAM
+identical on both sides.
 
 Results on one Windows machine, clang Release runner, two play folders:
 
