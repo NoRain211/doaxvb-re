@@ -679,15 +679,20 @@ if(RECOMP_PROGRAM_DIR)
         SOURCE_SUBDIR miniupnpc)
     FetchContent_MakeAvailable(miniupnpc)
     # Two runners pair only when they simulate alike: the same source and generated program.
-    set(RECOMP_NETPLAY_VERSION "" CACHE STRING "Release or commit netplay pairs on; empty reads Git")
+    set(RECOMP_NETPLAY_VERSION "" CACHE STRING "Release or commit netplay pairs on; empty reads package.json or Git")
     set(_netplay_version "${RECOMP_NETPLAY_VERSION}")
+    if(NOT _netplay_version AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../package.json")
+        # A release ZIP has no Git metadata; every platform's ZIP names the commit it was packed from.
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../package.json" _netplay_package)
+        string(JSON _netplay_version ERROR_VARIABLE _netplay_package_error GET "${_netplay_package}" source_base)
+    endif()
     if(NOT _netplay_version)
         # shortcut: read at configure time; build_game.py configures every build, a bare cmake --build may lag a commit.
         execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             OUTPUT_VARIABLE _netplay_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     endif()
     if(NOT _netplay_version)
-        message(FATAL_ERROR "Netplay needs a Git checkout or RECOMP_NETPLAY_VERSION")
+        message(FATAL_ERROR "Netplay needs a release package.json, a Git checkout or RECOMP_NETPLAY_VERSION")
     endif()
     string(SHA256 _netplay_build "${_netplay_version}\n${_recomp_program_manifest_sha256}\n")
     message(STATUS "Netplay build ${_netplay_build} (${_netplay_version})")
