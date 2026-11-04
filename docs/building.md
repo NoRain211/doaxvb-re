@@ -206,14 +206,6 @@ The receipt records the recipe, lifter revision, generated manifest, XBE, and ru
 identities. A matching generated program does not imply an identical executable:
 hand-written runtime changes and compiler inputs also affect the build.
 
-The checks above apply to the unmodified USA executable.
-`MODIFIED_XBES` in `tools/build_game.py` lists community-modified executables
-of the USA release that build. For each, setup restores the direct calls the
-modification redirected outside the recompiled program, recomputes the section
-digests the loader checks, and requires the result to match a recorded hash.
-Their generated program cannot match the recipe, so those builds skip the
-parity checks and record `xbe_variant: community-modified` in the receipt.
-
 An earlier experimental recipe used the same upstream pin with
 `runtime-bootstrap.patch` and fresh function discovery. Its two successful
 Exhibition runs did not establish parity with the original local build. The

@@ -133,14 +133,6 @@ build in a new folder and keep your previous install and saves. GitHub's
 automatic source archives are source only; see the
 [source build guide](docs/building.md) for their prerequisites.
 
-Setup also accepts specific community-modified disc images of the USA release,
-identified by the hash of their `default.xbe`. Such a mod changes a few calls
-in the game's code to jump into code the recompiler cannot see; during import,
-setup changes those calls back to their original targets so the game still
-builds. These builds skip the byte-for-byte checks that only the unmodified
-executable can pass. See the
-[source build guide](docs/building.md) for the list (`MODIFIED_XBES`) and details.
-
 New and older saves start in Digital control mode until you pick a PC
 control mode; later Analog or Digital choices are remembered. See the
 [controller guide](docs/recomp-controls.md).

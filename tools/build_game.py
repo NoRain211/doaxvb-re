@@ -9,7 +9,6 @@ import platform
 import re
 import shlex
 import shutil
-import struct
 import subprocess
 import sys
 import uuid
@@ -24,17 +23,6 @@ LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
 LIFTER_REVISION = "7adaf210a89814c5ca4444e4876fccb51b938878"
 RECIPE_SHA256 = "132ce89226ec913b95bec03b04c1170b051c6f768b6b8272f350dfbaadabfc3f"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
-# Community-modified executables of the USA release that are known to build.
-# Each lists direct calls the modification redirected to code outside the
-# recompiled program, as (call site, redirected target, original target); the
-# builder points them back and recomputes the section digests the loader checks.
-# The rest of such an executable differs from the recipe, so parity is skipped.
-MODIFIED_XBES = {
-    "d5fa60ecc72c0f500e5c50a5d620321870811e672a7fc588419a33c1f449576e": {
-        "calls": [(0x000B5849, 0x00010B40, 0x0023308F)],
-        "result_sha256": "4fa88909669a652369c3e711ea315a859ff43954eca1b1b768934afcba13edd2",
-    },
-}
 
 
 def command(args, cwd, log):
@@ -69,52 +57,6 @@ def verify_files(root, expected):
         path = root / name
         if not path.is_file() or sha256(path) != digest:
             raise ValueError(f"Build parity check failed: {name}")
-
-
-def xbe_sections(data):
-    """(header offset, virtual address, raw offset, raw size) for each section."""
-    base, = struct.unpack_from("<I", data, 0x104)
-    count, headers = struct.unpack_from("<II", data, 0x11C)
-    sections = []
-    for i in range(count):
-        offset = headers - base + i * 56
-        _, va, _, raw, raw_size = struct.unpack_from("<IIIII", data, offset)
-        sections.append((offset, va, raw, raw_size))
-    return sections
-
-
-def adapt_modified_xbe(path):
-    """Restore a known modified executable's redirected calls in place.
-    Returns False when the file is not a known modified executable."""
-    data = bytearray(path.read_bytes())
-    known = MODIFIED_XBES.get(hashlib.sha256(data).hexdigest())
-    if known is None:
-        return False
-    sections = xbe_sections(data)
-    for site, redirected, original in known["calls"]:
-        section = next((s for s in sections if s[1] <= site and site + 5 <= s[1] + s[3]), None)
-        if section is None:
-            raise ValueError(f"Modified executable has no code at {site:#x}")
-        offset = section[2] + site - section[1]
-        target = site + 5 + struct.unpack_from("<i", data, offset + 1)[0]
-        if data[offset] != 0xE8 or target != redirected:
-            raise ValueError(f"Modified executable has an unexpected call at {site:#x}")
-        struct.pack_into("<i", data, offset + 1, original - (site + 5))
-    for header, _, raw, raw_size in sections:
-        digest = hashlib.sha1(struct.pack("<I", raw_size) + bytes(data[raw:raw + raw_size])).digest()
-        data[header + 36:header + 56] = digest
-    if hashlib.sha256(data).hexdigest() != known["result_sha256"]:
-        raise ValueError("Adapted executable differs from the expected result")
-    # Replace atomically: an interrupted run leaves the original or the result.
-    # A unique, exclusively created sibling never overwrites another file.
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.adapting")
-    try:
-        with temporary.open("xb") as output:
-            output.write(data)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return True
 
 
 def prepare_lifter(work, revision=None):
@@ -198,18 +140,11 @@ def build(args, verify_parity=True, lifter_revision=None):
             disc = extract(args.iso, work / "imported-disc", extractor)
             imported_receipt = json.loads((disc.parent / "receipt.json").read_text(encoding="utf-8"))
         images = list(disc.glob("*.xbe"))
-        if len(images) == 1 and adapt_modified_xbe(images[0]):
-            print("Adapted a known community-modified game executable.", flush=True)
-        xbe_digest = sha256(images[0]) if len(images) == 1 else None
-        modified = xbe_digest in {known["result_sha256"] for known in MODIFIED_XBES.values()}
-        if xbe_digest != SUPPORTED_XBE_SHA256 and not modified:
+        if len(images) != 1 or sha256(images[0]) != SUPPORTED_XBE_SHA256:
             raise ValueError("This build currently supports only the verified USA game executable")
-        if modified:  # the generated program cannot match the recipe's proven files
-            verify_parity = False
-            receipt["xbe_variant"] = "community-modified"
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
-                       xbe_sha256=xbe_digest, disc=str(disc))
+                       xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
         if windows:  # before configure, which embeds private/doaxbv.ico in the runner
             try:
                 written = launcher_art.install(disc)

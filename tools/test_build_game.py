@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic checks for authenticated generation and setup."""
-import hashlib
 import json
 from pathlib import Path
-import struct
 import subprocess
 import sys
 import tempfile
@@ -128,55 +126,6 @@ class ProgramManifestTests(unittest.TestCase):
             gap = configure("gap", manifest)
             self.assertNotEqual(gap.returncode, 0)
             self.assertIn("chunk sequence has a gap", gap.stdout + gap.stderr)
-
-
-def synthetic_xbe(call_target):
-    """A two-section image: a call at 0x11010 in code, stale digests on both."""
-    data = bytearray(0x3000)
-    struct.pack_into("<I", data, 0x104, 0x10000)
-    struct.pack_into("<II", data, 0x11C, 2, 0x10200)
-    for i, (va, raw) in enumerate(((0x11000, 0x1000), (0x12000, 0x2000))):
-        struct.pack_into("<IIIII", data, 0x200 + i * 56, 0, va, 0x1000, raw, 0x1000)
-    data[0x1010] = 0xE8
-    struct.pack_into("<i", data, 0x1011, call_target - 0x11015)
-    data[0x2000:0x2004] = b"data"
-    return data
-
-
-class ModifiedExecutableTests(unittest.TestCase):
-    def adapt(self, data, result):
-        known = {hashlib.sha256(data).hexdigest(): {
-            "calls": [(0x11010, 0x10B40, 0x2308F)], "result_sha256": result}}
-        with tempfile.TemporaryDirectory() as folder, \
-                mock.patch.object(build_game, "MODIFIED_XBES", known):
-            path = Path(folder) / "default.xbe"
-            path.write_bytes(data)
-            adapted = build_game.adapt_modified_xbe(path)
-            return adapted, path.read_bytes()
-
-    def test_restores_call_and_section_digests(self):
-        expected = synthetic_xbe(0x2308F)
-        for header, raw in ((0x200, 0x1000), (0x238, 0x2000)):
-            expected[header + 36:header + 56] = hashlib.sha1(
-                struct.pack("<I", 0x1000) + bytes(expected[raw:raw + 0x1000])).digest()
-        adapted, data = self.adapt(synthetic_xbe(0x10B40), hashlib.sha256(expected).hexdigest())
-        self.assertTrue(adapted)
-        self.assertEqual(data, bytes(expected))
-
-    def test_unknown_executable_is_untouched(self):
-        data = synthetic_xbe(0x10B40)
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "default.xbe"
-            path.write_bytes(data)
-            self.assertFalse(build_game.adapt_modified_xbe(path))
-            self.assertEqual(path.read_bytes(), data)
-
-    def test_unexpected_call_or_result_is_rejected(self):
-        data = synthetic_xbe(0x12345)
-        with self.assertRaisesRegex(ValueError, "unexpected call"):
-            self.adapt(data, "")
-        with self.assertRaisesRegex(ValueError, "differs from the expected result"):
-            self.adapt(synthetic_xbe(0x10B40), "0" * 64)
 
 
 if __name__ == "__main__":
