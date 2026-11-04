@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.6.2 Beta — 2026-11-02
+
+0.6.2 makes macOS and Linux setup install its own tools, builds Linux with
+clang, and lets Windows setup ride out antivirus scans. The game program,
+generation recipe and runtime are the same as 0.6.0 and 0.6.1, so a working
+build does not need rebuilding.
+
+### Fixed
+
+- **macOS and Linux setup needed Capstone installed by hand** (#173, #177).
+  `build_game.sh` now installs Capstone 5.0.9 into `private/venv`, pinned by
+  hash, and repairs a venv that is missing, broken or has the wrong version.
+- **macOS and Linux setup needed `extract-xiso` built by hand** (#173, #179).
+  When none is on `PATH`, setup builds the XboxDev release that the Windows
+  package bundles into `tools/extract-xiso`.
+- **Windows setup could stop with `Access is denied` after extracting
+  llvm-mingw** (#176). Antivirus can keep the new files open for a few
+  seconds; setup now retries the move and clears staging an earlier run left.
+- **The Linux package list was incomplete** (#178). With the X11 headers
+  installed, SDL3's build also needs six X11 extension packages, and the
+  runner needs `libshaderc1`. `docs/building.md` now gives a tested Ubuntu
+  24.04 command.
+
+### Changed
+
+- **Linux builds with clang** (#178) when `clang` and `clang++` are installed
+  and neither `CC` nor `CXX` is set, as Windows and macOS already do. CI now
+  builds and runs the runtime tests on Linux.
+
+## 0.6.1 Beta — 2026-11-02
+
+0.6.1 fixes Windows setup from a long folder path and the Capstone setup
+hint on macOS. The game program and its generation recipe are the same as
+0.6.0, so a working 0.6.0 build does not need rebuilding.
+
+### Fixed
+
+- **Setup stopped while extracting llvm-mingw** (#171, #172). When the game
+  folder's path was longer than about 105 characters and Windows long paths
+  were off, setup failed with `No such file or directory` on a deep compiler
+  file. Setup now extracts the compiler through an extended-length path, so
+  folders up to about 145 characters build.
+- **The Capstone hint pointed at the wrong Python** (#173, #175). When
+  Capstone was missing, setup told users to run `python -m pip`, which on some
+  Macs is Python 2.7 and cannot install Capstone 5.0.9. The hint now names the
+  Python running setup, and the macOS steps install Capstone into
+  `private/venv`, because Homebrew's Python refuses `pip install`.
+
 ## 0.6.0 Beta — 2026-10-27
 
 0.6.0 builds on RC1. Windows setup no longer needs Visual Studio, the
@@ -179,14 +227,14 @@ download the new ZIP and run `BuildGame.cmd` again; saves are unchanged.
   presentation path for G-Sync and FreeSync. VRR must already be active for
   the game window, or the picture tears. Its effect on displayed pacing is
   not yet verified.
-- **macOS build** (#99). Apple Silicon and Intel Macs can build the game from
-  source with `build_game.sh` and play it with `launcher.sh`; see
+- **macOS build** (#99, by @tmcleroy). Apple Silicon and Intel Macs can build
+  the game from source with `build_game.sh` and play it with `launcher.sh`; see
   `docs/building.md`. It presents through SDL_GPU on Metal and uses SDL for
   audio and the keyboard. SMAA and custom soundtracks are not available on
   macOS yet. A contributor's smoke run on an Apple Silicon Mac reached the
   save-select and options menus; it has not been play-tested.
-- **Linux and Steam Deck build** (#103). x86-64 Linux, including SteamOS
-  through a container build, can build the game with `build_game.sh` and play
+- **Linux and Steam Deck build** (#103, by @tmcleroy). x86-64 Linux, including
+  SteamOS through a container build, can build the game with `build_game.sh` and play
   it with `launcher.sh`, which opens a gamepad settings screen; see
   `docs/building.md`. It presents through SDL_GPU on Vulkan and compiles
   shaders at runtime with the system's shaderc. SMAA and custom soundtracks are

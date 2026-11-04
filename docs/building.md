@@ -17,11 +17,14 @@ each attempt. The receipt, logs, generated program, and runner stay there.
 For a source checkout or GitHub's automatic source archive, install:
 
 - Python 3.12 or newer
-- Capstone 5.0.9 distribution for that Python installation
+- Capstone 5.0.9 distribution for that Python installation (on macOS and
+  Linux, `build_game.sh` installs it into `private/venv`)
 - Git with network access
 - CMake 3.20 or newer
-- On Windows, nothing else: setup downloads the llvm-mingw compiler (see below)
-- XboxDev `extract-xiso`
+- On Windows, nothing else: setup downloads the llvm-mingw compiler and the
+  DXC shader compiler (see below)
+- XboxDev `extract-xiso` on Windows; on macOS and Linux setup builds it when
+  none is on `PATH`
 
 The repository does not include an all-in-one build executable. Place
 `extract-xiso.exe` at `tools/artifacts/extract-xiso.exe`, add it to `PATH`, or
@@ -49,8 +52,15 @@ approval and happens once per folder. A release ZIP may already include it. The
 build receipt records the clang version. The runner links the C++ runtime
 statically and needs only Windows system DLLs and `SDL3.dll`.
 
+When `tools/dxc/bin/x64/dxc.exe` is missing, `BuildGame.cmd` also downloads
+the pinned [DXC](https://github.com/microsoft/DirectXShaderCompiler) v1.9.2609
+release (32 MB), checks its SHA-256 and extracts it to `tools/dxc`. The build
+uses it to compile the ray-traced GI shaders. Without it the build still
+succeeds, but without ray-traced GI.
+
 Direct `tools/build_game.py` invocations only check for the compiler by
-default. Add `--install-prerequisites` to download it as `BuildGame.cmd` does.
+default. Add `--install-prerequisites` to download it and DXC as
+`BuildGame.cmd` does.
 `--generate-only` does not need the compiler.
 
 If the extractor reports a missing `VCRUNTIME140.dll`, install the included
@@ -124,21 +134,19 @@ python tools/build_game.py --imported private/imported-disc
 
 ### macOS build
 
-On macOS (Apple Silicon or Intel), install CMake, Ninja, SDL3 and Capstone:
+On macOS (Apple Silicon or Intel), install CMake, Ninja, SDL3 and Python 3.10
+or newer (the lifter needs it; Apple's command line tools ship 3.9).
+`build_game.sh` installs Capstone into `private/venv` on its first run:
 
 ```bash
-brew install cmake ninja sdl3
-python3 -m pip install capstone==5.0.9
+brew install cmake ninja sdl3 python
 ```
 
-Homebrew has no `extract-xiso`; build it from
-[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) and put it on
-`PATH`, or pass its location with `--extractor`:
-
-```bash
-git clone https://github.com/XboxDev/extract-xiso.git
-cmake -S extract-xiso -B extract-xiso/build && cmake --build extract-xiso/build
-```
+Homebrew has no `extract-xiso`, so setup builds the
+[XboxDev/extract-xiso](https://github.com/XboxDev/extract-xiso) release the
+Windows package bundles into `tools/extract-xiso`, using Apple's command line
+tools (`xcode-select --install`). An `extract-xiso` on `PATH` or one passed with
+`--extractor` is used instead.
 
 Then build the runner:
 
@@ -156,21 +164,30 @@ Linux builds use Vulkan through SDL3 and compile shaders at runtime with
 shaderc, so the host needs `libshaderc_shared.so.1` (SteamOS includes it) or,
 on Debian and Ubuntu, `libshaderc.so.1` from the `libshaderc1` package.
 Build in an x86-64 distribution with CMake, Ninja, a C++17 compiler,
-Python 3 with `capstone==5.0.9`, `extract-xiso` built as above, and SDL3's
-build dependencies; `build_game.sh` builds SDL3 when the distribution has none.
-Ubuntu's system Python refuses `pip install`, so put Capstone in the virtual
-environment the scripts look for (Ubuntu needs the `python3-venv` package):
-
-```bash
-python3 -m venv private/venv
-private/venv/bin/pip install capstone==5.0.9
-```
+Python 3 and SDL3's build dependencies; `build_game.sh` builds SDL3 when the
+distribution has none, and `extract-xiso` as on macOS.
+`build_game.sh` installs Capstone into `private/venv` on its first run; on
+Ubuntu that needs the `python3-venv` package.
 
 SteamOS has a read-only system and no compiler, so build inside a container
 such as an Ubuntu 24.04 `distrobox` that shares your home folder; the
 finished checkout then runs on SteamOS itself. Run `./build_game.sh` as on
 macOS. `./launcher.sh` opens a gamepad-friendly settings screen, then starts
 the game; `./run_game.sh` starts the game with the saved choices.
+
+On Ubuntu 24.04, including that `distrobox`, this installs the build tools and
+SDL3's build dependencies:
+
+```bash
+sudo apt install cmake ninja-build clang git python3-venv \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+  libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
+  libasound2-dev libpulse-dev libvulkan-dev libshaderc1
+```
+
+Setup compiles with clang when `clang` and `clang++` are installed, as the
+Windows and macOS builds do; otherwise it uses the system's C++17 compiler.
+If `CC` or `CXX` is set, setup leaves the choice to CMake, which reads them.
 
 For Steam Game Mode, add `launcher.sh` (or `run_game.sh`) with **Add a
 Non-Steam Game** in Desktop Mode. Under Steam the game and launcher open full

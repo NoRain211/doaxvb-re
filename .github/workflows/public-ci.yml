@@ -91,9 +91,56 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: brew install sdl3 ninja
+      - name: Set up Capstone the way build_game.sh does
+        run: |
+          ./build_game.sh --help
+          private/venv/bin/python3 -c "import capstone"
+      - name: Build extract-xiso the way setup does
+        run: |
+          mkdir -p private/ci-xiso
+          tool=$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import build_prerequisites as p; print(p.ensure_extract_xiso(Path.cwd(), Path('private/ci-xiso')))" | tail -n 1)
+          "$tool" -h 2>&1 | grep extract-xiso
       - name: Configure public runtime tests
         run: cmake -S recomp-runtime -B build/recomp-runtime -G Ninja
       - name: Build public runtime tests
         run: cmake --build build/recomp-runtime
       - name: Run public runtime tests
         run: ctest --test-dir build/recomp-runtime --output-on-failure
+
+  runtime-tests-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # Keep in step with the Ubuntu command in docs/building.md.
+          sudo apt-get install -y cmake ninja-build clang git python3-venv \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
+            libasound2-dev libpulse-dev libvulkan-dev libshaderc1
+          # The runner has no display or GPU: software Vulkan for the presenter test.
+          sudo apt-get install -y mesa-vulkan-drivers
+      - name: Build extract-xiso the way setup does
+        run: |
+          mkdir -p private/ci-xiso
+          tool=$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import build_prerequisites as p; print(p.ensure_extract_xiso(Path.cwd(), Path('private/ci-xiso')))" | tail -n 1)
+          "$tool" -h 2>&1 | grep extract-xiso
+      - name: Configure public runtime tests with clang, as setup does
+        run: >-
+          cmake -S recomp-runtime -B build/recomp-runtime -G Ninja -DRECOMP_FETCH_SDL3=ON
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+      - name: Build public runtime tests
+        run: cmake --build build/recomp-runtime --parallel 4
+      - name: Run public runtime tests
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: ctest --test-dir build/recomp-runtime --output-on-failure
+      - name: Check the presenter compiled its Vulkan shaders
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          # The presenter test passes without shaderc, so fail on its skip or compile errors.
+          build/recomp-runtime/recomp_d3d_presenter_sdl_gpu_test > presenter.log 2>&1
+          cat presenter.log
+          if grep -E 'need shaderc|shaderc compilation failed|SPIR-V shader' presenter.log; then exit 1; fi

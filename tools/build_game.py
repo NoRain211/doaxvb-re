@@ -3,9 +3,11 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -13,7 +15,7 @@ import sys
 import uuid
 
 from extract_iso import extract, run_logged, sha256
-from build_prerequisites import ensure_prerequisites, prefer_bundled_tools
+from build_prerequisites import ensure_extract_xiso, ensure_prerequisites, prefer_bundled_tools
 import launcher_art
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,6 +143,13 @@ def prepare_lifter(work, revision=None):
                          "run: git submodule sync tools/xboxrecomp, then git submodule update tools/xboxrecomp")
 
 
+def linux_compiler_args():
+    """Windows and macOS build with clang; use it on Linux too unless the player chose a compiler."""
+    if os.environ.get("CC") or os.environ.get("CXX") or not (shutil.which("clang") and shutil.which("clang++")):
+        return []
+    return ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
+
+
 def build(args, verify_parity=True, lifter_revision=None):
     prefer_bundled_tools(ROOT)
     windows = sys.platform == "win32"
@@ -156,7 +165,11 @@ def build(args, verify_parity=True, lifter_revision=None):
     try:
         import capstone
     except ImportError as error:
-        raise ValueError("Install Capstone for this Python: python -m pip install capstone==5.0.9") from error
+        if windows:  # PowerShell syntax
+            hint = f'& "{sys.executable}" -m pip install capstone==5.0.9'
+        else:
+            hint = f"run {shlex.quote(str(ROOT / 'build_game.sh'))}, which installs it into private/venv"
+        raise ValueError(f"Install Capstone: {hint}") from error
     if not args.generate_only:
         compiler = ensure_prerequisites(ROOT, getattr(args, "install_prerequisites", False))
         prefer_bundled_tools(ROOT)  # puts a freshly downloaded llvm-mingw, with mingw32-make, on PATH
@@ -179,7 +192,10 @@ def build(args, verify_parity=True, lifter_revision=None):
                 if not path.is_relative_to(disc.resolve()) or path.stat().st_size != size:
                     raise ValueError("Existing import differs from its receipt")
         else:
-            disc = extract(args.iso, work / "imported-disc", args.extractor)
+            extractor = args.extractor
+            if not windows and extractor == "extract-xiso" and shutil.which(extractor) is None:
+                extractor = ensure_extract_xiso(ROOT, work)
+            disc = extract(args.iso, work / "imported-disc", extractor)
             imported_receipt = json.loads((disc.parent / "receipt.json").read_text(encoding="utf-8"))
         images = list(disc.glob("*.xbe"))
         if len(images) == 1 and adapt_modified_xbe(images[0]):
@@ -256,6 +272,7 @@ def build(args, verify_parity=True, lifter_revision=None):
                      f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
         if sys.platform.startswith("linux"):
             configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
+            configure += linux_compiler_args()
         if windows:
             receipt["compiler"] = subprocess.check_output(
                 [compiler, "--version"], text=True).splitlines()[0]
