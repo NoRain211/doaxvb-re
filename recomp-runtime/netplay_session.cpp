@@ -153,6 +153,7 @@ static std::chrono::steady_clock::time_point noticeShown;
 // A panel over the last frame, shown again now, while the game waits at a frame boundary.
 static void showNotice(const char *title, const std::string &detail)
 {
+    if (rollback.walking) recomp_overlay_rect(-1000.0f, 0.0f, 2640.0f, 480.0f, 0xff000000u); // the walk stays covered
     // opaque, so each redraw looks the same
     recomp_overlay_rect(120.0f, 194.0f, 400.0f, 92.0f, 0xff181820u);
     recomp_overlay_rect(120.0f, 194.0f, 400.0f, 4.0f, 0xffd8283cu);
