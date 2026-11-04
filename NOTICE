@@ -16,3 +16,9 @@ This project has been developed with substantial use of large language models
 (LLMs), including AI coding agents, for code, reverse-engineering analysis,
 debugging, tests, and documentation. LLM-produced work can contain mistakes;
 passing tests does not establish complete game accuracy or compatibility.
+
+recomp-runtime/musl_math/ is altered from musl libc (sin, cos, tan, atan,
+atan2, log1p, expm1 and their helpers from musl 1.2.5; log2 from musl
+1.1.19), Copyright (c) 2005-2020 Rich Felker, et al., under the MIT license,
+whose full text is in recomp-runtime/musl_math/COPYRIGHT. The files keep
+their fdlibm notices from Sun Microsystems. They came here from doa2u-re.

@@ -1,14 +1,72 @@
 #include "xapi_time_adapter.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
-uint64_t recomp_xapi_performance_counter(void)
+namespace {
+
+/* Adapted from doa2u-re's xapi_clock.cpp. All guest threads are fibers on
+   the one game thread, so plain statics suffice. */
+constexpr uint64_t frame_ns = UINT64_C(1000000000) / 60u;
+/* Timing loops in the guest poll the counter. Each read moves time on by a
+   small quantum so they make progress; the boundary discards it. */
+constexpr uint64_t read_tick_ns = 1000u;
+RecompFrameClockState frame_clock = {0, 0, 0, false};
+
+struct FrameClockEnv {
+    FrameClockEnv()
+    {
+        const char *value = std::getenv("RECOMP_FRAME_CLOCK");
+        frame_clock.enabled = value != nullptr && *value != '\0' && std::strcmp(value, "0") != 0;
+    }
+};
+const FrameClockEnv frame_clock_env;
+
+}
+
+uint64_t recomp_xapi_host_ns(void)
 {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+
+uint64_t recomp_xapi_performance_counter(void)
+{
+    if (frame_clock.enabled) {
+        frame_clock.offset_ns += read_tick_ns;
+        /* Reads inside a frame never pass its end, so the next frame starts on the grid. */
+        if (frame_clock.offset_ns > frame_ns) frame_clock.offset_ns = frame_ns;
+        return frame_clock.base_ns + frame_clock.offset_ns;
+    }
+    return recomp_xapi_host_ns();
+}
+
+bool recomp_xapi_frame_clock_enabled(void) { return frame_clock.enabled; }
+
+void recomp_xapi_frame_clock_set_enabled(bool enabled)
+{
+    recomp_xapi_frame_clock_reset();
+    frame_clock.enabled = enabled;
+}
+
+void recomp_xapi_frame_clock_reset(void)
+{
+    const bool enabled = frame_clock.enabled;
+    frame_clock = RecompFrameClockState{0, 0, 0, enabled};
+}
+
+void recomp_xapi_frame_clock_advance(void)
+{
+    if (!frame_clock.enabled) return;
+    frame_clock.base_ns += frame_ns;
+    frame_clock.offset_ns = 0;
+    ++frame_clock.frame;
+}
+
+void recomp_xapi_frame_clock_save(RecompFrameClockState *state) { *state = frame_clock; }
+void recomp_xapi_frame_clock_restore(const RecompFrameClockState *state) { frame_clock = *state; }
 
 uint64_t recomp_xapi_performance_frequency(void)
 {

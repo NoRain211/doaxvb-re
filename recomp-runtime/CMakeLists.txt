@@ -939,6 +939,39 @@ if(WIN32)
     target_link_libraries(recomp_sha_test PRIVATE bcrypt)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
+
+# Rollback netplay, ported from doa2u-re (docs/rollback-netcode.md).
+add_executable(recomp_guest_snapshot_test guest_snapshot.c guest_snapshot_test.c)
+add_test(NAME recomp-runtime-guest-snapshot COMMAND recomp_guest_snapshot_test)
+add_executable(recomp_synctest_test synctest.c guest_snapshot.c synctest_test.c)
+add_test(NAME recomp-runtime-synctest COMMAND recomp_synctest_test)
+add_executable(recomp_rollback_test rollback.c rollback_test.c)
+add_test(NAME recomp-runtime-rollback COMMAND recomp_rollback_test)
+add_executable(recomp_replay_test replay.c replay_test.c)
+add_test(NAME recomp-runtime-replay COMMAND recomp_replay_test)
+add_executable(recomp_netplay_test netplay.c netplay_names.c rollback.c netplay_test.c)
+add_executable(recomp_netplay_lobby_test netplay.c netplay_names.c rollback.c netplay_lobby_test.cpp)
+if(WIN32)
+    target_link_libraries(recomp_netplay_test PRIVATE ws2_32)
+    target_link_libraries(recomp_netplay_lobby_test PRIVATE ws2_32)
+endif()
+add_test(NAME recomp-runtime-netplay COMMAND recomp_netplay_test)
+add_test(NAME recomp-runtime-netplay-lobby COMMAND recomp_netplay_lobby_test)
+add_executable(recomp_netplay_settings_test netplay_settings.cpp netplay_settings_test.cpp)
+add_test(NAME recomp-runtime-netplay-settings COMMAND recomp_netplay_settings_test)
+# One x87 transcendental implementation for every host (portable_math.h).
+add_library(recomp_portable_math STATIC
+    musl_math/sin.c musl_math/cos.c musl_math/tan.c musl_math/__sin.c musl_math/__cos.c musl_math/__tan.c
+    musl_math/__rem_pio2.c musl_math/__rem_pio2_large.c musl_math/atan.c musl_math/atan2.c
+    musl_math/log2.c musl_math/log1p.c musl_math/expm1.c)
+target_include_directories(recomp_portable_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+if(NOT WIN32)
+    target_link_libraries(recomp_portable_math PUBLIC m)
+endif()
+add_executable(recomp_portable_math_test portable_math_test.c)
+target_link_libraries(recomp_portable_math_test PRIVATE recomp_portable_math)
+add_test(NAME recomp-runtime-portable-math COMMAND recomp_portable_math_test)
+
 add_executable(recomp_d3d_smooth_normals_test
     d3d_smooth_normals.cpp d3d_smooth_normals_test.cpp)
 
