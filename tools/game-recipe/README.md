@@ -64,7 +64,8 @@ owner their own `jump_table_arm` entry, such as the collection screen exit (#64)
 The x87 transcendentals lift as calls to `recomp_sin` and the rest, declared in
 `recomp-runtime/portable_math.h` and defined by the `recomp_portable_math`
 library that `recomp-runtime/CMakeLists.txt` builds from musl
-(`recomp-runtime/musl_math/`), so every host computes the same results.
+(`recomp-runtime/musl_math/`), so finite results match on every host. NaN
+sign bits still differ between x86 and Arm.
 It is not an upgrade to the latest upstream release:
 the fork's `main` follows upstream, and pinning it froze player movement
 animation, broke an island map texture and sent the hotel to the pool scene.
