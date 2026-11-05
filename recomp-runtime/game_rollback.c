@@ -41,15 +41,14 @@ bool recomp_game_rollback_begin(void)
     ULONG_PTR count = ram_bytes / PAGE_BYTES;
     DWORD granularity;
     if (pages == NULL || fibers == NULL ||
-        GetWriteWatch(WRITE_WATCH_FLAG_RESET, ram, ram_bytes, pages, &count, &granularity) != 0) {
+        GetWriteWatch(WRITE_WATCH_FLAG_RESET, ram, ram_bytes, pages, &count, &granularity) != 0 ||
+        (shadow = VirtualAlloc(NULL, ram_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)) == NULL) {
         free(pages);
         free(fibers);
         pages = NULL;
         fibers = NULL;
         return false;
     }
-    shadow = VirtualAlloc(NULL, ram_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (shadow == NULL) return false;
     memcpy(shadow, ram, ram_bytes);
     recomp_fiber_adapter_state_save(fibers);
     recomp_fpu_context_save(&fpu);
