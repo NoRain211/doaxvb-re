@@ -153,4 +153,21 @@ uint32_t recomp_kernel_queue_dpc(
 uint32_t recomp_kernel_remove_dpc(uint32_t dpc);
 void recomp_kernel_drain_dpcs(void);
 
+/* Rollback snapshots of the kernel models' host state. */
+size_t recomp_kernel_memory_state_size(void);
+void recomp_kernel_memory_state_save(void *state);
+void recomp_kernel_memory_state_restore(const void *state);
+size_t recomp_kernel_thread_state_size(void);
+void recomp_kernel_thread_state_save(void *state);
+void recomp_kernel_thread_state_restore(const void *state);
+size_t recomp_kernel_interrupt_state_size(void);
+void recomp_kernel_interrupt_state_save(void *state);
+void recomp_kernel_interrupt_state_restore(const void *state);
+size_t recomp_kernel_file_state_size(void);
+void recomp_kernel_file_state_save(void *state);
+bool recomp_kernel_file_state_restorable(const void *state);
+void recomp_kernel_file_state_restore(const void *state);
+/* Opens that may change save storage on disk, which no snapshot holds. */
+uint32_t recomp_kernel_profile_mutations(void);
+
 #endif

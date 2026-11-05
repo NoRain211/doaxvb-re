@@ -1220,3 +1220,24 @@ void recomp_fpu_context_restore(const RecompFpuContext *context)
     recomp_runtime.fpu_control_word = context->fpu_control_word;
     recomp_runtime.fpu_compare = context->fpu_compare;
 }
+
+size_t recomp_runtime_state_size(void)
+{
+    return sizeof(RecompRuntimeState);
+}
+
+void recomp_runtime_state_save(void *state)
+{
+    RecompRuntimeState *out = state;
+    out->registers = recomp_runtime.registers;
+    recomp_fpu_context_save(&out->fpu);
+    out->last_dispatch_address = recomp_last_dispatch_address;
+}
+
+void recomp_runtime_state_restore(const void *state)
+{
+    const RecompRuntimeState *in = state;
+    recomp_runtime.registers = in->registers;
+    recomp_fpu_context_restore(&in->fpu);
+    recomp_last_dispatch_address = in->last_dispatch_address;
+}

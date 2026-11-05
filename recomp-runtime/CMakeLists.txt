@@ -788,6 +788,8 @@ if(RECOMP_PROGRAM_DIR)
         kernel_video.c
         host_diagnostics.cpp
         guest_snapshot.c
+        synctest.c
+        synctest_modules.c
         "${_missing_source}"
         ${_recomp_program_sources}
         ../xbe/sha.cpp
@@ -948,6 +950,8 @@ add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
 
 add_executable(recomp_guest_snapshot_test guest_snapshot.c guest_snapshot_test.c)
 add_test(NAME recomp-runtime-guest-snapshot COMMAND recomp_guest_snapshot_test)
+add_executable(recomp_synctest_test synctest.c guest_snapshot.c synctest_test.c)
+add_test(NAME recomp-runtime-synctest COMMAND recomp_synctest_test)
 
 # One x87 transcendental implementation for every host (portable_math.h).
 add_library(recomp_portable_math STATIC

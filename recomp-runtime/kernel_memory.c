@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 enum {
     PAGE_READWRITE = 0x04u,
@@ -587,3 +588,7 @@ RecompFunction recomp_kernel_memory(uint32_t ordinal)
     default: return NULL;
     }
 }
+/* Rollback snapshots: the allocation table. */
+size_t recomp_kernel_memory_state_size(void) { return sizeof allocations; }
+void recomp_kernel_memory_state_save(void *state) { memcpy(state, allocations, sizeof allocations); }
+void recomp_kernel_memory_state_restore(const void *state) { memcpy(allocations, state, sizeof allocations); }
