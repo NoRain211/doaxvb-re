@@ -955,6 +955,12 @@ add_library(recomp_portable_math STATIC
     musl_math/__rem_pio2.c musl_math/__rem_pio2_large.c musl_math/atan.c musl_math/atan2.c
     musl_math/log2.c musl_math/expm1.c)
 target_include_directories(recomp_portable_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+# Same bits on every host: no fused multiply-add (arm64 has it by default) and no fast-math.
+if(MSVC)
+    target_compile_options(recomp_portable_math PRIVATE /fp:precise)
+else()
+    target_compile_options(recomp_portable_math PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
 if(NOT WIN32)
     target_link_libraries(recomp_portable_math PUBLIC m)
 endif()
