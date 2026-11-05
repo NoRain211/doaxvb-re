@@ -5,6 +5,7 @@
 #include "symbolic_link_model.h"
 #include "save_transaction.h"
 #include "stop_report.h"
+#include "xapi_time_adapter.h"
 #ifdef RECOMP_FULL_PROGRAM
 #include "fiber_adapter.h"
 #endif
@@ -66,6 +67,14 @@ static uint32_t next_guest_handle = 1u;
 static RecompSymbolicLinkModel symbolic_links;
 static int symbolic_links_initialized;
 static bool is_profile_path(const char *path);
+static uint32_t profile_mutation_count;
+
+uint32_t recomp_kernel_profile_mutations(void) { return profile_mutation_count; }
+
+static void note_profile_mutation(void)
+{
+    ++profile_mutation_count;
+}
 
 static void ensure_symbolic_links_initialized(void)
 {
@@ -252,15 +261,15 @@ static uint32_t register_file_handle(
                             continue;
                         }
                         strcpy(entry.name, data.cFileName);
-                        entry.creation_time =
+                        entry.creation_time = recomp_xapi_guest_file_time(
                             (uint64_t)data.ftCreationTime.dwLowDateTime |
-                            (uint64_t)data.ftCreationTime.dwHighDateTime << 32u;
-                        entry.last_access_time =
+                            (uint64_t)data.ftCreationTime.dwHighDateTime << 32u);
+                        entry.last_access_time = recomp_xapi_guest_file_time(
                             (uint64_t)data.ftLastAccessTime.dwLowDateTime |
-                            (uint64_t)data.ftLastAccessTime.dwHighDateTime << 32u;
-                        entry.last_write_time =
+                            (uint64_t)data.ftLastAccessTime.dwHighDateTime << 32u);
+                        entry.last_write_time = recomp_xapi_guest_file_time(
                             (uint64_t)data.ftLastWriteTime.dwLowDateTime |
-                            (uint64_t)data.ftLastWriteTime.dwHighDateTime << 32u;
+                            (uint64_t)data.ftLastWriteTime.dwHighDateTime << 32u);
                         entry.change_time = entry.last_write_time;
                         size = (uint64_t)data.nFileSizeLow |
                             (uint64_t)data.nFileSizeHigh << 32u;
@@ -1124,6 +1133,7 @@ static void bridge_nt_open_file(void)
     bool profile_path = is_profile_path(host_path);
     bool required_save_io = requested_write ||
         (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u);
+    if (required_save_io && profile_path) note_profile_mutation();
     if (required_save_io && recomp_save_pending() &&
         ((profile_path && !recomp_save_active(save_owner)) ||
          (recomp_save_active(save_owner) && !profile_path))) {
@@ -1219,6 +1229,7 @@ static void bridge_nt_create_file(void)
     bool mutation = (desired_access & GENERIC_WRITE_ACCESS) != 0u ||
         (profile_path && (desired_access & (DELETE | FILE_WRITE_ATTRIBUTES)) != 0u) ||
         create_disposition != FILE_OPEN_DISPOSITION;
+    if (mutation && profile_path) note_profile_mutation();
     if (mutation && recomp_save_pending() &&
         ((profile_path && !recomp_save_active(save_owner)) ||
          (recomp_save_active(save_owner) && !profile_path))) {
@@ -1449,8 +1460,9 @@ static void bridge_nt_query_information_file(void)
             const LARGE_INTEGER times[4] = {host.CreationTime, host.LastAccessTime,
                 host.LastWriteTime, host.ChangeTime};
             for (uint32_t t = 0u; t < 4u; ++t) {
-                *recomp_memory_u32(file_information + t * 8u) = times[t].LowPart;
-                *recomp_memory_u32(file_information + t * 8u + 4u) = (uint32_t)times[t].HighPart;
+                const uint64_t time = recomp_xapi_guest_file_time((uint64_t)times[t].QuadPart);
+                *recomp_memory_u32(file_information + t * 8u) = (uint32_t)time;
+                *recomp_memory_u32(file_information + t * 8u + 4u) = (uint32_t)(time >> 32u);
             }
         }
         if (file_information_class == FILE_NETWORK_OPEN_INFORMATION &&
@@ -1646,6 +1658,7 @@ static void bridge_nt_set_information_file(void)
             continue;
         }
 
+        if (required_save_io && is_profile_path(file_handles[i].host_path)) note_profile_mutation();
         if (handle_profile_mutation_information(
                 &file_handles[i], file_information_class, file_information,
                 length, &required_save_io, &status, &policy)) {
@@ -1883,6 +1896,7 @@ static void bridge_nt_write_file(void)
             policy = "save-write-owner-rejected";
             break;
         }
+        if (is_profile_path(file_handles[i].host_path)) note_profile_mutation();
         write_offset = file_handles[i].cursor;
         if (byte_offset != 0u) {
             write_offset = *recomp_memory_u32(byte_offset);
@@ -2397,5 +2411,51 @@ RecompFunction recomp_kernel_file(uint32_t ordinal)
     case 226u: return bridge_nt_set_information_file;
     case 236u: return bridge_nt_write_file;
     default: return NULL;
+    }
+}
+/* Rollback snapshots: guest handle cursors. Rewinds happen only inside a
+   rally, so a save is restorable only while the same handles are open. */
+typedef struct FilePositionState {
+    uint32_t next_guest_handle;
+    struct {
+        uint32_t guest_handle;
+        uint64_t cursor;
+        size_t directory_cursor;
+    } entries[MAX_FILE_HANDLES];
+} FilePositionState;
+
+size_t recomp_kernel_file_state_size(void) { return sizeof(FilePositionState); }
+
+void recomp_kernel_file_state_save(void *state)
+{
+    FilePositionState *out = state;
+    memset(out, 0, sizeof *out);
+    out->next_guest_handle = next_guest_handle;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (!file_handles[i].active) continue;
+        out->entries[i].guest_handle = file_handles[i].guest_handle;
+        out->entries[i].cursor = file_handles[i].cursor;
+        out->entries[i].directory_cursor = file_handles[i].directory.cursor;
+    }
+}
+
+bool recomp_kernel_file_state_restorable(const void *state)
+{
+    const FilePositionState *in = state;
+    if (in->next_guest_handle != next_guest_handle) return false;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        const uint32_t live = file_handles[i].active ? file_handles[i].guest_handle : 0u;
+        if (live != in->entries[i].guest_handle) return false;
+    }
+    return true;
+}
+
+void recomp_kernel_file_state_restore(const void *state)
+{
+    const FilePositionState *in = state;
+    for (size_t i = 0; i < MAX_FILE_HANDLES; ++i) {
+        if (!file_handles[i].active) continue;
+        file_handles[i].cursor = in->entries[i].cursor;
+        file_handles[i].directory.cursor = in->entries[i].directory_cursor;
     }
 }

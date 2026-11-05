@@ -14,6 +14,11 @@
 #include "scene_freeze_adapter.h"
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
+#include "synctest.h"
+#include "xapi_time_adapter.h"
+extern "C" {
+#include "game_scheduler.h"
+}
 #endif
 #include "guest_snapshot.h"
 #include "runtime.h"
@@ -228,6 +233,40 @@ bool sampleInputPulse(std::uint32_t port, RecompInputGamepad *gamepad)
     }
     samplePausedAnalogFile();
     return recomp_input_pulse_source_sample(&inputPulseSource, gamepad);
+}
+
+/* RECOMP_SYNCTEST: saves a frame at the loop top, runs it again and compares
+   (docs/rollback-netcode.md). */
+void synctestBoundary()
+{
+    static std::uint32_t frame;
+    recomp_xapi_frame_clock_advance();
+    const RecompSyncTestResult result = recomp_synctest_frame(++frame);
+    if (result == RECOMP_SYNCTEST_MISMATCH) recomp_stop(3, "synctest:mismatch");
+    if (!recomp_synctest_loop() &&
+        (result == RECOMP_SYNCTEST_MATCH || result == RECOMP_SYNCTEST_SKIP)) {
+        recomp_stop(0, result == RECOMP_SYNCTEST_MATCH ? "synctest:match" : "synctest:skip");
+    }
+}
+
+/* The scripted input schedule, so a replay presses at the same polls. */
+struct SyncTestInput {
+    RecompInputPulseSource pulses;
+    std::uint64_t waitAfterPoll;
+};
+
+void saveSyncTestInput(void *state)
+{
+    auto *out = static_cast<SyncTestInput *>(state);
+    std::memcpy(&out->pulses, &inputPulseSource, sizeof inputPulseSource);
+    out->waitAfterPoll = inputWaitAfterPoll;
+}
+
+void restoreSyncTestInput(const void *state)
+{
+    const auto *in = static_cast<const SyncTestInput *>(state);
+    std::memcpy(&inputPulseSource, &in->pulses, sizeof inputPulseSource);
+    inputWaitAfterPoll = in->waitAfterPoll;
 }
 #endif
 
@@ -912,6 +951,14 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
     }
     recomp_viewer_install();
+    if (recomp_synctest_enabled()) {
+        recomp_xapi_frame_clock_set_enabled(true);
+        recomp_synctest_install_default_modules();
+        recomp_synctest_set_extra_state(
+            sizeof(SyncTestInput), saveSyncTestInput, restoreSyncTestInput);
+        recomp_synctest_set_guest_ram(ram, kRamSize, writeWatch);
+        recomp_game_set_frame_boundary(synctestBoundary);
+    }
 #endif
 #ifndef RECOMP_FULL_PROGRAM
     recomp_imports_reset();

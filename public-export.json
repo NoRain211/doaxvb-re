@@ -46,6 +46,7 @@
     "docs/public-status.md",
     "docs/recomp-controls.md",
     "docs/recomp-save-contract.md",
+    "docs/rollback-netcode.md",
     "docs/wayfinder/research/audio-movie-replacements.md",
     "docs/wayfinder/research/game-ui-construction.md",
     "docs/wayfinder/research/sofdec-player-api.md",

@@ -4,6 +4,7 @@
 #include "audio_output.h"
 #include "xbox_adpcm.h"
 #include "game_scheduler.h"
+#include "xapi_time_adapter.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -169,7 +170,8 @@ static uint64_t buffer_now_ms(void)
         const char *setting = getenv("RECOMP_DSOUND_GAME_CLOCK");
         game_clock = setting != NULL && strcmp(setting, "1") == 0;
     }
-    if (game_clock) {
+    /* Rollback replays frames, so its buffers play in game ticks too. */
+    if (game_clock || recomp_xapi_frame_clock_enabled()) {
         return (uint64_t)recomp_game_tick() * 1000u / 60u;
     }
 #ifdef _WIN32
@@ -744,6 +746,65 @@ void recomp_dsound_service_adapter_reset(void)
 const RecompDsoundServiceModel *recomp_dsound_service_adapter_model(void)
 {
     return &dsound_service_model;
+}
+
+/* Rollback snapshots: the service model and each buffer's guest-visible
+   clock. Host output (output_model) keeps playing what it already took. */
+typedef struct DsoundState {
+    RecompDsoundServiceModel service;
+    struct {
+        uint32_t address, data, source_size, format;
+        int32_t volume;
+        const uint8_t *pcm;
+        RecompDsoundBufferModel model;
+    } clocks[RECOMP_DSOUND_VOICE_STATE_COUNT];
+} DsoundState;
+
+size_t recomp_dsound_service_adapter_state_size(void) { return sizeof(DsoundState); }
+
+void recomp_dsound_service_adapter_state_save(void *state)
+{
+    DsoundState *out = state;
+    LOCK_CLOCKS();
+    out->service = dsound_service_model;
+    for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
+        const BufferClock *clock = &buffer_clocks[i];
+        out->clocks[i].address = clock->address;
+        out->clocks[i].data = clock->data;
+        out->clocks[i].source_size = clock->source_size;
+        out->clocks[i].format = clock->format;
+        out->clocks[i].volume = clock->volume;
+        out->clocks[i].pcm = clock->pcm;
+        out->clocks[i].model = clock->model;
+    }
+    UNLOCK_CLOCKS();
+}
+
+void recomp_dsound_service_adapter_state_restore(const void *state)
+{
+    const DsoundState *in = state;
+    LOCK_CLOCKS();
+    dsound_service_model = in->service;
+    for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
+        BufferClock *clock = &buffer_clocks[i];
+        if (clock->address != in->clocks[i].address || clock->data != in->clocks[i].data ||
+            clock->source_size != in->clocks[i].source_size ||
+            clock->format != in->clocks[i].format ||
+            clock->output_model.playing != in->clocks[i].model.playing) {
+            /* Another sound took this voice, or it started or stopped since
+               the save; start its output over. */
+            recomp_audio_output_reset_voice(i);
+            clock->output_model = in->clocks[i].model;
+        }
+        clock->address = in->clocks[i].address;
+        clock->data = in->clocks[i].data;
+        clock->source_size = in->clocks[i].source_size;
+        clock->format = in->clocks[i].format;
+        clock->volume = in->clocks[i].volume;
+        clock->pcm = in->clocks[i].pcm;
+        clock->model = in->clocks[i].model;
+    }
+    UNLOCK_CLOCKS();
 }
 
 static void recomp_dsound_do_work_adapter(void)

@@ -56,7 +56,9 @@ static bool main_present_pending;
    completed tick pairs, then roll back before any further pass. */
 static bool authored_pass = true;
 static unsigned pass_steps = 1, pass_substep;
-static uint32_t game_pass, game_tick;
+static uint32_t game_pass;
+/* The audio output pump reads the tick on its own thread. */
+static volatile uint32_t game_tick;
 /* A hidden tick owns one Swap. A UI loading loop that draws and swaps
    without yielding to the scheduler must present every later frame. */
 static bool hidden_swap_done;
@@ -71,6 +73,40 @@ bool recomp_game_authored_pass(void) { return authored_pass; }
 uint32_t recomp_game_pass(void) { return game_pass; }
 uint32_t recomp_game_tick(void) { return game_tick; }
 unsigned recomp_game_substep(void) { return pass_substep; }
+
+static void (*frame_boundary)(void);
+void recomp_game_set_frame_boundary(void (*hook)(void))
+{
+    /* Rollback runs at 60 Hz only, where every pass is a tick. */
+    const unsigned hz = recomp_game_requested_hz();
+    if (hook != NULL && hz != 0u && hz != 60u) {
+        fprintf(stderr, "recomp game scheduler: rollback and SyncTest need RECOMP_GAME_HZ=60, not %u\n", hz);
+        exit(2);
+    }
+    frame_boundary = hook;
+}
+
+typedef struct SchedulerState {
+    uint32_t game_pass, game_tick;
+    unsigned scheduler_pass;
+    bool foreign_draws;
+    uint32_t foreign_callback;
+} SchedulerState;
+size_t recomp_game_scheduler_state_size(void) { return sizeof(SchedulerState); }
+void recomp_game_scheduler_state_save(void *state)
+{
+    *(SchedulerState *)state = (SchedulerState){game_pass, game_tick, scheduler_pass,
+        foreign_draws, foreign_callback};
+}
+void recomp_game_scheduler_state_restore(const void *state)
+{
+    const SchedulerState *in = state;
+    game_pass = in->game_pass;
+    game_tick = in->game_tick;
+    scheduler_pass = in->scheduler_pass;
+    foreign_draws = in->foreign_draws;
+    foreign_callback = in->foreign_callback;
+}
 
 void recomp_game_pass_begin(bool tick, unsigned steps, unsigned substep)
 {
@@ -102,7 +138,7 @@ static void replay_frame_owner_draws(void)
 
 static uint64_t timing_now(void)
 {
-    return trace_timing ? recomp_xapi_performance_counter() : 0;
+    return trace_timing ? recomp_xapi_host_ns() : 0;
 }
 
 unsigned recomp_game_requested_hz(void)
@@ -402,7 +438,8 @@ static unsigned display_steps = 1, display_done;
 static RecompGamePacing pacing = {1};
 static bool timing_tick_pass;
 
-static int64_t now_ns(void) { return (int64_t)recomp_xapi_performance_counter(); }
+/* Pacing runs on host time; guest time may be frame-locked. */
+static int64_t now_ns(void) { return (int64_t)recomp_xapi_host_ns(); }
 
 /* Simulation has its own 60 Hz deadline. Every completed tick gets a
    display; remaining refresh slots use the same two completed snapshots. */
@@ -480,6 +517,7 @@ static void game_loop(void)
     bool displayed = false;
 
     for (;;) {
+        if (frame_boundary != NULL) frame_boundary();
         uint64_t timed = timing_now();
         const bool tick = next_pass_is_tick();
         phase_time[6] += timing_now() - timed;
@@ -621,7 +659,8 @@ RecompFunction recomp_game_scheduler_lookup_manual(uint32_t address)
         const char *setting = getenv("RECOMP_GAME_SCHEDULER");
         enabled = (setting != NULL && strcmp(setting, "1") == 0) || recomp_game_requested_hz() != 0;
     }
-    if (!enabled) {
+    /* Rollback needs the hand-written loop for its frame boundary, installed before the guest starts. */
+    if (!enabled && frame_boundary == NULL) {
 #ifdef RECOMP_FULL_PROGRAM
         if (address == 0x000bb290u && test_clock_enabled()) {
             return generated_game_entry;

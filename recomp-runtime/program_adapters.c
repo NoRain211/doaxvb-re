@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 uint32_t g_recomp_178bb0_origin;
 uint32_t g_recomp_186fb5_origin;
@@ -550,4 +551,27 @@ void doaxbv_raw_advance_get_pointer_wait(
     (void)put;
     (void)target_delta;
     recomp_program_missing(0x001ea050u);
+}
+/* Rollback snapshots: both allocator cursors and the thread counters. */
+typedef struct HeapState {
+    uint32_t heap_cursor;
+    uint32_t contiguous_cursor;
+    uint32_t next_thread_handle;
+    uint32_t current_thread_id;
+} HeapState;
+
+size_t xbox_HeapStateSize(void) { return sizeof(HeapState); }
+
+void xbox_HeapStateSave(void *state)
+{
+    *(HeapState *)state = (HeapState){heap_cursor, contiguous_cursor, next_thread_handle, current_thread_id};
+}
+
+void xbox_HeapStateRestore(const void *state)
+{
+    const HeapState *in = state;
+    heap_cursor = in->heap_cursor;
+    contiguous_cursor = in->contiguous_cursor;
+    next_thread_handle = in->next_thread_handle;
+    current_thread_id = in->current_thread_id;
 }
