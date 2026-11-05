@@ -29,10 +29,13 @@ bool recomp_netplay_open_router_port(uint16_t port, char *address, size_t size)
         return false;
     }
     snprintf(text, sizeof text, "%u", port);
-    /* shortcut: a permanent forward that a crash leaves behind, until the next host run replaces it;
-       use a renewed lease if routers fill up with them. */
-    const int result = UPNP_AddPortMapping(urls.controlURL, data.first.servicetype, text, text, lan,
-        "DOAXBV netplay", "UDP", NULL, "0");
+    /* A day's lease outlasts any session, and a crash's forward expires on its own. Routers
+       that take only permanent forwards answer 725 (OnlyPermanentLeasesSupported). */
+    int result = UPNP_AddPortMapping(urls.controlURL, data.first.servicetype, text, text, lan,
+        "DOAXBV netplay", "UDP", NULL, "86400");
+    if (result == 725)
+        result = UPNP_AddPortMapping(urls.controlURL, data.first.servicetype, text, text, lan,
+            "DOAXBV netplay", "UDP", NULL, "0");
     if (result != UPNPCOMMAND_SUCCESS) {
         FreeUPNPUrls(&urls);
         fprintf(stderr, "recomp netplay: the router refused to forward UDP port %u (%s); "
