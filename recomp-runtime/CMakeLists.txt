@@ -88,9 +88,10 @@ if(WIN32 OR SDL3_FOUND)
         recomp_use_sdl3(recomp_imgui)
     endif()
 endif()
-# Adds the presenter's overlay drawer; the text model, overlay_text.c, is
-# added where the game side is.
+# Adds the presenter's overlay drawer; the text model and screen queue,
+# overlay_text.c, are added where the game side is.
 function(recomp_use_overlay target)
+    target_sources(${target} PRIVATE overlay_screen.c)
     if(WIN32)
         target_sources(${target} PRIVATE overlay_d3d11.cpp overlay_imgui_panel.cpp screenshot.c)
         # screenshot.c asks the shell for the Pictures folder.
@@ -668,6 +669,36 @@ if(RECOMP_PROGRAM_DIR)
     message(STATUS
         "Generated ${_missing_count} fail-loud stubs for absent snapshot bodies")
 
+    # The netplay host forwards its UDP port through the router with UPnP.
+    set(UPNPC_BUILD_SHARED OFF CACHE INTERNAL "")
+    set(UPNPC_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(UPNPC_BUILD_SAMPLE OFF CACHE INTERNAL "")
+    set(UPNPC_NO_INSTALL ON CACHE INTERNAL "")
+    include(FetchContent)
+    FetchContent_Declare(miniupnpc
+        URL https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_3_3.tar.gz
+        URL_HASH SHA256=8cf2c833b3e76fc4893ff29c2a376e3394962449e5970e373c0a91421724d222
+        SOURCE_SUBDIR miniupnpc)
+    FetchContent_MakeAvailable(miniupnpc)
+    # Two runners pair only when they simulate alike: the same source and generated program.
+    set(RECOMP_NETPLAY_VERSION "" CACHE STRING "Release or commit netplay pairs on; empty reads package.json or Git")
+    set(_netplay_version "${RECOMP_NETPLAY_VERSION}")
+    if(NOT _netplay_version AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../package.json")
+        # A release ZIP has no Git metadata; every platform's ZIP names the commit it was packed from.
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../package.json" _netplay_package)
+        string(JSON _netplay_version ERROR_VARIABLE _netplay_package_error GET "${_netplay_package}" source_base)
+    endif()
+    if(NOT _netplay_version)
+        # shortcut: read at configure time; build_game.py configures every build, a bare cmake --build may lag a commit.
+        execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _netplay_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    if(NOT _netplay_version)
+        message(FATAL_ERROR "Netplay needs a release package.json, a Git checkout or RECOMP_NETPLAY_VERSION")
+    endif()
+    string(SHA256 _netplay_build "${_netplay_version}\n${_recomp_program_manifest_sha256}\n")
+    message(STATUS "Netplay build ${_netplay_build} (${_netplay_version})")
+
     add_executable(recomp_program_runner
         runtime.c
         stop_report.c
@@ -723,6 +754,7 @@ if(RECOMP_PROGRAM_DIR)
         suit_switch.c
         suit_switch_adapter.c
         overlay_text.c
+        input_text.c
         unlock_swimsuits.c
         ui_log.c
         d3d_creation_model.c
@@ -787,9 +819,23 @@ if(RECOMP_PROGRAM_DIR)
         kernel_thread.c
         kernel_video.c
         host_diagnostics.cpp
-        guest_snapshot.c
         synctest.c
         synctest_modules.c
+        guest_snapshot.c
+        rollback.c
+        replay.c
+        netplay.c
+        netplay_room.c
+        netplay_names.c
+        netplay_upnp.c
+        netplay_game.c
+        netplay_profile.cpp
+        netplay_settings.cpp
+        netplay_menu.cpp
+        netplay_menu_room.cpp
+        netplay_menu_find.cpp
+        netplay_session.cpp
+        netplay_launch.cpp
         "${_missing_source}"
         ${_recomp_program_sources}
         ../xbe/sha.cpp
@@ -797,13 +843,15 @@ if(RECOMP_PROGRAM_DIR)
     target_compile_definitions(recomp_program_runner PRIVATE
         RECOMP_FULL_PROGRAM
         RECOMP_D3D_FRAME_ENABLED)
+    # Only runner.cpp reads it, so a new commit does not recompile the generated program.
+    set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_NETPLAY_BUILD="${_netplay_build}")
     target_include_directories(recomp_program_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     if(WIN32)
         target_link_libraries(recomp_program_runner PRIVATE
-            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32
+            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 ws2_32
             $<IF:$<BOOL:${MINGW}>,xaudio2_9,xaudio2> ${RECOMP_MEDIA_FOUNDATION})
         target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
         recomp_use_sdl3(recomp_program_runner)
@@ -816,7 +864,7 @@ if(RECOMP_PROGRAM_DIR)
         recomp_use_sdl3(recomp_program_runner)
     endif()
     recomp_use_overlay(recomp_program_runner)
-    target_link_libraries(recomp_program_runner PRIVATE recomp_portable_math)
+    target_link_libraries(recomp_program_runner PRIVATE libminiupnpc-static recomp_portable_math)
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
@@ -880,7 +928,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_d3d11_test)
-    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
@@ -905,7 +953,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_thread_test)
-    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
@@ -932,7 +980,7 @@ else()
         d3d_texture_model.c)
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
     recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test)
-    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
@@ -948,11 +996,31 @@ if(WIN32)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
 
+# Rollback netplay, ported from doa2u-re (docs/rollback-netcode.md).
 add_executable(recomp_guest_snapshot_test guest_snapshot.c guest_snapshot_test.c)
 add_test(NAME recomp-runtime-guest-snapshot COMMAND recomp_guest_snapshot_test)
 add_executable(recomp_synctest_test synctest.c guest_snapshot.c synctest_test.c)
 add_test(NAME recomp-runtime-synctest COMMAND recomp_synctest_test)
-
+add_executable(recomp_rollback_test rollback.c rollback_test.c)
+add_test(NAME recomp-runtime-rollback COMMAND recomp_rollback_test)
+add_executable(recomp_replay_test replay.c replay_test.c)
+add_test(NAME recomp-runtime-replay COMMAND recomp_replay_test)
+add_executable(recomp_netplay_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_test.c)
+add_executable(recomp_netplay_lobby_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_lobby_test.cpp)
+if(WIN32)
+    target_link_libraries(recomp_netplay_test PRIVATE ws2_32)
+    target_link_libraries(recomp_netplay_lobby_test PRIVATE ws2_32)
+endif()
+add_test(NAME recomp-runtime-netplay COMMAND recomp_netplay_test)
+add_test(NAME recomp-runtime-netplay-lobby COMMAND recomp_netplay_lobby_test)
+add_executable(recomp_netplay_settings_test netplay_settings.cpp netplay_settings_test.cpp)
+add_test(NAME recomp-runtime-netplay-settings COMMAND recomp_netplay_settings_test)
+add_executable(recomp_netplay_profile_test netplay_profile.cpp netplay_profile_test.cpp ../xbe/sha.cpp)
+target_include_directories(recomp_netplay_profile_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+if(WIN32)
+    target_link_libraries(recomp_netplay_profile_test PRIVATE bcrypt)
+endif()
+add_test(NAME recomp-runtime-netplay-profile COMMAND recomp_netplay_profile_test)
 # One x87 transcendental implementation for every host (portable_math.h).
 add_library(recomp_portable_math STATIC
     musl_math/sin.c musl_math/cos.c musl_math/tan.c musl_math/__sin.c musl_math/__cos.c musl_math/__tan.c

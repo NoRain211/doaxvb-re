@@ -68,12 +68,14 @@ static RecompSymbolicLinkModel symbolic_links;
 static int symbolic_links_initialized;
 static bool is_profile_path(const char *path);
 static uint32_t profile_mutation_count;
+void (*recomp_kernel_profile_mutation_hook)(void);
 
 uint32_t recomp_kernel_profile_mutations(void) { return profile_mutation_count; }
 
 static void note_profile_mutation(void)
 {
     ++profile_mutation_count;
+    if (recomp_kernel_profile_mutation_hook != NULL) recomp_kernel_profile_mutation_hook();
 }
 
 static void ensure_symbolic_links_initialized(void)
@@ -457,6 +459,15 @@ static int build_host_path(const char *relative, char *host_path, size_t host_pa
     return append_relative_path(relative, host_path, host_path_size);
 }
 
+/* Partition 1's host folder; a netplay session's saves have their own. */
+static bool append_partition1(char *path, size_t size)
+{
+    const char *session = recomp_save_get_session();
+    return append_segment(path, size, ".recomp-storage") &&
+        (session == NULL || append_segment(path, size, session)) &&
+        append_segment(path, size, "partition1");
+}
+
 static bool is_profile_path(const char *path)
 {
     char root[MAX_PATH_LEN];
@@ -464,8 +475,7 @@ static bool is_profile_path(const char *path)
         return false;
     }
     copy_root(root, sizeof root);
-    if (!append_segment(root, sizeof root, ".recomp-storage") ||
-        !append_segment(root, sizeof root, "partition1") ||
+    if (!append_partition1(root, sizeof root) ||
         !append_segment(root, sizeof root, "UDATA")) {
         return false;
     }
@@ -491,8 +501,7 @@ static int build_save_path(
     }
 
     copy_root(host_path, host_path_size);
-    if (!append_segment(host_path, host_path_size, ".recomp-storage") ||
-        !append_segment(host_path, host_path_size, "partition1")) {
+    if (!append_partition1(host_path, host_path_size)) {
         return -1;
     }
 

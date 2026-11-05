@@ -1,4 +1,5 @@
 #include "overlay_text.h"
+#include "overlay_screen.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -51,14 +52,17 @@ bool recomp_overlay_empty(const RecompOverlayText *text)
 }
 
 static RecompOverlayText published;
+/* The game's queue of shapes (overlay_screen.h) and the screen it last published. */
+static RecompOverlayQuad quads[RECOMP_OVERLAY_MAX_QUADS], published_quads[RECOMP_OVERLAY_MAX_QUADS];
+static uint32_t quad_count, published_quad_count;
 #ifdef _WIN32
 static volatile LONG published_lock;
 #else
 static atomic_flag published_lock = ATOMIC_FLAG_INIT;
 #endif
 
-/* The copy is a few hundred bytes, so a spin lock held only for it is
-   enough between the game thread and a render thread. */
+/* Each copy is the text or at most one screen of quads, so a spin lock held
+   only for it is enough between the game thread and a render thread. */
 static void lock(void)
 {
 #ifdef _WIN32
@@ -93,4 +97,28 @@ void recomp_overlay_take(RecompOverlayText *text)
     lock();
     *text = published;
     unlock();
+}
+
+void recomp_overlay_rect(float x, float y, float width, float height, uint32_t argb)
+{
+    if (quad_count == RECOMP_OVERLAY_MAX_QUADS || width <= 0.0f || height <= 0.0f) return;
+    quads[quad_count++] = (RecompOverlayQuad){x, y, width, height, argb};
+}
+
+void recomp_overlay_screen_publish(void)
+{
+    lock();
+    memcpy(published_quads, quads, quad_count * sizeof quads[0]);
+    published_quad_count = quad_count;
+    unlock();
+    quad_count = 0u;
+}
+
+uint32_t recomp_overlay_screen_take(RecompOverlayQuad *out, uint32_t capacity)
+{
+    lock();
+    const uint32_t count = published_quad_count < capacity ? published_quad_count : capacity;
+    memcpy(out, published_quads, count * sizeof out[0]);
+    unlock();
+    return count;
 }

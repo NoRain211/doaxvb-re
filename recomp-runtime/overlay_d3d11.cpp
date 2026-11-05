@@ -34,10 +34,11 @@ bool start(ID3D11Device *device, ID3D11DeviceContext *context, UINT height)
 }  // namespace
 
 void recomp_overlay_d3d11_draw(ID3D11Device *device, ID3D11DeviceContext *context,
-    ID3D11RenderTargetView *target, UINT width, UINT height, const RecompOverlayText *text)
+    ID3D11RenderTargetView *target, UINT width, UINT height, const RecompOverlayText *text,
+    const RecompOverlayQuad *screen, uint32_t screen_count)
 {
     if (device == nullptr || context == nullptr || target == nullptr ||
-        width == 0u || height == 0u || recomp_overlay_empty(text)) {
+        width == 0u || height == 0u || (screen_count == 0u && recomp_overlay_empty(text))) {
         return;
     }
     if (!start(device, context, height)) return;
@@ -51,7 +52,7 @@ void recomp_overlay_d3d11_draw(ID3D11Device *device, ID3D11DeviceContext *contex
 
     ImGui_ImplDX11_NewFrame();
     ImGui::NewFrame();
-    recomp_overlay_imgui_build(*text, io.DisplaySize.x, io.DisplaySize.y);
+    recomp_overlay_imgui_build(*text, screen, screen_count, io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
     ImDrawData *draw_data = ImGui::GetDrawData();
     if (draw_data == nullptr || draw_data->CmdListsCount == 0) return;

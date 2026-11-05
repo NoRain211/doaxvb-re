@@ -31,13 +31,23 @@ void recomp_overlay_imgui_style(float target_height)
     style.ScaleAllSizes(panel_scale);
 }
 
-void recomp_overlay_imgui_build(const RecompOverlayText &text, float width, float height)
+void recomp_overlay_imgui_build(const RecompOverlayText &text, const RecompOverlayQuad *screen,
+    uint32_t screen_count, float width, float height)
 {
     const float scale = panel_scale;
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
 
+    // The screen's 640 x 480 space spans the window's height, centered.
+    const float sy = height / 480.0f, left = (width - 640.0f * sy) * 0.5f;
+    ImDrawList *list = ImGui::GetBackgroundDrawList();
+    for (uint32_t i = 0u; i < screen_count; ++i) {
+        const RecompOverlayQuad &q = screen[i];
+        const ImU32 color = IM_COL32((q.argb >> 16) & 0xffu, (q.argb >> 8) & 0xffu, q.argb & 0xffu, q.argb >> 24);
+        list->AddRectFilled(ImVec2(left + q.x * sy, q.y * sy), ImVec2(left + (q.x + q.width) * sy, (q.y + q.height) * sy),
+            color);
+    }
     if (text.title[0] != '\0' || text.count != 0u) {
         ImGui::SetNextWindowPos(ImVec2(kMargin * scale, kMargin * scale));
         ImGui::Begin("recomp-overlay-panel", nullptr, flags);

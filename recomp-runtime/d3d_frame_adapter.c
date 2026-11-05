@@ -50,6 +50,7 @@ static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 }
 
 static uint32_t present_held;
+void (*recomp_d3d_swap_hook)(void);
 
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
 {
@@ -60,6 +61,17 @@ void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
 uint32_t recomp_d3d_frame_adapter_swap_counter(void)
 {
     return frame_state.swap_counter;
+}
+
+void recomp_d3d_frame_adapter_present_again(void)
+{
+    if (presenter == NULL || frame_state.swap_counter == 0u) return;
+    static RecompD3dPresenterCommand command; /* the draw union is large */
+    command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+    command.data.present.effective_flags = 5u;
+    command.data.present.swap_counter = frame_state.swap_counter;
+    command.data.present.hold = false;
+    recomp_d3d_frame_adapter_exit_if_closed(recomp_d3d_presenter_submit(presenter, &command));
 }
 
 /* Present returns the swap counter to the guest, so rollback rewinds it. */
@@ -406,7 +418,7 @@ void recomp_d3d_swap_adapter(void)
     }
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
-    recomp_d3d_wait_vblank();
+    if ((present_held & RECOMP_PRESENT_HOLD_ROLLBACK) == 0u) recomp_d3d_wait_vblank();
     /* A held frame is still presented, so its draws run now while the
        textures they borrow from guest memory are this frame's, and the
        presenter keeps handling window events. */
@@ -441,6 +453,7 @@ void recomp_d3d_swap_adapter(void)
     recomp_title_idle_frame();
     recomp_unlock_swimsuits_frame();
     recomp_ui_log_frame();
+    if (recomp_d3d_swap_hook != NULL) recomp_d3d_swap_hook();
     recomp_screenshot_poll_trigger();
     /* Scene state machine at 0x000A3820: 0x5DECE0 is the scene currently
        running and 0x5DED55 is the scene requested for the next iteration.

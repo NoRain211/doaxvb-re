@@ -167,7 +167,9 @@ size_t recomp_kernel_file_state_size(void);
 void recomp_kernel_file_state_save(void *state);
 bool recomp_kernel_file_state_restorable(const void *state);
 void recomp_kernel_file_state_restore(const void *state);
-/* Opens that may change save storage on disk, which no snapshot holds. */
+/* Opens that may change save storage on disk, which no snapshot holds. The
+   hook runs before each one; a netplay session confirms the frame there. */
 uint32_t recomp_kernel_profile_mutations(void);
+extern void (*recomp_kernel_profile_mutation_hook)(void);
 
 #endif

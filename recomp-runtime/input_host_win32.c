@@ -227,6 +227,11 @@ static void read_pad(SDL_Gamepad *host, RecompInputGamepad *gamepad)
     gamepad->thumb_ry = up_axis(host, SDL_GAMEPAD_AXIS_RIGHTY);
 }
 
+bool recomp_input_host_pad_connected(uint32_t port)
+{
+    return port < RECOMP_INPUT_PORT_COUNT && pads[port] != NULL;
+}
+
 bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
 {
     if (gamepad == NULL || port >= RECOMP_INPUT_PORT_COUNT) {

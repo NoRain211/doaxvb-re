@@ -184,6 +184,10 @@
   ],
   "byte_literal_exceptions": [
     {
+      "sha256": "3678064993b9a107c5cd38e2cd987029c88ad69b623c1d0e77efb39613a22e4a",
+      "reason": "Hand-written: the default netplay matchmaker's host:port, XORed with 0x5a, in netplay_menu.cpp (from doa2u-re). Not game data."
+    },
+    {
       "sha256": "4765463d844a412639298ff7ed691726722db592ea5bee51f7586bc575fa5ed0",
       "reason": "Synthetic DXT3 fixture: 0/85/170/255 alpha ramp per row, RGB565 endpoints and zero selectors for the alpha-to-coverage test in d3d_presenter_d3d11_test.cpp."
     },

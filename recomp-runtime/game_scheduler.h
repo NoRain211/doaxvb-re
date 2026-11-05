@@ -34,8 +34,9 @@ void recomp_game_test_clock_begin(bool enabled);
 /* Called at the top of every pass of the hand-written main loop, where every
    guest fiber is parked in the scheduler and the main thread's native stack
    is always the same: the frame boundary rollback saves and loads at. A hook
-   needs 60 Hz and exits otherwise. Call before the guest starts. */
-void recomp_game_set_frame_boundary(void (*hook)(void));
+   needs 60 Hz and exits otherwise. paced false: the hook paces each frame
+   itself, without the scheduler's 60 Hz wait. Call before the guest starts. */
+void recomp_game_set_frame_boundary(void (*hook)(void), bool paced);
 /* The pass and tick counters, for rollback snapshots. */
 size_t recomp_game_scheduler_state_size(void);
 void recomp_game_scheduler_state_save(void *state);
