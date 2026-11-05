@@ -126,12 +126,17 @@ static int pinned_court(void)
 /* Private xorshift32 state, so no shared C runtime rand state is touched. */
 static uint32_t random_state;
 
-static uint32_t random_below(uint32_t count)
+static void seed_random(void)
 {
     if (random_state == 0u) {
         /* A pinned court is a test run: the same cast every time. */
         random_state = pinned_court() >= 0 ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
     }
+}
+
+static uint32_t random_below(uint32_t count)
+{
+    seed_random();
     random_state ^= random_state << 13;
     random_state ^= random_state >> 17;
     random_state ^= random_state << 5;
@@ -387,6 +392,7 @@ void recomp_cpu_exhibition_state_save(void *state)
 {
     CpuExhibitionState *out = state;
 
+    seed_random(); /* a snapshot holds the seed, so a replay never reseeds from the clock */
     memset(out, 0, sizeof *out); /* compared byte for byte */
     out->random_state = random_state;
     out->people = people;

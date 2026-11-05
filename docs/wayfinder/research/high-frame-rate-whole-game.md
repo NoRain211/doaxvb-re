@@ -141,8 +141,9 @@ the display rate, and the drift that made match tick 650 differ is gone.
   (`runner.cpp`). `game_rollback.c` copies the pages a tick wrote into a
   shadow and copies the shadow back over the pages a display pass wrote. It
   also checkpoints the fiber model, the heap and the FPU context. A display
-  pass that creates or ends a fiber stops the runtime, because that cannot
-  be undone.
+  pass whose fiber state cannot be restored
+  (`recomp_fiber_adapter_state_restorable`, such as a parked fiber on a
+  POSIX host) stops the runtime.
   In a match, about 420 pages are committed per tick and 140 restored.
 - **Display motion.** The ball (`0x00416630`) is moved by match fiber
   `0x000BB420`. The first display pass of a tick runs that fiber ahead, and
