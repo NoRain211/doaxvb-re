@@ -42,10 +42,10 @@ static bool reset_tracking(RecompGuestSnapshots *s)
 {
 #ifdef _WIN32
     if (s->write_watch) return ResetWriteWatch(s->ram, s->size) == 0u;
-#else
-    (void)s;
-#endif
     return true;
+#else
+    return !s->write_watch; /* no host tracking: a write-watch request must fail */
+#endif
 }
 
 /* Fills dirty_pages with the pages written since the newest save and resets
@@ -225,6 +225,9 @@ static void rehash_page(RecompGuestSnapshots *s, size_t page)
         }
         memset(masked + (start - offset), 0, stop - start);
     }
+    /* Ranges that together cover the page read as zero like one range that does. */
+    static const uint8_t zero_page[PAGE];
+    if (data == masked && memcmp(masked, zero_page, PAGE) == 0) data = NULL;
     const uint64_t h = data != NULL ? page_hash(data, page) : 0u;
     s->hash += h - s->page_hashes[page];
     s->page_hashes[page] = h;

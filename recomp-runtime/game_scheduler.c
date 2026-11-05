@@ -56,7 +56,9 @@ static bool main_present_pending;
    completed tick pairs, then roll back before any further pass. */
 static bool authored_pass = true;
 static unsigned pass_steps = 1, pass_substep;
-static uint32_t game_pass, game_tick;
+static uint32_t game_pass;
+/* The audio output pump reads the tick on its own thread. */
+static volatile uint32_t game_tick;
 /* A hidden tick owns one Swap. A UI loading loop that draws and swaps
    without yielding to the scheduler must present every later frame. */
 static bool hidden_swap_done;

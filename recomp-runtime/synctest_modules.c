@@ -64,12 +64,14 @@ void recomp_synctest_mask_ignored(uint8_t *ram, size_t size)
     }
 }
 
-/* At the frame boundary only esp is defined; the rest is caller scratch. */
+/* At the frame boundary only esp and the x87 control word carry over; the
+   rest is caller scratch. */
 static bool cpu_equal(const void *left, const void *right, size_t size)
 {
     const RecompRuntimeState *a = left, *b = right;
     (void)size;
-    return a->registers.esp == b->registers.esp;
+    return a->registers.esp == b->registers.esp &&
+        a->fpu.fpu_control_word == b->fpu.fpu_control_word;
 }
 static bool fibers_restorable(const void *state, size_t size)
 {
@@ -80,6 +82,11 @@ static bool files_restorable(const void *state, size_t size)
 {
     (void)size;
     return recomp_kernel_file_state_restorable(state);
+}
+static bool allocations_restorable(const void *state, size_t size)
+{
+    (void)size;
+    return recomp_kernel_memory_state_restorable(state);
 }
 /* Save storage and its journal live on the host disk, outside the snapshot.
    A replay after a save sees the files the first pass wrote, and a rewind
@@ -98,7 +105,8 @@ static bool save_storage_restorable(const void *state, size_t size)
 {
     const SaveStorageState *saved = state;
     (void)size;
-    return !saved->pending && saved->mutations == recomp_kernel_profile_mutations();
+    return !saved->pending && !recomp_save_pending() &&
+        saved->mutations == recomp_kernel_profile_mutations();
 }
 
 void recomp_synctest_install_default_modules(void)
@@ -122,7 +130,8 @@ void recomp_synctest_install_default_modules(void)
     table[count++] = (RecompSyncTestModule){"files", recomp_kernel_file_state_size(),
         recomp_kernel_file_state_save, recomp_kernel_file_state_restore, NULL, files_restorable};
     table[count++] = (RecompSyncTestModule){"allocations", recomp_kernel_memory_state_size(),
-        recomp_kernel_memory_state_save, recomp_kernel_memory_state_restore};
+        recomp_kernel_memory_state_save, recomp_kernel_memory_state_restore, NULL,
+        allocations_restorable};
     table[count++] = (RecompSyncTestModule){"heap", xbox_HeapStateSize(),
         xbox_HeapStateSave, xbox_HeapStateRestore};
     table[count++] = (RecompSyncTestModule){"input", recomp_input_adapter_state_size(),

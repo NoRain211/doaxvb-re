@@ -797,8 +797,12 @@ void recomp_dsound_service_adapter_state_restore(const void *state)
     dsound_service_model = in->service;
     for (uint32_t i = 0u; i < RECOMP_DSOUND_VOICE_STATE_COUNT; ++i) {
         BufferClock *clock = &buffer_clocks[i];
-        if (clock->address != in->clocks[i].address || clock->data != in->clocks[i].data) {
-            /* Another sound took this voice; start its output over. */
+        if (clock->address != in->clocks[i].address || clock->data != in->clocks[i].data ||
+            clock->source_size != in->clocks[i].source_size ||
+            clock->format != in->clocks[i].format ||
+            clock->output_model.playing != in->clocks[i].model.playing) {
+            /* Another sound took this voice, or it started or stopped since
+               the save; start its output over. */
             recomp_audio_output_reset_voice(i);
             clock->output_model = in->clocks[i].model;
         }

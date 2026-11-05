@@ -156,6 +156,7 @@ void recomp_kernel_drain_dpcs(void);
 /* Rollback snapshots of the kernel models' host state. */
 size_t recomp_kernel_memory_state_size(void);
 void recomp_kernel_memory_state_save(void *state);
+bool recomp_kernel_memory_state_restorable(const void *state);
 void recomp_kernel_memory_state_restore(const void *state);
 size_t recomp_kernel_thread_state_size(void);
 void recomp_kernel_thread_state_save(void *state);

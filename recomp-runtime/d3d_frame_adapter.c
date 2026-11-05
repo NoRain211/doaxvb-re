@@ -33,6 +33,7 @@ enum {
 };
 
 static RecompD3dFrameState frame_state;
+static uint32_t first_clear_swap = UINT32_MAX;
 static RecompD3dPresenter *presenter;
 static uint32_t frame_device_address;
 #ifdef _WIN32
@@ -76,10 +77,15 @@ void recomp_d3d_frame_adapter_present_again(void)
     if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d-present-again:presenter:%u", (unsigned)error);
 }
 
-/* Present returns the swap counter to the guest, so rollback rewinds it. */
+/* Present returns the swap counter to the guest, so rollback rewinds it. A
+   rewind lands between frames, so the next Clear is a first Clear again. */
 size_t recomp_d3d_frame_adapter_state_size(void) { return sizeof frame_state; }
 void recomp_d3d_frame_adapter_state_save(void *state) { memcpy(state, &frame_state, sizeof frame_state); }
-void recomp_d3d_frame_adapter_state_restore(const void *state) { memcpy(&frame_state, state, sizeof frame_state); }
+void recomp_d3d_frame_adapter_state_restore(const void *state)
+{
+    memcpy(&frame_state, state, sizeof frame_state);
+    first_clear_swap = UINT32_MAX;
+}
 
 void recomp_d3d_frame_adapter_initialize(
     const RecompD3dPresenterConfig *config,
@@ -234,7 +240,6 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
 }
 
 static RecompD3dFrameHook first_clear_hook;
-static uint32_t first_clear_swap = UINT32_MAX;
 
 void recomp_d3d_frame_adapter_set_first_clear_hook(RecompD3dFrameHook hook)
 {

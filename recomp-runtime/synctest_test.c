@@ -162,6 +162,7 @@ int main(void)
     recomp_synctest_configure(false, 1u, false);
     recomp_synctest_set_modules(modules, 1u);
     recomp_synctest_set_guest_ram(guest, sizeof guest, false);
+    check("ring rejects zero frames", !recomp_rollback_ring_init(0u));
     check("ring init", recomp_rollback_ring_init(3u));
     guest[0x3000u] = 0u;
     for (uint8_t frame = 0u; frame < 7u; ++frame) {

@@ -1667,6 +1667,7 @@ static void bridge_nt_set_information_file(void)
             continue;
         }
 
+        if (required_save_io && is_profile_path(file_handles[i].host_path)) note_profile_mutation();
         if (handle_profile_mutation_information(
                 &file_handles[i], file_information_class, file_information,
                 length, &required_save_io, &status, &policy)) {
@@ -1904,6 +1905,7 @@ static void bridge_nt_write_file(void)
             policy = "save-write-owner-rejected";
             break;
         }
+        if (is_profile_path(file_handles[i].host_path)) note_profile_mutation();
         write_offset = file_handles[i].cursor;
         if (byte_offset != 0u) {
             write_offset = *recomp_memory_u32(byte_offset);

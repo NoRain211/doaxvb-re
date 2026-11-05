@@ -15,6 +15,8 @@
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
 #include "netplay_launch.h"
+#include "netplay_session.h"
+#include "synctest.h"
 #endif
 #include "guest_snapshot.h"
 #include "runtime.h"
@@ -245,6 +247,26 @@ bool sampleInputPulse(std::uint32_t port, RecompInputGamepad *gamepad)
     }
     samplePausedAnalogFile();
     return recomp_input_pulse_source_sample(&inputPulseSource, gamepad);
+}
+
+/* The scripted input schedule, so a replay presses at the same polls. */
+struct SyncTestInput {
+    RecompInputPulseSource pulses;
+    std::uint64_t waitAfterPoll;
+};
+
+void saveSyncTestInput(void *state)
+{
+    auto *out = static_cast<SyncTestInput *>(state);
+    std::memcpy(&out->pulses, &inputPulseSource, sizeof inputPulseSource);
+    out->waitAfterPoll = inputWaitAfterPoll;
+}
+
+void restoreSyncTestInput(const void *state)
+{
+    const auto *in = static_cast<const SyncTestInput *>(state);
+    std::memcpy(&inputPulseSource, &in->pulses, sizeof inputPulseSource);
+    inputWaitAfterPoll = in->waitAfterPoll;
 }
 #endif
 
@@ -926,6 +948,11 @@ std::vector<AnalogPulse> inputAnalogPulses;
     }
     recomp_viewer_install();
     recomp_netplay_launch_install(ram, kRamSize, writeWatch);
+    // A netplay session supplies its own pads; only SyncTest replays the script.
+    if (recomp_synctest_enabled() && !recomp_netplay_session_enabled()) {
+        recomp_synctest_set_extra_state(
+            sizeof(SyncTestInput), saveSyncTestInput, restoreSyncTestInput);
+    }
 #endif
 #ifndef RECOMP_FULL_PROGRAM
     recomp_imports_reset();
