@@ -53,12 +53,6 @@ enum {
 };
 
 static RecompDsoundServiceModel dsound_service_model;
-static volatile int output_muted; // set on the game thread, read by the output pump
-
-void recomp_dsound_service_adapter_set_muted(int muted)
-{
-    output_muted = muted;
-}
 
 typedef struct BufferClock {
     uint32_t address;
@@ -94,6 +88,15 @@ static inline int is_clock_owner(void) {
     return clock_locked && pthread_equal(clock_owner, pthread_self());
 }
 #endif
+
+static int output_muted; // set on the game thread, read by pump_buffer, both under clock_lock
+
+void recomp_dsound_service_adapter_set_muted(int muted)
+{
+    LOCK_CLOCKS();
+    output_muted = muted;
+    UNLOCK_CLOCKS();
+}
 
 static void retire_buffer(BufferClock *clock)
 {

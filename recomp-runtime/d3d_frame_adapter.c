@@ -71,7 +71,9 @@ void recomp_d3d_frame_adapter_present_again(void)
     command.data.present.effective_flags = 5u;
     command.data.present.swap_counter = frame_state.swap_counter;
     command.data.present.hold = false;
-    recomp_d3d_frame_adapter_exit_if_closed(recomp_d3d_presenter_submit(presenter, &command));
+    const RecompD3dPresenterError error = recomp_d3d_presenter_submit(presenter, &command);
+    recomp_d3d_frame_adapter_exit_if_closed(error);
+    if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d-present-again:presenter:%u", (unsigned)error);
 }
 
 /* Present returns the swap counter to the guest, so rollback rewinds it. */

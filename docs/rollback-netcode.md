@@ -309,6 +309,5 @@ the other presented at 10 fps until its 15 s grace ended the session.
 
 ## Still to do
 
-- Reopening the room after a session, as doa2u-re does; the runner comes
-  back to the online menu.
+- A full match played with real input.
 - Sessions between two machines and between operating systems.

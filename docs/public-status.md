@@ -143,12 +143,14 @@ and [acceptance dashboard](https://github.com/NoRain211/doaxbv-re/issues/16#issu
 
 Online Exhibition uses doa2u-re's rollback netcode (`netplay_session.cpp`),
 not the pinned rollback dependencies in the
-[dependency audit](research/rollback-engine-audit.md). Two runners on one
-Windows machine played Two Players matches from the menu's rooms and from
+[dependency audit](research/rollback-engine-audit.md). Agent-run smoke
+sessions with scripted input, two runners on one Windows machine, reached
+Two Players matches from the menu's rooms and from
 `--netplay-host`/`--netplay-join`, with guest RAM identical at the end
-and on every 30th frame. Sessions between two machines, between operating
-systems and over a lagged link are untested. See
-[rollback netcode](rollback-netcode.md).
+and on every 30th frame. One 4,000-frame UDP run went through a local relay
+adding 50 ms latency, jitter and packet loss. No full match with real input
+and no session between two machines or between operating systems has been
+tested. See [rollback netcode](rollback-netcode.md).
 
 The 0.3 Alpha source and recipe include subsequent inventory action-text,
 picture-setting, activity-transition and pool-rendering repairs. Daytime water

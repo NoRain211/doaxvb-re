@@ -52,7 +52,8 @@ void recomp_overlay_d3d11_draw(ID3D11Device *device, ID3D11DeviceContext *contex
 
     ImGui_ImplDX11_NewFrame();
     ImGui::NewFrame();
-    recomp_overlay_imgui_build(*text, screen, screen_count, io.DisplaySize.x, io.DisplaySize.y);
+    recomp_overlay_imgui_build(text != nullptr ? *text : RecompOverlayText{}, screen, screen_count,
+        io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
     ImDrawData *draw_data = ImGui::GetDrawData();
     if (draw_data == nullptr || draw_data->CmdListsCount == 0) return;

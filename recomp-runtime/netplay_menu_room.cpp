@@ -51,6 +51,7 @@ void enterRoom(bool hosting)
     menu.lobby.chat.clear();
     menu.lobby.typing = false;
     menu.lobby.showAddress = false;
+    menu.lobby.blockAsked = Clock::time_point{};
     menu.lobby.checkedIn = Clock::time_point{}; // a host lists its room on the first tick
     char stale[64]; // typed before the room opened, such as a game's Enter
     (void)recomp_input_text_take(stale, sizeof stale);
@@ -203,6 +204,7 @@ static void say()
 // Enter opens a line and sends it, Esc drops it; printable ASCII only.
 static void typeChat(bool peerAllowed)
 {
+    if (menu.lobby.typing) recomp_input_text_focus(); // Enter, which opens the line, comes without text input
     char typed[64];
     const std::size_t count = recomp_input_text_take(typed, sizeof typed);
     for (std::size_t i = 0u; i < count; ++i) {

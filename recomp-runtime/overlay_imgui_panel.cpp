@@ -39,14 +39,15 @@ void recomp_overlay_imgui_build(const RecompOverlayText &text, const RecompOverl
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
 
-    // The screen's 640 x 480 space spans the window's height, centered.
-    const float sy = height / 480.0f, left = (width - 640.0f * sy) * 0.5f;
+    // The screen's 640 x 480 space fits the window, centered, as the presenters letterbox the game.
+    const float sy = width * 480.0f < height * 640.0f ? width / 640.0f : height / 480.0f;
+    const float left = (width - 640.0f * sy) * 0.5f, top = (height - 480.0f * sy) * 0.5f;
     ImDrawList *list = ImGui::GetBackgroundDrawList();
     for (uint32_t i = 0u; i < screen_count; ++i) {
         const RecompOverlayQuad &q = screen[i];
         const ImU32 color = IM_COL32((q.argb >> 16) & 0xffu, (q.argb >> 8) & 0xffu, q.argb & 0xffu, q.argb >> 24);
-        list->AddRectFilled(ImVec2(left + q.x * sy, q.y * sy), ImVec2(left + (q.x + q.width) * sy, (q.y + q.height) * sy),
-            color);
+        list->AddRectFilled(ImVec2(left + q.x * sy, top + q.y * sy),
+            ImVec2(left + (q.x + q.width) * sy, top + (q.y + q.height) * sy), color);
     }
     if (text.title[0] != '\0' || text.count != 0u) {
         ImGui::SetNextWindowPos(ImVec2(kMargin * scale, kMargin * scale));

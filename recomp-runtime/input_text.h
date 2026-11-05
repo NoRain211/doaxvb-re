@@ -15,8 +15,10 @@ extern "C" {
    wait; take moves them out. From doa2u-re's input_keyboard_win32.c. */
 void recomp_input_text_char(uint32_t character);
 size_t recomp_input_text_take(char *out, size_t capacity);
-/* True when a text field has taken typed keys since the last call, so a
-   window can keep its text input on only while one is open. */
+/* An open text field calls focus each frame; asked is true when one has
+   since the last call, so a window can keep its text input on only while
+   one is open. */
+void recomp_input_text_focus(void);
 bool recomp_input_text_asked(void);
 
 #ifdef __cplusplus

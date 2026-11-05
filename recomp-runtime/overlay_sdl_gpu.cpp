@@ -76,7 +76,8 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
 
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui::NewFrame();
-    recomp_overlay_imgui_build(*text, screen, screen_count, io.DisplaySize.x, io.DisplaySize.y);
+    recomp_overlay_imgui_build(text != nullptr ? *text : RecompOverlayText{}, screen, screen_count,
+        io.DisplaySize.x, io.DisplaySize.y);
     ImGui::Render();
     ImDrawData *draw_data = ImGui::GetDrawData();
     if (draw_data == nullptr || draw_data->CmdListsCount == 0) return;

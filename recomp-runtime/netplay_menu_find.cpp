@@ -60,6 +60,7 @@ void updateFind(std::uint16_t keys)
     recomp_netplay_match_poll(&menu.net);
     const auto now = Clock::now();
     if (keys) menu.message.clear();
+    if (match.met && menu.find.joining == 0u) match.met = false; // a pairing after STOP or a timeout opens nothing
     if (match.met) {
         match.met = false;
         char text[64] = "RELAY";
@@ -84,7 +85,7 @@ void updateFind(std::uint16_t keys)
         match.listed = false;
         menu.find.listOk = true;
         recomp_netplay_match_probe(&menu.net);
-        if (menu.find.probedAt == Clock::time_point{}) menu.find.probedAt = now;
+        menu.find.probedAt = now; // quick match's second to hear pings starts with this room set
     }
     if (keys & B) {
         if (menu.find.joining == 0u) {

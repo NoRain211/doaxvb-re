@@ -36,8 +36,8 @@ size_t recomp_d3d_frame_adapter_state_size(void);
 void recomp_d3d_frame_adapter_state_save(void *state);
 void recomp_d3d_frame_adapter_state_restore(const void *state);
 /* While any reason holds it, Swap still counts frames, waits for the display
-   and presents the frame's work, but the window shows nothing new, so the
-   last picture stays on screen. */
+   (except for a rollback replay, below) and presents the frame's work, but
+   the window shows nothing new, so the last picture stays on screen. */
 enum {
     RECOMP_PRESENT_HOLD_SCENE = 1u,
     RECOMP_PRESENT_HOLD_VIEWER = 2u,

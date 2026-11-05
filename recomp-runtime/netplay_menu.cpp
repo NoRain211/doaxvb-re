@@ -203,6 +203,7 @@ static void pasteInto(std::string &text, const std::string &characters, std::siz
 // Returns the keys left for the screen.
 static std::uint16_t editText(std::string &text, const std::string &characters, std::size_t max, std::uint16_t keys)
 {
+    recomp_input_text_focus();
     char typed[64];
     const std::size_t typedCount = recomp_input_text_take(typed, sizeof typed);
     if (keys || typedCount) menu.message.clear();
@@ -562,6 +563,7 @@ void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad)
         }
         if (menu.injectA > 0 && port == menu.openedBy) {
             --menu.injectA;
+            *pad = RecompInputGamepad{};
             pad->analog_buttons[RECOMP_INPUT_ANALOG_A] = RECOMP_INPUT_ANALOG_PRESSED;
             return;
         }
@@ -586,6 +588,8 @@ std::string recomp_netplay_room_state_format(const RecompNetplayRoomState &room)
 bool recomp_netplay_room_state_parse(const std::string &text, RecompNetplayRoomState &room)
 {
     if (text.size() < 6u || text[1] != ',' || text[3] != ',' || text[5] != ',') return false;
+    for (const std::size_t at : {0u, 2u, 4u})
+        if (text[at] != '0' && text[at] != '1') return false;
     room = {text[0] == '1', text[2] == '1', text[4] == '1', text.substr(6u)};
     return true;
 }

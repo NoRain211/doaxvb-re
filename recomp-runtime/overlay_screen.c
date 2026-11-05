@@ -3,8 +3,6 @@
    queues the quads and hands them to the presenter's thread. */
 #include "overlay_screen.h"
 
-#include <string.h>
-
 /* The built-in font for ' ' through '_': seven rows of five dots each, top
    to bottom, drawn for this runner. */
 static const char font[64][42] = {
@@ -80,15 +78,23 @@ static const char *glyph(unsigned char c)
     return font[c >= 32u && c < 96u ? c - 32u : '?' - 32u];
 }
 
+/* A UTF-8 character is one '?': its lead byte draws it and the rest draw nothing. */
+static int continuation(unsigned char c)
+{
+    return (c & 0xc0u) == 0x80u;
+}
+
 float recomp_overlay_text_width(const char *text, float scale)
 {
-    const size_t length = strlen(text);
+    size_t length = 0u;
+    for (const unsigned char *c = (const unsigned char *)text; *c != 0u; ++c) length += !continuation(*c);
     return length == 0u ? 0.0f : (float)(length * 6u - 1u) * scale;
 }
 
 float recomp_overlay_text(float x, float y, float scale, uint32_t argb, const char *text)
 {
-    for (const unsigned char *c = (const unsigned char *)text; *c != 0u; ++c, x += 6.0f * scale) {
+    for (const unsigned char *c = (const unsigned char *)text; *c != 0u; ++c) {
+        if (continuation(*c)) continue;
         const char *dots = glyph(*c);
         for (unsigned row = 0u; row < 7u; ++row) {
             const char *line = dots + row * 6u;
@@ -105,6 +111,7 @@ float recomp_overlay_text(float x, float y, float scale, uint32_t argb, const ch
                 dot = end;
             }
         }
+        x += 6.0f * scale;
     }
     return recomp_overlay_text_width(text, scale);
 }

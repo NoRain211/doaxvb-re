@@ -34,9 +34,15 @@ size_t recomp_input_text_take(char *out, size_t capacity)
     const size_t size = text_size < capacity ? text_size : capacity;
     memcpy(out, text, size);
     text_size = 0u;
-    asked = true;
     UNLOCK();
     return size;
+}
+
+void recomp_input_text_focus(void)
+{
+    LOCK();
+    asked = true;
+    UNLOCK();
 }
 
 bool recomp_input_text_asked(void)
