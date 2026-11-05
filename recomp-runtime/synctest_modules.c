@@ -3,6 +3,7 @@
    doa2u-re's synctest_modules.c for this runtime's modules. */
 #include "synctest.h"
 
+#include "cpu_exhibition.h"
 #include "fiber_adapter.h"
 #include "d3d_frame_adapter.h"
 #include "dsound_service_adapter.h"
@@ -140,6 +141,8 @@ void recomp_synctest_install_default_modules(void)
         recomp_d3d_frame_adapter_state_save, recomp_d3d_frame_adapter_state_restore};
     table[count++] = (RecompSyncTestModule){"dsound", recomp_dsound_service_adapter_state_size(),
         recomp_dsound_service_adapter_state_save, recomp_dsound_service_adapter_state_restore};
+    table[count++] = (RecompSyncTestModule){"cpu_exhibition", recomp_cpu_exhibition_state_size(),
+        recomp_cpu_exhibition_state_save, recomp_cpu_exhibition_state_restore};
     table[count++] = (RecompSyncTestModule){"save_storage", sizeof(SaveStorageState),
         save_storage_save, save_storage_restore, NULL, save_storage_restorable, true};
     recomp_synctest_set_modules(table, count);
