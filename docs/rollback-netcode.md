@@ -100,10 +100,24 @@ guest RAM outside parked fibers' stacks. Saving took 6 to 10 ms and
 comparing 7 to 9 ms, most of it copying 64 MB for the comparison, which
 sessions do not do.
 
-One mismatch is still open and predates this work: at frame 1,942, after
-the end-of-match flag is set, 64 to 66 bytes of guest RAM from `0x4D6FF5`
-differ between the two passes. Until it is found, this range is not proven
-deterministic.
+Two more causes showed up in one-frame checks from frame 900, which span
+the menu and the match's loading:
+
+- At frame 1,942 the player records at `0x4D6FF0` (the `+5` byte of each),
+  the court byte and the people bytes differed. CPU Exhibition
+  (`cpu_exhibition.c`) casts the next match after its own count of menu
+  frames, and that count was host state a rewind did not restore, so only
+  one pass cast the match. The test mode's counters and cast choices are
+  now a SyncTest module. This was the test route, not the game.
+- At frame 2,194 the heap cursor differed by six 16 KB fiber stacks. A
+  rewind past a fiber's creation kept its guest stack for the next create
+  to reuse, while the heap module rewound the cursor under it. A rewind now
+  frees those stacks with the heap. The high frame rate display passes
+  (`game_rollback.c`) also rewind the heap now, so a fiber a display pass
+  creates cannot leak its stack.
+
+With both fixed, a Windows clang build ran 8,411 one-frame checks from
+frame 900 with no mismatch.
 
 A check during the boot's loading (frame 200) differed in 2.5 MB of guest
 RAM and the fiber state. Sessions roll back only inside a match, so loading

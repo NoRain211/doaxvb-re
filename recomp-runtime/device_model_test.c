@@ -93,6 +93,23 @@ bool xbox_HeapRestore(uint32_t checkpoint)
     return true;
 }
 
+/* The cursor and the allocation count that fail_after reads. */
+size_t xbox_HeapStateSize(void) { return 2u * sizeof(uint32_t); }
+
+void xbox_HeapStateSave(void *state)
+{
+    const uint32_t saved[2] = {test_heap_cursor, test_heap_allocations};
+    memcpy(state, saved, sizeof saved);
+}
+
+void xbox_HeapStateRestore(const void *state)
+{
+    uint32_t saved[2];
+    memcpy(saved, state, sizeof saved);
+    test_heap_cursor = saved[0];
+    test_heap_allocations = saved[1];
+}
+
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
 {
     if (actual == expected) {

@@ -3,12 +3,14 @@
 #include "guest_snapshot.h"
 #include "runtime.h"
 #include "stop_report.h"
+#include "xbox_memory_layout.h"
 
 #include <stdlib.h>
 
 #ifdef _WIN32
 static RecompGuestSnapshots ram;
 static void *fibers;
+static void *heap; /* a display pass's allocations, such as fiber stacks, rewind with it */
 static RecompFpuContext fpu;
 
 bool recomp_game_rollback_begin(void)
@@ -16,14 +18,18 @@ bool recomp_game_rollback_begin(void)
     if (fibers != NULL) return true;
     if (recomp_runtime.memory_region_count != 1u) return false;
     fibers = malloc(recomp_fiber_adapter_state_size());
-    if (fibers == NULL ||
+    heap = malloc(xbox_HeapStateSize());
+    if (fibers == NULL || heap == NULL ||
         !recomp_snapshots_init(&ram, recomp_runtime.memory_regions[0].data,
             recomp_runtime.memory_regions[0].size, true, 1u)) {
         free(fibers);
+        free(heap);
         fibers = NULL;
+        heap = NULL;
         return false;
     }
     recomp_fiber_adapter_state_save(fibers);
+    xbox_HeapStateSave(heap);
     recomp_fpu_context_save(&fpu);
     return true;
 }
@@ -33,6 +39,7 @@ void recomp_game_rollback_commit(void)
     /* A failed save still leaves the live RAM as the newest save point. */
     (void)recomp_snapshots_save(&ram);
     recomp_fiber_adapter_state_save(fibers);
+    xbox_HeapStateSave(heap);
     recomp_fpu_context_save(&fpu);
 }
 
@@ -45,6 +52,7 @@ void recomp_game_rollback_restore(void)
         recomp_stop(1, "game:rollback-write-watch");
     }
     recomp_fiber_adapter_state_restore(fibers);
+    xbox_HeapStateRestore(heap);
     recomp_fpu_context_restore(&fpu);
 }
 #else

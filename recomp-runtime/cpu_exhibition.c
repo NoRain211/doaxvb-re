@@ -124,18 +124,23 @@ static int pinned_court(void)
 }
 
 /* Private xorshift32 state, so no shared C runtime rand state is touched. */
+static uint32_t random_state;
+
+static void seed_random(void)
+{
+    if (random_state == 0u) {
+        /* A pinned court is a test run: the same cast every time. */
+        random_state = pinned_court() >= 0 ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
+    }
+}
+
 static uint32_t random_below(uint32_t count)
 {
-    static uint32_t state;
-
-    if (state == 0u) {
-        /* A pinned court is a test run: the same cast every time. */
-        state = pinned_court() >= 0 ? 0x9E3779B9u : (uint32_t)time(NULL) | 1u;
-    }
-    state ^= state << 13;
-    state ^= state >> 17;
-    state ^= state << 5;
-    return state % count;
+    seed_random();
+    random_state ^= random_state << 13;
+    random_state ^= random_state >> 17;
+    random_state ^= random_state << 5;
+    return random_state % count;
 }
 
 /* A swimsuit the girl can wear, chosen evenly from all of them, or 0 when
@@ -162,7 +167,7 @@ static uint16_t random_swimsuit(unsigned girl)
 }
 
 /* Who the players were before the first match was cast, for leave_mode. */
-static struct {
+static struct People {
     bool kept;
     uint32_t human;
     uint32_t port;
@@ -371,7 +376,53 @@ void recomp_cpu_exhibition_frame(void)
         menu_frames = 0;
     }
 }
+
+/* The mode's own frame counters and cast choices, so a SyncTest or rollback
+   rewind replays its script on the same frames. */
+typedef struct CpuExhibitionState {
+    uint32_t random_state;
+    struct People people;
+    bool match_asked, quit_pending, results_answering, active, unsupported;
+    unsigned results_frames, menu_frames;
+} CpuExhibitionState;
+
+size_t recomp_cpu_exhibition_state_size(void) { return sizeof(CpuExhibitionState); }
+
+void recomp_cpu_exhibition_state_save(void *state)
+{
+    CpuExhibitionState *out = state;
+
+    seed_random(); /* a snapshot holds the seed, so a replay never reseeds from the clock */
+    memset(out, 0, sizeof *out); /* compared byte for byte */
+    out->random_state = random_state;
+    out->people = people;
+    out->match_asked = match_asked;
+    out->quit_pending = quit_pending;
+    out->results_answering = results_answering;
+    out->active = active;
+    out->unsupported = unsupported;
+    out->results_frames = results_frames;
+    out->menu_frames = menu_frames;
+}
+
+void recomp_cpu_exhibition_state_restore(const void *state)
+{
+    const CpuExhibitionState *in = state;
+
+    random_state = in->random_state;
+    people = in->people;
+    match_asked = in->match_asked;
+    quit_pending = in->quit_pending;
+    results_answering = in->results_answering;
+    active = in->active;
+    unsupported = in->unsupported;
+    results_frames = in->results_frames;
+    menu_frames = in->menu_frames;
+}
 #else
 void recomp_cpu_exhibition_start(void) {}
 void recomp_cpu_exhibition_frame(void) {}
+size_t recomp_cpu_exhibition_state_size(void) { return 0u; }
+void recomp_cpu_exhibition_state_save(void *state) { (void)state; }
+void recomp_cpu_exhibition_state_restore(const void *state) { (void)state; }
 #endif
