@@ -117,6 +117,9 @@ static int run(uint8_t *ram, bool write_watch, const char *mode)
     if (!recomp_snapshots_hash(&s, ignored, 2u, &hash) || hash != fresh_hash(ram, ignored, 2u)) {
         return fail(mode, "first hash");
     }
+    const RecompRamRange split[] = {{3 * PAGE + 4, 3 * PAGE + 8}, {40 * PAGE + 100, 42 * PAGE},
+        {40 * PAGE, 40 * PAGE + 200}};
+    if (fresh_hash(ram, split, 3u) != hash) return fail(mode, "ranges that meet in a page");
     ram[3 * PAGE + 5] ^= 0x10u;
     ram[41 * PAGE + 7] ^= 1u;
     if (!recomp_snapshots_save(&s) || !recomp_snapshots_hash(&s, ignored, 2u, &again) || again != hash) {
@@ -145,7 +148,7 @@ int main(void)
     int result = run(ram, write_watch, write_watch ? "write watch" : "page compare");
     if (result == 0 && write_watch) {
         /* Both would reset the same tracking, so the second must be refused. */
-        RecompGuestSnapshots a, b;
+        RecompGuestSnapshots a = {0}, b = {0};
         if (!recomp_snapshots_init(&a, ram, RAM_SIZE, true, 1u)) result = fail("exclusion", "first init");
         else if (recomp_snapshots_init(&b, ram, RAM_SIZE, true, 1u)) result = fail("exclusion", "second write watch");
         recomp_snapshots_free(&a);
@@ -156,7 +159,12 @@ int main(void)
     /* The page-compare path runs on every host. */
     uint8_t *plain = calloc(RAM_SIZE, 1u);
     if (plain == NULL) return fail("allocate", "plain RAM");
-    result = run(plain, false, "page compare");
+    RecompGuestSnapshots untracked = {0};
+    if (recomp_snapshots_init(&untracked, plain, RAM_SIZE, true, 1u)) {
+        result = fail("page compare", "write watch accepted on untracked RAM");
+    }
+    recomp_snapshots_free(&untracked);
+    if (result == 0) result = run(plain, false, "page compare");
     free(plain);
     if (result == 0) printf("guest snapshot: write watch=%d ok\n", write_watch ? 1 : 0);
     return result;
