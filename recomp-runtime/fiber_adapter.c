@@ -287,10 +287,12 @@ void recomp_fiber_adapter_state_restore(const void *state)
         RecompHostFiber *host;
 
         if (saved->guest_handle == 0u) {
-            /* Slots the snapshot did not have are free again. The guest and
-               native stacks stay for a later create to reuse: the guest heap
-               is not rewound, so dropping the stack would leak it. */
+            /* Slots the snapshot did not have are free again; the native
+               stack stays for a later create to restart. Every snapshot
+               rewinds the heap too, so the guest stack is already free. */
             host_fibers[i].guest_handle = 0u;
+            host_fibers[i].guest_stack_base = 0u;
+            host_fibers[i].guest_stack_size = 0u;
             continue;
         }
         host = host_fiber_find_native(saved->native_fiber);

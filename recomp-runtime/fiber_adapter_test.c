@@ -157,6 +157,7 @@ int recomp_fiber_adapter_test(void)
     RecompFiberStackRange range = {0};
     void *saved = malloc(recomp_fiber_adapter_state_size());
     void *empty = malloc(recomp_fiber_adapter_state_size());
+    uint32_t empty_heap;
     int passed = 1;
 
     if (saved == NULL || empty == NULL) {
@@ -182,6 +183,7 @@ int recomp_fiber_adapter_test(void)
     adapter = recomp_fiber_lookup_manual(0x00183099u);
     adapter();
     recomp_fiber_adapter_state_save(empty);
+    empty_heap = xbox_HeapCheckpoint();
 
     arguments[0] = TEST_STACK_SIZE;
     arguments[1] = TEST_FIBER_ENTRY;
@@ -248,8 +250,10 @@ int recomp_fiber_adapter_test(void)
     passed &= expect_u32("restored stack base", range.base, TEST_HEAP_BASE);
     passed &= expect_u32("restored stack size", range.size, TEST_STACK_SIZE);
 
-    /* Rewinding past the create frees the slot but keeps its guest stack. */
+    /* Every snapshot rewinds the heap with the fibers, so a create replayed
+       after rewinding past it takes the same stack and moves the heap the same. */
     recomp_fiber_adapter_state_restore(empty);
+    recomp_test_heap_reset(empty_heap, -1);
     passed &= expect_u32("rewound fiber absent", find_fiber(first_handle) != NULL, 0u);
     arguments[0] = TEST_STACK_SIZE;
     arguments[1] = TEST_FIBER_ENTRY;
@@ -257,9 +261,9 @@ int recomp_fiber_adapter_test(void)
     prepare_call(3u, arguments);
     adapter = recomp_fiber_lookup_manual(0x00182fbbu);
     adapter();
-    passed &= expect_u32("rewound stack reused", recomp_runtime.registers.eax, first_handle);
+    passed &= expect_u32("replayed create handle", recomp_runtime.registers.eax, first_handle);
     passed &= expect_u32(
-        "rewound create heap unchanged", xbox_HeapCheckpoint(), first_heap_checkpoint);
+        "replayed create heap", xbox_HeapCheckpoint(), first_heap_checkpoint);
 
     arguments[0] = second_handle;
     prepare_call(1u, arguments);

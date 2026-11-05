@@ -93,6 +93,10 @@ bool xbox_HeapRestore(uint32_t checkpoint)
     return true;
 }
 
+size_t xbox_HeapStateSize(void) { return sizeof test_heap_cursor; }
+void xbox_HeapStateSave(void *state) { memcpy(state, &test_heap_cursor, sizeof test_heap_cursor); }
+void xbox_HeapStateRestore(const void *state) { memcpy(&test_heap_cursor, state, sizeof test_heap_cursor); }
+
 static int expect_u32(const char *field, uint32_t actual, uint32_t expected)
 {
     if (actual == expected) {
