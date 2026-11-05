@@ -116,7 +116,8 @@ int main(void)
     }
     printf("atan2  differs from this host's libm in the last bits for %u of 20000 inputs\n", differ);
 
-    /* fpatan's quadrants, signed zeros, infinities and NaN: C Annex F fixes these results exactly. */
+    /* fpatan's quadrants, signed zeros and infinities: C Annex F fixes these
+       results exactly. bits() folds every NaN together, so NaN is checked only as NaN. */
     const double edges[] = {0.0, -0.0, 1.0, -1.0, inf, -inf, NAN};
     for (size_t i = 0; i < sizeof edges / sizeof *edges; ++i) {
         for (size_t j = 0; j < sizeof edges / sizeof *edges; ++j) {
