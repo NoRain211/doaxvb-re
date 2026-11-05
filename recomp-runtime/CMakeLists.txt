@@ -346,6 +346,7 @@ add_executable(recomp_runtime_test
     game_scheduler.c
     game_display.c
     game_rollback.c
+    guest_snapshot.c
     game_frame_replay.c
     game_scene.c
     game_world.c
@@ -493,6 +494,7 @@ if(RECOMP_ENTRY_SOURCE)
         runtime.c
         stop_report.c
         runner.cpp
+        guest_snapshot.c
         runner_imports.c
         kernel_ordinals.c
         kernel_dispatch.c
@@ -789,6 +791,7 @@ if(RECOMP_PROGRAM_DIR)
         kernel_thread.c
         kernel_video.c
         host_diagnostics.cpp
+        guest_snapshot.c
         "${_missing_source}"
         ${_recomp_program_sources}
         ../xbe/sha.cpp
@@ -946,6 +949,9 @@ if(WIN32)
     target_link_libraries(recomp_sha_test PRIVATE bcrypt)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
+
+add_executable(recomp_guest_snapshot_test guest_snapshot.c guest_snapshot_test.c)
+add_test(NAME recomp-runtime-guest-snapshot COMMAND recomp_guest_snapshot_test)
 
 # One x87 transcendental implementation for every host (portable_math.h).
 add_library(recomp_portable_math STATIC
