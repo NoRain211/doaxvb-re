@@ -47,8 +47,8 @@ static uint64_t next(void)
     return state;
 }
 
-/* Uniform in [-12, 12], or a random sign and a magnitude spread over 2^-40..2^66.
-   Built with exact operations only, so every host tests the same inputs. */
+/* Uniform in [-12, 12], or a random sign and a magnitude spread over 2^-40..2^67.
+   Built only from correctly rounded IEEE basic operations, so every host tests the same inputs. */
 static double sample(int i)
 {
     const double unit = (double)(next() >> 11) / 9007199254740992.0;
@@ -115,6 +115,19 @@ int main(void)
         }
     }
     printf("atan2  differs from this host's libm in the last bits for %u of 20000 inputs\n", differ);
+
+    /* fpatan's quadrants, signed zeros, infinities and NaN: C Annex F fixes these results exactly. */
+    const double edges[] = {0.0, -0.0, 1.0, -1.0, inf, -inf, NAN};
+    for (size_t i = 0; i < sizeof edges / sizeof *edges; ++i) {
+        for (size_t j = 0; j < sizeof edges / sizeof *edges; ++j) {
+            const double y = edges[i], x = edges[j];
+            const double got = recomp_atan2(y, x), want = atan2(y, x);
+            if (bits(got) != bits(want)) {
+                fprintf(stderr, "FAIL atan2(%g, %g) = %.17g, host %.17g\n", y, x, got, want);
+                ++failures;
+            }
+        }
+    }
 
     printf("hash %016" PRIx64 "\n", hash);
     if (hash != expected_hash) {
