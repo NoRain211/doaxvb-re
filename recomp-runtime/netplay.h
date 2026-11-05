@@ -208,7 +208,7 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
     RecompNetplayProfiles *profiles, uint32_t timeout_ms, bool (*cancelled)(void));
 /* Says hello to the peer of a socket from recomp_netplay_open, or a room's,
    until it answers, copies the host's delay and flags into lobby, then swaps
-   profiles as the host does. */
+   profiles as the host does. A delay over RECOMP_ROLLBACK_WINDOW is a MISMATCH. */
 RecompNetplayLobbyResult recomp_netplay_join(RecompNetplay *net, RecompNetplayLobby *lobby,
     RecompNetplayProfiles *profiles, uint32_t timeout_ms, bool (*cancelled)(void));
 void recomp_netplay_close(RecompNetplay *net);

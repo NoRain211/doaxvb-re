@@ -67,7 +67,7 @@ int main(void)
     // History keeps the window behind the current frame, so the rest is ahead.
     recomp_rollback_init(&s, 0u);
     unsigned added = 0u;
-    while (recomp_rollback_add_local(&s, &local)) ++added;
+    while (added <= RECOMP_ROLLBACK_HISTORY && recomp_rollback_add_local(&s, &local)) ++added;
     check("history bound", added == RECOMP_ROLLBACK_HISTORY - RECOMP_ROLLBACK_WINDOW);
 
     // Input delay: both sides start with neutral pads already known.

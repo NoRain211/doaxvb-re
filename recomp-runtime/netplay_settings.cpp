@@ -3,6 +3,7 @@
 
 #include "rollback.h"
 
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -42,7 +43,9 @@ void recomp_netplay_settings_load(const std::filesystem::path &path, RecompNetpl
         std::istringstream words(line);
         std::string key, value;
         if (!(words >> key >> value)) continue;
-        const unsigned long number = std::strtoul(value.c_str(), nullptr, 10);
+        // A number with anything after its digits is no number, and keeps the default.
+        const unsigned long number = value.find_first_not_of("0123456789") == std::string::npos
+            ? std::strtoul(value.c_str(), nullptr, 10) : ULONG_MAX;
         std::uint64_t id = 0u;
         if (key == "delay" && number <= RECOMP_ROLLBACK_WINDOW) settings.delay = static_cast<std::uint32_t>(number);
         else if (key == "port" && number >= 1024u && number <= 65535u) settings.port = static_cast<std::uint32_t>(number);
@@ -52,7 +55,8 @@ void recomp_netplay_settings_load(const std::filesystem::path &path, RecompNetpl
         else if (key == "id" && parseId(value, id)) settings.id = id;
         else if (key == "block" && parseId(value, id)) {
             std::string name;
-            std::getline(words >> std::ws, name);
+            if (words.peek() == ' ') words.get(); // only the separator; a name may start with spaces
+            std::getline(words, name);
             settings.blocked.emplace_back(id, name);
         } else if (key == "display")
             for (int i = 0; i < 3; ++i)

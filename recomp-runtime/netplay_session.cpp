@@ -613,6 +613,13 @@ static void envNumber(const char *name, std::uint32_t &value)
         value = static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10));
 }
 
+// Digits only; 0, which no port uses, for anything else.
+static unsigned long portNumber(const std::string &text)
+{
+    return text.empty() || text.find_first_not_of("0123456789") != std::string::npos
+        ? 0u : std::strtoul(text.c_str(), nullptr, 10);
+}
+
 // Test hooks for every kind of session.
 static void readTestHooks()
 {
@@ -640,8 +647,8 @@ bool recomp_netplay_session_read_env(const char *mode)
         std::fprintf(stderr, "recomp runner: RECOMP_ROLLBACK is loopback or udp:<local port>:<peer host>:<peer port>\n");
         return false;
     }
-    const unsigned long localPort = std::strtoul(spec.substr(0u, hostAt).c_str(), nullptr, 10);
-    const unsigned long peerPort = std::strtoul(spec.substr(portAt + 1u).c_str(), nullptr, 10);
+    const unsigned long localPort = portNumber(spec.substr(0u, hostAt));
+    const unsigned long peerPort = portNumber(spec.substr(portAt + 1u));
     const std::string peerHost = spec.substr(hostAt + 1u, portAt - hostAt - 1u);
     envNumber("RECOMP_ROLLBACK_PLAYER", rollback.player);
     envNumber("RECOMP_ROLLBACK_DELAY", rollback.delay);
@@ -796,8 +803,7 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
         }
     } else {
         const std::size_t colon = launch.join.rfind(':');
-        const unsigned long port =
-            colon == std::string::npos ? 0u : std::strtoul(launch.join.c_str() + colon + 1u, nullptr, 10);
+        const unsigned long port = colon == std::string::npos ? 0u : portNumber(launch.join.substr(colon + 1u));
         if (colon == std::string::npos || colon == 0u || port == 0u || port > 65535u) {
             std::cerr << "recomp runner: --netplay-join needs <host>:<port>\n";
             return false;
@@ -820,6 +826,7 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
             !recomp_netplay_pack_profile(partition1, recomp_netplay_latest_profile(partition1), true, mine) ||
             mine.size() > RECOMP_NETPLAY_MAX_PROFILE)) {
         std::cerr << "recomp runner: cannot read your saves to send, or they are over 1 MiB\n";
+        recomp_netplay_close(&rollback.net); // a room's runner starts again on this port
         return false;
     }
     RecompNetplayLobby lobby{};
@@ -837,10 +844,13 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
             ? "cancelled by the other player"
             : result == RECOMP_NETPLAY_LOBBY_MISMATCH ? "refused: the other player runs a different build"
             : result == RECOMP_NETPLAY_LOBBY_TIMEOUT ? "timed out" : "could not open its UDP port") << '\n';
+        recomp_netplay_close(&rollback.net);
         return false;
     }
-    if (!useSessionSaves(hosting ? mine.data() : theirs.data(), hosting ? mine.size() : profiles.theirs_size, storage))
+    if (!useSessionSaves(hosting ? mine.data() : theirs.data(), hosting ? mine.size() : profiles.theirs_size, storage)) {
+        recomp_netplay_close(&rollback.net);
         return false;
+    }
     adoptSettings(lobby.flags, storage);
     rollback.mode = RollbackMode::Udp;
     rollback.player = hosting ? 0u : 1u;

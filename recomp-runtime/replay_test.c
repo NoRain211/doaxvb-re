@@ -18,7 +18,12 @@ static RecompInputGamepad pad(uint16_t buttons)
     RecompInputGamepad value;
     memset(&value, 0, sizeof value);
     value.buttons = buttons;
+    // Every field differs, and stays 0 on idle frames.
+    for (unsigned i = 0u; i < RECOMP_INPUT_ANALOG_BUTTON_COUNT; ++i) value.analog_buttons[i] = (uint8_t)(buttons * (i + 1u));
     value.thumb_lx = (int16_t)-buttons;
+    value.thumb_ly = (int16_t)(buttons * 3);
+    value.thumb_rx = (int16_t)(buttons * 5);
+    value.thumb_ry = (int16_t)-(buttons * 7);
     return value;
 }
 

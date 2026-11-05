@@ -59,7 +59,10 @@ const char kUsage[] = "usage: recomp_runner --xbe <path>"
                       " [--input-start-pulse-at <poll>]"
                       " [--input-buttons-at <poll>:<hexmask>]"
                       " [--input-analog-at <poll>:<index>:<value>]"
-                      " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]\n";
+#ifdef RECOMP_FULL_PROGRAM
+                      " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]"
+#endif
+                      "\n";
 
 extern "C" const char *recomp_disc_root_path;
 

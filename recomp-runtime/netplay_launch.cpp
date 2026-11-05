@@ -130,7 +130,8 @@ bool recomp_netplay_launch_parse(int &argc, char **argv)
             argv[kept++] = argv[i];
             continue;
         }
-        if (i + 1 >= argc) {
+        // An empty value would read as the mode being off.
+        if (i + 1 >= argc || *argv[i + 1] == '\0') {
             std::cerr << "recomp runner: " << arg << " needs a value\n";
             return false;
         }
@@ -244,7 +245,7 @@ void recomp_runner_relaunch(const std::vector<std::string> &extra)
     std::vector<char *> argv;
     for (std::string &arg : args) argv.push_back(arg.data());
     argv.push_back(nullptr);
-    execv(runnerPath.c_str(), argv.data());
+    execvp(runnerPath.c_str(), argv.data()); // argv[0] may be a bare name found on PATH
     recomp_stop(4, "netplay:relaunch");
 #endif
     std::abort(); // recomp_stop exits

@@ -79,9 +79,18 @@ static inline bool from_peer(const RecompNetplay *net, const struct sockaddr_in 
 
 static inline uint64_t now_ms(void)
 {
+    /* Monotonic, so a wall-clock correction cannot end a wait or skew a round trip. */
+#ifdef _WIN32
+    LARGE_INTEGER count, frequency;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&frequency);
+    return (uint64_t)(count.QuadPart / frequency.QuadPart * 1000 +
+        count.QuadPart % frequency.QuadPart * 1000 / frequency.QuadPart);
+#else
     struct timespec now;
-    if (timespec_get(&now, TIME_UTC) != TIME_UTC) return 0u;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0u;
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+#endif
 }
 
 bool netplay_resolve(const char *host, uint32_t *address);

@@ -337,7 +337,7 @@ void recomp_netplay_room_say(RecompNetplayRoom *room, const char *text)
 
 void recomp_netplay_room_drop(RecompNetplay *net, RecompNetplayRoom *room)
 {
-    room->joined = room->ready = room->start = room->pinged = false;
+    room->joined = room->ready = room->start = room->pinged = room->mismatch = false;
     room->echo = 0u;
     if (room->hosting) { /* let another player in */
         net->peer_port = 0u;

@@ -352,7 +352,8 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
         int size;
         while ((size = netplay_receive_from(net, packet, sizeof packet, &from)) >= 0) {
             if (t.known && !from_peer(net, &from)) continue;
-            if (t.known && is_goodbye(packet, size)) {
+            /* A room's host already knows its joiner, whose goodbye can beat a lost hello. */
+            if (is_goodbye(packet, size) && (t.known || (net->peer_port != 0u && from_peer(net, &from)))) {
                 net->peer_left = true;
                 return RECOMP_NETPLAY_LOBBY_CANCELLED;
             }
@@ -407,7 +408,8 @@ RecompNetplayLobbyResult recomp_netplay_join(RecompNetplay *net, RecompNetplayLo
             RecompNetplayLobby welcome;
             uint32_t theirs;
             if (!t.known && decode_lobby(packet, (size_t)size, &welcome, &theirs) == LOBBY_WELCOME) {
-                if (memcmp(welcome.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0)
+                if (memcmp(welcome.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0 ||
+                    welcome.delay > RECOMP_ROLLBACK_WINDOW)
                     return RECOMP_NETPLAY_LOBBY_MISMATCH;
                 if (theirs > RECOMP_NETPLAY_MAX_PROFILE) continue;
                 lobby->delay = welcome.delay;

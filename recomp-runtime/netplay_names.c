@@ -28,6 +28,9 @@ static const char *const codes[] = {
 
 enum { MAX_NAME = 256 };
 
+/* Digits and symbols that stand for letters. */
+static const char leet_from[] = "0134579@$!", leet_to[] = "oieastgasi";
+
 static size_t run_length(const char *s, size_t size, size_t at)
 {
     size_t end = at;
@@ -51,12 +54,15 @@ static bool runs_at(const char *text, size_t size, size_t at, const char *term, 
     return true;
 }
 
-static bool word_banned(const char *word, size_t size)
+/* source is the name at the same offset as word, or null; a short term may
+   end where the name had a digit or symbol the leet pass mapped. */
+static bool word_banned(const char *word, size_t size, const unsigned char *source)
 {
     for (size_t i = 0u; i < sizeof whole / sizeof *whole; ++i) {
         size_t end;
         if (runs_at(word, size, 0u, whole[i], &end) &&
-            (end == size || (word[end] == 's' && end + run_length(word, size, end) == size)))
+            (end == size || (word[end] == 's' && end + run_length(word, size, end) == size) ||
+                (source != NULL && !isalpha(source[end]))))
             return true;
     }
     return false;
@@ -67,16 +73,31 @@ static bool word_banned(const char *word, size_t size)
    become them; otherwise they split words. */
 static bool normalize(const char *name, bool leet, char *out, size_t *size)
 {
-    static const char from[] = "0134579@$!", to[] = "oieastgasi";
     size_t n = 0u;
     for (const unsigned char *c = (const unsigned char *)name; *c != 0u; ++c) {
         if (n == MAX_NAME) return false;
-        const char *mapped = leet ? strchr(from, *c) : NULL;
+        const char *mapped = leet ? strchr(leet_from, *c) : NULL;
         // shortcut: non-ASCII letters split words, so look-alike letters pass; map them if they show up.
-        out[n++] = *c < 0x80u && isalpha(*c) ? (char)tolower(*c) : mapped != NULL ? to[mapped - from] : ' ';
+        out[n++] = *c < 0x80u && isalpha(*c) ? (char)tolower(*c) : mapped != NULL ? leet_to[mapped - leet_from] : ' ';
     }
     *size = n;
     return true;
+}
+
+/* True when code is in text, a letter of code also matching a digit that stands for it. */
+static bool has_code(const char *text, size_t size, const char *code)
+{
+    const size_t length = strlen(code);
+    for (size_t at = 0u; at + length <= size; ++at) {
+        size_t i = 0u;
+        for (; i < length; ++i) {
+            const char c = text[at + i];
+            const char *mapped = isdigit((unsigned char)c) ? strchr(leet_from, c) : NULL;
+            if (c != code[i] && (mapped == NULL || leet_to[mapped - leet_from] != code[i])) break;
+        }
+        if (i == length) return true;
+    }
+    return false;
 }
 
 bool recomp_netplay_name_banned(const char *name)
@@ -87,7 +108,7 @@ bool recomp_netplay_name_banned(const char *name)
         if (*c < 0x80u && isalnum(*c)) code[code_size++] = (char)tolower(*c);
     code[code_size] = 0;
     for (size_t i = 0u; i < sizeof codes / sizeof *codes; ++i)
-        if (strstr(code, codes[i]) != NULL) return true;
+        if (has_code(code, code_size, codes[i])) return true;
     for (int leet = 0; leet < 2; ++leet) {
         char text[MAX_NAME], letters[MAX_NAME];
         size_t size, joined = 0u;
@@ -95,11 +116,11 @@ bool recomp_netplay_name_banned(const char *name)
         for (size_t at = 0u; at < size;) {
             size_t end = at;
             while (end < size && text[end] != ' ') letters[joined++] = text[end++];
-            if (end > at && word_banned(text + at, end - at)) return true;
+            if (end > at && word_banned(text + at, end - at, (const unsigned char *)name + at)) return true;
             at = end + 1u;
         }
         // Letters spaced apart still spell a word.
-        if (word_banned(letters, joined)) return true;
+        if (word_banned(letters, joined, NULL)) return true;
         for (size_t at = 0u; at < joined; at += run_length(letters, joined, at)) {
             for (size_t i = 0u; i < sizeof anywhere / sizeof *anywhere; ++i) {
                 size_t end;

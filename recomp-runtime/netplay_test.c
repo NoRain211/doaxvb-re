@@ -111,11 +111,14 @@ int main(void)
     for (int i = 0; i < 5; ++i) recomp_netplay_decode(&net_b, &b, packet, size);
     check("one sample per peer frame", net_b.peer_count == 1u && net_b.peer_samples[0] == 6);
 
-    // Real sockets on loopback: pads cross both ways.
+    // Real sockets on loopback, on ports the system picks: pads cross both ways.
     recomp_rollback_init(&a, 0u);
     recomp_rollback_init(&b, 0u);
-    check("open a", recomp_netplay_open(&net_a, 47311u, "127.0.0.1", 47312u));
-    check("open b", recomp_netplay_open(&net_b, 47312u, "127.0.0.1", 47311u));
+    check("open a", recomp_netplay_open(&net_a, 0u, "127.0.0.1", 0u));
+    check("open b", recomp_netplay_open(&net_b, 0u, "127.0.0.1", recomp_netplay_local_port(&net_a)));
+    const uint16_t port_b = recomp_netplay_local_port(&net_b);
+    const uint8_t port_b_order[2] = {(uint8_t)(port_b >> 8), (uint8_t)port_b}; // network order
+    memcpy(&net_a.peer_port, port_b_order, sizeof port_b_order);
     const RecompInputGamepad seven = pad(7u, 0), nine = pad(9u, 0);
     recomp_rollback_add_local(&a, &seven);
     recomp_rollback_add_local(&b, &nine);
@@ -155,7 +158,7 @@ int main(void)
     static const char *const banned[] = {"N1GG3R", "xX_n i g g a_Xx", "f4g", "FAGS", "FAG123", "Tr4nny",
         "c00n", "Dyke_99", "niiiggggerrr", "\xc3\xa9" "faggot", "1488", "14_88", "Kasumi14 88", "H1TL3R",
         "Sieg Heil", "N4ZI", "Nazis", "xXneonaziXx", "Fascist", "facist", "WhitePower", "kkk_lord",
-        "Aryan", "HH88"};
+        "Aryan", "HH88", "14 W0RDS", "F4G123"};
     for (size_t i = 0u; i < sizeof banned / sizeof *banned; ++i)
         check(banned[i], recomp_netplay_name_banned(banned[i]));
     char longName[300];

@@ -89,6 +89,8 @@ int main()
     const std::vector<std::uint8_t> kasumi = meta(u"Title=DOA2U\r\nName=Ka\u200bsumi \u00e9\u4e00\r\n");
     check("save name", recomp_netplay_profile_name(kasumi.data(), kasumi.size()) == "Kasumi \xc3\xa9\xe4\xb8\x80");
     check("no name line", recomp_netplay_profile_name(kasumi.data(), 8u).empty());
+    const std::vector<std::uint8_t> wide = meta(u"Name=\U0001F600" + std::u16string(1u, char16_t(0xd800u)) + u"a");
+    check("surrogates", recomp_netplay_profile_name(wide.data(), wide.size()) == "\xf0\x9f\x98\x80\xef\xbf\xbd" "a");
 
     // A profile, a second one, title saves and a file beside the profiles.
     const std::vector<std::uint8_t> data{1u, 2u, 3u}, title{4u}, beside{5u}, other{6u};
@@ -122,12 +124,17 @@ int main()
         !fs::exists(theirs / "joiner/TDATA") && !fs::exists(theirs / "joiner/UDATA/54430006/TitleMeta.xbx"));
     std::vector<std::uint8_t> none;
     check("pack no profile", recomp_netplay_pack_profile(root / "missing", "", false, none) && unpacks(none, theirs / "none"));
+    // The host refuses to send what the joiner would refuse to unpack.
+    write(root / "spaced/UDATA/54430006/a b", data);
+    check("pack unsafe name", !recomp_netplay_pack_profile(root / "spaced", "", true, none));
 
     // Damaged blobs.
-    std::vector<std::uint8_t> flipped = host;
-    flipped.back() ^= 1u;
-    check("changed byte", !unpacks(flipped, theirs / "flipped"));
-    check("short", !unpacks(std::vector<std::uint8_t>(host.begin(), host.begin() + 63), theirs / "short"));
+    if (host.size() > 64u) { // pack host above reports the failure
+        std::vector<std::uint8_t> flipped = host;
+        flipped.back() ^= 1u;
+        check("changed byte", !unpacks(flipped, theirs / "flipped"));
+        check("short", !unpacks(std::vector<std::uint8_t>(host.begin(), host.begin() + 63), theirs / "short"));
+    }
     std::vector<std::uint8_t> cut = blobOf({{1u, "UDATA/a", data}});
     cut.erase(cut.end() - 1);
     const std::string body(cut.begin() + 64, cut.end());

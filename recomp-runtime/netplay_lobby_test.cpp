@@ -50,6 +50,15 @@ static void check(const char *name, bool passed)
     }
 }
 
+// A socket no open reached yet, which closing leaves alone: an open that fails
+// short-circuits the ones after it.
+static RecompNetplay unopened()
+{
+    RecompNetplay net{};
+    net.socket = UINTPTR_MAX; // INVALID_SOCKET, as recomp_netplay_close checks it
+    return net;
+}
+
 // The lobby runs on a socket its caller opens, as a room's is handed over.
 static RecompNetplayLobbyResult hostOn(RecompNetplay *net, std::uint16_t port, const RecompNetplayLobby *offered,
     RecompNetplayProfiles *profiles, std::uint32_t timeout, bool (*cancel)())
@@ -98,7 +107,7 @@ static std::vector<std::uint8_t> peerPacket(std::uint16_t port)
 // Pairs a host room on 47620 and a joiner room on 47621, telling each the other's port (0 for none).
 static bool matchRooms(std::uint16_t toHost, std::uint16_t toJoiner, int milliseconds, bool &relayed)
 {
-    RecompNetplay server, host, joiner;
+    RecompNetplay server = unopened(), host = unopened(), joiner = unopened();
     bool opened = recomp_netplay_listen(&server, 47622u) && recomp_netplay_listen(&host, 47620u) &&
         recomp_netplay_listen(&joiner, 47621u) && recomp_netplay_match_server(&host, "127.0.0.1", 47622u) &&
         recomp_netplay_match_server(&joiner, "127.0.0.1", 47622u);
@@ -164,9 +173,16 @@ static std::vector<std::uint8_t> roomsPacket(std::uint32_t id, std::uint16_t por
 static void probeRooms()
 {
     using std::chrono::steady_clock;
-    RecompNetplay server, host, joiner;
-    check("probe sockets", recomp_netplay_listen(&server, 47623u) && recomp_netplay_listen(&host, 47624u) &&
-        recomp_netplay_listen(&joiner, 47625u) && recomp_netplay_match_server(&joiner, "127.0.0.1", 47623u));
+    RecompNetplay server = unopened(), host = unopened(), joiner = unopened();
+    const bool opened = recomp_netplay_listen(&server, 47623u) && recomp_netplay_listen(&host, 47624u) &&
+        recomp_netplay_listen(&joiner, 47625u) && recomp_netplay_match_server(&joiner, "127.0.0.1", 47623u);
+    check("probe sockets", opened);
+    const auto closeAll = [&] {
+        recomp_netplay_close(&server);
+        recomp_netplay_close(&host);
+        recomp_netplay_close(&joiner);
+    };
+    if (!opened) return closeAll();
     RecompNetplayRoom room{};
     room.hosting = true;
     char digest[RECOMP_NETPLAY_DIGEST_BYTES];
@@ -203,9 +219,7 @@ static void probeRooms()
     check("an unlisted room stays quiet", list(0x01020305u, 47624u, true) && !probe(300));
     check("an older server's list has no endpoint", list(0x01020304u, 0u, false) && listed.port == 0u &&
         !listed.pinged);
-    recomp_netplay_close(&server);
-    recomp_netplay_close(&host);
-    recomp_netplay_close(&joiner);
+    closeAll();
 }
 
 int main()
@@ -311,6 +325,27 @@ int main()
         joinerWelcomed) == RECOMP_NETPLAY_LOBBY_CANCELLED);
     wait.join();
     check("host hears the cancel", hosted == RECOMP_NETPLAY_LOBBY_CANCELLED && host.peer_left);
+    recomp_netplay_close(&host);
+    recomp_netplay_close(&joiner);
+
+    // A room's host knows its joiner, so the joiner's goodbye ends the wait even when its hello was lost.
+    check("goodbye before hello sockets", recomp_netplay_listen(&host, 47626u) &&
+        recomp_netplay_open(&joiner, 0u, "127.0.0.1", 47626u));
+    host.peer_address = htonl(0x7f000001u);
+    host.peer_port = htons(recomp_netplay_local_port(&joiner));
+    recomp_netplay_send_goodbye(&joiner);
+    check("goodbye before hello", recomp_netplay_host(&host, &offered, &none, 5000u, nullptr) ==
+        RECOMP_NETPLAY_LOBBY_CANCELLED && host.peer_left);
+    recomp_netplay_close(&host);
+    recomp_netplay_close(&joiner);
+
+    // A delay past the rollback window could never run, so the joiner refuses it.
+    const RecompNetplayLobby tooLate = lobby('a', RECOMP_ROLLBACK_WINDOW + 1u, 0u);
+    wait = std::thread([&] { hosted = hostOn(&host, 47627u, &tooLate, &none, 500u, nullptr); });
+    asked = offered;
+    check("delay past the window", joinTo(&joiner, 47627u, &asked, &noneJoiner, 5000u, nullptr) ==
+        RECOMP_NETPLAY_LOBBY_MISMATCH);
+    wait.join();
     recomp_netplay_close(&host);
     recomp_netplay_close(&joiner);
 
@@ -424,6 +459,8 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     check("room other build", hostRoom.mismatch && joinerRoom.mismatch);
+    recomp_netplay_room_drop(&host, &hostRoom);
+    check("drop forgets the other build", !hostRoom.mismatch);
     recomp_netplay_close(&host);
     recomp_netplay_close(&joiner);
 

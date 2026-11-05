@@ -13,7 +13,16 @@ std::string recomp_netplay_profile_name(const std::uint8_t *bytes, std::size_t s
 {
     std::string line;
     for (std::size_t i = 0u; i + 1u < size; i += 2u) {
-        const std::uint32_t c = bytes[i] | bytes[i + 1u] << 8;
+        std::uint32_t c = bytes[i] | bytes[i + 1u] << 8;
+        if (c >= 0xd800u && c < 0xe000u) {
+            const std::uint32_t low = i + 3u < size ? bytes[i + 2u] | bytes[i + 3u] << 8 : 0u;
+            if (c < 0xdc00u && low >= 0xdc00u && low < 0xe000u) {
+                c = 0x10000u + ((c - 0xd800u) << 10) + (low - 0xdc00u);
+                i += 2u;
+            } else {
+                c = 0xfffdu; // an unpaired surrogate
+            }
+        }
         if (c == '\r' || c == '\n') {
             if (line.rfind("Name=", 0u) == 0u) break;
             line.clear();
@@ -24,8 +33,13 @@ std::string recomp_netplay_profile_name(const std::uint8_t *bytes, std::size_t s
         } else if (c < 0x800u) {
             line += static_cast<char>(0xc0u | c >> 6);
             line += static_cast<char>(0x80u | (c & 0x3fu));
-        } else {
+        } else if (c < 0x10000u) {
             line += static_cast<char>(0xe0u | c >> 12);
+            line += static_cast<char>(0x80u | (c >> 6 & 0x3fu));
+            line += static_cast<char>(0x80u | (c & 0x3fu));
+        } else {
+            line += static_cast<char>(0xf0u | c >> 18);
+            line += static_cast<char>(0x80u | (c >> 12 & 0x3fu));
             line += static_cast<char>(0x80u | (c >> 6 & 0x3fu));
             line += static_cast<char>(0x80u | (c & 0x3fu));
         }
@@ -64,6 +78,8 @@ std::string recomp_netplay_own_profile_name(const std::filesystem::path &partiti
     return recomp_netplay_profile_name(bytes.data(), bytes.size());
 }
 
+static bool safeProfilePath(const std::string &name);
+
 bool recomp_netplay_pack_profile(const std::filesystem::path &root, const std::string &profile, bool title,
     std::vector<std::uint8_t> &blob)
 {
@@ -80,6 +96,7 @@ bool recomp_netplay_pack_profile(const std::filesystem::path &root, const std::s
         return (name == "UDATA" || name.rfind("UDATA/", 0u) == 0u) && (depth < 2 || (depth == 2 && !folder));
     };
     std::error_code error;
+    unsigned entries = 0u;
     if (fs::exists(root, error)) {
         for (fs::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
             const fs::file_status status = it->symlink_status(error);
@@ -87,12 +104,15 @@ bool recomp_netplay_pack_profile(const std::filesystem::path &root, const std::s
             if (error || (!folder && !fs::is_regular_file(status))) return false;
             const std::string name = it->path().lexically_relative(root).generic_string();
             if (!keep(name, folder)) continue;
+            // The joiner's unpacker refuses the whole blob past any of its limits.
+            if (++entries > 512u || name.size() > 200u || !safeProfilePath(name)) return false;
             body.push_back(folder ? 0u : 1u);
             put(name.size(), 2u);
             body.insert(body.end(), name.begin(), name.end());
             if (folder) continue;
             const std::uintmax_t size = fs::file_size(it->path(), error);
-            if (error || size > RECOMP_NETPLAY_MAX_PROFILE) return false;
+            if (error || size > RECOMP_NETPLAY_MAX_PROFILE || 64u + body.size() + 4u + size > RECOMP_NETPLAY_MAX_PROFILE)
+                return false;
             std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
             std::ifstream file(it->path(), std::ios::binary);
             if (!file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) return false;
@@ -101,6 +121,7 @@ bool recomp_netplay_pack_profile(const std::filesystem::path &root, const std::s
         }
     }
     if (error) return false;
+    if (body.size() > RECOMP_NETPLAY_MAX_PROFILE - 64u) return false;
     const std::string hash = doaxbv::sha256Hex(body);
     blob.assign(hash.begin(), hash.end());
     blob.insert(blob.end(), body.begin(), body.end());
