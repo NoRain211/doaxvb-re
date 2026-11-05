@@ -39,6 +39,8 @@ typedef struct Allocation {
 } Allocation;
 
 static Allocation allocations[MAX_ALLOCATIONS];
+/* Frees of contiguous blocks, which can back presenter resources. */
+static uint32_t contiguous_frees;
 
 static uint32_t effective_size(uint32_t size)
 {
@@ -221,6 +223,7 @@ static void free_guest(uint32_t base)
     Allocation *allocation = find_allocation(base);
 
     if (allocation != NULL) {
+        if (allocation->kind == ALLOCATION_CONTIGUOUS) ++contiguous_frees;
 #ifdef RECOMP_D3D_FRAME_ENABLED
         RecompD3dPresenter *presenter = recomp_d3d_frame_adapter_presenter();
         if (presenter != NULL) {
@@ -588,7 +591,25 @@ RecompFunction recomp_kernel_memory(uint32_t ordinal)
     default: return NULL;
     }
 }
-/* Rollback snapshots: the allocation table. */
-size_t recomp_kernel_memory_state_size(void) { return sizeof allocations; }
-void recomp_kernel_memory_state_save(void *state) { memcpy(state, allocations, sizeof allocations); }
-void recomp_kernel_memory_state_restore(const void *state) { memcpy(allocations, state, sizeof allocations); }
+/* Rollback snapshots: the allocation table. Freeing a contiguous block drops
+   the presenter's textures and targets in it, which a rewind cannot bring
+   back, so a save made before such a free is not restorable. */
+typedef struct MemoryState {
+    Allocation allocations[MAX_ALLOCATIONS];
+    uint32_t contiguous_frees;
+} MemoryState;
+size_t recomp_kernel_memory_state_size(void) { return sizeof(MemoryState); }
+void recomp_kernel_memory_state_save(void *state)
+{
+    MemoryState *out = state;
+    memcpy(out->allocations, allocations, sizeof allocations);
+    out->contiguous_frees = contiguous_frees;
+}
+bool recomp_kernel_memory_state_restorable(const void *state)
+{
+    return ((const MemoryState *)state)->contiguous_frees == contiguous_frees;
+}
+void recomp_kernel_memory_state_restore(const void *state)
+{
+    memcpy(allocations, ((const MemoryState *)state)->allocations, sizeof allocations);
+}

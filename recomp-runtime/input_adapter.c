@@ -277,7 +277,20 @@ RecompFunction recomp_input_lookup_manual(uint32_t guest_address)
         return NULL;
     }
 }
-/* Rollback snapshots: open handles, packet numbers and the last pads. */
+/* Rollback snapshots: open handles, packet numbers, the last pads and the
+   motors, which go back out to the host pads when they change. */
 size_t recomp_input_adapter_state_size(void) { return sizeof input_model; }
 void recomp_input_adapter_state_save(void *state) { memcpy(state, &input_model, sizeof input_model); }
-void recomp_input_adapter_state_restore(const void *state) { memcpy(&input_model, state, sizeof input_model); }
+void recomp_input_adapter_state_restore(const void *state)
+{
+    const RecompInputModel before = input_model;
+    memcpy(&input_model, state, sizeof input_model);
+    for (uint32_t port = 0u; feedback_sink != NULL && port < RECOMP_INPUT_PORT_COUNT; ++port) {
+        const RecompInputPort *old = &before.ports[port], *now = &input_model.ports[port];
+        const uint16_t old_left = old->open ? old->left_motor : 0u;
+        const uint16_t old_right = old->open ? old->right_motor : 0u;
+        const uint16_t left = now->open ? now->left_motor : 0u;
+        const uint16_t right = now->open ? now->right_motor : 0u;
+        if (left != old_left || right != old_right) feedback_sink(port, left, right);
+    }
+}

@@ -248,6 +248,26 @@ void synctestBoundary()
         recomp_stop(0, result == RECOMP_SYNCTEST_MATCH ? "synctest:match" : "synctest:skip");
     }
 }
+
+/* The scripted input schedule, so a replay presses at the same polls. */
+struct SyncTestInput {
+    RecompInputPulseSource pulses;
+    std::uint64_t waitAfterPoll;
+};
+
+void saveSyncTestInput(void *state)
+{
+    auto *out = static_cast<SyncTestInput *>(state);
+    std::memcpy(&out->pulses, &inputPulseSource, sizeof inputPulseSource);
+    out->waitAfterPoll = inputWaitAfterPoll;
+}
+
+void restoreSyncTestInput(const void *state)
+{
+    const auto *in = static_cast<const SyncTestInput *>(state);
+    std::memcpy(&inputPulseSource, &in->pulses, sizeof inputPulseSource);
+    inputWaitAfterPoll = in->waitAfterPoll;
+}
 #endif
 
 bool parsePositiveU64(const std::string& value, std::uint64_t& parsed)
@@ -934,6 +954,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
     if (recomp_synctest_enabled()) {
         recomp_xapi_frame_clock_set_enabled(true);
         recomp_synctest_install_default_modules();
+        recomp_synctest_set_extra_state(
+            sizeof(SyncTestInput), saveSyncTestInput, restoreSyncTestInput);
         recomp_synctest_set_guest_ram(ram, kRamSize, writeWatch);
         recomp_game_set_frame_boundary(synctestBoundary);
     }

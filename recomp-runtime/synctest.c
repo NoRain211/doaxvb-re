@@ -158,9 +158,19 @@ static void allocate_snapshot(Snapshot *snapshot)
     snapshot->extra = extra_size != 0u ? allocate(extra_size) : NULL;
 }
 
+static void free_snapshot(Snapshot *snapshot)
+{
+    for (size_t i = 0u; i < MAX_MODULES; ++i) free(snapshot->block[i]);
+    free(snapshot->extra);
+    *snapshot = (Snapshot){0};
+}
+
 static void ensure_allocated(void)
 {
     if (allocated) return;
+    free_snapshot(&baseline);
+    free_snapshot(&reference);
+    free_snapshot(&current);
     allocate_snapshot(&baseline);
     allocate_snapshot(&reference);
     allocate_snapshot(&current);
@@ -299,11 +309,9 @@ static RecompGuestSnapshots ring_ram;
 
 bool recomp_rollback_ring_init(size_t frames)
 {
+    if (frames == 0u) return false;
     /* A second session in one process replaces the first one's ring. */
-    for (size_t i = 0u; ring != NULL && i < ring_size; ++i) {
-        for (size_t m = 0u; m < MAX_MODULES; ++m) free(ring[i].block[m]);
-        free(ring[i].extra);
-    }
+    for (size_t i = 0u; ring != NULL && i < ring_size; ++i) free_snapshot(&ring[i]);
     free(ring);
     ring_size = frames + 1u;
     ring = calloc(ring_size, sizeof *ring);
@@ -338,11 +346,12 @@ bool recomp_rollback_ring_load(uint32_t frame)
     const size_t index = (ring_newest + ring_size - back) % ring_size;
     const Snapshot *saved = &ring[index];
     if (!snapshots_restorable(saved)) return false;
-    load_snapshot(saved);
+    /* A failed RAM load changes nothing, so it goes before the modules. */
     if (ram_live != NULL && !recomp_snapshots_load(&ring_ram, back)) {
         fprintf(stderr, "recomp rollback: guest RAM rewind failed\n");
-        exit(2);
+        return false;
     }
+    load_snapshot(saved);
     ring_newest = index;
     ring_count -= back;
     return true;

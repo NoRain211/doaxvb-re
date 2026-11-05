@@ -46,9 +46,10 @@ value the guest reads that a rewind did not restore:
   stores in two bytes of the D3D library's data (`0x1F569C`, `0x1F5D30`).
   A probe at each frame boundary showed them climbing through the rewind.
   The frame state is now saved.
-- About 13 KB of decoded audio in guest RAM (`0xCAE000` to `0xCB7000`
-  and `0x1259000` to `0x125B000`) followed DirectSound play cursors on
-  host time. With the frame clock on, buffers play in game ticks, as
+- Decoded audio in two guest RAM ranges (`0xCAE000` to `0xCB7000` and
+  `0x1259000` to `0x125B000`, 44 KB together, of which about 13 KB
+  differed) followed DirectSound play cursors on host time. With the frame
+  clock on, buffers play in game ticks, as
   `RECOMP_DSOUND_GAME_CLOCK=1` already did, and the guest-visible buffer
   clocks are saved under the lock the output pump shares. The pump only
   copies audio the guest wrote into host output, so it advances nothing the
@@ -56,9 +57,16 @@ value the guest reads that a rewind did not restore:
 
 With both, a Windows clang build ran 887 two-frame checks from frame 2,400
 and then 770 eight-frame checks from frame 1,700 to about 14,000, over three
-minutes of a CPU match, with every module and all of guest RAM matching and
-no check skipped. Saving took 6 to 10 ms and comparing 7 to 9 ms, most of it
-copying 64 MB for the comparison, which sessions do not do.
+minutes of a CPU match, with no check skipped. Each check compares every
+module except the clock and save storage, which SyncTest ignores, and all
+guest RAM outside parked fibers' stacks. Saving took 6 to 10 ms and
+comparing 7 to 9 ms, most of it copying 64 MB for the comparison, which
+sessions do not do.
+
+One mismatch is still open and predates this work: at frame 1,942, after
+the end-of-match flag is set, 64 to 66 bytes of guest RAM from `0x4D6FF5`
+differ between the two passes. Until it is found, this range is not proven
+deterministic.
 
 A check during the boot's loading (frame 200) differed in 2.5 MB of guest
 RAM and the fiber state. Sessions roll back only inside a match, so loading
