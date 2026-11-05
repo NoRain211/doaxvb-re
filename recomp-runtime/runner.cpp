@@ -15,6 +15,7 @@
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
 #endif
+#include "guest_snapshot.h"
 #include "runtime.h"
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
@@ -792,21 +793,16 @@ std::vector<AnalogPulse> inputAnalogPulses;
         std::cerr << "recomp runner: " << error << '\n';
         return 1;
     }
-#ifdef _WIN32
-    /* Whole-game display passes find and undo their guest writes through
-       write tracking, which only VirtualAlloc can provide. */
-    auto *ram = static_cast<std::uint8_t *>(VirtualAlloc(nullptr, memory.size(),
-        MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE));
+    /* Whole-game display passes find guest writes through write tracking
+       (Windows only); without it game_rollback.c reports no display passes. */
+    bool writeWatch = false;
+    std::uint8_t *ram = recomp_guest_ram_allocate(memory.size(), &writeWatch);
     if (ram == nullptr) {
         std::cerr << "recomp runner: guest RAM allocation failed\n";
         return 1;
     }
     std::memcpy(ram, memory.data(), memory.size());
     std::vector<std::uint8_t>().swap(memory);
-#else
-    // Without write tracking, game_rollback.c reports no display passes.
-    std::uint8_t *ram = memory.data();
-#endif
 
     const RecompMemoryRegion region = {
         0u,
