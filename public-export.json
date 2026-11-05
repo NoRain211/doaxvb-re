@@ -141,7 +141,7 @@
     {
       "path": "tools/xboxrecomp",
       "url": "https://github.com/NoRain211/xboxrecomp.git",
-      "commit": "7adaf210a89814c5ca4444e4876fccb51b938878"
+      "commit": "4500b88f25275cfcbc6c413842d9f84e102333e4"
     },
     {
       "path": "third_party/rbengine",

@@ -407,6 +407,8 @@ add_executable(recomp_runtime_test
     kernel_video_test.c
     kernel_ordinals.c
     "${_recomp_test_leaf_source}")
+# Generated code calls the x87 transcendentals in recomp_portable_math.
+target_link_libraries(recomp_runtime_test PRIVATE recomp_portable_math)
 if(NOT MSVC)
     target_link_libraries(recomp_runtime_test PRIVATE m)
 endif()
@@ -466,6 +468,7 @@ if(RECOMP_BOUNDARY_SOURCE)
         "${_recomp_boundary_source}")
     target_include_directories(recomp_runtime_boundary_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(recomp_runtime_boundary_test PRIVATE recomp_portable_math)
 endif()
 
 if(RECOMP_ENTRY_SOURCE)
@@ -515,6 +518,7 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+    target_link_libraries(recomp_runner PRIVATE recomp_portable_math)
     if(WIN32)
         target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
     else()
@@ -809,6 +813,7 @@ if(RECOMP_PROGRAM_DIR)
         recomp_use_sdl3(recomp_program_runner)
     endif()
     recomp_use_overlay(recomp_program_runner)
+    target_link_libraries(recomp_program_runner PRIVATE recomp_portable_math)
     if(NOT MSVC)
         target_link_libraries(recomp_program_runner PRIVATE m)
     endif()
@@ -939,6 +944,26 @@ if(WIN32)
     target_link_libraries(recomp_sha_test PRIVATE bcrypt)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
+
+# One x87 transcendental implementation for every host (portable_math.h).
+add_library(recomp_portable_math STATIC
+    musl_math/sin.c musl_math/cos.c musl_math/tan.c musl_math/__sin.c musl_math/__cos.c musl_math/__tan.c
+    musl_math/__rem_pio2.c musl_math/__rem_pio2_large.c musl_math/atan.c musl_math/atan2.c
+    musl_math/log2.c musl_math/expm1.c)
+target_include_directories(recomp_portable_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+# Same bits on every host: no fused multiply-add (arm64 has it by default) and no fast-math.
+if(MSVC)
+    target_compile_options(recomp_portable_math PRIVATE /fp:precise)
+else()
+    target_compile_options(recomp_portable_math PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+if(NOT WIN32)
+    target_link_libraries(recomp_portable_math PUBLIC m)
+endif()
+add_executable(recomp_portable_math_test portable_math_test.c)
+target_link_libraries(recomp_portable_math_test PRIVATE recomp_portable_math)
+add_test(NAME recomp-runtime-portable-math COMMAND recomp_portable_math_test)
+
 add_executable(recomp_d3d_smooth_normals_test
     d3d_smooth_normals.cpp d3d_smooth_normals_test.cpp)
 
