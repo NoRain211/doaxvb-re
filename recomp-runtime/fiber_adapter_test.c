@@ -2,6 +2,7 @@
 #include "xbox_memory_layout.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -93,8 +94,13 @@ int recomp_fiber_adapter_test(void)
     uint32_t second_handle;
     RecompFunction adapter;
     const RecompFiber *fiber;
+    RecompFiberStackRange range = {0};
+    void *saved = malloc(recomp_fiber_adapter_state_size());
     int passed = 1;
 
+    if (saved == NULL) {
+        return 0;
+    }
     memset(low_memory, 0, sizeof low_memory);
     memset(tls_index_memory, 0, sizeof tls_index_memory);
     memset(heap_memory, 0xa5, sizeof heap_memory);
@@ -121,6 +127,7 @@ int recomp_fiber_adapter_test(void)
     adapter();
     first_handle = recomp_runtime.registers.eax;
     first_heap_checkpoint = xbox_HeapCheckpoint();
+    recomp_fiber_adapter_state_save(saved);
 
     arguments[0] = first_handle;
     prepare_call(1u, arguments);
@@ -164,6 +171,19 @@ int recomp_fiber_adapter_test(void)
         passed &= expect_u32(
             "recreated fiber parameter", fiber->parameter, second_parameter);
     }
+
+    /* Rewinding the delete and the re-create puts the first fiber back in its slot. */
+    recomp_fiber_adapter_state_restore(saved);
+    fiber = find_fiber(first_handle);
+    passed &= expect_u32(
+        "restored fiber parameter",
+        fiber != NULL ? fiber->parameter : 0u,
+        first_parameter);
+    passed &= expect_u32(
+        "restored stack count", (uint32_t)recomp_fiber_adapter_stack_ranges(&range, 1u), 1u);
+    passed &= expect_u32("restored stack base", range.base, TEST_HEAP_BASE);
+    passed &= expect_u32("restored stack size", range.size, TEST_STACK_SIZE);
+    free(saved);
 
     arguments[0] = second_handle;
     prepare_call(1u, arguments);
