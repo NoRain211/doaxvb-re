@@ -1,7 +1,6 @@
 #include "xapi_time_adapter.h"
 
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -22,15 +21,6 @@ struct FrameClock {
 };
 FrameClock frame_clock;
 bool frame_clock_enabled;
-
-struct FrameClockEnv {
-    FrameClockEnv()
-    {
-        const char *value = std::getenv("RECOMP_FRAME_CLOCK");
-        frame_clock_enabled = value != nullptr && *value != '\0' && std::strcmp(value, "0") != 0;
-    }
-};
-const FrameClockEnv frame_clock_env;
 
 }
 

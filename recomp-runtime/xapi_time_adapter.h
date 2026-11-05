@@ -13,7 +13,8 @@ uint64_t recomp_xapi_performance_frequency(void);
 uint64_t recomp_xapi_host_ns(void);
 /* Frame-locked guest time for rollback. While enabled, each frame
    boundary advances the counter one 60 Hz frame, so replaying the same
-   frames reads the same times. RECOMP_FRAME_CLOCK=1 enables it at startup. */
+   frames reads the same times. Whoever enables it advances it at its frame
+   boundary. */
 bool recomp_xapi_frame_clock_enabled(void);
 void recomp_xapi_frame_clock_set_enabled(bool enabled);
 void recomp_xapi_frame_clock_reset(void);
