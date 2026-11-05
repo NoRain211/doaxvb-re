@@ -233,12 +233,29 @@ bool recomp_fiber_adapter_state_restorable(const void *state)
     return true;
 }
 
+/* Field by field, because the struct has padding; floats compare as bits. */
+static bool fiber_equal(const RecompFiber *a, const RecompFiber *b)
+{
+    return a->active == b->active && a->guest_handle == b->guest_handle &&
+        a->entry == b->entry && a->parameter == b->parameter &&
+        a->exception_list == b->exception_list &&
+        memcmp(&a->registers, &b->registers, sizeof a->registers) == 0 &&
+        memcmp(a->fpu.xmm, b->fpu.xmm, sizeof a->fpu.xmm) == 0 &&
+        memcmp(a->fpu.fpu_stack, b->fpu.fpu_stack, sizeof a->fpu.fpu_stack) == 0 &&
+        a->fpu.fpu_top == b->fpu.fpu_top &&
+        a->fpu.fpu_control_word == b->fpu.fpu_control_word &&
+        a->fpu.fpu_compare == b->fpu.fpu_compare;
+}
+
 bool recomp_fiber_adapter_state_equal(const void *left, const void *right, size_t size)
 {
     const FiberAdapterState *a = left, *b = right;
 
     (void)size;
-    if (memcmp(&a->model, &b->model, sizeof a->model) != 0) return false;
+    if (a->model.current_handle != b->model.current_handle) return false;
+    for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
+        if (!fiber_equal(&a->model.fibers[i], &b->model.fibers[i])) return false;
+    }
     if (a->current_host_handle != b->current_host_handle) return false;
     if (a->converted_thread != b->converted_thread) return false;
     for (size_t i = 0u; i < RECOMP_FIBER_MAX_COUNT; ++i) {
@@ -270,11 +287,10 @@ void recomp_fiber_adapter_state_restore(const void *state)
         RecompHostFiber *host;
 
         if (saved->guest_handle == 0u) {
-            /* Slots the snapshot did not have are free again; the native
-               stack stays for a later create to restart. */
+            /* Slots the snapshot did not have are free again. The guest and
+               native stacks stay for a later create to reuse: the guest heap
+               is not rewound, so dropping the stack would leak it. */
             host_fibers[i].guest_handle = 0u;
-            host_fibers[i].guest_stack_base = 0u;
-            host_fibers[i].guest_stack_size = 0u;
             continue;
         }
         host = host_fiber_find_native(saved->native_fiber);
