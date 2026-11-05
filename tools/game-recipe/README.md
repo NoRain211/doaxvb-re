@@ -61,9 +61,10 @@ including the explicit x87 destination correction used by camera
 calculations, the cross-block carry fix, the jump-table slot-one retry and the
 LOOP/LOOPE/LOOPNE lift. It also gives switch arms that fall outside their split
 owner their own `jump_table_arm` entry, such as the collection screen exit (#64).
-The x87 transcendentals lift as calls to `recomp_sin` and the rest, which
-`recomp_types.h` maps to musl's (`recomp-runtime/musl_math/`), so every host
-computes the same results.
+The x87 transcendentals lift as calls to `recomp_sin` and the rest, declared in
+`recomp-runtime/portable_math.h` and defined by the `recomp_portable_math`
+library that `recomp-runtime/CMakeLists.txt` builds from musl
+(`recomp-runtime/musl_math/`), so every host computes the same results.
 It is not an upgrade to the latest upstream release:
 the fork's `main` follows upstream, and pinning it froze player movement
 animation, broke an island map texture and sent the hotel to the pool scene.
