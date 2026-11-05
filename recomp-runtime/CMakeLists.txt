@@ -408,6 +408,8 @@ add_executable(recomp_runtime_test
     kernel_video_test.c
     kernel_ordinals.c
     "${_recomp_test_leaf_source}")
+# Generated code calls the x87 transcendentals in recomp_portable_math.
+target_link_libraries(recomp_runtime_test PRIVATE recomp_portable_math)
 if(NOT MSVC)
     target_link_libraries(recomp_runtime_test PRIVATE m)
 endif()
@@ -467,6 +469,7 @@ if(RECOMP_BOUNDARY_SOURCE)
         "${_recomp_boundary_source}")
     target_include_directories(recomp_runtime_boundary_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(recomp_runtime_boundary_test PRIVATE recomp_portable_math)
 endif()
 
 if(RECOMP_ENTRY_SOURCE)
@@ -516,6 +519,7 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+    target_link_libraries(recomp_runner PRIVATE recomp_portable_math)
     if(WIN32)
         target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
     else()
