@@ -89,6 +89,15 @@ static inline int is_clock_owner(void) {
 }
 #endif
 
+static int output_muted; // set on the game thread, read by pump_buffer, both under clock_lock
+
+void recomp_dsound_service_adapter_set_muted(int muted)
+{
+    LOCK_CLOCKS();
+    output_muted = muted;
+    UNLOCK_CLOCKS();
+}
+
 static void retire_buffer(BufferClock *clock)
 {
     recomp_audio_output_reset_voice((uint32_t)(clock - buffer_clocks));
@@ -152,8 +161,9 @@ static void pump_buffer(BufferClock *clock, uint64_t now, int force)
             if (offset == output->size_bytes) offset = output->loop_start_bytes;
         }
     }
-    recomp_audio_output_submit((uint32_t)(clock - buffer_clocks), pcm, bytes,
-        output->sample_rate, channels, bits, clock->volume);
+    if (!output_muted)
+        recomp_audio_output_submit((uint32_t)(clock - buffer_clocks), pcm, bytes,
+            output->sample_rate, channels, bits, clock->volume);
 }
 
 static uint64_t buffer_now_ms(void)

@@ -75,7 +75,8 @@ uint32_t recomp_game_tick(void) { return game_tick; }
 unsigned recomp_game_substep(void) { return pass_substep; }
 
 static void (*frame_boundary)(void);
-void recomp_game_set_frame_boundary(void (*hook)(void))
+static bool paced = true;
+void recomp_game_set_frame_boundary(void (*hook)(void), bool hook_paced)
 {
     /* Rollback runs at 60 Hz only, where every pass is a tick. */
     const unsigned hz = recomp_game_requested_hz();
@@ -84,6 +85,7 @@ void recomp_game_set_frame_boundary(void (*hook)(void))
         exit(2);
     }
     frame_boundary = hook;
+    paced = hook == NULL || hook_paced;
 }
 
 typedef struct SchedulerState {
@@ -468,7 +470,7 @@ static bool next_pass_is_tick(void)
         return false;
     }
     /* Hidden ticks have no vblank wait of their own. */
-    while ((now = now_ns()) < next_tick_ns) {
+    while (paced && (now = now_ns()) < next_tick_ns) {
         if (next_tick_ns - now > 2000000) Sleep(1);
         else YieldProcessor();
     }

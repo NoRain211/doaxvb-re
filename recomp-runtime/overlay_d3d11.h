@@ -4,12 +4,15 @@
 #include <d3d11.h>
 
 #include "overlay_text.h"
+#include "overlay_screen.h"
 
-/* Draws the runtime's overlay text (overlay_text.h) with Dear ImGui into the
-   window's back buffer after the game's frame, on the presenter's thread.
-   Created on first use; nothing is drawn while the overlay is empty. */
+/* Draws the runtime's overlay text (overlay_text.h) and screen quads
+   (overlay_screen.h) with Dear ImGui into the window's back buffer after the
+   game's frame, on the presenter's thread. Created on first use; nothing is
+   drawn while both are empty. */
 void recomp_overlay_d3d11_draw(ID3D11Device *device, ID3D11DeviceContext *context,
-    ID3D11RenderTargetView *target, UINT width, UINT height, const RecompOverlayText *text);
+    ID3D11RenderTargetView *target, UINT width, UINT height, const RecompOverlayText *text,
+    const RecompOverlayQuad *screen, uint32_t screen_count);
 void recomp_overlay_d3d11_shutdown(void);
 
 #endif

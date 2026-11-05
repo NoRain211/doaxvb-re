@@ -22,3 +22,7 @@ atan2, expm1 and their helpers from musl 1.2.5; log2 from musl
 1.1.19), Copyright (c) 2005-2020 Rich Felker, et al., under the MIT license,
 whose full text is in recomp-runtime/musl_math/COPYRIGHT. The files keep
 their fdlibm notices from Sun Microsystems. They came here from doa2u-re.
+
+The runner links miniupnpc 2.3.3 (miniupnp/miniupnp, tag miniupnpc_2_3_3),
+Copyright (c) 2005-2025 Thomas Bernard, under the BSD 3-Clause license. The
+build fetches it; its LICENSE remains in the fetched source.

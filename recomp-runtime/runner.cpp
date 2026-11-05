@@ -14,17 +14,16 @@
 #include "scene_freeze_adapter.h"
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
+#include "netplay_launch.h"
+#include "netplay_session.h"
 #include "synctest.h"
-#include "xapi_time_adapter.h"
-extern "C" {
-#include "game_scheduler.h"
-}
 #endif
 #include "guest_snapshot.h"
 #include "runtime.h"
 #include "stop_report.h"
 #include "xbox_memory_layout.h"
 #include "xbe_parser.h"
+#include "sha.h"
 
 #ifndef RECOMP_FULL_PROGRAM
 #include "runner_imports.h"
@@ -51,6 +50,21 @@ extern "C" {
 #endif
 
 namespace {
+
+const char kUsage[] = "usage: recomp_runner --xbe <path>"
+                      " [--expect-stop <id>] [--stop-at <id>]"
+                      " [--milestone-log <path>]"
+                      " [--vsync]"
+                      " [--input-host-after-poll <poll>]"
+                      " [--input-wait-after-poll <poll> --input-resume-file <path>]"
+                      " [--input-paused-analog-file <path>]"
+                      " [--input-start-pulse-at <poll>]"
+                      " [--input-buttons-at <poll>:<hexmask>]"
+                      " [--input-analog-at <poll>:<index>:<value>]"
+#ifdef RECOMP_FULL_PROGRAM
+                      " [--netplay-host <port> [--netplay-delay <frames>] | --netplay-join <host>:<port> | --replay <file>]"
+#endif
+                      "\n";
 
 extern "C" const char *recomp_disc_root_path;
 
@@ -233,20 +247,6 @@ bool sampleInputPulse(std::uint32_t port, RecompInputGamepad *gamepad)
     }
     samplePausedAnalogFile();
     return recomp_input_pulse_source_sample(&inputPulseSource, gamepad);
-}
-
-/* RECOMP_SYNCTEST: saves a frame at the loop top, runs it again and compares
-   (docs/rollback-netcode.md). */
-void synctestBoundary()
-{
-    static std::uint32_t frame;
-    recomp_xapi_frame_clock_advance();
-    const RecompSyncTestResult result = recomp_synctest_frame(++frame);
-    if (result == RECOMP_SYNCTEST_MISMATCH) recomp_stop(3, "synctest:mismatch");
-    if (!recomp_synctest_loop() &&
-        (result == RECOMP_SYNCTEST_MATCH || result == RECOMP_SYNCTEST_SKIP)) {
-        recomp_stop(0, result == RECOMP_SYNCTEST_MATCH ? "synctest:match" : "synctest:skip");
-    }
 }
 
 /* The scripted input schedule, so a replay presses at the same polls. */
@@ -515,6 +515,9 @@ int main(int argc, char **argv)
     std::string expectStop;
     std::string stopAt;
     std::string milestoneLog;
+#ifdef RECOMP_FULL_PROGRAM
+    if (!recomp_netplay_launch_parse(argc, argv)) return 64;
+#endif
     bool inputStartPulseEnabled = false;
     bool vsyncPresent = false;
     std::vector<std::uint64_t> inputStartPulsePolls;
@@ -726,16 +729,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
                 AnalogPulse{parsedPoll, parsedIndex, parsedValue});
             inputStartPulseEnabled = true;
         } else {
-            std::cerr << "usage: recomp_runner --xbe <path>"
-                         " [--expect-stop <id>] [--stop-at <id>]"
-                         " [--milestone-log <path>]"
-                         " [--vsync]"
-                         " [--input-host-after-poll <poll>]"
-                         " [--input-wait-after-poll <poll> --input-resume-file <path>]"
-                         " [--input-paused-analog-file <path>]"
-                         " [--input-start-pulse-at <poll>]"
-                         " [--input-buttons-at <poll>:<hexmask>]"
-                         " [--input-analog-at <poll>:<index>:<value>]\n";
+            std::cerr << kUsage;
             return 64;
         }
     }
@@ -779,15 +773,7 @@ std::vector<AnalogPulse> inputAnalogPulses;
         }
     }
     if (xbePath.empty()) {
-        std::cerr << "usage: recomp_runner --xbe <path>"
-                     " [--expect-stop <id>] [--stop-at <id>]"
-                     " [--milestone-log <path>]"
-                     " [--input-host-after-poll <poll>]"
-                     " [--input-wait-after-poll <poll> --input-resume-file <path>]"
-                     " [--input-paused-analog-file <path>]"
-                     " [--input-start-pulse-at <poll>]"
-                     " [--input-buttons-at <poll>:<hexmask>]"
-                     " [--input-analog-at <poll>:<index>:<value>]\n";
+        std::cerr << kUsage;
         return 64;
     }
     recomp_stop_configure(
@@ -821,6 +807,16 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_disc_root_path = disc_root.c_str();
     }
 
+#ifdef RECOMP_FULL_PROGRAM
+    {
+        // The build and the game image: both runners must simulate alike.
+        const std::string identity = std::string(RECOMP_NETPLAY_BUILD) + "\n" + parsed.metadata.fileSha256 + "\n";
+        const int code = recomp_netplay_launch_configure(
+            doaxbv::sha256Hex(std::vector<std::uint8_t>(identity.begin(), identity.end())), recomp_disc_root_path);
+        if (code != 0) return code;
+    }
+#endif
+
     if (!recomp_save_initialize(recomp_disc_root_path)) {
         std::cerr << "recomp runner: save recovery failed; guest not started\n";
         return 2;
@@ -832,8 +828,8 @@ std::vector<AnalogPulse> inputAnalogPulses;
         std::cerr << "recomp runner: " << error << '\n';
         return 1;
     }
-    /* Whole-game display passes find guest writes through write tracking
-       (Windows only); without it game_rollback.c reports no display passes. */
+    /* Whole-game display passes and rollback find guest writes through write
+       tracking (Windows only); without it game_rollback.c reports no display passes. */
     bool writeWatch = false;
     std::uint8_t *ram = recomp_guest_ram_allocate(memory.size(), &writeWatch);
     if (ram == nullptr) {
@@ -951,13 +947,11 @@ std::vector<AnalogPulse> inputAnalogPulses;
         recomp_fiber_set_switch_hook(recomp_scene_freeze_switch);
     }
     recomp_viewer_install();
-    if (recomp_synctest_enabled()) {
-        recomp_xapi_frame_clock_set_enabled(true);
-        recomp_synctest_install_default_modules();
+    recomp_netplay_launch_install(ram, kRamSize, writeWatch);
+    // A netplay session supplies its own pads; only SyncTest replays the script.
+    if (recomp_synctest_enabled() && !recomp_netplay_session_enabled()) {
         recomp_synctest_set_extra_state(
             sizeof(SyncTestInput), saveSyncTestInput, restoreSyncTestInput);
-        recomp_synctest_set_guest_ram(ram, kRamSize, writeWatch);
-        recomp_game_set_frame_boundary(synctestBoundary);
     }
 #endif
 #ifndef RECOMP_FULL_PROGRAM

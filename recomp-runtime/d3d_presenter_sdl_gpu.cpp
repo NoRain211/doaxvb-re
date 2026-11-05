@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "d3d_presenter.h"
+#include "input_text.h"
 #include "overlay_sdl_gpu.h"
 #include "screenshot.h"
 #include "d3d_draw_model.h"
@@ -339,6 +340,8 @@ struct PipelineKeyHash {
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
+    RecompOverlayQuad overlay_screen[RECOMP_OVERLAY_MAX_QUADS]{}; // the presenter's copy of the menu's screen
+    Uint64 text_asked_ms = 0; // when a text field last read typed keys
     std::thread::id owner_thread;
     SDL_Window *window = nullptr;
     SDL_GPUDevice *device = nullptr;
@@ -448,6 +451,13 @@ bool preferMailbox(bool immediate)
 
 void pumpEvents(RecompD3dPresenter *presenter)
 {
+    // Text input, which can raise an IME or a screen keyboard, stays on only while a text field reads it.
+    if (recomp_input_text_asked()) presenter->text_asked_ms = SDL_GetTicks();
+    const bool wanted = presenter->text_asked_ms != 0 && SDL_GetTicks() - presenter->text_asked_ms < 500u;
+    if (wanted != SDL_TextInputActive(presenter->window)) {
+        if (wanted) SDL_StartTextInput(presenter->window);
+        else SDL_StopTextInput(presenter->window);
+    }
     SDL_PumpEvents();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -458,6 +468,14 @@ void pumpEvents(RecompD3dPresenter *presenter)
                 event.window.windowID == SDL_GetWindowID(presenter->window)) {
                 presenter->close_requested = true;
             }
+        } else if (event.type == SDL_EVENT_TEXT_INPUT) {
+            for (const char *c = event.text.text; *c != '\0'; ++c)
+                if (static_cast<unsigned char>(*c) < 0x80u) recomp_input_text_char(static_cast<unsigned char>(*c));
+        } else if (event.type == SDL_EVENT_KEY_DOWN) {
+            // Text events carry no control keys; the text fields read them as WM_CHAR gives them.
+            if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) recomp_input_text_char('\r');
+            else if (event.key.key == SDLK_BACKSPACE) recomp_input_text_char('\b');
+            else if (event.key.key == SDLK_ESCAPE) recomp_input_text_char(0x1bu);
         }
     }
 }
@@ -2601,8 +2619,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // buffer.
                 RecompOverlayText overlay;
                 recomp_overlay_take(&overlay);
+                const uint32_t screen_count =
+                    recomp_overlay_screen_take(presenter->overlay_screen, RECOMP_OVERLAY_MAX_QUADS);
                 recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
-                    swapchain_tex, swap_w, swap_h, &overlay);
+                    swapchain_tex, swap_w, swap_h, &overlay, presenter->overlay_screen, screen_count);
             }
         }
 

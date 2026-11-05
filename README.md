@@ -89,7 +89,7 @@ and morph blend have been rewritten.
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
 | Hand-written game logic | Startup thread entry and the girls' joint bend and morph blend; the rest runs as generated code |
-| Rollback multiplayer | Planned ([#20](https://github.com/NoRain211/doaxbv-re/issues/20)) |
+| Online Exhibition with rollback netcode: rooms, FIND MATCH, replays | Experimental; tested with two runners on one Windows machine. See [`docs/rollback-netcode.md`](docs/rollback-netcode.md) ([#20](https://github.com/NoRain211/doaxbv-re/issues/20)) |
 
 Remaining work is tracked in the
 [offline acceptance tracker](https://github.com/NoRain211/doaxbv-re/issues/16).

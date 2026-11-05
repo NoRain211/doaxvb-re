@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum {
     RECOMP_INPUT_PORT_COUNT = 4u,
     RECOMP_INPUT_ANALOG_BUTTON_COUNT = 8u,
@@ -59,5 +63,9 @@ bool recomp_input_set_feedback(
     uint32_t handle,
     uint16_t left_motor,
     uint16_t right_motor);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
