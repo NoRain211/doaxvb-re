@@ -3,6 +3,8 @@
    queues the quads and hands them to the presenter's thread. */
 #include "overlay_screen.h"
 
+#include <stddef.h>
+
 /* The built-in font for ' ' through '_': seven rows of five dots each, top
    to bottom, drawn for this runner. */
 static const char font[64][42] = {
