@@ -75,9 +75,9 @@ try {
     } @{ RECOMP_D3D_VRR = '0'; RECOMP_D3D_FOG = '1'; RECOMP_TEXTURES = $null; RECOMP_TEXTURE_DUMP = '0'; RECOMP_D3D_PIXEL_LIGHTING = '0'; RECOMP_D3D_SMOOTH_NORMALS = '0'; RECOMP_D3D_RTGI = '0'; RECOMP_D3D_RTGI_STRENGTH = '1.25'; RECOMP_D3D_RTGI_HITCOLOR = '0' }
     $vulkan = @{ renderer = 'vulkan'; sun_shadows = $true; rtgi = $true } | ConvertTo-Json
     Check-Launch $vulkan {
-        Assert (!$sun.Enabled -and !$rtgi.Enabled -and !$strength.Enabled -and !$hitColor.Enabled) 'Vulkan must disable the Direct3D 11 options'
+        Assert ($fog.Enabled -and !$sun.Enabled -and !$rtgi.Enabled -and !$strength.Enabled -and !$hitColor.Enabled) 'Vulkan must keep fog and disable the Direct3D 11 options'
         'OK'
-    } @{ RECOMP_RENDERER = 'vulkan'; RECOMP_D3D_SUN_SHADOW = '0' }
+    } @{ RECOMP_RENDERER = 'vulkan'; RECOMP_D3D_SUN_SHADOW = '0'; RECOMP_D3D_FOG = '1' }
     Check-Launch $vulkan {
         $renderer.SelectedIndex = 0
         Assert ($sun.Enabled -and $rtgi.Enabled -and $strength.Enabled -and $hitColor.Enabled) 'Direct3D 11 must enable its options'

@@ -247,6 +247,65 @@ static bool testDraw()
     draw_prog.program_constants[109][3] = 1.0f;
     passed &= expect("submit vertex program draw", recomp_d3d_presenter_submit(presenter, &draw_cmd));
 
+    // Vertex fog from specular alpha on pretransformed vertices.
+    struct VertexSpecular {
+        float x, y, z, rhw;
+        uint32_t diffuse, specular;
+        float u, v;
+    };
+    VertexSpecular specular_verts[] = {
+        {20.0f,  20.0f,  0.5f, 1.0f, 0xffffffffu, 0x00000000u, 0.0f, 0.0f},
+        {200.0f, 20.0f,  0.5f, 1.0f, 0xffffffffu, 0x80000000u, 1.0f, 0.0f},
+        {20.0f,  200.0f, 0.5f, 1.0f, 0xffffffffu, 0x80000000u, 0.0f, 1.0f},
+        {200.0f, 200.0f, 0.5f, 1.0f, 0xffffffffu, 0xff000000u, 1.0f, 1.0f},
+    };
+    draw_cmd = {};
+    draw_cmd.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    auto &draw_fog = draw_cmd.data.draw;
+    draw_fog.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw_fog.index_count = draw_fog.vertex_count = 4;
+    draw_fog.triangle_count = 2;
+    draw_fog.vertex_stride = sizeof(VertexSpecular);
+    draw_fog.fvf = 0x1C4u; // D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_SPECULAR | D3DFVF_TEX1
+    draw_fog.vertex_bytes = specular_verts;
+    draw_fog.index_bytes = indices;
+    draw_fog.blend.color_write_mask = 15;
+    draw_fog.fog = {true, false, 0u, 0xff8090a0u, 0.0f, 1.0f, 0.0f};
+    passed &= expect("submit vertex fog draw", recomp_d3d_presenter_submit(presenter, &draw_cmd));
+
+    // Linear range fog on a two-weight blended mesh.
+    struct VertexBlend {
+        float x, y, z;
+        float w0, w1;
+        float nx, ny, nz;
+        float u, v;
+    };
+    VertexBlend blend_verts[] = {
+        {-1.0f, -1.0f, 0.5f, 0.5f, 0.25f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f},
+        { 1.0f, -1.0f, 0.5f, 0.5f, 0.25f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f},
+        {-1.0f,  1.0f, 0.5f, 0.5f, 0.25f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f},
+        { 1.0f,  1.0f, 0.5f, 0.5f, 0.25f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f},
+    };
+    draw_cmd = {};
+    draw_cmd.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    auto &draw_range = draw_cmd.data.draw;
+    draw_range.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw_range.index_count = draw_range.vertex_count = 4;
+    draw_range.triangle_count = 2;
+    draw_range.vertex_stride = sizeof(VertexBlend);
+    draw_range.fvf = 0x118u; // D3DFVF_XYZB2 | D3DFVF_NORMAL | D3DFVF_TEX1
+    draw_range.vertex_bytes = blend_verts;
+    draw_range.index_bytes = indices;
+    draw_range.has_transform = true;
+    draw_range.blend_weight_count = 2;
+    for (float *m : {draw_range.transform, draw_range.blend_transforms[0], draw_range.blend_transforms[1],
+                     draw_range.fog_world_view[0], draw_range.fog_world_view[1], draw_range.fog_world_view[2]}) {
+        m[0] = m[5] = m[10] = m[15] = 1.0f;
+    }
+    draw_range.blend.color_write_mask = 15;
+    draw_range.fog = {true, true, 3u, 0xff8090a0u, 0.25f, 0.75f, 0.0f};
+    passed &= expect("submit range fog draw", recomp_d3d_presenter_submit(presenter, &draw_cmd));
+
     RecompD3dPresenterCommand pres_cmd{};
     pres_cmd.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
     pres_cmd.data.present = {5u, 1u};

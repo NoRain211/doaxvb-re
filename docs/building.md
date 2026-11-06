@@ -114,8 +114,8 @@ Direct3D 11 stays the default; choose **Renderer: Vulkan** on the launcher's
 Graphics page, or set `RECOMP_RENDERER=vulkan` before `RunGame.cmd`, to play
 with it. It needs a Vulkan driver and compiles its shaders at run time with
 `shaderc.dll`, which CMake downloads from Maven Central (LWJGL 3.4.3, checked
-by SHA-256) and copies beside the runner. It uses the resolution and MSAA
-choices only: SMAA, VRR pacing, fog, sun shadows, per-pixel lighting, smooth
+by SHA-256) and copies beside the runner. It uses the resolution, MSAA and
+fog choices: SMAA, VRR pacing, sun shadows, per-pixel lighting, smooth
 normals, RTGI, texture packs and the F5 to F11 RTGI keys belong to the
 Direct3D 11 renderer. Builds made before it have no Vulkan runner; build the
 game again to use it.

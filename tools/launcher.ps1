@@ -348,10 +348,10 @@ $smoothNormals = New-Toggle $pages[2] 'Smooth normals' 120 $settings.smoothNorma
 $rtgi = New-Toggle $pages[2] 'Ray-traced GI (RTGI)' 146 $settings.rtgi 228 220
 $hitColor = New-Toggle $pages[2] 'RTGI hit-point color' 172 $settings.rtgiHitColor 228 220
 $strength = Add-Row $pages[2] 'RTGI strength' 198 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)) })
-# Vulkan has only resolution and MSAA; the toggles are Direct3D 11 features.
+# Vulkan has resolution, MSAA and fog; the other toggles are Direct3D 11 features.
 function Update-Renderer {
     $d3d11 = $renderer.SelectedIndex -eq 0
-    foreach ($box in $smaa, $vrr, $fog, $sun, $pixelLighting, $smoothNormals, $rtgi) { $box.Enabled = $d3d11 }
+    foreach ($box in $smaa, $vrr, $sun, $pixelLighting, $smoothNormals, $rtgi) { $box.Enabled = $d3d11 }
     $strength.Enabled = $d3d11 -and $rtgi.Checked; $hitColor.Enabled = $strength.Enabled
 }
 Update-Renderer
@@ -403,7 +403,7 @@ New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12  
 
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" })
-    $render = if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Checked) { "$($dot)VRR" }) }
+    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" })
     $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
