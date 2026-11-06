@@ -73,17 +73,17 @@ try {
         Assert (!$strength.Enabled -and !$hitColor.Enabled) 'RTGI toggle did not disable controls'
         'OK'
     } @{ RECOMP_D3D_VRR = '0'; RECOMP_D3D_FOG = '1'; RECOMP_TEXTURES = $null; RECOMP_TEXTURE_DUMP = '0'; RECOMP_D3D_PIXEL_LIGHTING = '0'; RECOMP_D3D_SMOOTH_NORMALS = '0'; RECOMP_D3D_RTGI = '0'; RECOMP_D3D_RTGI_STRENGTH = '1.25'; RECOMP_D3D_RTGI_HITCOLOR = '0' }
-    $vulkan = @{ renderer = 'vulkan'; sun_shadows = $true; rtgi = $true } | ConvertTo-Json
+    $vulkan = @{ renderer = 'vulkan'; sun_shadows = $true; rtgi = $true; textures = $true; textureFolder = $pack; textureDump = $true } | ConvertTo-Json
     Check-Launch $vulkan {
         Assert ($fog.Enabled -and !$sun.Enabled -and !$rtgi.Enabled -and !$strength.Enabled -and !$hitColor.Enabled) 'Vulkan must keep fog and disable the Direct3D 11 options'
         Assert (!$textures.Enabled -and !$browse.Enabled -and !$textureDump.Enabled) 'Vulkan must disable texture packs'
         'OK'
-    } @{ RECOMP_RENDERER = 'vulkan'; RECOMP_D3D_SUN_SHADOW = '0'; RECOMP_D3D_FOG = '1' }
+    } @{ RECOMP_RENDERER = 'vulkan'; RECOMP_D3D_SUN_SHADOW = '0'; RECOMP_D3D_FOG = '1'; RECOMP_TEXTURES = $null; RECOMP_TEXTURE_DUMP = '0' }
     Check-Launch $vulkan {
         $renderer.SelectedIndex = 0
         Assert ($sun.Enabled -and $rtgi.Enabled -and $strength.Enabled -and $hitColor.Enabled -and $textures.Enabled) 'Direct3D 11 must enable its options'
         'OK'
-    } @{ RECOMP_RENDERER = 'd3d11'; RECOMP_D3D_SUN_SHADOW = '1' }
+    } @{ RECOMP_RENDERER = 'd3d11'; RECOMP_D3D_SUN_SHADOW = '1'; RECOMP_TEXTURES = $pack; RECOMP_TEXTURE_DUMP = '1' }
     # Controller: each new press once, held directions repeat after 350 ms then every 120 ms.
     $steps = (0, 0, $null), (1, 10, 'up'), (1, 359, $null), (1, 360, 'up'), (1, 479, $null), (1, 480, 'up'),
         (0x30, 500, 'a'), (0x30, 530, 'b'), (0x30, 900, $null), (0, 930, $null), (0x80, 960, 'lb')

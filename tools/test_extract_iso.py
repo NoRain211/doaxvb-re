@@ -144,6 +144,8 @@ class ExtractionTests(unittest.TestCase):
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_FREE_CAMERA"), expected)
 
     def test_launch_prerequisites_and_command(self):
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with self.assertRaisesRegex(ValueError, "No playable runner"):

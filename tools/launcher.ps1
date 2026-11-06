@@ -541,8 +541,9 @@ $env:RECOMP_DEMO_CUT_HOLD = if ($demoCut.Checked) { '12' } else { $null }
 $env:RECOMP_FREE_CAMERA = if ($freeCamera.Checked) { '1' } else { $null }
 $env:RECOMP_D3D_VRR = if ($vrr.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_FOG = if ($fog.Checked) { '1' } else { '0' }
-$env:RECOMP_TEXTURES = if ($textures.Checked) { $textureFolder.Text } else { $null }
-$env:RECOMP_TEXTURE_DUMP = if ($textureDump.Checked) { '1' } else { '0' }
+# Texture packs and dumps are Direct3D 11 only; set, they also take F12 from the game.
+$env:RECOMP_TEXTURES = if ($textures.Enabled -and $textures.Checked) { $textureFolder.Text } else { $null }
+$env:RECOMP_TEXTURE_DUMP = if ($textureDump.Enabled -and $textureDump.Checked) { '1' } else { '0' }
 $env:RECOMP_TEXTURE_DUMP_DIR = Join-Path $root 'private\textures'
 $env:RECOMP_D3D_PIXEL_LIGHTING = if ($pixelLighting.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_SMOOTH_NORMALS = if ($smoothNormals.Checked) { '1' } else { '0' }
