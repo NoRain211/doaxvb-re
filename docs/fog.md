@@ -52,4 +52,5 @@ fog, specular-alpha vertex fog, programmable fog bypass, disabled fog, alpha
 preservation and fog color before additive blending.
 The SDL GPU presenter test submits vertex fog and blended range fog draws,
 so a shader that fails to build shows in its log; it does not read pixels back.
+It skips (exit 77) on machines with no SPIR-V or Metal GPU device.
 Actual scene comparisons and performance receipts belong under `private/`.

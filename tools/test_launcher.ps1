@@ -76,11 +76,12 @@ try {
     $vulkan = @{ renderer = 'vulkan'; sun_shadows = $true; rtgi = $true } | ConvertTo-Json
     Check-Launch $vulkan {
         Assert ($fog.Enabled -and !$sun.Enabled -and !$rtgi.Enabled -and !$strength.Enabled -and !$hitColor.Enabled) 'Vulkan must keep fog and disable the Direct3D 11 options'
+        Assert (!$textures.Enabled -and !$browse.Enabled -and !$textureDump.Enabled) 'Vulkan must disable texture packs'
         'OK'
     } @{ RECOMP_RENDERER = 'vulkan'; RECOMP_D3D_SUN_SHADOW = '0'; RECOMP_D3D_FOG = '1' }
     Check-Launch $vulkan {
         $renderer.SelectedIndex = 0
-        Assert ($sun.Enabled -and $rtgi.Enabled -and $strength.Enabled -and $hitColor.Enabled) 'Direct3D 11 must enable its options'
+        Assert ($sun.Enabled -and $rtgi.Enabled -and $strength.Enabled -and $hitColor.Enabled -and $textures.Enabled) 'Direct3D 11 must enable its options'
         'OK'
     } @{ RECOMP_RENDERER = 'd3d11'; RECOMP_D3D_SUN_SHADOW = '1' }
     # Controller: each new press once, held directions repeat after 350 ms then every 120 ms.

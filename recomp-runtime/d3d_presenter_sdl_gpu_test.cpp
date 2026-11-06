@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <thread>
 
 #ifdef _WIN32
@@ -247,6 +248,8 @@ static bool testDraw()
     draw_prog.program_constants[109][3] = 1.0f;
     passed &= expect("submit vertex program draw", recomp_d3d_presenter_submit(presenter, &draw_cmd));
 
+    // Smoke tests: the fog draws must build their shaders and submit; they
+    // do not read pixels back (see docs/fog.md).
     // Vertex fog from specular alpha on pretransformed vertices.
     struct VertexSpecular {
         float x, y, z, rhw;

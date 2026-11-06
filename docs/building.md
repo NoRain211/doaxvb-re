@@ -50,7 +50,8 @@ pinned 20261006 `ucrt-x86_64` release (190 MB, about 715 MB extracted), checks
 its SHA-256 and extracts it to `tools/llvm-mingw`. This needs no administrator
 approval and happens once per folder. A release ZIP may already include it. The
 build receipt records the clang version. The runner links the C++ runtime
-statically and needs only Windows system DLLs and `SDL3.dll`.
+statically and needs only Windows system DLLs and `SDL3.dll`; the Vulkan
+runner described below also needs `shaderc.dll`.
 
 When `tools/dxc/bin/x64/dxc.exe` is missing, `BuildGame.cmd` also downloads
 the pinned [DXC](https://github.com/microsoft/DirectXShaderCompiler) v1.9.2609
