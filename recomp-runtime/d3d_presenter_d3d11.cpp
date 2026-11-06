@@ -613,6 +613,7 @@ struct RecompD3dPresenter {
        a discard per draw on draw_constant_buffer and the sun buffers. */
     ID3D11DeviceContext1 *context1 = nullptr;
     ID3D11Buffer *constant_ring = nullptr;
+    UINT constant_ring_capacity = 0u;
     UINT constant_ring_used = 0u;
     ID3D11RasterizerState *draw_rasterizer_states[3] = {};
     SmoothNormalsCache smooth_normals;
@@ -898,6 +899,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->draw_index_capacity = 0u;
     presenter->draw_vertex_used = 0u;
     presenter->draw_index_used = 0u;
+    presenter->constant_ring_capacity = 0u;
+    presenter->constant_ring_used = 0u;
     presenter->draw_shared_ready = false;
 #ifdef RECOMP_RTGI
     d3d_rtgi_destroy(presenter->rtgi);
@@ -2000,31 +2003,9 @@ bool createDrawPipeline(
     return true;
 }
 
+void createConstantRing(RecompD3dPresenter *presenter);
+
 /* Device state every draw shares, independent of vertex format. */
-constexpr UINT kConstantRingBytes = 1u << 24;
-
-/* A discard per draw renames the whole constant buffer every time. AMD's D3D11
-   driver stalls on that at a thousand or more draws a frame (DOA2U issue #69),
-   so constants share one ring that is discarded only when it wraps. */
-void createConstantRing(RecompD3dPresenter *presenter)
-{
-    D3D11_FEATURE_DATA_D3D11_OPTIONS options{};
-    if (FAILED(presenter->context->QueryInterface(IID_PPV_ARGS(&presenter->context1))) ||
-        FAILED(presenter->device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof options)) ||
-        !options.ConstantBufferOffsetting || !options.MapNoOverwriteOnDynamicConstantBuffer) {
-        releaseCom(presenter->context1);
-        return;
-    }
-    D3D11_BUFFER_DESC desc{};
-    desc.ByteWidth = kConstantRingBytes;
-    desc.Usage = D3D11_USAGE_DYNAMIC;
-    desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    if (FAILED(presenter->device->CreateBuffer(&desc, nullptr, &presenter->constant_ring)))
-        releaseCom(presenter->context1);
-    presenter->constant_ring_used = kConstantRingBytes; // the first write discards
-}
-
 bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 {
     if (presenter->draw_shared_ready) {
@@ -2218,39 +2199,6 @@ bool uploadBuffer(
     return true;
 }
 
-/* Writes constants and binds them to the vertex and pixel stages at slot. Each
-   ring slot is a multiple of 16 constants, as VSSetConstantBuffers1 requires. */
-bool bindConstants(
-    RecompD3dPresenter *presenter,
-    ID3D11Buffer *fallback,
-    UINT slot,
-    const void *source,
-    UINT size)
-{
-    ID3D11Buffer *ring = presenter->constant_ring;
-    if (ring == nullptr) {
-        if (!uploadBuffer(presenter, fallback, source, size)) return false;
-        presenter->context->VSSetConstantBuffers(slot, 1u, &fallback);
-        presenter->context->PSSetConstantBuffers(slot, 1u, &fallback);
-        return true;
-    }
-    const UINT slot_bytes = (size + 255u) & ~255u;
-    const bool wrap = presenter->constant_ring_used + slot_bytes > kConstantRingBytes;
-    if (wrap) presenter->constant_ring_used = 0u;
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(presenter->context->Map(ring, 0u,
-            wrap ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0u, &mapped))) {
-        return false;
-    }
-    std::memcpy(static_cast<uint8_t *>(mapped.pData) + presenter->constant_ring_used, source, size);
-    presenter->context->Unmap(ring, 0u);
-    const UINT first = presenter->constant_ring_used / 16u, count = slot_bytes / 16u;
-    presenter->context1->VSSetConstantBuffers1(slot, 1u, &ring, &first, &count);
-    presenter->context1->PSSetConstantBuffers1(slot, 1u, &ring, &first, &count);
-    presenter->constant_ring_used += slot_bytes;
-    return true;
-}
-
 /* Appends each draw's vertices or indices and discards only when the ring
    wraps. A discard per draw made the driver block for up to ~150 ms per tick
    right after a buffer grew (island map). */
@@ -2283,6 +2231,50 @@ bool uploadRing(
     presenter->context->Unmap(*buffer, 0u);
     offset = used;
     used += (size + 15u) & ~15u;
+    return true;
+}
+
+/* A discard per draw renames the whole constant buffer every time. AMD's D3D11
+   driver stalls on that at a thousand or more draws a frame (DOA2U issue #69),
+   so constants share one ring that is discarded only when it wraps. */
+void createConstantRing(RecompD3dPresenter *presenter)
+{
+    D3D11_FEATURE_DATA_D3D11_OPTIONS options{};
+    if (FAILED(presenter->context->QueryInterface(IID_PPV_ARGS(&presenter->context1))) ||
+        FAILED(presenter->device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof options)) ||
+        !options.ConstantBufferOffsetting || !options.MapNoOverwriteOnDynamicConstantBuffer ||
+        !ensureDynamicBuffer(presenter, &presenter->constant_ring, presenter->constant_ring_capacity,
+            1u << 24, D3D11_BIND_CONSTANT_BUFFER)) {
+        releaseCom(presenter->context1);
+        return;
+    }
+    presenter->constant_ring_used = presenter->constant_ring_capacity; // the first write discards
+}
+
+/* Writes constants and binds them to the vertex and pixel stages at slot. */
+bool bindConstants(
+    RecompD3dPresenter *presenter,
+    ID3D11Buffer *fallback,
+    UINT slot,
+    const void *source,
+    UINT size)
+{
+    if (presenter->constant_ring == nullptr) {
+        if (!uploadBuffer(presenter, fallback, source, size)) return false;
+        presenter->context->VSSetConstantBuffers(slot, 1u, &fallback);
+        presenter->context->PSSetConstantBuffers(slot, 1u, &fallback);
+        return true;
+    }
+    // Whole multiples of 16 constants, as VSSetConstantBuffers1 requires.
+    const UINT slot_bytes = (size + 255u) & ~255u;
+    UINT offset = 0u;
+    if (!uploadRing(presenter, &presenter->constant_ring, presenter->constant_ring_capacity,
+            presenter->constant_ring_used, source, slot_bytes, D3D11_BIND_CONSTANT_BUFFER, offset, 0u, size)) {
+        return false;
+    }
+    const UINT first = offset / 16u, count = slot_bytes / 16u;
+    presenter->context1->VSSetConstantBuffers1(slot, 1u, &presenter->constant_ring, &first, &count);
+    presenter->context1->PSSetConstantBuffers1(slot, 1u, &presenter->constant_ring, &first, &count);
     return true;
 }
 
