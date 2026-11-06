@@ -30,14 +30,18 @@ def build_inputs(root, receipt_path=None):
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if receipt.get("status") != "built-unverified":
         raise ValueError("Build is incomplete; see its build-receipt.json and logs.")
-    runner = Path(receipt["runner"]).resolve(strict=True)
+    # The Windows launcher's Renderer choice; Windows builds a second runner for Vulkan.
+    key = "vulkan_runner" if os.environ.get("RECOMP_RENDERER") == "vulkan" else "runner"
+    if key not in receipt:
+        raise ValueError("This build has no Vulkan renderer. Build the game again, or choose Direct3D 11.")
+    runner = Path(receipt[key]).resolve(strict=True)
     disc = Path(receipt["disc"]).resolve(strict=True)
     if not runner.is_relative_to(private) or not disc.is_relative_to(private):
         raise ValueError("Build paths must remain inside this checkout's private folder.")
     images = list(disc.glob("*.xbe"))
     if len(images) != 1:
         raise ValueError("Expected exactly one root XBE in the built disc.")
-    if sha256(runner) != receipt["runner_sha256"] or sha256(images[0]) != receipt["xbe_sha256"]:
+    if sha256(runner) != receipt[key + "_sha256"] or sha256(images[0]) != receipt["xbe_sha256"]:
         raise ValueError("Runner or game executable differs from the build receipt; rebuild before launching.")
     return runner, images[0], receipt_path
 

@@ -10,6 +10,12 @@
 #include <cstring>
 #include <thread>
 
+#ifdef _WIN32
+// The presenter reads settings with std::getenv; an empty value removes one.
+#define setenv(name, value, overwrite) _putenv_s(name, value)
+#define unsetenv(name) _putenv_s(name, "")
+#endif
+
 static const RecompD3dPresenterConfig kTestConfig = {
     320u, 240u,
     RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
@@ -356,6 +362,15 @@ int main()
     // Run tests headless so no windows pop up during CI / test runs
     setenv("RECOMP_HEADLESS", "1", 1);
     recomp_d3d_presenter_set_immediate_present(false);
+
+    // Windows CI machines have no Vulkan driver.
+    const bool gpu = SDL_InitSubSystem(SDL_INIT_VIDEO) &&
+        SDL_GPUSupportsShaderFormats(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL, nullptr);
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    if (!gpu) {
+        std::puts("SKIP no SDL GPU device supports SPIR-V or MSL");
+        return 77;
+    }
 
     if (!testCreateAndTicks() || !testDraw() || !testMsaa() || !testClose()) {
         std::fprintf(stderr, "SDL_GPU presenter tests failed!\n");

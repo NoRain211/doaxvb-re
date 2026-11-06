@@ -221,7 +221,7 @@ def build(args, verify_parity=True, lifter_revision=None):
         if windows or sys.platform.startswith("linux"):  # macOS compiles its Swift launcher on first use
             targets.append("recomp_launcher")
         if windows:
-            targets.append("recomp_play")
+            targets += ["recomp_play", "recomp_program_runner_vulkan"]
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
@@ -229,6 +229,9 @@ def build(args, verify_parity=True, lifter_revision=None):
             shutil.copy2(output / "recomp_launcher.exe", ROOT / "Launcher.exe")
             shutil.copy2(output / "recomp_play.exe", ROOT / "DOAXBV.exe")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
+        if windows:
+            vulkan = output / "recomp_program_runner_vulkan.exe"
+            receipt.update(vulkan_runner=str(vulkan), vulkan_runner_sha256=sha256(vulkan))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
     except Exception as error:
