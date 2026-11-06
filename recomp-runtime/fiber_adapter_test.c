@@ -2,6 +2,7 @@
 #include "xbox_memory_layout.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -57,6 +58,66 @@ static const RecompFiber *find_fiber(uint32_t guest_handle)
     return NULL;
 }
 
+#ifdef _WIN32
+static uint32_t test_main_handle;
+static uint32_t test_fiber_visits;
+
+static void switch_to(uint32_t guest_handle)
+{
+    prepare_call(1u, &guest_handle);
+    recomp_fiber_lookup_manual(0x0018305au)();
+}
+
+/* Counts on its own native stack, so only a rewound stack can repeat a count. */
+static void test_fiber_body(void)
+{
+    volatile uint32_t visits = 0u;
+
+    for (;;) {
+        test_fiber_visits = ++visits;
+        switch_to(test_main_handle);
+    }
+}
+
+static RecompFunction test_fiber_lookup(uint32_t guest_address)
+{
+    return guest_address == TEST_FIBER_ENTRY ? test_fiber_body : NULL;
+}
+
+/* A snapshot of a parked fiber rewinds its native continuation. */
+static int parked_fiber_rewinds(void *saved)
+{
+    uint32_t arguments[3] = {0xabcdef01u};
+    uint32_t fiber_handle;
+    int passed = 1;
+
+    recomp_runtime_set_lookup(test_fiber_lookup);
+    prepare_call(1u, arguments);
+    recomp_fiber_lookup_manual(0x00183099u)();
+    test_main_handle = recomp_runtime.registers.eax;
+    arguments[0] = TEST_STACK_SIZE;
+    arguments[1] = TEST_FIBER_ENTRY;
+    arguments[2] = 0u;
+    prepare_call(3u, arguments);
+    recomp_fiber_lookup_manual(0x00182fbbu)();
+    fiber_handle = recomp_runtime.registers.eax;
+
+    switch_to(fiber_handle);
+    recomp_fiber_adapter_state_save(saved);
+    passed &= expect_u32("parked fiber restorable", recomp_fiber_adapter_state_restorable(saved), 1u);
+    switch_to(fiber_handle);
+    switch_to(fiber_handle);
+    passed &= expect_u32("fiber visits before rewind", test_fiber_visits, 3u);
+    recomp_fiber_adapter_state_restore(saved);
+    switch_to(fiber_handle);
+    passed &= expect_u32("fiber visits after rewind", test_fiber_visits, 2u);
+
+    recomp_fiber_adapter_reset();
+    recomp_runtime_set_lookup(NULL);
+    return passed;
+}
+#endif
+
 int recomp_fiber_adapter_test(void)
 {
     static uint8_t low_memory[8];
@@ -93,8 +154,17 @@ int recomp_fiber_adapter_test(void)
     uint32_t second_handle;
     RecompFunction adapter;
     const RecompFiber *fiber;
+    RecompFiberStackRange range = {0};
+    void *saved = malloc(recomp_fiber_adapter_state_size());
+    void *empty = malloc(recomp_fiber_adapter_state_size());
+    uint32_t empty_heap;
     int passed = 1;
 
+    if (saved == NULL || empty == NULL) {
+        free(saved);
+        free(empty);
+        return 0;
+    }
     memset(low_memory, 0, sizeof low_memory);
     memset(tls_index_memory, 0, sizeof tls_index_memory);
     memset(heap_memory, 0xa5, sizeof heap_memory);
@@ -112,6 +182,8 @@ int recomp_fiber_adapter_test(void)
     prepare_call(1u, arguments);
     adapter = recomp_fiber_lookup_manual(0x00183099u);
     adapter();
+    recomp_fiber_adapter_state_save(empty);
+    empty_heap = xbox_HeapCheckpoint();
 
     arguments[0] = TEST_STACK_SIZE;
     arguments[1] = TEST_FIBER_ENTRY;
@@ -121,6 +193,7 @@ int recomp_fiber_adapter_test(void)
     adapter();
     first_handle = recomp_runtime.registers.eax;
     first_heap_checkpoint = xbox_HeapCheckpoint();
+    recomp_fiber_adapter_state_save(saved);
 
     arguments[0] = first_handle;
     prepare_call(1u, arguments);
@@ -165,10 +238,42 @@ int recomp_fiber_adapter_test(void)
             "recreated fiber parameter", fiber->parameter, second_parameter);
     }
 
+    /* Rewinding the delete and the re-create puts the first fiber back in its slot. */
+    recomp_fiber_adapter_state_restore(saved);
+    fiber = find_fiber(first_handle);
+    passed &= expect_u32(
+        "restored fiber parameter",
+        fiber != NULL ? fiber->parameter : 0u,
+        first_parameter);
+    passed &= expect_u32(
+        "restored stack count", (uint32_t)recomp_fiber_adapter_stack_ranges(&range, 1u), 1u);
+    passed &= expect_u32("restored stack base", range.base, TEST_HEAP_BASE);
+    passed &= expect_u32("restored stack size", range.size, TEST_STACK_SIZE);
+
+    /* Every snapshot rewinds the heap with the fibers, so a create replayed
+       after rewinding past it takes the same stack and moves the heap the same. */
+    recomp_fiber_adapter_state_restore(empty);
+    recomp_test_heap_reset(empty_heap, -1);
+    passed &= expect_u32("rewound fiber absent", find_fiber(first_handle) != NULL, 0u);
+    arguments[0] = TEST_STACK_SIZE;
+    arguments[1] = TEST_FIBER_ENTRY;
+    arguments[2] = second_parameter;
+    prepare_call(3u, arguments);
+    adapter = recomp_fiber_lookup_manual(0x00182fbbu);
+    adapter();
+    passed &= expect_u32("replayed create handle", recomp_runtime.registers.eax, first_handle);
+    passed &= expect_u32(
+        "replayed create heap", xbox_HeapCheckpoint(), first_heap_checkpoint);
+
     arguments[0] = second_handle;
     prepare_call(1u, arguments);
     adapter = recomp_fiber_lookup_manual(0x00183047u);
     adapter();
     recomp_fiber_adapter_reset();
+#ifdef _WIN32
+    passed &= parked_fiber_rewinds(saved);
+#endif
+    free(saved);
+    free(empty);
     return passed;
 }

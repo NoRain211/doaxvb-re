@@ -33,6 +33,7 @@ enum {
 };
 
 static RecompD3dFrameState frame_state;
+static uint32_t first_clear_swap = UINT32_MAX;
 static RecompD3dPresenter *presenter;
 static uint32_t frame_device_address;
 #ifdef _WIN32
@@ -50,6 +51,7 @@ static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 }
 
 static uint32_t present_held;
+void (*recomp_d3d_swap_hook)(void);
 
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
 {
@@ -60,6 +62,29 @@ void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
 uint32_t recomp_d3d_frame_adapter_swap_counter(void)
 {
     return frame_state.swap_counter;
+}
+
+void recomp_d3d_frame_adapter_present_again(void)
+{
+    if (presenter == NULL || frame_state.swap_counter == 0u) return;
+    static RecompD3dPresenterCommand command; /* the draw union is large */
+    command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+    command.data.present.effective_flags = 5u;
+    command.data.present.swap_counter = frame_state.swap_counter;
+    command.data.present.hold = false;
+    const RecompD3dPresenterError error = recomp_d3d_presenter_submit(presenter, &command);
+    recomp_d3d_frame_adapter_exit_if_closed(error);
+    if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d-present-again:presenter:%u", (unsigned)error);
+}
+
+/* Present returns the swap counter to the guest, so rollback rewinds it. A
+   rewind lands between frames, so the next Clear is a first Clear again. */
+size_t recomp_d3d_frame_adapter_state_size(void) { return sizeof frame_state; }
+void recomp_d3d_frame_adapter_state_save(void *state) { memcpy(state, &frame_state, sizeof frame_state); }
+void recomp_d3d_frame_adapter_state_restore(const void *state)
+{
+    memcpy(&frame_state, state, sizeof frame_state);
+    first_clear_swap = UINT32_MAX;
 }
 
 void recomp_d3d_frame_adapter_initialize(
@@ -215,7 +240,6 @@ void recomp_d3d_frame_adapter_reset_buffers(void)
 }
 
 static RecompD3dFrameHook first_clear_hook;
-static uint32_t first_clear_swap = UINT32_MAX;
 
 void recomp_d3d_frame_adapter_set_first_clear_hook(RecompD3dFrameHook hook)
 {
@@ -401,7 +425,7 @@ void recomp_d3d_swap_adapter(void)
     }
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
-    recomp_d3d_wait_vblank();
+    if ((present_held & RECOMP_PRESENT_HOLD_ROLLBACK) == 0u) recomp_d3d_wait_vblank();
     /* A held frame is still presented, so its draws run now while the
        textures they borrow from guest memory are this frame's, and the
        presenter keeps handling window events. */
@@ -436,6 +460,7 @@ void recomp_d3d_swap_adapter(void)
     recomp_title_idle_frame();
     recomp_unlock_swimsuits_frame();
     recomp_ui_log_frame();
+    if (recomp_d3d_swap_hook != NULL) recomp_d3d_swap_hook();
     recomp_screenshot_poll_trigger();
     /* Scene state machine at 0x000A3820: 0x5DECE0 is the scene currently
        running and 0x5DED55 is the scene requested for the next iteration.

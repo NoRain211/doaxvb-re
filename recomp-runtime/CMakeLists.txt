@@ -26,6 +26,23 @@ if(WIN32)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
+    # The Vulkan runner compiles its shaders at run time with shaderc. LWJGL's
+    # build of shaderc 2c8cae7 imports only KERNEL32; the jar is a zip.
+    # shortcut: x64 only; add natives-windows-arm64 when Windows on Arm builds ship.
+    set(_shaderc_jar "${CMAKE_BINARY_DIR}/_deps/lwjgl-shaderc-3.4.3-natives-windows.jar")
+    set(RECOMP_SHADERC_DLL "${CMAKE_BINARY_DIR}/_deps/shaderc/windows/x64/org/lwjgl/shaderc/shaderc.dll")
+    if(NOT EXISTS "${RECOMP_SHADERC_DLL}")
+        file(DOWNLOAD
+            https://repo1.maven.org/maven2/org/lwjgl/lwjgl-shaderc/3.4.3/lwjgl-shaderc-3.4.3-natives-windows.jar
+            "${_shaderc_jar}"
+            EXPECTED_HASH SHA256=E8E631D007B36EDF1440CB4D42654A9B5C03BCB91B9C333C6A81EC6A3911F8BC)
+        file(ARCHIVE_EXTRACT INPUT "${_shaderc_jar}" DESTINATION "${CMAKE_BINARY_DIR}/_deps/shaderc"
+            PATTERNS windows/x64/org/lwjgl/shaderc/shaderc.dll)
+    endif()
+    function(recomp_use_shaderc target)
+        add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
+            copy_if_different "${RECOMP_SHADERC_DLL}" "$<TARGET_FILE_DIR:${target}>")
+    endfunction()
 else()
     # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
     # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
@@ -58,8 +75,8 @@ else()
     endfunction()
 endif()
 
-# Dear ImGui draws the runtime's overlay text over the game, through the D3D11
-# presenter on Windows and the SDL GPU one elsewhere; see overlay_*.cpp. Set
+# Dear ImGui draws the runtime's overlay text over the game, through the SDL
+# GPU presenter, and on Windows also the D3D11 one; see overlay_*.cpp. Set
 # FETCHCONTENT_SOURCE_DIR_IMGUI to configure offline.
 if(WIN32 OR SDL3_FOUND)
     if(POLICY CMP0135)
@@ -70,10 +87,9 @@ if(WIN32 OR SDL3_FOUND)
         URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9.tar.gz
         URL_HASH SHA256=3872a5f90df78fced023c1945f4466b654fd74573370b77b17742149763a7a7c)
     FetchContent_MakeAvailable(imgui)
+    set(_recomp_imgui_backend "${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp")
     if(WIN32)
-        set(_recomp_imgui_backend "${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp")
-    else()
-        set(_recomp_imgui_backend "${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp")
+        list(APPEND _recomp_imgui_backend "${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp")
     endif()
     add_library(recomp_imgui STATIC
         "${imgui_SOURCE_DIR}/imgui.cpp"
@@ -83,20 +99,24 @@ if(WIN32 OR SDL3_FOUND)
         "${_recomp_imgui_backend}")
     target_include_directories(recomp_imgui PUBLIC "${imgui_SOURCE_DIR}")
     if(WIN32)
-        target_link_libraries(recomp_imgui PUBLIC d3d11 d3dcompiler)
+        target_link_libraries(recomp_imgui PUBLIC d3d11 d3dcompiler SDL3::SDL3)
     else()
         recomp_use_sdl3(recomp_imgui)
     endif()
 endif()
-# Adds the presenter's overlay drawer; the text model, overlay_text.c, is
-# added where the game side is.
+# Adds the presenter's overlay drawer; the text model and screen queue,
+# overlay_text.c, are added where the game side is. Windows draws with D3D11
+# unless SDL_GPU follows the target, as for the Vulkan runner.
 function(recomp_use_overlay target)
+    target_sources(${target} PRIVATE overlay_screen.c overlay_imgui_panel.cpp screenshot.c)
+    if(WIN32 AND NOT "${ARGV1}" STREQUAL "SDL_GPU")
+        target_sources(${target} PRIVATE overlay_d3d11.cpp)
+    else()
+        target_sources(${target} PRIVATE overlay_sdl_gpu.cpp)
+    endif()
     if(WIN32)
-        target_sources(${target} PRIVATE overlay_d3d11.cpp overlay_imgui_panel.cpp screenshot.c)
         # screenshot.c asks the shell for the Pictures folder.
         target_link_libraries(${target} PRIVATE shell32 ole32 uuid)
-    else()
-        target_sources(${target} PRIVATE overlay_sdl_gpu.cpp overlay_imgui_panel.cpp screenshot.c)
     endif()
     target_link_libraries(${target} PRIVATE recomp_imgui)
 endfunction()
@@ -344,6 +364,7 @@ add_executable(recomp_runtime_test
     crt_string_adapter_test.c
     fiber_model.c
     fiber_adapter.c
+    native_fiber.c
     fiber_adapter_test.c
     fiber_model_test.c
     flag_macro_test.c
@@ -361,6 +382,7 @@ add_executable(recomp_runtime_test
     game_scheduler.c
     game_display.c
     game_rollback.c
+    guest_snapshot.c
     game_frame_replay.c
     game_scene.c
     game_world.c
@@ -423,6 +445,8 @@ add_executable(recomp_runtime_test
     kernel_video_test.c
     kernel_ordinals.c
     "${_recomp_test_leaf_source}")
+# Generated code calls the x87 transcendentals in recomp_portable_math.
+target_link_libraries(recomp_runtime_test PRIVATE recomp_portable_math)
 if(NOT MSVC)
     target_link_libraries(recomp_runtime_test PRIVATE m)
 endif()
@@ -482,6 +506,7 @@ if(RECOMP_BOUNDARY_SOURCE)
         "${_recomp_boundary_source}")
     target_include_directories(recomp_runtime_boundary_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(recomp_runtime_boundary_test PRIVATE recomp_portable_math)
 endif()
 
 if(RECOMP_ENTRY_SOURCE)
@@ -505,6 +530,7 @@ if(RECOMP_ENTRY_SOURCE)
         runtime.c
         stop_report.c
         runner.cpp
+        guest_snapshot.c
         runner_imports.c
         kernel_ordinals.c
         kernel_dispatch.c
@@ -531,6 +557,7 @@ if(RECOMP_ENTRY_SOURCE)
     target_include_directories(recomp_runner PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+    target_link_libraries(recomp_runner PRIVATE recomp_portable_math)
     if(WIN32)
         target_link_libraries(recomp_runner PRIVATE bcrypt dbghelp)
     else()
@@ -681,7 +708,39 @@ if(RECOMP_PROGRAM_DIR)
     message(STATUS
         "Generated ${_missing_count} fail-loud stubs for absent snapshot bodies")
 
-    add_executable(recomp_program_runner
+    # The netplay host forwards its UDP port through the router with UPnP.
+    set(UPNPC_BUILD_SHARED OFF CACHE INTERNAL "")
+    set(UPNPC_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(UPNPC_BUILD_SAMPLE OFF CACHE INTERNAL "")
+    set(UPNPC_NO_INSTALL ON CACHE INTERNAL "")
+    include(FetchContent)
+    FetchContent_Declare(miniupnpc
+        URL https://github.com/miniupnp/miniupnp/archive/refs/tags/miniupnpc_2_3_3.tar.gz
+        URL_HASH SHA256=8cf2c833b3e76fc4893ff29c2a376e3394962449e5970e373c0a91421724d222
+        SOURCE_SUBDIR miniupnpc)
+    FetchContent_MakeAvailable(miniupnpc)
+    # Two runners pair only when they simulate alike: the same source and generated program.
+    set(RECOMP_NETPLAY_VERSION "" CACHE STRING "Release or commit netplay pairs on; empty reads package.json or Git")
+    set(_netplay_version "${RECOMP_NETPLAY_VERSION}")
+    if(NOT _netplay_version AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../package.json")
+        # A release ZIP has no Git metadata; every platform's ZIP names the commit it was packed from.
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../package.json" _netplay_package)
+        string(JSON _netplay_version ERROR_VARIABLE _netplay_package_error GET "${_netplay_package}" source_base)
+    endif()
+    if(NOT _netplay_version)
+        # shortcut: read at configure time; build_game.py configures every build, a bare cmake --build may lag a commit.
+        execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _netplay_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    if(NOT _netplay_version)
+        message(FATAL_ERROR "Netplay needs a release package.json, a Git checkout or RECOMP_NETPLAY_VERSION")
+    endif()
+    string(SHA256 _netplay_build "${_netplay_version}\n${_recomp_program_manifest_sha256}\n")
+    message(STATUS "Netplay build ${_netplay_build} (${_netplay_version})")
+
+    # The generated program and runner compile once; each runner below links
+    # them with one presenter.
+    add_library(recomp_program OBJECT
         runtime.c
         stop_report.c
         runner.cpp
@@ -736,6 +795,7 @@ if(RECOMP_PROGRAM_DIR)
         suit_switch.c
         suit_switch_adapter.c
         overlay_text.c
+        input_text.c
         unlock_swimsuits.c
         ui_log.c
         d3d_creation_model.c
@@ -745,15 +805,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_model.c
         d3d_frame_adapter.c
         d3d_vblank.cpp
-        $<$<PLATFORM_ID:Windows>:d3d_presenter_d3d11.cpp>
-        $<$<PLATFORM_ID:Windows>:d3d_draw_shader.cpp>
-        $<$<PLATFORM_ID:Windows>:d3d_fsr.cpp>
-        $<$<PLATFORM_ID:Windows>:d3d_motion.cpp>
-        $<$<PLATFORM_ID:Windows>:d3d_dlss.cpp>
-        $<$<PLATFORM_ID:Windows>:texture_replacement.cpp>
-        $<$<PLATFORM_ID:Windows>:d3d_presenter_thread.cpp>
         $<$<PLATFORM_ID:Windows>:audio_output_xaudio2.cpp>
-        $<$<NOT:$<PLATFORM_ID:Windows>>:d3d_presenter_sdl_gpu.cpp>
         $<$<NOT:$<PLATFORM_ID:Windows>>:audio_output_sdl.cpp>
         d3d_presenter_capture.cpp
         d3d_pose_replay.c
@@ -780,6 +832,7 @@ if(RECOMP_PROGRAM_DIR)
         crt_string_adapter.c
         fiber_model.c
         fiber_adapter.c
+        native_fiber.c
         directory_model.c
         input_model.c
         input_adapter.c
@@ -803,39 +856,78 @@ if(RECOMP_PROGRAM_DIR)
         kernel_thread.c
         kernel_video.c
         host_diagnostics.cpp
+        synctest.c
+        synctest_modules.c
+        guest_snapshot.c
+        rollback.c
+        replay.c
+        netplay.c
+        netplay_room.c
+        netplay_names.c
+        netplay_upnp.c
+        netplay_game.c
+        netplay_profile.cpp
+        netplay_settings.cpp
+        netplay_menu.cpp
+        netplay_menu_room.cpp
+        netplay_menu_find.cpp
+        netplay_session.cpp
+        netplay_launch.cpp
         "${_missing_source}"
         ${_recomp_program_sources}
         ../xbe/sha.cpp
         ../xbe/xbe_parser.cpp)
-    target_compile_definitions(recomp_program_runner PRIVATE
+    target_compile_definitions(recomp_program PUBLIC
         RECOMP_FULL_PROGRAM
         RECOMP_D3D_FRAME_ENABLED)
-    target_include_directories(recomp_program_runner PRIVATE
+    # Only runner.cpp reads it, so a new commit does not recompile the generated program.
+    set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_NETPLAY_BUILD="${_netplay_build}")
+    target_include_directories(recomp_program PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${_recomp_program_dir}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
     if(WIN32)
-        target_link_libraries(recomp_program_runner PRIVATE
-            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32
+        target_link_libraries(recomp_program PUBLIC
+            bcrypt dbghelp d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 ws2_32
             $<IF:$<BOOL:${MINGW}>,xaudio2_9,xaudio2> ${RECOMP_MEDIA_FOUNDATION})
-        target_link_options(recomp_program_runner PRIVATE ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
-        recomp_use_sdl3(recomp_program_runner)
+        target_link_options(recomp_program PUBLIC ${RECOMP_MEDIA_FOUNDATION_DELAYLOAD})
     else()
-        target_sources(recomp_program_runner PRIVATE win32_compat.c)
+        target_sources(recomp_program PRIVATE win32_compat.c)
         if(RECOMP_FIBER_ASM)
             enable_language(ASM)
-            target_sources(recomp_program_runner PRIVATE ${RECOMP_FIBER_ASM})
+            target_sources(recomp_program PRIVATE ${RECOMP_FIBER_ASM})
         endif()
-        recomp_use_sdl3(recomp_program_runner)
     endif()
-    recomp_use_overlay(recomp_program_runner)
+    if(TARGET SDL3::SDL3)
+        target_link_libraries(recomp_program PUBLIC SDL3::SDL3)
+    endif()
+    target_link_libraries(recomp_program PUBLIC libminiupnpc-static recomp_portable_math recomp_imgui)
     if(NOT MSVC)
-        target_link_libraries(recomp_program_runner PRIVATE m)
+        target_link_libraries(recomp_program PUBLIC m)
     endif()
 
-    if(RECOMP_APP_ICON)
-        target_sources(recomp_program_runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
+    # Windows plays with D3D11 unless the launcher picks the Vulkan runner,
+    # which draws through SDL GPU as the macOS and Linux builds do.
+    if(WIN32)
+        add_executable(recomp_program_runner
+            d3d_presenter_d3d11.cpp d3d_draw_shader.cpp d3d_fsr.cpp d3d_motion.cpp d3d_dlss.cpp
+            texture_replacement.cpp d3d_presenter_thread.cpp)
+        add_executable(recomp_program_runner_vulkan d3d_presenter_sdl_gpu.cpp)
+        recomp_use_overlay(recomp_program_runner_vulkan SDL_GPU)
+        recomp_use_shaderc(recomp_program_runner_vulkan)
+        set(_recomp_program_runners recomp_program_runner recomp_program_runner_vulkan)
+    else()
+        add_executable(recomp_program_runner d3d_presenter_sdl_gpu.cpp)
+        set(_recomp_program_runners recomp_program_runner)
     endif()
+    recomp_use_overlay(recomp_program_runner)
+    foreach(_runner IN LISTS _recomp_program_runners)
+        target_link_libraries(${_runner} PRIVATE recomp_program)
+        recomp_use_sdl3(${_runner})
+        if(RECOMP_APP_ICON)
+            target_sources(${_runner} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
+        endif()
+    endforeach()
 
     # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
     # beside the runner rather than on first use like the macOS launcher.
@@ -896,7 +988,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_d3d11_test)
-    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
@@ -925,7 +1017,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_thread_test)
-    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c)
+    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c input_text.c)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
@@ -944,21 +1036,24 @@ if(WIN32)
     target_link_libraries(recomp_input_host_test PRIVATE user32)
     recomp_use_sdl3(recomp_input_host_test)
 else()
-    add_executable(recomp_d3d_presenter_sdl_gpu_test
-        d3d_presenter_sdl_gpu.cpp
-        d3d_presenter_sdl_gpu_test.cpp
-        d3d_vertex_program.cpp
-        d3d_draw_model.c
-        d3d_texture_model.c)
-    recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
-    recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test)
-    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c)
     add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     recomp_use_sdl3(recomp_input_host_test)
     add_executable(recomp_win32_compat_test win32_compat.c win32_compat_test.c)
     add_test(NAME recomp-runtime-win32-compat COMMAND recomp_win32_compat_test)
+endif()
+add_executable(recomp_d3d_presenter_sdl_gpu_test
+    d3d_presenter_sdl_gpu.cpp
+    d3d_presenter_sdl_gpu_test.cpp
+    d3d_vertex_program.cpp
+    d3d_draw_model.c
+    d3d_texture_model.c)
+recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
+recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test SDL_GPU)
+target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c input_text.c)
+if(WIN32)
+    recomp_use_shaderc(recomp_d3d_presenter_sdl_gpu_test)
 endif()
 
 add_executable(recomp_sha_test sha_test.cpp ../xbe/sha.cpp)
@@ -967,6 +1062,51 @@ if(WIN32)
     target_link_libraries(recomp_sha_test PRIVATE bcrypt)
 endif()
 add_test(NAME recomp-runtime-sha COMMAND recomp_sha_test)
+
+# Rollback netplay, ported from doa2u-re (docs/rollback-netcode.md).
+add_executable(recomp_guest_snapshot_test guest_snapshot.c guest_snapshot_test.c)
+add_test(NAME recomp-runtime-guest-snapshot COMMAND recomp_guest_snapshot_test)
+add_executable(recomp_synctest_test synctest.c guest_snapshot.c synctest_test.c)
+add_test(NAME recomp-runtime-synctest COMMAND recomp_synctest_test)
+add_executable(recomp_rollback_test rollback.c rollback_test.c)
+add_test(NAME recomp-runtime-rollback COMMAND recomp_rollback_test)
+add_executable(recomp_replay_test replay.c replay_test.c)
+add_test(NAME recomp-runtime-replay COMMAND recomp_replay_test)
+add_executable(recomp_netplay_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_test.c)
+add_executable(recomp_netplay_lobby_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_lobby_test.cpp)
+if(WIN32)
+    target_link_libraries(recomp_netplay_test PRIVATE ws2_32)
+    target_link_libraries(recomp_netplay_lobby_test PRIVATE ws2_32)
+endif()
+add_test(NAME recomp-runtime-netplay COMMAND recomp_netplay_test)
+add_test(NAME recomp-runtime-netplay-lobby COMMAND recomp_netplay_lobby_test)
+add_executable(recomp_netplay_settings_test netplay_settings.cpp netplay_settings_test.cpp)
+add_test(NAME recomp-runtime-netplay-settings COMMAND recomp_netplay_settings_test)
+add_executable(recomp_netplay_profile_test netplay_profile.cpp netplay_profile_test.cpp ../xbe/sha.cpp)
+target_include_directories(recomp_netplay_profile_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../xbe")
+if(WIN32)
+    target_link_libraries(recomp_netplay_profile_test PRIVATE bcrypt)
+endif()
+add_test(NAME recomp-runtime-netplay-profile COMMAND recomp_netplay_profile_test)
+# One x87 transcendental implementation for every host (portable_math.h).
+add_library(recomp_portable_math STATIC
+    musl_math/sin.c musl_math/cos.c musl_math/tan.c musl_math/__sin.c musl_math/__cos.c musl_math/__tan.c
+    musl_math/__rem_pio2.c musl_math/__rem_pio2_large.c musl_math/atan.c musl_math/atan2.c
+    musl_math/log2.c musl_math/expm1.c)
+target_include_directories(recomp_portable_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+# Same bits on every host: no fused multiply-add (arm64 has it by default) and no fast-math.
+if(MSVC)
+    target_compile_options(recomp_portable_math PRIVATE /fp:precise)
+else()
+    target_compile_options(recomp_portable_math PRIVATE -ffp-contract=off -fno-fast-math)
+endif()
+if(NOT WIN32)
+    target_link_libraries(recomp_portable_math PUBLIC m)
+endif()
+add_executable(recomp_portable_math_test portable_math_test.c)
+target_link_libraries(recomp_portable_math_test PRIVATE recomp_portable_math)
+add_test(NAME recomp-runtime-portable-math COMMAND recomp_portable_math_test)
+
 add_executable(recomp_d3d_smooth_normals_test
     d3d_smooth_normals.cpp d3d_smooth_normals_test.cpp)
 
@@ -1082,6 +1222,9 @@ if(TARGET recomp_input_host_test)
 endif()
 if(TARGET recomp_d3d_presenter_thread_test)
     add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_thread_test)
+    # The Vulkan runner's presenter; machines without a Vulkan driver skip it.
+    add_test(NAME recomp-runtime-d3d-presenter-vulkan COMMAND recomp_d3d_presenter_sdl_gpu_test)
+    set_tests_properties(recomp-runtime-d3d-presenter-vulkan PROPERTIES SKIP_RETURN_CODE 77)
 elseif(TARGET recomp_d3d_presenter_sdl_gpu_test)
     add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_sdl_gpu_test)
 endif()

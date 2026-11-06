@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "d3d_presenter.h"
+#include "input_text.h"
 #include "overlay_sdl_gpu.h"
 #include "screenshot.h"
 #include "d3d_draw_model.h"
@@ -8,7 +9,11 @@
 
 #include <SDL3/SDL.h>
 
-#if !defined(_WIN32)
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #endif
 
@@ -36,10 +41,11 @@ constexpr uint64_t kTargetByteLimit = 64u * 1024u * 1024u;
 constexpr uint32_t kInitialVertexCapacity = 32u * 1024u * 1024u; // 32 MB
 constexpr uint32_t kInitialIndexCapacity = 16u * 1024u * 1024u;  // 16 MB
 // TransformUniforms in floats: the header every draw pushes, then the
-// directional block. SDL's Vulkan backend binds 4 KB per uniform slot, so
-// vertex program constants live in their own slot.
-constexpr uint32_t kHeaderUniformFloats = 144u;
-constexpr uint32_t kTransformUniformFloats = 280u;
+// directional block, then the range-fog matrices. SDL's Vulkan backend binds
+// 4 KB per uniform slot, so vertex program constants live in their own slot.
+constexpr uint32_t kHeaderUniformFloats = 156u;
+constexpr uint32_t kLightingUniformFloats = 292u;
+constexpr uint32_t kTransformUniformFloats = 356u;
 constexpr uint32_t kProgramConstantFloats = 192u * 4u;
 constexpr uint32_t kNoProgramConstants = UINT32_MAX;
 
@@ -64,16 +70,31 @@ struct TransformUniforms {
     float4 reflection_diffuse;
     float4 reflection_flags;
     float4 directional_flags;
+    float4 fog_color;
+    float4 fog_params; // start, end, density, mode
+    float4 fog_flags; // enabled, Z depth, range, visualization
     float4x4 directional_normals[4];
     float4 directional_base;
     float4 directional_material;
     float4 directional_directions[8];
     float4 directional_colors[8];
+    float4x4 fog_world_view[4];
 };
 
 struct ProgramConstants {
     float4 vc[192];
 };
+
+// D3D fog modes, as the D3D11 presenter evaluates them; see docs/fog.md.
+static float fogFactor(constant TransformUniforms &u, float depth) {
+    if (u.fog_params.w == 1) return saturate(exp(-depth * u.fog_params.z));
+    if (u.fog_params.w == 2) { float d = depth * u.fog_params.z; return saturate(exp(-d * d)); }
+    if (u.fog_params.w == 3) {
+        float span = u.fog_params.y - u.fog_params.x;
+        return span == 0 ? (depth < u.fog_params.y ? 1.0 : 0.0) : saturate((u.fog_params.y - depth) / span);
+    }
+    return saturate(depth);
+}
 )";
 
 struct TextureEntry {
@@ -339,6 +360,8 @@ struct PipelineKeyHash {
 
 struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
+    RecompOverlayQuad overlay_screen[RECOMP_OVERLAY_MAX_QUADS]{}; // the presenter's copy of the menu's screen
+    Uint64 text_asked_ms = 0; // when a text field last read typed keys
     std::thread::id owner_thread;
     SDL_Window *window = nullptr;
     SDL_GPUDevice *device = nullptr;
@@ -448,6 +471,13 @@ bool preferMailbox(bool immediate)
 
 void pumpEvents(RecompD3dPresenter *presenter)
 {
+    // Text input, which can raise an IME or a screen keyboard, stays on only while a text field reads it.
+    if (recomp_input_text_asked()) presenter->text_asked_ms = SDL_GetTicks();
+    const bool wanted = presenter->text_asked_ms != 0 && SDL_GetTicks() - presenter->text_asked_ms < 500u;
+    if (wanted != SDL_TextInputActive(presenter->window)) {
+        if (wanted) SDL_StartTextInput(presenter->window);
+        else SDL_StopTextInput(presenter->window);
+    }
     SDL_PumpEvents();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -458,6 +488,14 @@ void pumpEvents(RecompD3dPresenter *presenter)
                 event.window.windowID == SDL_GetWindowID(presenter->window)) {
                 presenter->close_requested = true;
             }
+        } else if (event.type == SDL_EVENT_TEXT_INPUT) {
+            for (const char *c = event.text.text; *c != '\0'; ++c)
+                if (static_cast<unsigned char>(*c) < 0x80u) recomp_input_text_char(static_cast<unsigned char>(*c));
+        } else if (event.type == SDL_EVENT_KEY_DOWN) {
+            // Text events carry no control keys; the text fields read them as WM_CHAR gives them.
+            if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) recomp_input_text_char('\r');
+            else if (event.key.key == SDLK_BACKSPACE) recomp_input_text_char('\b');
+            else if (event.key.key == SDLK_ESCAPE) recomp_input_text_char(0x1bu);
         }
     }
 }
@@ -862,6 +900,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool has_specular = layout.specular_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_texcoord = layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
     const bool four_coords = (layout.texcoord_count == 4u);
     const bool two_coords = (layout.texcoord_count == 2u);
@@ -890,6 +929,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     } else if (two_coords) {
         s += "    float2 texcoord1 [[attribute(5)]];\n";
     }
+    if (has_specular && !program_count) s += "    float4 specular [[attribute(8)]];\n";
     s += "};\n";
 
     // VSOut
@@ -907,6 +947,10 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     }
     if (program_count) {
         s += "    float2 program_q [[user(prog_q)]];\n";
+    } else {
+        // Vertex-program draws are unfogged, as in the D3D11 presenter.
+        s += "    float fog_depth [[user(fog_depth)]];\n";
+        s += "    float fog_factor [[user(fog_factor), center_no_perspective]];\n";
     }
     s += "};\n";
 
@@ -1021,6 +1065,28 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                 s += "    }\n";
             }
         }
+        s += "    out.fog_depth = u.fog_flags.y > 0.5 ? abs(out.position.z) : out.position.w;\n";
+        s += has_specular ? "    out.fog_factor = in.specular.w;\n" : "    out.fog_factor = 1.0;\n";
+        if (layout.pretransformed) {
+            s += "    if (u.fog_flags.y > 0.5) out.fog_depth = abs(out.position.z / out.position.w);\n";
+        } else {
+            s += "    if (u.fog_flags.z > 0.5) {\n";
+            s += "        float3 eye = (u.fog_world_view[0] * float4(in.position, 1.0)).xyz;\n";
+            if (layout.blend_weight_count != 0u) {
+                s += "        if (u.blend_flags.x > 0.5) {\n";
+                s += "            eye = float3(0.0);\n";
+                s += "            float remainder = 1.0;\n";
+                for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
+                    const std::string w = layout.blend_weight_count == 1u ? "in.weights" : "in.weights[" + std::to_string(i) + "]";
+                    s += "            eye += " + w + " * (u.fog_world_view[" + std::to_string(i) + "] * float4(in.position, 1.0)).xyz;\n";
+                    s += "            remainder -= " + w + ";\n";
+                }
+                s += "            eye += remainder * (u.fog_world_view[" + std::to_string(layout.blend_weight_count) + "] * float4(in.position, 1.0)).xyz;\n";
+                s += "        }\n";
+            }
+            s += "        out.fog_depth = length(eye);\n";
+            s += "    }\n";
+        }
         s += "    return out;\n";
         s += "}\n";
     }
@@ -1110,6 +1176,13 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "            (func == 6 && alpha >= ref);\n";
     s += "        if (!alpha_pass) discard_fragment();\n";
     s += "    }\n";
+    if (!program_count) {
+        s += "    if (u.fog_flags.x > 0.5) {\n";
+        s += "        float depth = u.fog_flags.y > 0.5 && u.fog_flags.z < 0.5 ? abs(in.position.z) : in.fog_depth;\n";
+        s += "        float factor = u.fog_params.w == 0 ? saturate(in.fog_factor) : fogFactor(u, depth);\n";
+        s += "        shaded.rgb = u.fog_flags.w > 0.5 ? float3(factor) : mix(u.fog_color.rgb, shaded.rgb, factor);\n";
+        s += "    }\n";
+    }
     s += "    return shaded;\n";
     s += "}\n";
 
@@ -1130,11 +1203,15 @@ layout(set = 1, binding = 0, std140) uniform TransformUniforms {
     vec4 reflection_diffuse;
     vec4 reflection_flags;
     vec4 directional_flags;
+    vec4 fog_color;
+    vec4 fog_params;
+    vec4 fog_flags;
     mat4 directional_normals[4];
     vec4 directional_base;
     vec4 directional_material;
     vec4 directional_directions[8];
     vec4 directional_colors[8];
+    mat4 fog_world_view[4];
 } u;
 )";
 
@@ -1152,12 +1229,25 @@ layout(set = 3, binding = 0, std140) uniform TransformUniforms {
     vec4 reflection_diffuse;
     vec4 reflection_flags;
     vec4 directional_flags;
+    vec4 fog_color;
+    vec4 fog_params;
+    vec4 fog_flags;
     mat4 directional_normals[4];
     vec4 directional_base;
     vec4 directional_material;
     vec4 directional_directions[8];
     vec4 directional_colors[8];
+    mat4 fog_world_view[4];
 } u;
+float fogFactor(float depth) {
+    if (u.fog_params.w == 1.0) return clamp(exp(-depth * u.fog_params.z), 0.0, 1.0);
+    if (u.fog_params.w == 2.0) { float d = depth * u.fog_params.z; return clamp(exp(-d * d), 0.0, 1.0); }
+    if (u.fog_params.w == 3.0) {
+        float span = u.fog_params.y - u.fog_params.x;
+        return span == 0.0 ? (depth < u.fog_params.y ? 1.0 : 0.0) : clamp((u.fog_params.y - depth) / span, 0.0, 1.0);
+    }
+    return clamp(depth, 0.0, 1.0);
+}
 )";
 
 std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
@@ -1165,6 +1255,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool has_specular = layout.specular_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_texcoord = layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
     const bool four_coords = (layout.texcoord_count == 4u);
     const bool two_coords = (layout.texcoord_count == 2u);
@@ -1201,6 +1292,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
     } else if (two_coords) {
         s += "layout(location = 5) in vec2 in_texcoord1;\n";
     }
+    if (has_specular && !program_count) s += "layout(location = 8) in vec4 in_specular;\n";
 
     s += "layout(location = 0) out vec4 v_color;\n";
     s += "layout(location = 1) out vec2 v_texcoord;\n";
@@ -1214,6 +1306,10 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
     }
     if (program_count) {
         s += "layout(location = 6) out vec2 v_program_q;\n";
+    } else {
+        // Vertex-program draws are unfogged, as in the D3D11 presenter.
+        s += "layout(location = 7) out float v_fog_depth;\n";
+        s += "layout(location = 8) noperspective out float v_fog_factor;\n";
     }
 
     s += "void main() {\n";
@@ -1322,6 +1418,28 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
                 s += "    }\n";
             }
         }
+        s += "    v_fog_depth = u.fog_flags.y > 0.5 ? abs(gl_Position.z) : gl_Position.w;\n";
+        s += has_specular ? "    v_fog_factor = in_specular.w;\n" : "    v_fog_factor = 1.0;\n";
+        if (layout.pretransformed) {
+            s += "    if (u.fog_flags.y > 0.5) v_fog_depth = abs(gl_Position.z / gl_Position.w);\n";
+        } else {
+            s += "    if (u.fog_flags.z > 0.5) {\n";
+            s += "        vec3 eye = (u.fog_world_view[0] * vec4(in_position, 1.0)).xyz;\n";
+            if (layout.blend_weight_count != 0u) {
+                s += "        if (u.blend_flags.x > 0.5) {\n";
+                s += "            eye = vec3(0.0);\n";
+                s += "            float remainder = 1.0;\n";
+                for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
+                    const std::string w = layout.blend_weight_count == 1u ? "in_weights" : "in_weights[" + std::to_string(i) + "]";
+                    s += "            eye += " + w + " * (u.fog_world_view[" + std::to_string(i) + "] * vec4(in_position, 1.0)).xyz;\n";
+                    s += "            remainder -= " + w + ";\n";
+                }
+                s += "            eye += remainder * (u.fog_world_view[" + std::to_string(layout.blend_weight_count) + "] * vec4(in_position, 1.0)).xyz;\n";
+                s += "        }\n";
+            }
+            s += "        v_fog_depth = length(eye);\n";
+            s += "    }\n";
+        }
         s += "}\n";
     }
     return s;
@@ -1352,6 +1470,9 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     }
     if (program_count) {
         s += "layout(location = 6) in vec2 v_program_q;\n";
+    } else {
+        s += "layout(location = 7) in float v_fog_depth;\n";
+        s += "layout(location = 8) noperspective in float v_fog_factor;\n";
     }
 
     s += "layout(location = 0) out vec4 out_color;\n";
@@ -1434,16 +1555,23 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "            (func == 6 && alpha >= ref);\n";
     s += "        if (!alpha_pass) discard;\n";
     s += "    }\n";
+    if (!program_count) {
+        s += "    if (u.fog_flags.x > 0.5) {\n";
+        s += "        float depth = u.fog_flags.y > 0.5 && u.fog_flags.z < 0.5 ? abs(gl_FragCoord.z) : v_fog_depth;\n";
+        s += "        float factor = u.fog_params.w == 0.0 ? clamp(v_fog_factor, 0.0, 1.0) : fogFactor(depth);\n";
+        s += "        shaded.rgb = u.fog_flags.w > 0.5 ? vec3(factor) : mix(u.fog_color.rgb, shaded.rgb, factor);\n";
+        s += "    }\n";
+    }
     s += "    out_color = shaded;\n";
     s += "}\n";
 
     return s;
 }
 
-#if !defined(_WIN32)
 // Vulkan takes SPIR-V; the generated GLSL is compiled at runtime by shaderc,
 // loaded on demand so the runner has no build-time dependency on it. SteamOS
-// and most distributions ship libshaderc_shared.
+// and most distributions ship libshaderc_shared; the Windows build copies
+// shaderc.dll beside the runner.
 typedef void *(*ShadercCompilerInitFn)();
 typedef void *(*ShadercCompileOptionsInitFn)();
 typedef void *(*ShadercCompileIntoSpvFn)(void *, const char *, size_t, int, const char *, const char *, void *);
@@ -1463,18 +1591,25 @@ static ShadercResultLengthFn s_shaderc_length = nullptr;
 static ShadercResultReleaseFn s_shaderc_res_release = nullptr;
 
 static bool loadShadercSymbols() {
+#ifdef _WIN32
+    HMODULE h = LoadLibraryA("shaderc.dll");
+    if (!h) return false;
+    const auto find = [h](const char *name) { return reinterpret_cast<void *>(GetProcAddress(h, name)); };
+#else
     void *h = dlopen("libshaderc_shared.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!h) h = dlopen("libshaderc_shared.so", RTLD_NOW | RTLD_LOCAL);
     if (!h) h = dlopen("libshaderc.so.1", RTLD_NOW | RTLD_LOCAL);  // Debian and Ubuntu name
     if (!h) return false;
-    s_shaderc_init = (ShadercCompilerInitFn)dlsym(h, "shaderc_compiler_initialize");
-    s_shaderc_opt_init = (ShadercCompileOptionsInitFn)dlsym(h, "shaderc_compile_options_initialize");
-    s_shaderc_compile = (ShadercCompileIntoSpvFn)dlsym(h, "shaderc_compile_into_spv");
-    s_shaderc_status = (ShadercResultStatusFn)dlsym(h, "shaderc_result_get_compilation_status");
-    s_shaderc_error = (ShadercResultErrorFn)dlsym(h, "shaderc_result_get_error_message");
-    s_shaderc_bytes = (ShadercResultBytesFn)dlsym(h, "shaderc_result_get_bytes");
-    s_shaderc_length = (ShadercResultLengthFn)dlsym(h, "shaderc_result_get_length");
-    s_shaderc_res_release = (ShadercResultReleaseFn)dlsym(h, "shaderc_result_release");
+    const auto find = [h](const char *name) { return dlsym(h, name); };
+#endif
+    s_shaderc_init = (ShadercCompilerInitFn)find("shaderc_compiler_initialize");
+    s_shaderc_opt_init = (ShadercCompileOptionsInitFn)find("shaderc_compile_options_initialize");
+    s_shaderc_compile = (ShadercCompileIntoSpvFn)find("shaderc_compile_into_spv");
+    s_shaderc_status = (ShadercResultStatusFn)find("shaderc_result_get_compilation_status");
+    s_shaderc_error = (ShadercResultErrorFn)find("shaderc_result_get_error_message");
+    s_shaderc_bytes = (ShadercResultBytesFn)find("shaderc_result_get_bytes");
+    s_shaderc_length = (ShadercResultLengthFn)find("shaderc_result_get_length");
+    s_shaderc_res_release = (ShadercResultReleaseFn)find("shaderc_result_release");
     if (!s_shaderc_init || !s_shaderc_compile || !s_shaderc_status || !s_shaderc_bytes ||
         !s_shaderc_length || !s_shaderc_res_release) {
         s_shaderc_compile = nullptr;
@@ -1488,9 +1623,7 @@ static bool loadShaderc() {
     static const bool loaded = loadShadercSymbols();
     return loaded;
 }
-#endif
 
-#if !defined(_WIN32)
 static void *s_persistent_compiler = nullptr;
 static void *s_persistent_options = nullptr;
 static std::mutex s_compiler_mutex;
@@ -1498,8 +1631,12 @@ static std::mutex s_compiler_mutex;
 static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_GPUShaderStage stage) {
     std::vector<uint32_t> spv;
     if (!loadShaderc()) {
+#ifdef _WIN32
+        std::fprintf(stderr, "[presenter] Vulkan shaders need shaderc.dll beside the runner; build the game again\n");
+#else
         std::fprintf(stderr, "[presenter] Vulkan shaders need shaderc (libshaderc_shared.so.1, "
                              "or libshaderc.so.1 from the libshaderc1 package)\n");
+#endif
         return spv;
     }
     std::lock_guard<std::mutex> lock(s_compiler_mutex);
@@ -1525,7 +1662,6 @@ static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_G
     s_shaderc_res_release(result);
     return spv;
 }
-#endif
 
 // Failures are cached too, so a shader that cannot build is not retried on every draw.
 // The boot-shader thread may finish the same key first; keep its pair and drop ours.
@@ -1775,7 +1911,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     vb_desc.pitch = draw.vertex_stride;
     vb_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
-    SDL_GPUVertexAttribute attributes[8]{};
+    SDL_GPUVertexAttribute attributes[9]{};
     Uint32 attr_count = 0;
 
     // Position (attr 0)
@@ -1810,6 +1946,15 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
         attributes[attr_count].buffer_slot = 0;
         attributes[attr_count].format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM;
         attributes[attr_count].offset = layout.diffuse_offset;
+        ++attr_count;
+    }
+
+    // Specular (attr 8): its alpha is the vertex fog factor.
+    if (layout.specular_offset != RECOMP_D3D_FVF_ABSENT) {
+        attributes[attr_count].location = 8;
+        attributes[attr_count].buffer_slot = 0;
+        attributes[attr_count].format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM;
+        attributes[attr_count].offset = layout.specular_offset;
         ++attr_count;
     }
 
@@ -2149,8 +2294,13 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
-    SDL_GPUDevice *device = SDL_CreateGPUDevice(
-        SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
+#ifdef _WIN32
+    // SPIR-V alone selects Vulkan; Windows already has the Direct3D 11 runner.
+    const SDL_GPUShaderFormat formats = SDL_GPU_SHADERFORMAT_SPIRV;
+#else
+    const SDL_GPUShaderFormat formats = SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_SPIRV;
+#endif
+    SDL_GPUDevice *device = SDL_CreateGPUDevice(formats, false, nullptr);
     if (!device) {
         std::fprintf(stderr, "[presenter] SDL create GPU device failed: %s\n", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -2457,8 +2607,8 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->draw_vertex_transfer = vtb;
     p->draw_index_transfer = itb;
 
-    std::fprintf(stderr, "[presenter] initialized scale=%.2f resolution=%ux%u window=%ux%u widescreen=%d msaa=%ux\n",
-        scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
+    std::fprintf(stderr, "[presenter] initialized driver=%s scale=%.2f resolution=%ux%u window=%ux%u widescreen=%d msaa=%ux\n",
+        SDL_GetGPUDeviceDriver(device), scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
 
     try {
         p->precompile_thread = std::thread(precompileBootShaders, p);
@@ -2601,8 +2751,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // buffer.
                 RecompOverlayText overlay;
                 recomp_overlay_take(&overlay);
+                const uint32_t screen_count =
+                    recomp_overlay_screen_take(presenter->overlay_screen, RECOMP_OVERLAY_MAX_QUADS);
                 recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
-                    swapchain_tex, swap_w, swap_h, &overlay);
+                    swapchain_tex, swap_w, swap_h, &overlay, presenter->overlay_screen, screen_count);
             }
         }
 
@@ -2806,7 +2958,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         if (draw.directional.enabled && !draw.program_count) {
             const auto &light = draw.directional;
-            float *dir_constants = constants + 144;
+            float *dir_constants = constants + kHeaderUniformFloats;
             std::memcpy(dir_constants, light.normal_transforms, sizeof(light.normal_transforms));
             std::memcpy(dir_constants + 64, light.ambient_emissive, sizeof(light.ambient_emissive));
             std::memcpy(dir_constants + 68, light.material_diffuse, sizeof(light.material_diffuse));
@@ -2815,6 +2967,32 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             constants[140] = 1.0f;
             constants[141] = light.normalize ? 1.0f : 0.0f;
             constants[142] = static_cast<float>(light.count);
+        }
+
+        // Fog as the D3D11 presenter applies it; see docs/fog.md.
+        static const bool fog_enabled = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        static const bool fog_visualize = [] {
+            const char *value = std::getenv("RECOMP_D3D_FOG_FACTOR");
+            return value && std::strcmp(value, "1") == 0;
+        }();
+        const bool fog = draw.fog.enabled && fog_enabled && !draw.program_count;
+        const bool range_fog = fog && draw.fog.range && !layout.pretransformed;
+        if (fog) {
+            float *fog_constants = constants + 144;
+            for (unsigned c = 0; c < 3; ++c)
+                fog_constants[c] = ((draw.fog.color >> (16 - 8 * c)) & 255u) / 255.0f;
+            fog_constants[4] = draw.fog.start;
+            fog_constants[5] = draw.fog.end;
+            fog_constants[6] = draw.fog.density;
+            fog_constants[7] = static_cast<float>(draw.fog.mode);
+            fog_constants[8] = 1.0f;
+            fog_constants[9] = draw.fog_z ? 1.0f : 0.0f;
+            fog_constants[10] = range_fog ? 1.0f : 0.0f;
+            fog_constants[11] = fog_visualize ? 1.0f : 0.0f;
+            if (range_fog) std::memcpy(constants + kLightingUniformFloats, draw.fog_world_view, sizeof draw.fog_world_view);
         }
 
         constants[64] = (texture != nullptr) ? 1.0f : 0.0f;
@@ -2854,10 +3032,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
         }
 
-        // Only lit draws push the directional block; vertex programs push
-        // their constants to the second vertex uniform slot.
-        const uint32_t vs_uniform_size = (draw.directional.enabled && !draw.program_count)
-            ? kTransformUniformFloats : kHeaderUniformFloats;
+        // Only lit draws push the directional block and only range fog the
+        // matrices after it; vertex programs push their constants to the
+        // second vertex uniform slot.
+        const uint32_t vs_uniform_size = range_fog ? kTransformUniformFloats
+            : (draw.directional.enabled && !draw.program_count) ? kLightingUniformFloats : kHeaderUniformFloats;
         const uint32_t fs_uniform_size = kHeaderUniformFloats;
 
         auto &udata = presenter->segment.uniform_data;

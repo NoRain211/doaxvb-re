@@ -49,6 +49,7 @@
     "docs/public-status.md",
     "docs/recomp-controls.md",
     "docs/recomp-save-contract.md",
+    "docs/rollback-netcode.md",
     "docs/wayfinder/research/audio-movie-replacements.md",
     "docs/wayfinder/research/game-ui-construction.md",
     "docs/wayfinder/research/sofdec-player-api.md",
@@ -145,7 +146,7 @@
     {
       "path": "tools/xboxrecomp",
       "url": "https://github.com/NoRain211/xboxrecomp.git",
-      "commit": "7adaf210a89814c5ca4444e4876fccb51b938878"
+      "commit": "4500b88f25275cfcbc6c413842d9f84e102333e4"
     },
     {
       "path": "third_party/rbengine",
@@ -189,6 +190,10 @@
     {
       "sha256": "3086fb925984a8bd85580aa2c202143d61020e6d7a5367a231bbabb5bd98195a",
       "reason": "AMD FSR 1.0.2 ffx_a.h half-float conversion shift table in third_party/fsr1 (MIT), unmodified from GPUOpen-Effects/FidelityFX-FSR commit a21ffb8."
+    },
+    {
+      "sha256": "3678064993b9a107c5cd38e2cd987029c88ad69b623c1d0e77efb39613a22e4a",
+      "reason": "Hand-written: the default netplay matchmaker's host:port, XORed with 0x5a, in netplay_menu.cpp (from doa2u-re). Not game data."
     },
     {
       "sha256": "4765463d844a412639298ff7ed691726722db592ea5bee51f7586bc575fa5ed0",

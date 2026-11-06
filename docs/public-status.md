@@ -141,9 +141,16 @@ full lighting fidelity, camera parity and the remaining offline matrix rows
 remain unproven. See the [preview evidence](https://github.com/NoRain211/doaxbv-re/issues/28#issuecomment-5647654899)
 and [acceptance dashboard](https://github.com/NoRain211/doaxbv-re/issues/16#issuecomment-5647656786).
 
-The pinned rollback dependencies and their seal repair are available as source.
-They are not linked into the game runtime; see the
-[dependency audit](research/rollback-engine-audit.md) for limitations and checks.
+Online Exhibition uses doa2u-re's rollback netcode (`netplay_session.cpp`),
+not the pinned rollback dependencies in the
+[dependency audit](research/rollback-engine-audit.md). Agent-run smoke
+sessions with scripted input, two runners on one Windows machine, reached
+Two Players matches from the menu's rooms and from
+`--netplay-host`/`--netplay-join`, with guest RAM identical at the end
+and on every 30th frame. One 4,000-frame UDP run went through a local relay
+adding 50 ms latency, jitter and packet loss. No full match with real input
+and no session between two machines or between operating systems has been
+tested. See [rollback netcode](rollback-netcode.md).
 
 The 0.3 Alpha source and recipe include subsequent inventory action-text,
 picture-setting, activity-transition and pool-rendering repairs. Daytime water

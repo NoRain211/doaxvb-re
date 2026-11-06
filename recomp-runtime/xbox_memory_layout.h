@@ -2,6 +2,7 @@
 #define DOAXBV_XBOX_MEMORY_LAYOUT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Kernel data exports and synthetic thread objects. Above the main stack top
@@ -21,5 +22,9 @@ uint32_t xbox_ContiguousAlloc(
     uint32_t lowest_address,
     uint32_t highest_address,
     uint32_t alignment);
+/* Both allocator cursors and the thread counters, for rollback snapshots. */
+size_t xbox_HeapStateSize(void);
+void xbox_HeapStateSave(void *state);
+void xbox_HeapStateRestore(const void *state);
 
 #endif

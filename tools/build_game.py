@@ -20,8 +20,8 @@ import launcher_art
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
 LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
-LIFTER_REVISION = "7adaf210a89814c5ca4444e4876fccb51b938878"
-RECIPE_SHA256 = "132ce89226ec913b95bec03b04c1170b051c6f768b6b8272f350dfbaadabfc3f"
+LIFTER_REVISION = "4500b88f25275cfcbc6c413842d9f84e102333e4"
+RECIPE_SHA256 = "914191506b713569a31066daa6333306cdff6cf5fa5ea018797768f086b1b662"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
@@ -221,7 +221,7 @@ def build(args, verify_parity=True, lifter_revision=None):
         if windows or sys.platform.startswith("linux"):  # macOS compiles its Swift launcher on first use
             targets.append("recomp_launcher")
         if windows:
-            targets.append("recomp_play")
+            targets += ["recomp_play", "recomp_program_runner_vulkan"]
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
@@ -229,6 +229,9 @@ def build(args, verify_parity=True, lifter_revision=None):
             shutil.copy2(output / "recomp_launcher.exe", ROOT / "Launcher.exe")
             shutil.copy2(output / "recomp_play.exe", ROOT / "DOAXBV.exe")
         receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
+        if windows:
+            vulkan = output / "recomp_program_runner_vulkan.exe"
+            receipt.update(vulkan_runner=str(vulkan), vulkan_runner_sha256=sha256(vulkan))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
     except Exception as error:

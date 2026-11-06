@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad);
+/* A gamepad holds the port, as of the last sample. */
+bool recomp_input_host_pad_connected(uint32_t port);
 
 void recomp_input_host_set_vibration(
     uint32_t port,

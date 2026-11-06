@@ -47,6 +47,8 @@ class ExtractionTests(unittest.TestCase):
             self.assertIn(b"compiler error", log.read_bytes())
 
     def test_built_runner_receipt_selection_and_identity(self):
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
             work = root / "private/setup-synthetic"
@@ -83,6 +85,20 @@ class ExtractionTests(unittest.TestCase):
             selected.write_text(json.dumps({"receipt": str(receipt.relative_to(root))}))
             self.assertEqual(build_inputs(root), (runner, image, receipt))
             self.assertEqual(build_inputs(root, receipt), (runner, image, receipt))
+            with patch.dict(os.environ, RECOMP_RENDERER="vulkan"), patch("run_game.sys.platform", "win32"):
+                with self.assertRaisesRegex(ValueError, "no Vulkan renderer"):
+                    build_inputs(root, receipt)
+                vulkan = work / "runner_vulkan.exe"
+                vulkan.write_bytes(b"synthetic Vulkan runner")
+                receipt.write_text(json.dumps(dict(data, vulkan_runner=str(vulkan),
+                                                   vulkan_runner_sha256=sha256(vulkan))))
+                self.assertEqual(build_inputs(root, receipt), (vulkan, image, receipt))
+                vulkan.write_bytes(b"changed Vulkan runner")
+                with self.assertRaisesRegex(ValueError, "differs from the build receipt"):
+                    build_inputs(root, receipt)
+            with patch.dict(os.environ, RECOMP_RENDERER="vulkan"), patch("run_game.sys.platform", "linux"):
+                self.assertEqual(build_inputs(root, receipt), (runner, image, receipt))
+            receipt.write_text(json.dumps(data))
             runner.write_bytes(b"changed binary")
             with self.assertRaisesRegex(ValueError, "differs from the build receipt"):
                 build_inputs(root, receipt)
@@ -128,6 +144,8 @@ class ExtractionTests(unittest.TestCase):
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_FREE_CAMERA"), expected)
 
     def test_launch_prerequisites_and_command(self):
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with self.assertRaisesRegex(ValueError, "No playable runner"):
@@ -149,6 +167,10 @@ class ExtractionTests(unittest.TestCase):
                                   str(disc / "synthetic.xbe"), "--vsync"])
                 self.assertEqual(run.call_args.kwargs["env"]["RECOMP_AUDIO_GAIN"], "0.5")
                 self.assertEqual(run.call_args.kwargs["cwd"], disc)
+            # Without a build receipt there is no Vulkan runner to start.
+            with patch.dict(os.environ, RECOMP_RENDERER="vulkan"), patch("run_game.sys.platform", "win32"):
+                with self.assertRaisesRegex(ValueError, "Vulkan renderer needs a build"):
+                    launch(root)
 
     def test_paths_and_complete_listing(self):
         self.assertEqual(listing_files(listing("/sub/ (0 bytes)\n/sub/a.txt (3 bytes)")),

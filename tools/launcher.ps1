@@ -80,6 +80,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $settingsPath = Join-Path $root 'private\launcher.json'
 $heights = 480, 720, 1080, 1440, 2160
 $samples = 1, 2, 4, 8
+$renderers = 'd3d11', 'vulkan'
 $volumes = 100, 75, 50, 25, 0
 # What the game does when its title screen is left idle; see docs/title-idle.md.
 $idleValues = 'default', 'no-cutscene', 'cpu-exhibition'
@@ -88,7 +89,7 @@ $settings = [pscustomobject]@{
     height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; volume = 100; shuffle = $false
     sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
-    pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true
+    pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true; renderer = 'd3d11'
     windowMode = 'borderless'; windowHeight = 0; upscale = 'fsr'; sharpness = 50; anisotropy = 16; dlss = 'off'; frameRate = '60'
 }
 # Display page; see docs/display-modes.md. 'legacy' is the original fixed window.
@@ -349,21 +350,29 @@ $heightNames = [string[]]($heights | ForEach-Object { "$($_)p" })
 $nearest = @($heights | Where-Object { $_ -le [int]$settings.height }).Count - 1
 $resolution = Add-Row $pages[2] 'Render resolution' 0 (New-Choice $heightNames $nearest)
 $msaaNames = [string[]]($samples | ForEach-Object { if ($_ -eq 1) { 'Off' } else { "$($_)x" } })
-$msaa = Add-Row $pages[2] 'MSAA' 36 (New-Choice $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa)))
+$msaa = Add-Row $pages[2] 'MSAA' 30 (New-Choice $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa)))
+# Vulkan draws through SDL GPU like the Linux build; see docs/building.md.
+$renderer = Add-Row $pages[2] 'Renderer' 60 (New-Choice ([string[]]('Direct3D 11', 'Vulkan')) ([Array]::IndexOf($renderers, [string]$settings.renderer)))
 # Display settings on the left, renderer toggles on the right.
-$smaa = New-Toggle $pages[2] 'SMAA edge smoothing' 72 $settings.smaa 0 218
-$vrr = New-Toggle $pages[2] 'VRR display (even 60 Hz pacing)' 100 $settings.vrr 0 218
-$fog = New-Toggle $pages[2] 'Fog' 128 $settings.fog 0 218
+$smaa = New-Toggle $pages[2] 'SMAA edge smoothing' 94 $settings.smaa 0 218
+$vrr = New-Toggle $pages[2] 'VRR display (even 60 Hz pacing)' 120 $settings.vrr 0 218
+$fog = New-Toggle $pages[2] 'Fog' 146 $settings.fog 0 218
 # Off keeps the game's original shadows for lower-powered PCs; see docs/sun-shadow.md.
-$sun = New-Toggle $pages[2] 'Sun shadows' 156 $settings.sun_shadows 0 218
-$pixelLighting = New-Toggle $pages[2] 'Per-pixel lighting' 72 $settings.pixelLighting 228 220
-$smoothNormals = New-Toggle $pages[2] 'Smooth normals' 100 $settings.smoothNormals 228 220
-$rtgi = New-Toggle $pages[2] 'Ray-traced GI (RTGI)' 128 $settings.rtgi 228 220
-$hitColor = New-Toggle $pages[2] 'RTGI hit-point color' 156 $settings.rtgiHitColor 228 220
-$strength = Add-Row $pages[2] 'RTGI strength' 184 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)); Enabled = $rtgi.Checked })
-$hitColor.Enabled = $rtgi.Checked
-$rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
-New-Note $pages[2] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 208 32 | Out-Null
+$sun = New-Toggle $pages[2] 'Sun shadows' 172 $settings.sun_shadows 0 218
+$pixelLighting = New-Toggle $pages[2] 'Per-pixel lighting' 94 $settings.pixelLighting 228 220
+$smoothNormals = New-Toggle $pages[2] 'Smooth normals' 120 $settings.smoothNormals 228 220
+$rtgi = New-Toggle $pages[2] 'Ray-traced GI (RTGI)' 146 $settings.rtgi 228 220
+$hitColor = New-Toggle $pages[2] 'RTGI hit-point color' 172 $settings.rtgiHitColor 228 220
+$strength = Add-Row $pages[2] 'RTGI strength' 198 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 4; DecimalPlaces = 2; Increment = 0.25; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]4, [decimal]$settings.rtgiStrength)) })
+# Vulkan has resolution, MSAA and fog; the other toggles and texture packs are Direct3D 11 features.
+function Update-Renderer {
+    $d3d11 = $renderer.SelectedIndex -eq 0
+    foreach ($box in $smaa, $vrr, $sun, $pixelLighting, $smoothNormals, $rtgi, $textures, $browse, $textureDump) { $box.Enabled = $d3d11 }
+    $strength.Enabled = $d3d11 -and $rtgi.Checked; $hitColor.Enabled = $strength.Enabled
+    foreach ($box in $windowMode, $anisotropy, $dlss, $frameRate) { $box.Enabled = $d3d11 }
+    Update-DisplayControls
+}
+New-Note $pages[2] 'RTGI needs DXR and can slow matches.' 224 20 | Out-Null
 
 # Display: the window and how the rendered frame is scaled into it.
 $windowMode = Add-Row $pages[3] 'Display mode' 0 (New-Choice $windowModeNames ([Array]::IndexOf($windowModeValues, [string]$settings.windowMode)))
@@ -375,7 +384,7 @@ $dlss = Add-Row $pages[3] 'NVIDIA DLSS' 160 (New-Choice $dlssNames ([Array]::Ind
 $frameRate = Add-Row $pages[3] 'Frame rate' 192 (New-Choice $frameRateNames ([Array]::IndexOf($frameRateValues, [string]$settings.frameRate)))
 New-Note $pages[3] "DLSS replaces MSAA and RTGI. Alt+Enter: window / fullscreen.`nUnlocked tears; 120 on a faster screen needs VRR (Graphics)." 216 28 | Out-Null
 function Update-DisplayControls {
-    $scaled = $windowMode.SelectedIndex -ne 2
+    $scaled = $windowMode.Enabled -and $windowMode.SelectedIndex -ne 2
     $windowSize.Enabled = $scaled; $upscale.Enabled = $scaled
     $sharpness.Enabled = $scaled -and $upscale.SelectedIndex -eq 0
 }
@@ -421,15 +430,19 @@ $browse.Add_Click({
 })
 $pages[6].Controls.AddRange(@($textureFolder, $browse))
 $textureDump = New-Toggle $pages[6] 'Dump original textures' 68 $settings.textureDump
+# Every control Update-Renderer touches exists from here on.
+Update-Renderer
+$rtgi.Add_CheckedChanged({ Update-Renderer })
+$renderer.Add_SelectedIndexChanged({ Update-Renderer })
 New-Note $pages[6] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
 
 New-Note $pages[7] "Display`n    Alt+Enter    Window / fullscreen`n`nFree camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
 
 function Update-Summary {
-    $antiAliasing = if ($dlss.SelectedIndex) { "DLSS $(($dlssNames[$dlss.SelectedIndex] -split ' ')[0])" } else { $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" }) }
-    $display = "$($windowMode.SelectedItem)$dot$($resolution.SelectedItem)" + $(if ($windowMode.SelectedIndex -ne 2 -and $upscale.SelectedIndex -eq 0) { ' FSR' }) + $dot + $antiAliasing
-    $render = 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Checked) { "$($dot)VRR" }) + $(if ($frameRate.SelectedIndex) { "$dot$(@('', '120 FPS', 'Display Hz', 'Unlocked FPS')[$frameRate.SelectedIndex])" })
-    $extras = @($(if ($sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
+    $antiAliasing = if ($dlss.Enabled -and $dlss.SelectedIndex) { "DLSS $(($dlssNames[$dlss.SelectedIndex] -split ' ')[0])" } else { $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" }) }
+    $display = $(if ($windowMode.Enabled) { "$($windowMode.SelectedItem)$dot" }) + "$($resolution.SelectedItem)" + $(if ($upscale.Enabled -and $upscale.SelectedIndex -eq 0) { ' FSR' }) + $dot + $antiAliasing
+    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" }) + $(if ($frameRate.Enabled -and $frameRate.SelectedIndex) { "$dot$(@('', '120 FPS', 'Display Hz', 'Unlocked FPS')[$frameRate.SelectedIndex])" })
+    $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Enabled -and $textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
 
@@ -547,6 +560,7 @@ $percent = $volumes[$volume.SelectedIndex]
     sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
+    renderer = $renderers[$renderer.SelectedIndex]
     windowMode = $windowModeValues[$windowMode.SelectedIndex]; windowHeight = $windowHeights[$windowSize.SelectedIndex]
     upscale = $upscaleValues[$upscale.SelectedIndex]; sharpness = $sharpness.Value; anisotropy = $anisotropyValues[$anisotropy.SelectedIndex]
     dlss = $dlssValues[$dlss.SelectedIndex]; frameRate = $frameRateValues[$frameRate.SelectedIndex]
@@ -562,7 +576,8 @@ $env:RECOMP_SPLIT_RATE = if ($frameRate.SelectedIndex) { $frameRateValues[$frame
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_MSAA = "$count"
 $env:RECOMP_D3D_SMAA = if ($smaa.Checked) { '1' } else { '0' }
-$env:RECOMP_D3D_SUN_SHADOW = if ($sun.Checked) { '1' } else { '0' }
+# Sun shadows draw extra casters for the Direct3D 11 sun map, which Vulkan lacks.
+$env:RECOMP_D3D_SUN_SHADOW = if ($sun.Enabled -and $sun.Checked) { '1' } else { '0' }
 $env:RECOMP_AUDIO_GAIN = ($percent / 100).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_MUSIC_SHUFFLE = if ($shuffle.Checked) { '1' } else { '0' }
 $env:RECOMP_TITLE_IDLE = $idleValues[$idle.SelectedIndex]
@@ -573,12 +588,15 @@ $env:RECOMP_DEMO_CUT_HOLD = if ($demoCut.Checked) { '12' } else { $null }
 $env:RECOMP_FREE_CAMERA = if ($freeCamera.Checked) { '1' } else { $null }
 $env:RECOMP_D3D_VRR = if ($vrr.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_FOG = if ($fog.Checked) { '1' } else { '0' }
-$env:RECOMP_TEXTURES = if ($textures.Checked) { $textureFolder.Text } else { $null }
-$env:RECOMP_TEXTURE_DUMP = if ($textureDump.Checked) { '1' } else { '0' }
+# Texture packs and dumps are Direct3D 11 only; set, they also take F12 from the game.
+$env:RECOMP_TEXTURES = if ($textures.Enabled -and $textures.Checked) { $textureFolder.Text } else { $null }
+$env:RECOMP_TEXTURE_DUMP = if ($textureDump.Enabled -and $textureDump.Checked) { '1' } else { '0' }
 $env:RECOMP_TEXTURE_DUMP_DIR = Join-Path $root 'private\textures'
 $env:RECOMP_D3D_PIXEL_LIGHTING = if ($pixelLighting.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_SMOOTH_NORMALS = if ($smoothNormals.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_RTGI = if ($rtgi.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_RTGI_STRENGTH = $strength.Value.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_RTGI_HITCOLOR = if ($hitColor.Checked) { '1' } else { '0' }
+# tools/run_game.py starts the build's Vulkan runner for 'vulkan'.
+$env:RECOMP_RENDERER = $renderers[$renderer.SelectedIndex]
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root
