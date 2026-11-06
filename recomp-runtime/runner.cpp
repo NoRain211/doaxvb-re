@@ -47,6 +47,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#ifdef RECOMP_FULL_PROGRAM
+#include <timeapi.h>
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+#endif
 #endif
 
 namespace {
@@ -509,6 +515,19 @@ int main(int argc, char **argv)
     /* Every guest thread is a fiber on this one. At Normal priority, busy
        desktop apps left it ready but unscheduled for 20-50 ms. */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#ifdef RECOMP_FULL_PROGRAM
+    /* Guest frame waits that lost a 15.6 ms scheduler tick dropped frames on a
+       power-managed handheld (DOA2U issue #69): ask for a 1 ms tick and keep
+       Windows from throttling the process or ignoring that request. */
+    timeBeginPeriod(1u);
+    PROCESS_POWER_THROTTLING_STATE throttling{PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0u};
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
+    // Each call replaces the whole state. Windows 10 rejects the Windows 11
+    // timer flag, which leaves the first call in force.
+    throttling.ControlMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
+#endif
 #endif
 
     std::string xbePath;
