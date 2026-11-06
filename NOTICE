@@ -26,3 +26,11 @@ their fdlibm notices from Sun Microsystems. They came here from doa2u-re.
 The runner links miniupnpc 2.3.3 (miniupnp/miniupnp, tag miniupnpc_2_3_3),
 Copyright (c) 2005-2025 Thomas Bernard, under the BSD 3-Clause license. The
 build fetches it; its LICENSE remains in the fetched source.
+
+The Windows Vulkan runner loads shaderc.dll from LWJGL 3.4.3
+(org.lwjgl:lwjgl-shaderc natives-windows on Maven Central), which the build
+downloads and copies beside the runner. LWJGL is Copyright (c) 2012-present
+Lightweight Java Game Library, under the BSD 3-Clause license. The library is
+built from shaderc 2c8cae7, Copyright 2015 The Shaderc Authors, under the
+Apache License 2.0, and includes glslang and SPIRV-Tools under their own
+licenses.

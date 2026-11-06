@@ -30,16 +30,24 @@ def build_inputs(root, receipt_path=None):
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if receipt.get("status") != "built-unverified":
         raise ValueError("Build is incomplete; see its build-receipt.json and logs.")
-    runner = Path(receipt["runner"]).resolve(strict=True)
+    # The Windows launcher's Renderer choice; elsewhere the only runner already draws with SDL GPU.
+    key = "vulkan_runner" if vulkan_requested() else "runner"
+    if key not in receipt:
+        raise ValueError("This build has no Vulkan renderer. Build the game again, or choose Direct3D 11.")
+    runner = Path(receipt[key]).resolve(strict=True)
     disc = Path(receipt["disc"]).resolve(strict=True)
     if not runner.is_relative_to(private) or not disc.is_relative_to(private):
         raise ValueError("Build paths must remain inside this checkout's private folder.")
     images = list(disc.glob("*.xbe"))
     if len(images) != 1:
         raise ValueError("Expected exactly one root XBE in the built disc.")
-    if sha256(runner) != receipt["runner_sha256"] or sha256(images[0]) != receipt["xbe_sha256"]:
+    if sha256(runner) != receipt[key + "_sha256"] or sha256(images[0]) != receipt["xbe_sha256"]:
         raise ValueError("Runner or game executable differs from the build receipt; rebuild before launching.")
     return runner, images[0], receipt_path
+
+
+def vulkan_requested():
+    return sys.platform == "win32" and os.environ.get("RECOMP_RENDERER") == "vulkan"
 
 
 def launch(root, receipt_path=None, settings=False):
@@ -48,6 +56,8 @@ def launch(root, receipt_path=None, settings=False):
         runner, image, receipt_path = built
         print(f"Using build receipt: {receipt_path}", flush=True)
         return run(runner, image, root, receipt_path, settings)
+    if vulkan_requested():
+        raise ValueError("The Vulkan renderer needs a build from BuildGame.cmd. Build the game, or choose Direct3D 11.")
     candidates = [root / "recomp_program_runner.exe",
                   root / "recomp_program_runner",
                   root / "build/recomp-program/Release/recomp_program_runner.exe",

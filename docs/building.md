@@ -50,7 +50,8 @@ pinned 20261006 `ucrt-x86_64` release (190 MB, about 715 MB extracted), checks
 its SHA-256 and extracts it to `tools/llvm-mingw`. This needs no administrator
 approval and happens once per folder. A release ZIP may already include it. The
 build receipt records the clang version. The runner links the C++ runtime
-statically and needs only Windows system DLLs and `SDL3.dll`.
+statically and needs only Windows system DLLs and `SDL3.dll`; the Vulkan
+runner described below also needs `shaderc.dll`.
 
 When `tools/dxc/bin/x64/dxc.exe` is missing, `BuildGame.cmd` also downloads
 the pinned [DXC](https://github.com/microsoft/DirectXShaderCompiler) v1.9.2609
@@ -107,6 +108,18 @@ a list, A ticks or presses, Start plays and B quits. Texture dumps go to
 `private/textures`. To check launcher settings, run `tools/test_launcher.ps1`
 with both Windows PowerShell 5 and PowerShell 7; it uses isolated synthetic
 settings under `private/`.
+
+Setup also builds `recomp_program_runner_vulkan.exe` from the same compiled
+program. It draws through SDL3's GPU API on Vulkan, as the Linux build does.
+Direct3D 11 stays the default; choose **Renderer: Vulkan** on the launcher's
+Graphics page, or set `RECOMP_RENDERER=vulkan` before `RunGame.cmd`, to play
+with it. It needs a Vulkan driver and compiles its shaders at run time with
+`shaderc.dll`, which CMake downloads from Maven Central (LWJGL 3.4.3, checked
+by SHA-256) and copies beside the runner. It uses the resolution, MSAA and
+fog choices: SMAA, VRR pacing, sun shadows, per-pixel lighting, smooth
+normals, RTGI, texture packs and the F5 to F11 RTGI keys belong to the
+Direct3D 11 renderer. Builds made before it have no Vulkan runner; build the
+game again to use it.
 
 On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) include
 court posts, palm trunks and leaves, and the volleyball net tape and rope.
@@ -262,6 +275,8 @@ does not contain generated game code or prove game parity.
 CMake configuration downloads the official SDL3 3.4.16 Visual C++ package from
 GitHub and checks its SHA-256. The build copies `SDL3.dll` beside the runner
 and the input test; keep it next to `recomp_program_runner.exe` if you move it.
+It also downloads LWJGL's `shaderc.dll` and copies it beside the Vulkan
+runner and the SDL GPU presenter test.
 
 The named 0.5.3 Beta ZIP includes the ISO setup workflow and bundled
 Python, Capstone, MinGit, CMake and extractor. GitHub's automatic source archives contain

@@ -1,9 +1,13 @@
-# D3D8 fog in the D3D11 presenter
+# D3D8 fog in the D3D11 and SDL GPU presenters
 
 Fog follows the game's enable, color, mode, start, end, density and range
 states. It is on by default. `RECOMP_D3D_FOG=0` disables host fog for A/B
 comparison. `RECOMP_D3D_FOG_FACTOR=1` displays the factor on fog-enabled
 draws (white is clear, black is fully fogged).
+
+The SDL GPU presenter (Vulkan on Windows and Linux, Metal on macOS) generates
+the same equations and coordinate choices in GLSL and Metal shaders, with
+the same settings.
 
 The draw adapter reads the retained Xbox render-state array, snapshots it
 in the presenter command and passes constants to Shader Model 4.0 shaders.
@@ -46,4 +50,8 @@ The render-state test checks float-bit decoding. The D3D11 readback test
 checks all three equations, varying RHW versus affine Z, transformed range
 fog, specular-alpha vertex fog, programmable fog bypass, disabled fog, alpha
 preservation and fog color before additive blending.
+The SDL GPU presenter test submits vertex fog and blended range fog draws,
+so a shader that fails to build shows in its log; it does not read pixels back.
+On Windows, CTest skips it (exit 77) when no Vulkan device exists. The macOS
+and Linux CI jobs have a GPU device, so there it must run and pass.
 Actual scene comparisons and performance receipts belong under `private/`.
