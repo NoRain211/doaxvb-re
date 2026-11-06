@@ -61,8 +61,16 @@ D3dDlss *d3d_dlss_create(ID3D11Device *device, ID3D11DeviceContext *context, int
         d3d_dlss_destroy(dlss);
         return nullptr;
     };
-    dlss->module = LoadLibraryExW(L"dlss_bridge.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
-    if (dlss->module == nullptr) return off("dlss_bridge.dll not found beside the runner");
+    // The bridge comes only from the runner's directory; System32 stays searched
+    // for its dependencies, such as the MSVC runtime an MSVC-built bridge imports.
+    dlss->module = LoadLibraryExW(L"dlss_bridge.dll", nullptr,
+        LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (dlss->module == nullptr) {
+        char why[96];
+        std::snprintf(why, sizeof why, "dlss_bridge.dll beside the runner did not load (error %lu)",
+            GetLastError());
+        return off(why);
+    }
     const auto symbol = [dlss](const char *name) {
         return reinterpret_cast<void *>(GetProcAddress(dlss->module, name));
     };
