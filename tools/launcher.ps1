@@ -90,7 +90,8 @@ $settings = [pscustomobject]@{
     sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true; renderer = 'd3d11'
-    windowMode = 'borderless'; windowHeight = 0; upscale = 'fsr'; sharpness = 50; anisotropy = 16; dlss = 'off'; frameRate = '60'
+    # Classic window and game filtering: older settings files keep the original picture.
+    windowMode = 'legacy'; windowHeight = 0; upscale = 'fsr'; sharpness = 50; anisotropy = 0; dlss = 'off'; frameRate = '60'
 }
 # Display page; see docs/display-modes.md. 'legacy' is the original fixed window.
 $windowModeValues = 'borderless', 'windowed', 'legacy'
@@ -567,7 +568,8 @@ $percent = $volumes[$volume.SelectedIndex]
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 $env:RECOMP_D3D_WINDOW_MODE = $windowModeValues[$windowMode.SelectedIndex]
 $env:RECOMP_D3D_WINDOW_HEIGHT = "$($windowHeights[$windowSize.SelectedIndex])"
-$env:RECOMP_D3D_UPSCALE = $upscaleValues[$upscale.SelectedIndex]
+# Classic with VRR also scales its output; keep that scale bilinear as before.
+$env:RECOMP_D3D_UPSCALE = if ($upscale.Enabled) { $upscaleValues[$upscale.SelectedIndex] } else { 'bilinear' }
 $env:RECOMP_D3D_SHARPNESS = ($sharpness.Value / 100).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_ANISOTROPY = "$($anisotropyValues[$anisotropy.SelectedIndex])"
 $env:RECOMP_D3D_DLSS = if ($dlss.SelectedIndex) { $dlssValues[$dlss.SelectedIndex] } else { $null }
