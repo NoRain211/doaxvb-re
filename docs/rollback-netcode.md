@@ -269,6 +269,13 @@ it; the host lists it again and waits, and the joiner calls the host again.
 A runner that cannot have the port back within 2 s opens the menu with the
 reason once the main menu has EXHIBITION chosen. Leaving the room leaves
 the game where it booted to.
+B leaves the room, and the runner first tells the other player with its own
+leave message (`D2RC`), separate from the session's goodbye, which can
+arrive late into a room both players just returned to. A host that hears it
+says who left and lets the next player in; a joiner drops the host as its
+peer, stops calling it and shows THE HOST CLOSED THE ROOM, so a room opened
+again on the same port starts empty. Before, a host noticed a joiner leave
+only after 3 s of silence.
 
 Two runners on one machine, each driven by an input script, went through
 the menu: the host opened a private room, the joiner joined it from its

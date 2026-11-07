@@ -464,6 +464,60 @@ int main()
     recomp_netplay_close(&host);
     recomp_netplay_close(&joiner);
 
+    // A joiner that leaves frees the host; a host that leaves sends the joiner away for good,
+    // so the room it opens again on the same port starts empty. A session's goodbye closes nothing.
+    {
+        const auto meet = [&](RecompNetplayRoom &a, RecompNetplayRoom &b) {
+            for (int i = 0; i < 50 && !(a.joined && b.joined); ++i) {
+                recomp_netplay_room_tick(&joiner, &a, digest, "JOINER", false, false);
+                recomp_netplay_room_tick(&host, &b, digest, "HOST", false, false);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            return a.joined && b.joined;
+        };
+        hostRoom = RecompNetplayRoom{};
+        joinerRoom = RecompNetplayRoom{};
+        hostRoom.hosting = true;
+        check("leave room opens", recomp_netplay_listen(&host, 47630u) &&
+            recomp_netplay_open(&joiner, 0u, "127.0.0.1", 47630u) && meet(joinerRoom, hostRoom));
+        recomp_netplay_send_goodbye(&host);
+        for (int i = 0; i < 10; ++i) {
+            recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check("a session goodbye stays out of the room", !joinerRoom.left && joinerRoom.joined);
+
+        recomp_netplay_room_leave(&joiner); // the socket stays open, so it can meet the host again
+        for (int i = 0; i < 25 && !hostRoom.left; ++i) {
+            recomp_netplay_room_tick(&host, &hostRoom, digest, "HOST", false, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check("host hears the joiner leave", hostRoom.left && !hostRoom.joined && host.peer_port == 0u);
+
+        hostRoom = RecompNetplayRoom{};
+        joinerRoom = RecompNetplayRoom{};
+        hostRoom.hosting = true;
+        check("leave room meets again", meet(joinerRoom, hostRoom));
+        recomp_netplay_room_leave(&host);
+        recomp_netplay_close(&host);
+        for (int i = 0; i < 25 && !joinerRoom.left; ++i) {
+            recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check("joiner hears the host leave", joinerRoom.left && !joinerRoom.joined && joiner.peer_port == 0u);
+        hostRoom = RecompNetplayRoom{};
+        hostRoom.hosting = true;
+        check("leave room reopens", recomp_netplay_listen(&host, 47630u));
+        for (int i = 0; i < 25; ++i) {
+            recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
+            recomp_netplay_room_tick(&host, &hostRoom, digest, "HOST", false, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        check("a reopened room starts empty", !hostRoom.joined && host.peer_port == 0u);
+        recomp_netplay_close(&host);
+        recomp_netplay_close(&joiner);
+    }
+
     // Matched rooms punch through to each other, or meet through the relay without
     // endpoints, or after 5 s of punching at endpoints that never answer.
     bool relayed = true;
