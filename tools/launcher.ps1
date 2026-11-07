@@ -90,7 +90,24 @@ $settings = [pscustomobject]@{
     sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true; renderer = 'd3d11'
+    # Classic window and game filtering: older settings files keep the original picture.
+    windowMode = 'legacy'; windowHeight = 0; upscale = 'fsr'; sharpness = 50; anisotropy = 0; dlss = 'off'; frameRate = '60'
 }
+# Display page; see docs/display-modes.md. 'legacy' is the original fixed window.
+$windowModeValues = 'borderless', 'windowed', 'legacy'
+$windowModeNames = [string[]]('Borderless fullscreen', 'Windowed (resizable)', 'Classic')
+$windowHeights = 0, 720, 900, 1080, 1440
+$windowHeightNames = [string[]]($windowHeights | ForEach-Object { if ($_ -eq 0) { 'Auto (fit screen)' } else { "$($_)p" } })
+$upscaleValues = 'fsr', 'bilinear'
+$upscaleNames = [string[]]('AMD FSR 1.0', 'Bilinear')
+$anisotropyValues = 0, 2, 4, 8, 16
+$anisotropyNames = [string[]]($anisotropyValues | ForEach-Object { if ($_ -eq 0) { 'Game default' } else { "$($_)x" } })
+# NVIDIA DLSS (docs/dlss.md): needs dlss_bridge.dll beside the runner and an RTX GPU.
+$dlssValues = 'off', 'dlaa', 'quality', 'balanced', 'performance', 'ultra'
+$dlssNames = [string[]]('Off', 'DLAA (native, anti-aliasing only)', 'Quality', 'Balanced', 'Performance', 'Ultra Performance')
+# Above 60 the game still runs at 60 Hz and extra frames are interpolated (RECOMP_SPLIT_RATE).
+$frameRateValues = '60', '120', 'auto', 'unlocked'
+$frameRateNames = [string[]]('60 FPS (original)', '120 FPS', 'Match display refresh', 'Unlocked')
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
     # Older settings files omit new options; keep their defaults.
@@ -214,8 +231,8 @@ $card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width
 $subtitle = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 448; Height = 22; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
 $card.Controls.Add($subtitle)
 
-$sections = 'Main Menu', 'Build', 'Graphics', 'Audio', 'Game', 'Textures', 'Help'
-$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Keys while playing'
+$sections = 'Main Menu', 'Build', 'Graphics', 'Display', 'Audio', 'Game', 'Textures', 'Help'
+$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Rendering and image quality', 'Window, upscaling and filtering', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Keys while playing'
 $pages = foreach ($name in $sections) {
     $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = (C '#185162'); BackgroundImage = (Crop 374 170 448 244); BackgroundImageLayout = 'None'; Visible = $false }
     $card.Controls.Add($page); $page
@@ -330,9 +347,9 @@ $buildNow.Add_Click({
     }
 })
 
-$heightNames = [string[]]($heights | ForEach-Object { if ($_ -eq 480) { '480p (windowed)' } else { "$($_)p" } })
+$heightNames = [string[]]($heights | ForEach-Object { "$($_)p" })
 $nearest = @($heights | Where-Object { $_ -le [int]$settings.height }).Count - 1
-$resolution = Add-Row $pages[2] 'Resolution' 0 (New-Choice $heightNames $nearest)
+$resolution = Add-Row $pages[2] 'Render resolution' 0 (New-Choice $heightNames $nearest)
 $msaaNames = [string[]]($samples | ForEach-Object { if ($_ -eq 1) { 'Off' } else { "$($_)x" } })
 $msaa = Add-Row $pages[2] 'MSAA' 30 (New-Choice $msaaNames ([Array]::IndexOf($samples, [int]$settings.msaa)))
 # Vulkan draws through SDL GPU like the Linux build; see docs/building.md.
@@ -353,14 +370,34 @@ function Update-Renderer {
     $d3d11 = $renderer.SelectedIndex -eq 0
     foreach ($box in $smaa, $vrr, $sun, $pixelLighting, $smoothNormals, $rtgi, $textures, $browse, $textureDump) { $box.Enabled = $d3d11 }
     $strength.Enabled = $d3d11 -and $rtgi.Checked; $hitColor.Enabled = $strength.Enabled
+    foreach ($box in $windowMode, $anisotropy, $dlss, $frameRate) { $box.Enabled = $d3d11 }
+    Update-DisplayControls
 }
 New-Note $pages[2] 'RTGI needs DXR and can slow matches.' 224 20 | Out-Null
+
+# Display: the window and how the rendered frame is scaled into it.
+$windowMode = Add-Row $pages[3] 'Display mode' 0 (New-Choice $windowModeNames ([Array]::IndexOf($windowModeValues, [string]$settings.windowMode)))
+$windowSize = Add-Row $pages[3] 'Window size' 32 (New-Choice $windowHeightNames ([Array]::IndexOf($windowHeights, [int]$settings.windowHeight)))
+$upscale = Add-Row $pages[3] 'Upscaling' 64 (New-Choice $upscaleNames ([Array]::IndexOf($upscaleValues, [string]$settings.upscale)))
+$sharpness = Add-Row $pages[3] 'FSR sharpness (%)' 96 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 100; Increment = 10; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]100, [decimal]$settings.sharpness)) })
+$anisotropy = Add-Row $pages[3] 'Anisotropic filtering' 128 (New-Choice $anisotropyNames ([Array]::IndexOf($anisotropyValues, [int]$settings.anisotropy)))
+$dlss = Add-Row $pages[3] 'NVIDIA DLSS' 160 (New-Choice $dlssNames ([Array]::IndexOf($dlssValues, [string]$settings.dlss)))
+$frameRate = Add-Row $pages[3] 'Frame rate' 192 (New-Choice $frameRateNames ([Array]::IndexOf($frameRateValues, [string]$settings.frameRate)))
+New-Note $pages[3] "DLSS replaces MSAA and RTGI. Alt+Enter: window / fullscreen.`nUnlocked tears; 120 on a faster screen needs VRR (Graphics)." 216 28 | Out-Null
+function Update-DisplayControls {
+    $scaled = $windowMode.Enabled -and $windowMode.SelectedIndex -ne 2
+    $windowSize.Enabled = $scaled; $upscale.Enabled = $scaled
+    $sharpness.Enabled = $scaled -and $upscale.SelectedIndex -eq 0
+}
+$windowMode.Add_SelectedIndexChanged({ Update-DisplayControls })
+$upscale.Add_SelectedIndexChanged({ Update-DisplayControls })
+Update-DisplayControls
 
 # PowerShell 7 loads JSON numbers as Int64, so cast before finding their index.
 $savedVolume = [Array]::IndexOf($volumes, [int]$settings.volume)
 $volumeNames = [string[]]($volumes | ForEach-Object { if ($_ -eq 0) { 'Mute' } else { "$_%" } })
-$volume = Add-Row $pages[3] 'Volume' 0 (New-Choice $volumeNames $savedVolume)
-$shuffle = New-Toggle $pages[3] 'Shuffle music' 40 $settings.shuffle
+$volume = Add-Row $pages[4] 'Volume' 0 (New-Choice $volumeNames $savedVolume)
+$shuffle = New-Toggle $pages[4] 'Shuffle music' 40 $settings.shuffle
 $music = New-Button 'Open music folder' 160
 $music.Top = 76
 $music.Add_Click({
@@ -373,15 +410,15 @@ $music.Add_Click({
         [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
     }
 })
-$pages[3].Controls.Add($music)
-New-Note $pages[3] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
+$pages[4].Controls.Add($music)
+New-Note $pages[4] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
 
-$unlock = New-Toggle $pages[4] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
-$demoCut = New-Toggle $pages[4] 'Shorter demo cuts' 28 $settings.demo_cut_hold
-$freeCamera = New-Toggle $pages[4] 'Free camera (F1)' 56 $settings.free_camera
-$idle = Add-Row $pages[4] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
+$unlock = New-Toggle $pages[5] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
+$demoCut = New-Toggle $pages[5] 'Shorter demo cuts' 28 $settings.demo_cut_hold
+$freeCamera = New-Toggle $pages[5] 'Free camera (F1)' 56 $settings.free_camera
+$idle = Add-Row $pages[5] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
 
-$textures = New-Toggle $pages[5] 'Use texture pack' 0 $settings.textures
+$textures = New-Toggle $pages[6] 'Use texture pack' 0 $settings.textures
 $textureFolder = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 32; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Text = [string]$settings.textureFolder }
 $browse = New-Button 'Folder...' 88
 $browse.Left = 358; $browse.Top = 30
@@ -392,26 +429,27 @@ $browse.Add_Click({
     if ($dialog.ShowDialog($form) -eq 'OK') { $textureFolder.Text = $dialog.SelectedPath }
     $dialog.Dispose()
 })
-$pages[5].Controls.AddRange(@($textureFolder, $browse))
-$textureDump = New-Toggle $pages[5] 'Dump original textures' 68 $settings.textureDump
+$pages[6].Controls.AddRange(@($textureFolder, $browse))
+$textureDump = New-Toggle $pages[6] 'Dump original textures' 68 $settings.textureDump
 # Every control Update-Renderer touches exists from here on.
 Update-Renderer
 $rtgi.Add_CheckedChanged({ Update-Renderer })
 $renderer.Add_SelectedIndexChanged({ Update-Renderer })
-New-Note $pages[5] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
+New-Note $pages[6] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
 
-New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
+New-Note $pages[7] "Display`n    Alt+Enter    Window / fullscreen`n`nFree camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
 
 function Update-Summary {
-    $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" })
-    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" })
+    $antiAliasing = if ($dlss.Enabled -and $dlss.SelectedIndex) { "DLSS $(($dlssNames[$dlss.SelectedIndex] -split ' ')[0])" } else { $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" }) }
+    $display = $(if ($windowMode.Enabled) { "$($windowMode.SelectedItem)$dot" }) + "$($resolution.SelectedItem)" + $(if ($upscale.Enabled -and $upscale.SelectedIndex -eq 0) { ' FSR' }) + $dot + $antiAliasing
+    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" }) + $(if ($frameRate.Enabled -and $frameRate.SelectedIndex) { "$dot$(@('', '120 FPS', 'Display Hz', 'Unlocked FPS')[$frameRate.SelectedIndex])" })
     $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Enabled -and $textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
 
 $state = @{ section = 0 }
 $menu = for ($i = 0; $i -lt $sections.Count; $i++) {
-    $item = New-Object Windows.Forms.Label -Property @{ Left = 24; Top = 214 + $i * 44; Width = 270; Height = 42; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand'; Tag = $i; AccessibleName = $sections[$i]; AccessibleRole = 'MenuItem' }
+    $item = New-Object Windows.Forms.Label -Property @{ Left = 24; Top = 168 + $i * 44; Width = 270; Height = 42; BackColor = [Drawing.Color]::Transparent; Cursor = 'Hand'; Tag = $i; AccessibleName = $sections[$i]; AccessibleRole = 'MenuItem' }
     $item.Add_Paint({
         param($s, $e)
         if ($state.section -eq $s.Tag) {
@@ -524,7 +562,18 @@ $percent = $volumes[$volume.SelectedIndex]
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
     renderer = $renderers[$renderer.SelectedIndex]
+    windowMode = $windowModeValues[$windowMode.SelectedIndex]; windowHeight = $windowHeights[$windowSize.SelectedIndex]
+    upscale = $upscaleValues[$upscale.SelectedIndex]; sharpness = $sharpness.Value; anisotropy = $anisotropyValues[$anisotropy.SelectedIndex]
+    dlss = $dlssValues[$dlss.SelectedIndex]; frameRate = $frameRateValues[$frameRate.SelectedIndex]
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
+$env:RECOMP_D3D_WINDOW_MODE = $windowModeValues[$windowMode.SelectedIndex]
+$env:RECOMP_D3D_WINDOW_HEIGHT = "$($windowHeights[$windowSize.SelectedIndex])"
+# Classic with VRR also scales its output; keep that scale bilinear as before.
+$env:RECOMP_D3D_UPSCALE = if ($upscale.Enabled) { $upscaleValues[$upscale.SelectedIndex] } else { 'bilinear' }
+$env:RECOMP_D3D_SHARPNESS = ($sharpness.Value / 100).ToString([Globalization.CultureInfo]::InvariantCulture)
+$env:RECOMP_D3D_ANISOTROPY = "$($anisotropyValues[$anisotropy.SelectedIndex])"
+$env:RECOMP_D3D_DLSS = if ($dlss.SelectedIndex) { $dlssValues[$dlss.SelectedIndex] } else { $null }
+$env:RECOMP_SPLIT_RATE = if ($frameRate.SelectedIndex) { $frameRateValues[$frameRate.SelectedIndex] } else { $null }
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_MSAA = "$count"

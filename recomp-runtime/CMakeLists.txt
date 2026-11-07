@@ -168,6 +168,22 @@ if(EXISTS "${_smaa_dir}/SMAA.hlsl")
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR};${_smaa_dir}/Textures")
 endif()
 
+# Optional AMD FSR 1.0 from third_party/fsr1 (MIT); without it RECOMP_D3D_UPSCALE=fsr
+# falls back to bilinear. The headers are embedded for the shader and included
+# directly for their CPU constant setup.
+set(_fsr1_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/fsr1")
+if(EXISTS "${_fsr1_dir}/ffx_fsr1.h" AND EXISTS "${_fsr1_dir}/ffx_a.h")
+    foreach(_fsr1_file ffx_a ffx_fsr1)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fsr1_dir}/${_fsr1_file}.h")
+        file(READ "${_fsr1_dir}/${_fsr1_file}.h" _fsr1_hex HEX)
+        string(REGEX REPLACE "(..)" "'\\\\x\\1'," _fsr1_hex "${_fsr1_hex}")
+        file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${_fsr1_file}_hlsl.inc" CONTENT "${_fsr1_hex}")
+    endforeach()
+    set_property(SOURCE d3d_fsr.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_FSR1)
+    set_property(SOURCE d3d_fsr.cpp
+        APPEND PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR};${_fsr1_dir}")
+endif()
+
 option(RECOMP_ENABLE_RTGI "Build optional hardware ray-traced GI" ON)
 if(WIN32 AND RECOMP_ENABLE_RTGI)
     file(GLOB _rtgi_sdk_bins "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64")
@@ -894,7 +910,8 @@ if(RECOMP_PROGRAM_DIR)
     # which draws through SDL GPU as the macOS and Linux builds do.
     if(WIN32)
         add_executable(recomp_program_runner
-            d3d_presenter_d3d11.cpp texture_replacement.cpp d3d_presenter_thread.cpp)
+            d3d_presenter_d3d11.cpp d3d_draw_shader.cpp d3d_fsr.cpp d3d_motion.cpp d3d_dlss.cpp
+            texture_replacement.cpp d3d_presenter_thread.cpp)
         add_executable(recomp_program_runner_vulkan d3d_presenter_sdl_gpu.cpp)
         recomp_use_overlay(recomp_program_runner_vulkan SDL_GPU)
         recomp_use_shaderc(recomp_program_runner_vulkan)
@@ -956,6 +973,10 @@ if(WIN32)
     add_test(NAME recomp-runtime-texture-replacement COMMAND recomp_texture_replacement_test)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        d3d_draw_shader.cpp
+        d3d_fsr.cpp
+        d3d_motion.cpp
+        d3d_dlss.cpp
         texture_replacement.cpp
         ../xbe/sha.cpp
         d3d_vblank.cpp
@@ -982,6 +1003,10 @@ if(WIN32)
         animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
+        d3d_draw_shader.cpp
+        d3d_fsr.cpp
+        d3d_motion.cpp
+        d3d_dlss.cpp
         texture_replacement.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp

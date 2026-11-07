@@ -28,6 +28,9 @@
     "docs/agents/issue-tracker.md",
     "docs/agents/triage-labels.md",
     "docs/building.md",
+    "docs/display-modes.md",
+    "docs/dlss.md",
+    "docs/motion-vectors.md",
     "docs/texture-replacement.md",
     "docs/fog.md",
     "docs/lighting-and-lines.md",
@@ -108,6 +111,7 @@
     "third_party/rbengine",
     "third_party/recomp-net",
     "third_party/smaa",
+    "third_party/fsr1/**",
     ".gitattributes",
     "BuildGame.cmd",
     "tools/build_game.py",
@@ -183,6 +187,10 @@
     ".jsonl"
   ],
   "byte_literal_exceptions": [
+    {
+      "sha256": "3086fb925984a8bd85580aa2c202143d61020e6d7a5367a231bbabb5bd98195a",
+      "reason": "AMD FSR 1.0.2 ffx_a.h half-float conversion shift table in third_party/fsr1 (MIT), unmodified from GPUOpen-Effects/FidelityFX-FSR commit a21ffb8."
+    },
     {
       "sha256": "3678064993b9a107c5cd38e2cd987029c88ad69b623c1d0e77efb39613a22e4a",
       "reason": "Hand-written: the default netplay matchmaker's host:port, XORed with 0x5a, in netplay_menu.cpp (from doa2u-re). Not game data."

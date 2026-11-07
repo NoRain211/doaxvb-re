@@ -1,7 +1,7 @@
 # Third-Party Tools
 
-Downloaded public tooling can live here locally. Everything except this README
-and the dependency submodules below is ignored.
+Downloaded public tooling can live here locally. Everything except this README,
+the dependency submodules and the copied FSR headers below is ignored.
 
 ## Renderer
 
@@ -11,6 +11,13 @@ and the dependency submodules below is ignored.
 ```sh
 git submodule update --init third_party/smaa
 ```
+
+- [FidelityFX FSR 1.0](https://github.com/GPUOpen-Effects/FidelityFX-FSR): the
+  `RECOMP_D3D_UPSCALE=fsr` window upscale. MIT licensed. `third_party/fsr1`
+  holds `ffx_a.h`, `ffx_fsr1.h` and `license.txt` unmodified from upstream
+  v1.0.2 (commit `a21ffb8`). They are copied because the upstream repository
+  nests about 1.4 GB of sample media as submodules, which a recursive clone
+  would download.
 
 ## Rollback dependencies
 
