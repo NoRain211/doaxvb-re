@@ -304,6 +304,7 @@ bool recomp_input_host_key(RecompInputHostKey key)
     case RECOMP_INPUT_HOST_KEY_CONTROL:
         return focused() && (pressed(KEY(VK_LCONTROL, SDL_SCANCODE_LCTRL)) ||
             pressed(KEY(VK_RCONTROL, SDL_SCANCODE_RCTRL)));
+    case RECOMP_INPUT_HOST_KEY_BACKSPACE: return focused() && pressed(KEY(VK_BACK, SDL_SCANCODE_BACKSPACE));
     case RECOMP_INPUT_HOST_KEY_COUNT: break;
     }
     return false;

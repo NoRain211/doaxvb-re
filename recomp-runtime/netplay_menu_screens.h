@@ -83,6 +83,7 @@ struct Menu : RecompNetplaySettings {
     Screen screen = Screen::Closed;
     std::uint16_t held[RECOMP_INPUT_PORT_COUNT]{};
     std::uint16_t pressed = 0u;
+    std::uint16_t aliased = 0u; // the pressed face buttons that came from the keyboard's Z, X, A, S and Backspace
     unsigned repeat = 0u, frame = 0u;
     bool swallow = false; // after closing, the game waits until every button is up
     int injectA = 0;      // polls of A the game still gets, so LOCAL enters Exhibition
@@ -92,7 +93,7 @@ struct Menu : RecompNetplaySettings {
     std::string reopenMessage; // shown when the menu opens again after a room's session
     std::string address;
     std::size_t caret = 0u;
-    bool keyboard = false; // a key was typed in this editor, so its pad aliases are ignored
+    bool keyboard = false; // a key was typed in this editor, so the keyboard's pad aliases are ignored
     bool launched = false, covering = false, drawn = false;
     std::string name; // this player's profile name, read when a room opens
     RecompNetplay net{};
