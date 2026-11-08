@@ -255,6 +255,14 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
             fprintf(stderr, "recomp netplay: reached the other player directly at %s:%u\n", text, ntohs(from.sin_port));
         }
         const uint8_t *at = packet + 6u + RECOMP_NETPLAY_DIGEST_BYTES;
+        if (room->doubted) {
+            /* One of this side's clocks: from the last 3 s, at most 1 ms ahead since it is forced odd. */
+            const uint32_t echo = get32(at + 2u + RECOMP_NETPLAY_NAME_BYTES + 4u);
+            const int32_t ago = (int32_t)((uint32_t)now - echo);
+            room->doubted = echo == 0u || ago < -1 || ago > (int32_t)ROOM_SILENCE_MS;
+            room->owed = true;
+            if (room->doubted) continue; /* nothing it says counts, and another player may still take the room */
+        }
         room->joined = true;
         room->heard_ms = now;
         room->mismatch = memcmp(packet + 6u, digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0;
@@ -268,12 +276,6 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
         room->echo = get32(at);
         room->echo_at_ms = now;
         const uint32_t echo = get32(at + 4u), age = get16(at + 8u);
-        if (room->doubted) {
-            /* One of this side's clocks: from the last 3 s, at most 1 ms ahead since it is forced odd. */
-            const int32_t ago = (int32_t)((uint32_t)now - echo);
-            room->doubted = echo == 0u || ago < -1 || ago > (int32_t)ROOM_SILENCE_MS;
-            room->owed = true;
-        }
         if (echo != 0u) {
             room->ping_ms = (uint32_t)now - echo - age;
             room->pinged = true;

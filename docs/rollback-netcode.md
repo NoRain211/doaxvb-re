@@ -47,8 +47,8 @@ includes the XBE hash. The client speaks the server's version 2: each
 socket's packets carry a random nonce that the server's answers echo, and
 HOST, JOIN, LEAVE and RELAY carry the cookie the server sends to the
 sender's address. FIND MATCH shows each room's ping as an estimate, its own
-round trip to the server plus the host's, and sends nothing to a listed
-host.
+round trip to the server plus the host's, and sends no direct ping probe to
+a listed host.
 
 `synctest.c` no longer checks which routine called Present. doa2u-re's
 frame boundary is the Swap, where that routine decides the main thread's
