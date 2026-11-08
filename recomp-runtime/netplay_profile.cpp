@@ -184,6 +184,8 @@ bool recomp_netplay_unpack_profile(const std::uint8_t *blob, std::size_t size, c
         fs::create_directories(path.parent_path(), error);
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         if (!file.write(reinterpret_cast<const char *>(body.data() + at), bytes)) return false;
+        file.close();
+        if (!file) return false;
         if (path.filename() == "SaveMeta.xbx") names.push_back(recomp_netplay_profile_name(body.data() + at, bytes));
         at += bytes;
     }
