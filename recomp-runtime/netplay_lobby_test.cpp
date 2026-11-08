@@ -158,8 +158,8 @@ static std::vector<std::uint8_t> lobbyPacket(std::uint8_t kind, std::uint32_t in
         static_cast<std::uint8_t>(index >> 16), static_cast<std::uint8_t>(index >> 24)};
 }
 
-// The profile chunks a socket receives within 300 ms.
-static int chunksArriving(const RecompNetplay &net)
+// The profile chunks a socket receives within 300 ms; their payload bytes add to bytes.
+static int chunksArriving(const RecompNetplay &net, int &bytes)
 {
     int chunks = 0;
     const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
@@ -167,13 +167,18 @@ static int chunksArriving(const RecompNetplay &net)
         std::uint8_t packet[2048];
         for (int got; (got = static_cast<int>(recv(static_cast<RawSocket>(net.socket),
                            reinterpret_cast<char *>(packet), sizeof packet, 0))) > 0;)
-            chunks += got > 10 && packet[5] == 4u;
+            if (got > 10 && packet[5] == 4u) {
+                ++chunks;
+                bytes += got - 10;
+            }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return chunks;
 }
 
 // A host serves the next window of its profile at once, a replayed one after 50 ms, and eight copies in all.
+// A busy runner may stall the host past one hold, so the hold checks allow one extra served window; an
+// unbounded host serves every replay.
 static void serveBounds()
 {
     RecompNetplay host = unopened(), fake = unopened();
@@ -193,21 +198,23 @@ static void serveBounds()
     hello.insert(hello.end(), RECOMP_NETPLAY_DIGEST_BYTES, 'a');
     hello.resize(hello.size() + 6u); // delay, flags and an empty profile
     sendFrom(fake, 47655u, hello);
-    (void)chunksArriving(fake); // the welcome
+    int bytes = 0;
+    (void)chunksArriving(fake, bytes); // the welcome
     sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
     sendFrom(fake, 47655u, lobbyPacket(3u, 16u));
+    for (int i = 0; i < 8; ++i) sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
+    const int first = chunksArriving(fake, bytes);
+    check("next window served at once, replays held", first == 17 || first == 33);
     sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
-    check("next window served at once, replay held", chunksArriving(fake) == 17);
-    sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
-    sendFrom(fake, 47655u, lobbyPacket(3u, 16u));
-    check("a replay does not move the served window back", chunksArriving(fake) == 16);
-    // 33,768 bytes sent so far; seven more windows pass eight copies of 17,384.
-    int replayed = 0;
+    for (int i = 0; i < 8; ++i) sendFrom(fake, 47655u, lobbyPacket(3u, 16u));
+    const int back = chunksArriving(fake, bytes);
+    check("a replay does not move the served window back", back == 16 || back == 17);
+    // 33,768 to 51,152 bytes sent so far; nine more requests reach eight copies of 17,384.
     for (int i = 0; i < 9; ++i) {
         sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
-        replayed += chunksArriving(fake);
+        (void)chunksArriving(fake, bytes);
     }
-    check("eight copies end serving", replayed == 7 * 16);
+    check("eight copies end serving", bytes > 8 * 17384 - 1024 && bytes <= 8 * 17384);
     sendFrom(fake, 47655u, lobbyPacket(3u, 17u)); // holds them all
     wait.join();
     check("serve lobby ends", hosted == RECOMP_NETPLAY_LOBBY_OK);

@@ -309,13 +309,15 @@ static void transfer_packet(RecompNetplay *net, Transfer *t, const uint8_t *pack
            a replay, waits 50 ms, and eight copies end it, far more than a
            lossy link needs. */
         const uint64_t now = now_ms();
-        if (t->served >= 8ull * p->mine_size || (index < t->served_end && now < t->next_serve)) return;
+        const uint64_t limit = 8ull * p->mine_size;
+        if (t->served >= limit || (index < t->served_end && now < t->next_serve)) return;
         t->next_serve = now + 50u;
         const uint32_t end = index + CHUNKS_PER_REQUEST < mine ? index + CHUNKS_PER_REQUEST : mine;
         if (end > t->served_end) t->served_end = end; /* only forward, so a replayed window stays a replay */
         uint8_t chunk[PART_HEADER + CHUNK_BYTES];
         for (uint32_t i = index; i < mine && i < index + CHUNKS_PER_REQUEST; ++i) {
             const uint32_t bytes = chunk_size(p->mine_size, i);
+            if (bytes > limit - t->served) break;
             memcpy(chunk + encode_part(LOBBY_CHUNK, i, chunk), p->mine + i * CHUNK_BYTES, bytes);
             netplay_send_to(net, net->peer_address, net->peer_port, chunk, PART_HEADER + bytes);
             t->served += bytes;
