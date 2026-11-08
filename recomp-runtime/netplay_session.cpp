@@ -751,12 +751,10 @@ static void usePads(std::uint8_t flags, const std::vector<std::uint8_t> &joiner)
     recomp_program_set_session_pads((flags & LobbyHostAnalog) != 0u, record ? joiner.data() : nullptr);
 }
 
-// --netplay-pad's hex; empty when malformed.
+// --netplay-pad's hex, which recomp_netplay_launch_parse checks.
 static std::vector<std::uint8_t> padRecord(const std::string &hex)
 {
     std::vector<std::uint8_t> record;
-    if (hex.size() != 2u * RECOMP_PROGRAM_PAD_BYTES ||
-        hex.find_first_not_of("0123456789abcdef") != std::string::npos) return record;
     for (std::size_t i = 0u; i < hex.size(); i += 2u)
         record.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2u), nullptr, 16)));
     return record;
@@ -862,7 +860,13 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
         (settingIs("RECOMP_D3D_WIDESCREEN", "0") ? LobbyNormalScreen : 0u) |
         (settingIs("RECOMP_MUSIC_SHUFFLE", "1") ? LobbyMusicShuffle : 0u));
     std::uint8_t modes[4] = {};
-    if (recomp_controller_settings_load(launch.disc.string().c_str(), modes) && modes[0] != 0u)
+    if (hosting && !recomp_controller_settings_load(launch.disc.string().c_str(), modes)) {
+        std::cerr << "recomp runner: cannot read your controller settings\n";
+        recomp_netplay_close(&rollback.net);
+        return false;
+    }
+    // Without a vacation save the host's port plays the defaults.
+    if (modes[0] != 0u && !recomp_netplay_latest_profile(partition1).empty())
         lobby.flags |= LobbyHostAnalog;
     RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
     const RecompNetplayLobbyResult result = hosting

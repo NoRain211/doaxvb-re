@@ -14,6 +14,7 @@
 #include "xapi_time_adapter.h"
 extern "C" {
 #include "game_scheduler.h"
+#include "program_manual.h"
 }
 
 #include <algorithm>
@@ -153,6 +154,11 @@ bool recomp_netplay_launch_parse(int &argc, char **argv)
         } else if (arg == "--netplay-room") {
             launch.room = value;
         } else if (arg == "--netplay-pad") {
+            const std::string pad = value; // from a room's runner (recomp_netplay_session_room_launch)
+            if (pad.size() != 2u * RECOMP_PROGRAM_PAD_BYTES || pad.find_first_not_of("0123456789abcdef") != std::string::npos) {
+                std::cerr << "recomp runner: --netplay-pad needs " << 2u * RECOMP_PROGRAM_PAD_BYTES << " hex digits\n";
+                return false;
+            }
             launch.pad = value;
         } else if (arg == "--netplay-return") {
             returnReason = value;

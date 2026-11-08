@@ -232,7 +232,8 @@ instead (`usePads`): the host's Digital or Analog choice goes to every port
 with the host's options, and a joiner from a room sends port 0's settings
 from its own game as its profile, which port 1 takes. A joiner started
 with `--netplay-join` sends none, so port 1 plays the host's settings.
-A host with no vacation save loads none, and every port plays the defaults.
+A host with no vacation save loads none, so port 0, and without a joiner
+profile every port, plays the defaults.
 Choices made in a session's Controller Settings stay out of the player's own
 preference. With the joiner on Analog and the host on Digital, two scripted
 runners matched from a room gave port 0 Digital and port 1 Analog, and
