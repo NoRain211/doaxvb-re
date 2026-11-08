@@ -35,7 +35,7 @@ namespace {
 
 // Each takes a value, and a runner started again goes without them.
 const char *const netplayFlags[] = {"--netplay-host", "--netplay-join", "--netplay-delay", "--netplay-room-socket",
-    "--netplay-room", "--netplay-return", "--replay"};
+    "--netplay-room", "--netplay-pad", "--netplay-return", "--replay"};
 
 RecompNetplayLaunch launch;
 std::string replayPath;
@@ -152,6 +152,8 @@ bool recomp_netplay_launch_parse(int &argc, char **argv)
             launch.roomSocket = value; // from a room's runner (recomp_netplay_session_room_launch)
         } else if (arg == "--netplay-room") {
             launch.room = value;
+        } else if (arg == "--netplay-pad") {
+            launch.pad = value;
         } else if (arg == "--netplay-return") {
             returnReason = value;
         } else {

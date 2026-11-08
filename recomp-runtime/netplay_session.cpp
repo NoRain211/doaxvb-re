@@ -21,9 +21,11 @@
 #include "synctest.h"
 #include "xapi_time_adapter.h"
 extern "C" {
+#include "controller_settings.h"
 #include "dsound_service_adapter.h"
 #include "game_scheduler.h"
 #include "kernel_abi.h"
+#include "program_manual.h"
 #include "runtime.h"
 #include "stop_report.h"
 }
@@ -78,6 +80,7 @@ struct RollbackRun {
     std::string digest;
     std::uint8_t flags = 0u;
     std::vector<std::uint8_t> hostSaves;
+    std::vector<std::uint8_t> joinerPad; // the joiner's controller settings (usePads), or empty
     std::ofstream replayFile; // the replay being recorded (startReplay)
     RecompReplayWriter replayWriter{};
     std::uint32_t replayFrames = 0u;
@@ -229,10 +232,11 @@ static void startReplay()
     info.delay = static_cast<std::uint8_t>(rollback.delay);
     info.flags = rollback.flags;
     info.start_frame = rollback.pass;
-    info.blob_size[0] = static_cast<std::uint32_t>(rollback.hostSaves.size()); // the joiner sends none
-    std::vector<std::uint8_t> header(RECOMP_REPLAY_HEADER_BYTES + rollback.hostSaves.size());
+    info.blob_size[0] = static_cast<std::uint32_t>(rollback.hostSaves.size());
+    info.blob_size[1] = static_cast<std::uint32_t>(rollback.joinerPad.size());
+    std::vector<std::uint8_t> header(RECOMP_REPLAY_HEADER_BYTES + rollback.hostSaves.size() + rollback.joinerPad.size());
     header.resize(recomp_replay_header(&rollback.replayWriter, &info, rollback.hostSaves.data(),
-        rollback.hostSaves.data(), header.data()));
+        rollback.joinerPad.data(), header.data()));
     rollback.replayFile.write(reinterpret_cast<const char *>(header.data()),
         static_cast<std::streamsize>(header.size()));
     rollback.replayFile.flush();
@@ -671,7 +675,7 @@ bool recomp_netplay_session_enabled()
 }
 
 /* Settings that change guest RAM, which the joiner takes from the host. */
-enum : std::uint8_t { LobbyUnlockSwimsuits = 1u, LobbyNormalScreen = 2u, LobbyMusicShuffle = 4u };
+enum : std::uint8_t { LobbyUnlockSwimsuits = 1u, LobbyNormalScreen = 2u, LobbyMusicShuffle = 4u, LobbyHostAnalog = 8u };
 
 static bool settingIs(const char *name, const char *value)
 {
@@ -735,6 +739,27 @@ static bool useSessionSaves(const std::uint8_t *saves, std::size_t size, const s
     recomp_save_set_session("netplay");
     rollback.hostSaves.assign(saves, saves + size);
     return true;
+}
+
+/* The host's saves give every port the host's controller settings. The host
+   keeps its own Digital or Analog choice (LobbyHostAnalog), and port 1 the
+   joiner's own record, which a joiner from a room sends as its profile. */
+static void usePads(std::uint8_t flags, const std::vector<std::uint8_t> &joiner)
+{
+    const bool record = joiner.size() == RECOMP_PROGRAM_PAD_BYTES && joiner[0] <= 1u && joiner[1] <= 1u;
+    rollback.joinerPad = record ? joiner : std::vector<std::uint8_t>{};
+    recomp_program_set_session_pads((flags & LobbyHostAnalog) != 0u, record ? joiner.data() : nullptr);
+}
+
+// --netplay-pad's hex; empty when malformed.
+static std::vector<std::uint8_t> padRecord(const std::string &hex)
+{
+    std::vector<std::uint8_t> record;
+    if (hex.size() != 2u * RECOMP_PROGRAM_PAD_BYTES ||
+        hex.find_first_not_of("0123456789abcdef") != std::string::npos) return record;
+    for (std::size_t i = 0u; i < hex.size(); i += 2u)
+        record.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2u), nullptr, 16)));
+    return record;
 }
 
 /* A room's socket, as --netplay-room-socket carries it to the session's
@@ -817,11 +842,12 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
     }
     if (rollback.fromRoom) room.applyTo(rollback.net);
     /* The game keeps all three vacations in one save, so both sides play
-       from the host's, and the joiner sends none. Recovery first, so an
-       interrupted save is never sent. */
+       from the host's, and the joiner sends only its controller settings.
+       Recovery first, so an interrupted save is never sent. */
     const std::filesystem::path storage = launch.disc / ".recomp-storage",
         partition1 = recomp_save_partition1(storage, nullptr);
     std::vector<std::uint8_t> mine, theirs(RECOMP_NETPLAY_MAX_PROFILE);
+    if (!hosting) mine = padRecord(launch.pad);
     if (hosting && (!recomp_save_initialize(launch.disc.string().c_str()) ||
             !recomp_netplay_pack_profile(partition1, recomp_netplay_latest_profile(partition1), true, mine) ||
             mine.size() > RECOMP_NETPLAY_MAX_PROFILE)) {
@@ -835,6 +861,9 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
     lobby.flags = static_cast<std::uint8_t>((settingIs("RECOMP_UNLOCK_SWIMSUITS", "1") ? LobbyUnlockSwimsuits : 0u) |
         (settingIs("RECOMP_D3D_WIDESCREEN", "0") ? LobbyNormalScreen : 0u) |
         (settingIs("RECOMP_MUSIC_SHUFFLE", "1") ? LobbyMusicShuffle : 0u));
+    std::uint8_t modes[4] = {};
+    if (recomp_controller_settings_load(launch.disc.string().c_str(), modes) && modes[0] != 0u)
+        lobby.flags |= LobbyHostAnalog;
     RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
     const RecompNetplayLobbyResult result = hosting
         ? recomp_netplay_host(&rollback.net, &lobby, &profiles, 10u * 60u * 1000u, nullptr)
@@ -852,6 +881,7 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
         return false;
     }
     adoptSettings(lobby.flags, storage);
+    usePads(lobby.flags, hosting ? std::vector<std::uint8_t>(theirs.begin(), theirs.begin() + profiles.theirs_size) : mine);
     rollback.mode = RollbackMode::Udp;
     rollback.player = hosting ? 0u : 1u;
     rollback.delay = lobby.delay;
@@ -883,6 +913,7 @@ bool recomp_netplay_session_load_replay(const std::string &path, const RecompNet
     const std::filesystem::path storage = launch.disc / ".recomp-storage";
     if (!useSessionSaves(hostSaves, info.blob_size[0], storage)) return false;
     adoptSettings(info.flags, storage);
+    usePads(info.flags, std::vector<std::uint8_t>(joinerSaves, joinerSaves + info.blob_size[1]));
     rollback.mode = RollbackMode::Replay;
     rollback.player = info.player;
     rollback.delay = info.delay;
@@ -908,7 +939,12 @@ bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
         const unsigned peerPort = (socket.peer_port & 0xffu) << 8 | socket.peer_port >> 8;
         char endpoint[32];
         std::snprintf(endpoint, sizeof endpoint, "%u.%u.%u.%u:%u", peer[0], peer[1], peer[2], peer[3], peerPort);
-        args.insert(args.end(), {"--netplay-join", endpoint});
+        // The joiner's own controller settings, which the session's guest loads from the host's save (usePads).
+        std::uint8_t pad[RECOMP_PROGRAM_PAD_BYTES];
+        recomp_program_read_pad(0u, pad);
+        char hex[2u * RECOMP_PROGRAM_PAD_BYTES + 1u];
+        for (std::size_t i = 0u; i < sizeof pad; ++i) std::snprintf(hex + 2u * i, 3u, "%02x", pad[i]);
+        args.insert(args.end(), {"--netplay-join", endpoint, "--netplay-pad", hex});
     }
     // The new runner takes the port; the router forward goes with this one.
     recomp_netplay_close(&socket);
