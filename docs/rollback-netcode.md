@@ -244,13 +244,15 @@ on EXHIBITION (`0x9D9E0C` 1, `viewer_menu_adapter.c`) and list 0 is open.
 The rooms, chat, blocks, FIND MATCH, the shared matchmaker and
 `.recomp-storage/netplay.txt` work as in doa2u-re
 ([matchmaking](https://github.com/NoRain211/doa2u-re/blob/codex/rollback-netcode/docs/matchmaking.md)).
+Enter or Tab opens the room's chat line.
 
 The menu draws with doa2u-re's quads and 5 x 7 font (`overlay_screen.c`).
 The game thread publishes each frame's quads, and the presenter's thread
 draws them with Dear ImGui into a 640 x 480 area centered on the window,
 in the same pass as the overlay text (`overlay_imgui_panel.cpp`). Typed
 characters come from the window's `WM_CHAR` (`input_text.c`); the SDL
-presenter feeds its text events and Enter, Backspace and Esc the same way.
+presenter feeds its text events and Enter, Tab, Backspace and Esc the same
+way.
 Pasting uses the Windows clipboard only.
 
 When both players are ready, doa2u-re reboots the game in the same process.
@@ -260,8 +262,11 @@ socket's port, peer and matchmaker (`--netplay-room-socket`), so the path
 the routers opened and a relay stay in use. Resetting every adapter that
 keeps state between boots would be needed for an in-process reboot. The
 window closes and opens again. A session started from a room that ends
-(the other player left or went quiet, a desync, a failed lobby) starts the
-runner offline again with `--netplay-return`, the room socket and the
+(the other player left or went quiet, a desync, a failed lobby, or
+`netplay:left-exhibition` when a player backs out of Exhibition to the
+main menu, menu screen 0, which both sides see at the start of the same
+lockstep frame) starts the runner offline again with `--netplay-return`,
+the room socket and the
 room's state (`--netplay-room`: hosting, listed, found by FIND MATCH, the
 peer's address), which the room's runner passed to the session. The room
 opens again at once over the game on the same port, and the reason shows in
@@ -269,6 +274,12 @@ it; the host lists it again and waits, and the joiner calls the host again.
 A runner that cannot have the port back within 2 s opens the menu with the
 reason once the main menu has EXHIBITION chosen. Leaving the room leaves
 the game where it booted to.
+
+Two runners matched from a private room; the joiner pressed B in character
+select and again in Exhibition's setup. Both left at frame 290 with equal
+kernel call counts and replay lengths and went back to their rooms. Before
+this, both stayed in the session on the main menu and then the title until
+one closed the window.
 
 Two runners on one machine, each driven by an input script, went through
 the menu: the host opened a private room, the joiner joined it from its

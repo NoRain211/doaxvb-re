@@ -55,6 +55,7 @@ struct RollbackRun {
     bool hidden = false;
     bool interrupted = false;
     bool walking = false; // the menus are walked to Two Players for both sides
+    bool inExhibition = false; // the walk is done; backing out to the main menu ends the session
     bool fromRoom = false; // a room started this runner, so an ending session goes back to the menu
     RecompNetplayLaunch launch; // a room's session hands its socket and state back (recomp_netplay_session_return_args)
     std::uint32_t pass = 0u; // loop passes since boot
@@ -472,6 +473,7 @@ static void walkPads()
     if (!rollback.walking) return;
     if (recomp_netplay_game_walk(rollback.session.frame, &rollback.pads[0])) {
         rollback.walking = false;
+        rollback.inExhibition = true;
         recomp_dsound_service_adapter_set_muted(0);
         std::fprintf(stderr, "recomp netplay: Two Players character select from frame %u\n", rollback.session.frame);
     }
@@ -506,6 +508,13 @@ static void onFrame()
     recordReplay();
     bool saved = true;
     if (s.frame == rollback.frontier) {
+        /* Backing out of Exhibition to the main menu ends the session. Menus run
+           in lockstep, so both sides start this frame from the same confirmed
+           state and leave together, before waiting on each other's pads. */
+        if (rollback.inExhibition && recomp_netplay_game_main_menu()) {
+            std::fprintf(stderr, "recomp netplay: left Exhibition at frame %u\n", s.frame);
+            endSession("netplay:left-exhibition");
+        }
         if (rollback.mode == RollbackMode::Udp)
             setWindow(recomp_netplay_game_rally_live() ? RECOMP_ROLLBACK_WINDOW : 0u);
         if (rollback.mode == RollbackMode::Udp && rollback.paced != s.frame) {
