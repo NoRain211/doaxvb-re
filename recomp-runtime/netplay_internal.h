@@ -29,9 +29,6 @@ typedef socklen_t SocketLength;
 enum {
     MAGIC = 0x42523244u,       /* "D2RB" */
     GOODBYE_MAGIC = 0x59423244u, /* "D2BY", the whole packet */
-    PROBE_MAGIC = 0x49503244u, /* "D2PI": a listed room's id and the asker's clock */
-    ECHO_MAGIC = 0x4f503244u,  /* "D2PO": the same probe sent back */
-    PROBE_BYTES = 12u,
     LOBBY_MAGIC = 0x424c3244u, /* "D2LB" */
     LOBBY_VERSION = 5u,
     LOBBY_HELLO = 1u,
