@@ -65,6 +65,7 @@ struct RollbackRun {
     std::chrono::steady_clock::time_point next_frame{};
     std::int32_t advantage = 0;
     std::chrono::steady_clock::time_point started;
+    std::chrono::steady_clock::time_point contact{}; // when a stall first saw the other player
     const char *dump = nullptr;
     std::uint32_t checkFrame = 0u, compared = 0u, matched = 0u;
     std::uint64_t checkHash = 0u;
@@ -185,8 +186,10 @@ static void stalled(std::chrono::steady_clock::time_point began, bool atBoundary
     }
     const auto now = steady_clock::now();
     const bool heard = rollback.net.peer_seen;
+    if (heard && rollback.contact == steady_clock::time_point{}) rollback.contact = now;
     const seconds grace(heard ? 15 : 120);
-    const auto waited = now - began;
+    // Contact heard during this wait starts its 15 s afresh.
+    const auto waited = now - (heard ? std::max(began, rollback.contact) : began);
     if (waited > grace) endSession("rollback:peer-timeout");
     if (waited < seconds(1)) return;
     if (!rollback.interrupted && heard)
@@ -634,7 +637,8 @@ bool recomp_netplay_session_read_env(const char *mode)
     if (std::strcmp(mode, "loopback") == 0) {
         rollback.mode = RollbackMode::Loopback;
         rollback.player = 1u;
-        if (std::getenv("RECOMP_ROLLBACK_FRAMES") == nullptr) rollback.stop = 600u;
+        if (const char *frames = std::getenv("RECOMP_ROLLBACK_FRAMES"); frames == nullptr || *frames == '\0')
+            rollback.stop = 600u;
         envNumber("RECOMP_ROLLBACK_LAG", rollback.lag);
         if (rollback.lag <= RECOMP_ROLLBACK_WINDOW) return true;
         std::fprintf(stderr, "recomp runner: RECOMP_ROLLBACK_LAG is at most %u\n", RECOMP_ROLLBACK_WINDOW);

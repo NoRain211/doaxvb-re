@@ -90,6 +90,7 @@ typedef struct RecompNetplayMatch {
     bool punching;
     uint64_t punch_ms;
     bool relay; /* packets to the peer go through the server, as do its answers */
+    bool busy;  /* the room's peer is talking, so a late pairing for another player is ignored */
 } RecompNetplayMatch;
 
 typedef struct RecompNetplay {
@@ -139,10 +140,11 @@ typedef struct RecompNetplayRoom {
     bool hosting;  /* set before the first tick; a host takes the first player who talks */
     uint64_t id;   /* this install's player ID, set before the first tick */
     /* Set before the first tick, or null: true for a player ID this player
-       blocked. Their messages are dropped and set refused; a side that was
-       calling or punching to them stops. */
+       blocked. Their messages are dropped; when the peer, a punch candidate
+       or an empty host's first caller is blocked, refused is set, and a call
+       or punch to them stops. */
     bool (*blocked)(uint64_t id);
-    bool refused;  /* a blocked player spoke; the caller clears it */
+    bool refused;  /* this room's peer is blocked; the caller clears it */
     bool joined;   /* the other player spoke in the last 3 s */
     bool mismatch; /* the other player runs another build */
     bool ready;
@@ -156,7 +158,7 @@ typedef struct RecompNetplayRoom {
     char heard[RECOMP_NETPLAY_CHAT_BYTES + 1u];
     bool heard_new;
     /* Kept between ticks. */
-    uint64_t heard_ms, sent_ms, echo_at_ms;
+    uint64_t heard_ms, sent_ms, echo_at_ms, heard_line_ms;
     uint32_t echo;
     char say[RECOMP_NETPLAY_CHAT_BYTES + 1u];
     uint32_t say_id, heard_id;
@@ -172,8 +174,8 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
     const char *name, bool ready, bool start);
 /* Sends a chat line, cut to RECOMP_NETPLAY_CHAT_BYTES, with the next ticks:
    each tick for 2 s repeats it, and the other side shows it once. The other
-   side drops a line that is not printable ASCII or that
-   recomp_netplay_name_banned refuses. */
+   side takes at most one line a second and drops a line that is not
+   printable ASCII or that recomp_netplay_name_banned refuses. */
 void recomp_netplay_room_say(RecompNetplayRoom *room, const char *text);
 /* Forgets the other player as if they went quiet; a host stops answering
    them and lets another player in. */
@@ -200,9 +202,10 @@ void recomp_netplay_match_poll(RecompNetplay *net);
 uint32_t recomp_netplay_suggested_delay(uint32_t rtt_ms);
 /* Waits on a socket from recomp_netplay_listen, or a room's, for a joiner's
    hello, answering each with the host's
-   digest and settings. The first joiner becomes the peer; one with another
-   digest ends the wait with MISMATCH. Returns once both sides hold both
-   profiles. cancelled, when not null, is polled every 20 ms; either side
+   digest and settings. The first joiner with the same digest becomes the
+   peer; one with another digest learns it from the answer and is ignored.
+   Returns once both sides hold both profiles. cancelled, when not null, is
+   polled every 20 ms; either side
    cancelling sends the other a goodbye, which ends its wait too. */
 RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNetplayLobby *lobby,
     RecompNetplayProfiles *profiles, uint32_t timeout_ms, bool (*cancelled)(void));
@@ -223,8 +226,8 @@ bool recomp_netplay_route_address(char *text, size_t size);
 bool recomp_netplay_open_router_port(uint16_t port, char *address, size_t size);
 /* Removes that forward; nothing when none was made. */
 void recomp_netplay_close_router_port(void);
-/* True for a profile name that is not allowed online, or one too long to
-   check. Takes UTF-8. */
+/* True for a profile name that is not allowed online, one with a non-ASCII
+   byte, or one too long to check. */
 bool recomp_netplay_name_banned(const char *name);
 void recomp_netplay_send(RecompNetplay *net, const RecompRollbackSession *session,
     int32_t advantage);

@@ -1,5 +1,6 @@
 #include "netplay_internal.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void put_pad(uint8_t *out, const RecompInputGamepad *pad)
@@ -366,8 +367,11 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
                 }
                 if (theirs > RECOMP_NETPLAY_MAX_PROFILE) continue;
                 netplay_send_to(net, from.sin_addr.s_addr, from.sin_port, welcome, welcome_size);
-                if (memcmp(hello.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0)
-                    return RECOMP_NETPLAY_LOBBY_MISMATCH;
+                // Keep waiting, so a stray hello cannot end the lobby; the welcome tells that joiner.
+                if (memcmp(hello.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0) {
+                    fprintf(stderr, "recomp netplay: refused a player who runs a different build; still waiting\n");
+                    continue;
+                }
                 net->peer_address = from.sin_addr.s_addr;
                 net->peer_port = from.sin_port;
                 transfer_start(&t, theirs);
