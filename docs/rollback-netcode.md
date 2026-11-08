@@ -263,11 +263,11 @@ the routers opened and a relay stay in use. Resetting every adapter that
 keeps state between boots would be needed for an in-process reboot. The
 window closes and opens again. A session started from a room that ends
 (the other player left or went quiet, a desync, a failed lobby, or
-`netplay:left-exhibition` when a player backs out of Exhibition to the
-main menu, menu screen 0, which both sides see at the start of the same
-lockstep frame) starts the runner offline again with `--netplay-return`,
-the room socket and the
-room's state (`--netplay-room`: hosting, listed, found by FIND MATCH, the
+`netplay:left-exhibition` after the session reaches Exhibition and returns
+to the main menu, menu screen 0, which both sides see at the start of the
+same lockstep frame) starts the runner offline again with
+`--netplay-return`, the room socket and the room's state
+(`--netplay-room`: hosting, listed, found by FIND MATCH, the
 peer's address), which the room's runner passed to the session. The room
 opens again at once over the game on the same port, and the reason shows in
 it; the host lists it again and waits, and the joiner calls the host again.
