@@ -224,7 +224,7 @@ static void startReplay()
     fs::create_directories(folder, error);
     // A second session within the same second gets a suffix instead of truncating the first one's replay.
     std::snprintf(name, sizeof name, "%s.dxbr", stamp);
-    for (unsigned n = 2u; n < 100u && fs::exists(folder / name, error); ++n)
+    for (unsigned n = 2u; fs::exists(folder / name, error); ++n)
         std::snprintf(name, sizeof name, "%s-%u.dxbr", stamp, n);
     rollback.replayFile.open(folder / name, std::ios::binary | std::ios::trunc);
     RecompReplayInfo info{};

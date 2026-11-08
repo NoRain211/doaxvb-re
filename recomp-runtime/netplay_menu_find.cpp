@@ -83,20 +83,6 @@ void updateFind(std::uint16_t keys)
     recomp_netplay_match_poll(&menu.net);
     const auto now = Clock::now();
     if (keys) menu.message.clear();
-    if (match.met && menu.find.joining == 0u) match.met = false; // a pairing after STOP or a timeout opens nothing
-    if (match.met) {
-        match.met = false;
-        char text[64] = "RELAY";
-        if (match.candidate_port[0] != 0u) {
-            const std::uint8_t *at = reinterpret_cast<const std::uint8_t *>(&match.candidate_address[0]);
-            const std::uint8_t *port = reinterpret_cast<const std::uint8_t *>(&match.candidate_port[0]);
-            std::snprintf(text, sizeof text, "%u.%u.%u.%u:%u", at[0], at[1], at[2], at[3], port[0] << 8 | port[1]);
-        }
-        menu.lobby.peerAddress = text;
-        menu.lobby.found = true;
-        enterRoom(false);
-        return;
-    }
     if (match.gone) {
         match.gone = false;
         menu.find.joining = 0u;
@@ -122,11 +108,27 @@ void updateFind(std::uint16_t keys)
         menu.find.quick = false;
         return;
     }
+    if (menu.find.joining != 0u && now - menu.find.joinStarted > std::chrono::seconds(3)) {
+        if (forgetJoin()) menu.message = "NO ANSWER FROM THE MATCHMAKER.";
+        return;
+    }
+    if (match.met && menu.find.joining == 0u) match.met = false; // a pairing after STOP or a timeout opens nothing
+    if (match.met) {
+        match.met = false;
+        char text[64] = "RELAY";
+        if (match.candidate_port[0] != 0u) {
+            const std::uint8_t *at = reinterpret_cast<const std::uint8_t *>(&match.candidate_address[0]);
+            const std::uint8_t *port = reinterpret_cast<const std::uint8_t *>(&match.candidate_port[0]);
+            std::snprintf(text, sizeof text, "%u.%u.%u.%u:%u", at[0], at[1], at[2], at[3], port[0] << 8 | port[1]);
+        }
+        menu.lobby.peerAddress = text;
+        menu.lobby.found = true;
+        enterRoom(false);
+        return;
+    }
     if (menu.find.joining != 0u) {
         // The server answers a repeated join again, so a lost answer costs one retry.
-        if (now - menu.find.joinStarted > std::chrono::seconds(3)) {
-            if (forgetJoin()) menu.message = "NO ANSWER FROM THE MATCHMAKER.";
-        } else if (now - menu.find.askedAt >= std::chrono::milliseconds(500)) {
+        if (now - menu.find.askedAt >= std::chrono::milliseconds(500)) {
             menu.find.askedAt = now;
             recomp_netplay_match_join(&menu.net, menu.find.joining, menu.digest.data(), menu.name.c_str());
         }

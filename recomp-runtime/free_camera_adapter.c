@@ -283,7 +283,8 @@ static bool controller_used(const RecompInputGamepad *gamepad)
 
 static bool keys_used(void)
 {
-    for (int key = 0; key < RECOMP_INPUT_HOST_KEY_COUNT; ++key) {
+    /* Backspace, the last key, edits netplay names and does not fly the camera. */
+    for (int key = 0; key < RECOMP_INPUT_HOST_KEY_BACKSPACE; ++key) {
         if (recomp_input_host_key((RecompInputHostKey)key)) return true;
     }
     return false;

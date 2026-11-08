@@ -720,7 +720,7 @@ if(RECOMP_PROGRAM_DIR)
         if(NOT _git_branch)
             set(_git_branch HEAD)
         endif()
-        execute_process(COMMAND git rev-parse --git-path HEAD --git-path logs/HEAD --git-path "${_git_branch}"
+        execute_process(COMMAND git rev-parse --git-path HEAD --git-path logs/HEAD --git-path "${_git_branch}" --git-path packed-refs
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             OUTPUT_VARIABLE _git_head_files OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
         string(REPLACE "\n" ";" _git_head_files "${_git_head_files}")
