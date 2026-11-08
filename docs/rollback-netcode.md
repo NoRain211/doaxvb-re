@@ -216,10 +216,29 @@ The game keeps all three vacations in one save
 (`UDATA/54430007/<save>/doaxuser.dat`), so both players' saves would
 collide. The host recovers its save journal, packs its saves and title
 saves with doa2u-re's `netplay_profile.cpp` (at most 1 MiB, with a
-SHA-256), and the joiner sends none. Each side clears
+SHA-256), and the joiner sends no saves. Each side clears
 `.recomp-storage/netplay`, writes the host's copy there after checking the
 hash and every path, and plays the session from it with its own journal
 (`recomp_save_set_session`), so neither player's own saves change.
+
+The save also holds one set of controller settings, which loading it
+(`0x01B340`, from the newest vacation at boot) gives every port:
+Vibration (`0x416559`), Digital or Analog (`0x41655D`), a word at
+`0x416561` and the Digital and Analog button maps (`0x416571`, 8 bytes a
+port). The runner then puts its own Digital or Analog preference
+(`controller_settings.cpp`) on every port, so two players who chose
+differently desynced at frame 30. In a session each player keeps their own
+instead (`usePads`): the host's Digital or Analog choice goes to every port
+with the host's options, and a joiner from a room sends port 0's settings
+from its own game as its profile, which port 1 takes. A joiner started
+with `--netplay-join` sends none, so port 1 plays the host's settings.
+A host with no vacation save loads none, so port 0, and without a joiner
+profile every port, plays the defaults.
+Choices made in a session's Controller Settings stay out of the player's own
+preference. With the joiner on Analog and the host on Digital, two scripted
+runners matched from a room gave port 0 Digital and port 1 Analog, and
+matched guest RAM through frame 600; the joiner's replay ended with the
+same guest RAM.
 
 The host asks the router to forward its UDP port with UPnP (miniupnpc
 2.3.3) and removes the forward when the runner exits. The forward is leased
@@ -290,6 +309,7 @@ Each session started by `--netplay-host` or `--netplay-join`, and so
 each room's session, records a replay in the player's own
 `.recomp-storage/replays` (doa2u-re's `replay.c`, tag `DXBR`). It holds
 the build digest, the side, the input delay, the host's options and saves,
+the joiner's controller settings,
 the loop pass the session started at and both ports' confirmed pads, so it
 stays on this computer. `--replay <file>` plays it again at 60 Hz from the
 same saves and options, walks the menus as the session did, and stops at
