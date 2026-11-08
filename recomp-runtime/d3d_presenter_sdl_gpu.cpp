@@ -496,6 +496,7 @@ void pumpEvents(RecompD3dPresenter *presenter)
             if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) recomp_input_text_char('\r');
             else if (event.key.key == SDLK_BACKSPACE) recomp_input_text_char('\b');
             else if (event.key.key == SDLK_ESCAPE) recomp_input_text_char(0x1bu);
+            else if (event.key.key == SDLK_TAB) recomp_input_text_char('\t');
         }
     }
 }

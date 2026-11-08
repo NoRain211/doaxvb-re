@@ -52,10 +52,14 @@ bool recomp_netplay_game_character_select(void)
     return byte(SCENE) == SCENE_MENU && (int8_t)byte(MENU_SCREEN) == SCREEN_CHARACTER_SELECT;
 }
 
+bool recomp_netplay_game_main_menu(void)
+{
+    return byte(SCENE) == SCENE_MENU && (int8_t)byte(MENU_SCREEN) == SCREEN_MAIN;
+}
+
 bool recomp_netplay_game_exhibition_chosen(void)
 {
-    return byte(SCENE) == SCENE_MENU && (int8_t)byte(MENU_SCREEN) == SCREEN_MAIN &&
-        *recomp_memory_u32(MENU_PHASE) == MENU_PHASE_RUNNING &&
+    return recomp_netplay_game_main_menu() && *recomp_memory_u32(MENU_PHASE) == MENU_PHASE_RUNNING &&
         *recomp_memory_u32(MAIN_MENU_CURSOR) == ITEM_EXHIBITION &&
         *recomp_memory_u32(LIST_BASE + LIST_PHASE) == LIST_OPEN;
 }

@@ -201,7 +201,7 @@ static void say()
     }
 }
 
-// Enter opens a line and sends it, Esc drops it; printable ASCII only.
+// Enter or Tab opens a line, Enter sends it, Esc drops it; printable ASCII only.
 static void typeChat(bool peerAllowed)
 {
     if (menu.lobby.typing) recomp_input_text_focus(); // Enter, which opens the line, comes without text input
@@ -210,7 +210,7 @@ static void typeChat(bool peerAllowed)
     for (std::size_t i = 0u; i < count; ++i) {
         const char c = typed[i];
         if (!menu.lobby.typing) {
-            if (c == '\r' && peerAllowed) {
+            if ((c == '\r' || c == '\t') && peerAllowed) {
                 menu.lobby.typing = true;
                 menu.lobby.draft.clear();
             }
