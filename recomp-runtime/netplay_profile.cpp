@@ -136,6 +136,8 @@ static bool safeProfilePath(const std::string &name)
         const std::size_t slash = name.find('/', start);
         const std::string part = name.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
         if (part.empty() || part == "." || part == "..") return false;
+        // Windows drops a trailing dot, so "SaveMeta.xbx." would open as SaveMeta.xbx.
+        if (part.back() == '.') return false;
         for (const char c : part)
             if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '_' && c != '-') return false;
         if (first && part != "UDATA" && part != "TDATA") return false;
