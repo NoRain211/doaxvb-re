@@ -739,18 +739,21 @@ static bool useSessionSaves(const std::uint8_t *saves, std::size_t size, const s
 
 /* A room's socket, as --netplay-room-socket carries it to the session's
    runner and back: <local port>,<peer address>,<peer port>,<server
-   address>,<server port>,<relay>, all but the local port in network order. */
+   address>,<server port>,<relay>,<nonce>,<cookie>, all but the local port in
+   network order. The matchmaker relays a pair with each side's nonce from its
+   JOIN, so the new runner's socket keeps it. */
 struct RoomSocket {
     std::uint16_t localPort = 0u;
     std::uint32_t peerAddress = 0u, serverAddress = 0u;
     std::uint16_t peerPort = 0u, serverPort = 0u;
     bool relay = false;
+    unsigned long long nonce = 0u, cookie = 0u; // the 8 bytes of each, as memcpy packs them
 
     bool parse(const std::string &text)
     {
         unsigned long field[6] = {};
-        if (std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu", &field[0], &field[1], &field[2], &field[3],
-                &field[4], &field[5]) != 6 || field[0] == 0u || field[0] > 65535u)
+        if (std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu,%llx,%llx", &field[0], &field[1], &field[2], &field[3],
+                &field[4], &field[5], &nonce, &cookie) != 8 || field[0] == 0u || field[0] > 65535u)
             return false;
         localPort = static_cast<std::uint16_t>(field[0]);
         peerAddress = static_cast<std::uint32_t>(field[1]);
@@ -763,15 +766,19 @@ struct RoomSocket {
 
     static std::string format(const RecompNetplay &socket)
     {
-        char text[80];
-        std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u", recomp_netplay_local_port(&socket),
+        unsigned long long nonce = 0u, cookie = 0u;
+        static_assert(sizeof nonce == RECOMP_NETPLAY_TOKEN_BYTES, "a token packs into one number");
+        std::memcpy(&nonce, socket.match.nonce, sizeof nonce);
+        std::memcpy(&cookie, socket.match.cookie, sizeof cookie);
+        char text[128];
+        std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u,%llx,%llx", recomp_netplay_local_port(&socket),
             static_cast<unsigned long>(socket.peer_address), socket.peer_port,
             static_cast<unsigned long>(socket.match.server_address), socket.match.server_port,
-            socket.match.relay ? 1u : 0u);
+            socket.match.relay ? 1u : 0u, nonce, cookie);
         return text;
     }
 
-    // The room's peer and matchmaker, so relayed packets keep arriving through it.
+    // The room's peer, matchmaker and tokens, so relayed packets keep arriving through it.
     void applyTo(RecompNetplay &net) const
     {
         net.peer_address = peerAddress;
@@ -779,6 +786,8 @@ struct RoomSocket {
         net.match.server_address = serverAddress;
         net.match.server_port = serverPort;
         net.match.relay = relay;
+        std::memcpy(net.match.nonce, &nonce, sizeof nonce);
+        std::memcpy(net.match.cookie, &cookie, sizeof cookie);
     }
 };
 

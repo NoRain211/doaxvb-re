@@ -5,9 +5,9 @@
 
 #include <stddef.h>
 
-/* The built-in font for ' ' through '_': seven rows of five dots each, top
-   to bottom, drawn for this runner. */
-static const char font[64][42] = {
+/* The built-in font for ' ' through '_', then '~': seven rows of five dots
+   each, top to bottom, drawn for this runner. */
+static const char font[65][42] = {
     ".....|.....|.....|.....|.....|.....|.....", /* space */
     "..#..|..#..|..#..|..#..|..#..|.....|..#..", /* ! */
     ".#.#.|.#.#.|.....|.....|.....|.....|.....", /* " */
@@ -72,11 +72,13 @@ static const char font[64][42] = {
     ".###.|...#.|...#.|...#.|...#.|...#.|.###.", /* ] */
     "..#..|.#.#.|#...#|.....|.....|.....|.....", /* ^ */
     ".....|.....|.....|.....|.....|.....|#####", /* _ */
+    ".....|.....|.#...|#.#.#|...#.|.....|.....", /* ~ */
 };
 
 static const char *glyph(unsigned char c)
 {
     if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+    if (c == '~') return font[64];
     return font[c >= 32u && c < 96u ? c - 32u : '?' - 32u];
 }
 
