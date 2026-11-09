@@ -516,7 +516,8 @@ int main(int argc, char **argv)
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0u};
     if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling)) {
         throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED; // Windows 10 lacks the timer flag
-        SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
+        if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling))
+            std::cerr << "recomp runner: Windows kept power throttling on (error " << GetLastError() << ")\n";
     }
 #endif
 
