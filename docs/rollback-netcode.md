@@ -219,7 +219,12 @@ saves with doa2u-re's `netplay_profile.cpp` (at most 1 MiB, with a
 SHA-256), and the joiner sends none. Each side clears
 `.recomp-storage/netplay`, writes the host's copy there after checking the
 hash and every path, and plays the session from it with its own journal
-(`recomp_save_set_session`), so neither player's own saves change.
+(`recomp_save_set_session`), so neither player's own saves change. A save
+folder may hold only what the game writes there: `doaxuser.dat` at the
+11,176 bytes of every real save, and a UTF-16 `SaveMeta.xbx` of at most
+4 KiB that names the save once. Anything else, including a folder inside
+it, refuses the copy, so a modified host cannot hand the game a crafted
+save.
 
 The host asks the router to forward its UDP port with UPnP (miniupnpc
 2.3.3) and removes the forward when the runner exits. The forward is leased
