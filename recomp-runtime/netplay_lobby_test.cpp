@@ -186,7 +186,10 @@ static void serveBounds()
     const RecompNetplayLobby offered = lobby('a', 2u, 0u);
     std::vector<std::uint8_t> mine(16u * 1024u + 1000u), theirs(RECOMP_NETPLAY_MAX_PROFILE); // 17 chunks
     RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
-    if (!recomp_netplay_listen(&host, 47655u) || !recomp_netplay_open(&fake, 0u, "127.0.0.1", 47655u)) {
+    // A port the system picks, so another test or runner holding a fixed one cannot fail this.
+    const bool listening = recomp_netplay_listen(&host, 0u);
+    const std::uint16_t port = listening ? recomp_netplay_local_port(&host) : 0u;
+    if (port == 0u || !recomp_netplay_open(&fake, 0u, "127.0.0.1", port)) {
         check("serve sockets", false);
         recomp_netplay_close(&host);
         recomp_netplay_close(&fake);
@@ -197,25 +200,25 @@ static void serveBounds()
     hello.resize(6u);
     hello.insert(hello.end(), RECOMP_NETPLAY_DIGEST_BYTES, 'a');
     hello.resize(hello.size() + 6u); // delay, flags and an empty profile
-    sendFrom(fake, 47655u, hello);
+    sendFrom(fake, port, hello);
     int bytes = 0;
     (void)chunksArriving(fake, bytes); // the welcome
-    sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
-    sendFrom(fake, 47655u, lobbyPacket(3u, 16u));
-    for (int i = 0; i < 8; ++i) sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
+    sendFrom(fake, port, lobbyPacket(3u, 0u));
+    sendFrom(fake, port, lobbyPacket(3u, 16u));
+    for (int i = 0; i < 8; ++i) sendFrom(fake, port, lobbyPacket(3u, 0u));
     const int first = chunksArriving(fake, bytes);
     check("next window served at once, replays held", first == 17 || first == 33);
-    sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
-    for (int i = 0; i < 8; ++i) sendFrom(fake, 47655u, lobbyPacket(3u, 16u));
+    sendFrom(fake, port, lobbyPacket(3u, 0u));
+    for (int i = 0; i < 8; ++i) sendFrom(fake, port, lobbyPacket(3u, 16u));
     const int back = chunksArriving(fake, bytes);
     check("a replay does not move the served window back", back == 16 || back == 17);
     // 33,768 to 51,152 bytes sent so far; nine more requests reach eight copies of 17,384.
     for (int i = 0; i < 9; ++i) {
-        sendFrom(fake, 47655u, lobbyPacket(3u, 0u));
+        sendFrom(fake, port, lobbyPacket(3u, 0u));
         (void)chunksArriving(fake, bytes);
     }
     check("eight copies end serving", bytes > 8 * 17384 - 1024 && bytes <= 8 * 17384);
-    sendFrom(fake, 47655u, lobbyPacket(3u, 17u)); // holds them all
+    sendFrom(fake, port, lobbyPacket(3u, 17u)); // holds them all
     wait.join();
     check("serve lobby ends", hosted == RECOMP_NETPLAY_LOBBY_OK);
     recomp_netplay_close(&host);
