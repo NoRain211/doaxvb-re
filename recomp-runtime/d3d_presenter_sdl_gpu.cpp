@@ -1663,10 +1663,20 @@ static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_G
     return spv;
 }
 
+// The boot precompile thread, whose builds hold up no frame, and when this thread's build began.
+thread_local bool precompiling_shaders;
+thread_local std::chrono::steady_clock::time_point shader_build_start;
+
 // Failures are cached too, so a shader that cannot build is not retried on every draw.
 // The boot-shader thread may finish the same key first; keep its pair and drop ours.
 ShaderPair rememberShaderPair(RecompD3dPresenter *presenter, uint64_t key, ShaderPair pair)
 {
+    if (!precompiling_shaders && shader_build_start != std::chrono::steady_clock::time_point{}) {
+        std::fprintf(stderr, "[presenter] %s draw shader %016llx in %.1f ms\n",
+            pair.vertex_shader ? "compiled" : "failed to compile", static_cast<unsigned long long>(key),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - shader_build_start).count());
+    }
+    shader_build_start = {};
     std::lock_guard<std::mutex> lock(presenter->shader_mutex);
     const auto [it, inserted] = presenter->shader_cache.emplace(key, pair);
     if (!inserted) {
@@ -1692,6 +1702,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     }
     // The D3D11 presenter accepts vertex programs only with this FVF.
     if (program_count && fvf != 0x112u) return rememberShaderPair(presenter, shader_key, {});
+    shader_build_start = std::chrono::steady_clock::now();
 
     if (presenter->use_spirv) {
         const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens);
@@ -1770,6 +1781,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
 
 void precompileBootShaders(RecompD3dPresenter *p)
 {
+    precompiling_shaders = true;
     for (const uint32_t fvf : kBootDrawFvfs) {
         if (p->precompile_stop.load()) return;
         RecompD3dVertexLayout layout{};
