@@ -478,8 +478,11 @@ int main()
         hostRoom = RecompNetplayRoom{};
         joinerRoom = RecompNetplayRoom{};
         hostRoom.hosting = true;
-        check("leave room opens", recomp_netplay_listen(&host, 47630u) &&
-            recomp_netplay_open(&joiner, 0u, "127.0.0.1", 47630u) && meet(joinerRoom, hostRoom));
+        // A port the system picks, so another test or runner holding a fixed one cannot fail this.
+        const bool listening = recomp_netplay_listen(&host, 0u);
+        const std::uint16_t roomPort = listening ? recomp_netplay_local_port(&host) : 0u;
+        check("leave room opens", roomPort != 0u && recomp_netplay_open(&joiner, 0u, "127.0.0.1", roomPort) &&
+            meet(joinerRoom, hostRoom));
         recomp_netplay_send_goodbye(&host);
         for (int i = 0; i < 10; ++i) {
             recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
@@ -507,7 +510,7 @@ int main()
         check("joiner hears the host leave", joinerRoom.left && !joinerRoom.joined && joiner.peer_port == 0u);
         hostRoom = RecompNetplayRoom{};
         hostRoom.hosting = true;
-        check("leave room reopens", recomp_netplay_listen(&host, 47630u));
+        check("leave room reopens", recomp_netplay_listen(&host, roomPort));
         for (int i = 0; i < 25; ++i) {
             recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
             recomp_netplay_room_tick(&host, &hostRoom, digest, "HOST", false, false);
