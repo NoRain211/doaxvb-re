@@ -216,10 +216,10 @@ void recomp_netplay_close(RecompNetplay *net);
    text; it also starts Winsock on Windows. */
 bool recomp_netplay_route_address(char *text, size_t size);
 /* Asks the router over UPnP to forward UDP port to this computer, and
-   prints the outcome and the address the other player joins, which also
-   goes to address as host:port (empty when the router's own address is
-   private). False when no router answered or it refused; the port may
-   still be reachable. Takes seconds. */
+   prints the outcome without the public address. That address goes to
+   address as host:port (empty when the router's own address is private).
+   False when no router answered or it refused; the port may still be
+   reachable. Takes seconds. */
 bool recomp_netplay_open_router_port(uint16_t port, char *address, size_t size);
 /* Removes that forward; nothing when none was made. */
 void recomp_netplay_close_router_port(void);

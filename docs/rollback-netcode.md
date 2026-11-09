@@ -224,8 +224,10 @@ hash and every path, and plays the session from it with its own journal
 The host asks the router to forward its UDP port with UPnP (miniupnpc
 2.3.3) and removes the forward when the runner exits. The forward is leased
 for a day, so one left by a crash expires, except on routers that take only
-permanent forwards. The log names the public address the other player
-joins, or says to forward the port by hand.
+permanent forwards. The log says the port is forwarded, that the router's
+own address is private so outside players cannot reach it, or that the port
+must be forwarded by hand. It leaves out the public address, since players
+paste this log into public issues; a host's room shows it after Y.
 
 Two runners on one machine paired this way at delay 2, with the joiner's
 own saves moved away: both walked to character select at frame 182 and

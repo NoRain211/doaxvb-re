@@ -151,6 +151,80 @@ static bool matchRooms(std::uint16_t toHost, std::uint16_t toJoiner, int millise
     return met;
 }
 
+// A lobby packet with no payload past its header and index, as a joiner sends it.
+static std::vector<std::uint8_t> lobbyPacket(std::uint8_t kind, std::uint32_t index)
+{
+    return {'D', '2', 'L', 'B', 5u, kind, static_cast<std::uint8_t>(index), static_cast<std::uint8_t>(index >> 8),
+        static_cast<std::uint8_t>(index >> 16), static_cast<std::uint8_t>(index >> 24)};
+}
+
+// The profile chunks a socket receives within 300 ms; their payload bytes add to bytes.
+static int chunksArriving(const RecompNetplay &net, int &bytes)
+{
+    int chunks = 0;
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (std::chrono::steady_clock::now() < end) {
+        std::uint8_t packet[2048];
+        for (int got; (got = static_cast<int>(recv(static_cast<RawSocket>(net.socket),
+                           reinterpret_cast<char *>(packet), sizeof packet, 0))) > 0;)
+            if (got > 10 && packet[5] == 4u) {
+                ++chunks;
+                bytes += got - 10;
+            }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return chunks;
+}
+
+// A host serves the next window of its profile at once, a replayed one after 50 ms, and eight copies in all.
+// A busy runner may stall the host past one hold, so the hold checks allow one extra served window; an
+// unbounded host serves every replay.
+static void serveBounds()
+{
+    RecompNetplay host = unopened(), fake = unopened();
+    RecompNetplayLobbyResult hosted = RECOMP_NETPLAY_LOBBY_SOCKET;
+    const RecompNetplayLobby offered = lobby('a', 2u, 0u);
+    std::vector<std::uint8_t> mine(16u * 1024u + 1000u), theirs(RECOMP_NETPLAY_MAX_PROFILE); // 17 chunks
+    RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
+    // A port the system picks, so another test or runner holding a fixed one cannot fail this.
+    const bool listening = recomp_netplay_listen(&host, 0u);
+    const std::uint16_t port = listening ? recomp_netplay_local_port(&host) : 0u;
+    if (port == 0u || !recomp_netplay_open(&fake, 0u, "127.0.0.1", port)) {
+        check("serve sockets", false);
+        recomp_netplay_close(&host);
+        recomp_netplay_close(&fake);
+        return;
+    }
+    std::thread wait([&] { hosted = recomp_netplay_host(&host, &offered, &profiles, 10000u, nullptr); });
+    std::vector<std::uint8_t> hello = lobbyPacket(1u, 0u);
+    hello.resize(6u);
+    hello.insert(hello.end(), RECOMP_NETPLAY_DIGEST_BYTES, 'a');
+    hello.resize(hello.size() + 6u); // delay, flags and an empty profile
+    sendFrom(fake, port, hello);
+    int bytes = 0;
+    (void)chunksArriving(fake, bytes); // the welcome
+    sendFrom(fake, port, lobbyPacket(3u, 0u));
+    sendFrom(fake, port, lobbyPacket(3u, 16u));
+    for (int i = 0; i < 8; ++i) sendFrom(fake, port, lobbyPacket(3u, 0u));
+    const int first = chunksArriving(fake, bytes);
+    check("next window served at once, replays held", first == 17 || first == 33);
+    sendFrom(fake, port, lobbyPacket(3u, 0u));
+    for (int i = 0; i < 8; ++i) sendFrom(fake, port, lobbyPacket(3u, 16u));
+    const int back = chunksArriving(fake, bytes);
+    check("a replay does not move the served window back", back == 16 || back == 17);
+    // 33,768 to 51,152 bytes sent so far; nine more requests reach eight copies of 17,384.
+    for (int i = 0; i < 9; ++i) {
+        sendFrom(fake, port, lobbyPacket(3u, 0u));
+        (void)chunksArriving(fake, bytes);
+    }
+    check("eight copies end serving", bytes > 8 * 17384 - 1024 && bytes <= 8 * 17384);
+    sendFrom(fake, port, lobbyPacket(3u, 17u)); // holds them all
+    wait.join();
+    check("serve lobby ends", hosted == RECOMP_NETPLAY_LOBBY_OK);
+    recomp_netplay_close(&host);
+    recomp_netplay_close(&fake);
+}
+
 // A ROOMS answer listing one room named HOST, with its host at 127.0.0.1:port, or without an
 // endpoint, as an older server sends it.
 static std::vector<std::uint8_t> roomsPacket(std::uint32_t id, std::uint16_t port, bool endpoints)
@@ -472,6 +546,7 @@ int main()
     check("matched rooms relay without endpoints", matchRooms(0u, 0u, 5000, relayed) && relayed);
     check("matched rooms relay when punching fails", matchRooms(47629u, 47628u, 10000, relayed) && relayed);
     probeRooms();
+    serveBounds();
 
     if (failures != 0) return 1;
     std::puts("PASS netplay lobby joins one build, swaps profiles, refuses another and runs a room");
