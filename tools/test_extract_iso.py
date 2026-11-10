@@ -71,6 +71,14 @@ class ExtractionTests(unittest.TestCase):
             self.assertEqual(build_inputs(moved),
                              (work / "runner", work / "disc/synthetic.xbe", work / "build-receipt.json"))
 
+    def test_fog_setting_defaults_on(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            for saved, expected in (({}, "1"), ({"fog": True}, "1"), ({"fog": False}, "0")):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                self.assertEqual(saved_launcher_settings(root)["RECOMP_D3D_FOG"], expected)
+
     def test_built_runner_receipt_selection_and_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()

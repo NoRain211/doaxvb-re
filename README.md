@@ -119,13 +119,14 @@ installer, which needs administrator approval and several GB of disk space.
    choices without opening the launcher. Running `RunGame.cmd` directly uses
    the defaults.
 
-On macOS:
-1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).
-2. Run `./build_game.sh /path/to/game.iso` and wait for setup to complete.
-3. Run `./launcher.sh` to select resolution, volume, and soundtrack options, then press **Play** (or run `./run_game.sh` directly).
-
-On Linux and Steam Deck, follow [docs/building.md](docs/building.md#linux-and-steamos-build);
-the scripts are the same as on macOS.
+On macOS, Linux and Steam Deck:
+1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build)
+   on macOS, or follow [docs/building.md](docs/building.md#linux-and-steamos-build)
+   on Linux and Steam Deck.
+2. Run `./launcher.sh`. It opens on **Build** and finds your ISO; press **Build
+   game** and wait for **Build complete**.
+3. Pick your options, then press **Play**. Afterwards `./run_game.sh` starts the
+   game with those saved choices without opening the launcher.
 
 Setup extracts your ISO and builds a native Release runner locally; the package
 contains tools and source, never a prebuilt runner or game data. When updating,

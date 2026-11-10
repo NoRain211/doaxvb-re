@@ -51,12 +51,12 @@ def vulkan_requested():
     return sys.platform == "win32" and os.environ.get("RECOMP_RENDERER") == "vulkan"
 
 
-def launch(root, receipt_path=None, settings=False):
+def launch(root, receipt_path=None):
     built = build_inputs(root, receipt_path)
     if built is not None:
         runner, image, receipt_path = built
         print(f"Using build receipt: {receipt_path}", flush=True)
-        return run(runner, image, root, receipt_path, settings)
+        return run(runner, image, root, receipt_path)
     if vulkan_requested():
         raise ValueError("The Vulkan renderer needs a build from BuildGame.cmd. Build the game, or choose Direct3D 11.")
     candidates = [root / "recomp_program_runner.exe",
@@ -79,7 +79,7 @@ def launch(root, receipt_path=None, settings=False):
         release = json.loads(release_path.read_text(encoding="utf-8"))
         if sha256(runner) != release["runner_sha256"] or sha256(images[0]) != release["xbe_sha256"]:
             raise ValueError("Runner or game executable does not match this release.")
-    return run(runner, images[0], root, release_path if release_path.is_file() else None, settings)
+    return run(runner, images[0], root, release_path if release_path.is_file() else None)
 
 
 # What the game does when its title screen is left idle; see docs/title-idle.md.
@@ -96,6 +96,8 @@ def saved_launcher_settings(root):
         return {"RECOMP_D3D_SCALE": f"{int(settings.get('height', 480)) / 480:.4f}",
                 "RECOMP_D3D_MSAA": str(int(settings.get("msaa", 1))),
                 "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
+                # On by default, as in the Windows launcher; the SDL GPU presenter draws it too.
+                "RECOMP_D3D_FOG": "0" if settings.get("fog") is False else "1",
                 "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
                 "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0",
                 "RECOMP_UNLOCK_SWIMSUITS": "1" if settings.get("unlock_swimsuits") else "0",
@@ -108,15 +110,7 @@ def saved_launcher_settings(root):
         return {}
 
 
-def run(runner, image, root, receipt_path=None, settings=False):
-    if settings:
-        # Linux builds the settings launcher beside the runner; see launcher.sh.
-        launcher = runner.parent / "recomp_launcher"
-        if not launcher.is_file():
-            raise ValueError(f"{launcher} is missing. Rebuild with ./build_game.sh, "
-                             "or start the game with ./run_game.sh.")
-        if subprocess.run([str(launcher), str(root)]).returncode != 0:
-            return 1
+def run(runner, image, root, receipt_path=None):
     log_path = root / "private" / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".log")
     env = dict(os.environ, RECOMP_USER_MUSIC=str(root / "private" / "UserMusic"))
     if os.name != "nt":
@@ -147,10 +141,9 @@ def run(runner, image, root, receipt_path=None, settings=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("receipt", nargs="?", type=Path, help="Select a private build-receipt.json")
-    parser.add_argument("--launcher", action="store_true", help="Pick settings first (Linux; see launcher.sh)")
     args = parser.parse_args()
     try:
-        sys.exit(launch(package_root(), args.receipt, args.launcher))
+        sys.exit(launch(package_root(), args.receipt))
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Cannot launch: {error}", file=sys.stderr)
         sys.exit(1)
