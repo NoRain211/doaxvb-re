@@ -718,6 +718,8 @@ static void adoptSettings(std::uint8_t flags, const std::filesystem::path &stora
     putSetting("RECOMP_GAME_HZ", "60");
     putSetting("RECOMP_TITLE_IDLE", "default");
     putSetting("RECOMP_FREE_CAMERA", "0");
+    // Each side's stored language would differ in guest RAM; both play in English.
+    putSetting("RECOMP_LANGUAGE", "en");
     // The game lists custom soundtracks in guest RAM; a session's folder has none.
     putSetting("RECOMP_USER_MUSIC", (storage / "netplay" / "UserMusic").string().c_str());
 }
