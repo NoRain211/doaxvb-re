@@ -137,16 +137,19 @@ zero; a normal user close can exit three for an expectation mismatch. Neither
 an expectation match nor exit zero alone proves successful gameplay.
 
 Windows unhandled exceptions write `event=host-crash kind=unhandled-exception`
-in Release and Debug, with the exception code and address. Expected-stop rules
+in Release and Debug, with the exception code and address. A stack overflow
+writes `kind=stack-overflow`, `abort()` (also reached by `std::terminate` and
+pure virtual calls) writes `kind=abort`, and an invalid CRT argument writes
+`kind=invalid-crt-parameter` before the process ends. Expected-stop rules
 do not apply to these crashes. Debug `event=exception-observed terminal=unknown`
 means an exception was observed before its final handling decision; a subsequent
 handler may recover. Debug `event=runtime-check terminal=false` reports a CRT
 check while execution continues. Do not classify either diagnostic as a crash
 without a terminal event or external evidence of process termination.
 
-These are local stderr logs, not automatic uploads. Forced termination,
-fail-fast, and failures that bypass Windows' unhandled-exception filter may
-leave no terminal log; absence of a crash event is not proof of a clean exit.
+These are local stderr logs, not automatic uploads. Forced termination, other
+fail-fast paths, and failures that bypass these handlers may leave no terminal
+log; absence of a crash event is not proof of a clean exit.
 Bug reports should include the exact build identity and configuration, stop
 line, process exit status and reproduction steps. Review logs for private
 paths or game-derived data before sharing them.

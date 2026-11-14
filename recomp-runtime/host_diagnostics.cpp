@@ -24,9 +24,58 @@ void bufferStderr()
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <csignal>
+#include <cstdlib>
+
 namespace {
+char overflowLine[192]; // static: an overflowed stack has only a few KiB left
+
+/* The unhandled-exception filter's stdio needs more stack than an overflow
+   leaves, so it died without a line. This reports first, with one direct
+   write, then flushes what stderr's buffer still holds. */
+LONG CALLBACK reportStackOverflow(EXCEPTION_POINTERS *info)
+{
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const int size = std::snprintf(overflowLine, sizeof overflowLine,
+        "recomp host: event=host-crash kind=stack-overflow"
+        " exception_code=0x%08lx address=%p expectation_applied=false\n",
+        static_cast<unsigned long>(EXCEPTION_STACK_OVERFLOW),
+        info->ExceptionRecord->ExceptionAddress);
+    DWORD written;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), overflowLine,
+        static_cast<DWORD>(size > 0 ? size : 0), &written, nullptr);
+    std::fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* abort(), std::terminate and pure virtual calls end in a fail-fast that
+   skips the unhandled-exception filter; SIGABRT is raised before it. */
+void reportAbort(int)
+{
+    std::fprintf(stderr,
+        "recomp host: event=host-crash kind=abort expectation_applied=false\n");
+    std::fflush(stderr);
+}
+
+/* A bad CRT argument would also fail fast silently. Ending the process here
+   keeps it terminal instead of letting the call return an error. */
+void reportInvalidParameter(const wchar_t *, const wchar_t *, const wchar_t *,
+    unsigned, uintptr_t)
+{
+    std::fprintf(stderr,
+        "recomp host: event=host-crash kind=invalid-crt-parameter"
+        " expectation_applied=false\n");
+    std::fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 0xC0000417u); // STATUS_INVALID_CRUNTIME_PARAMETER
+}
+
 LONG CALLBACK reportUnhandledException(EXCEPTION_POINTERS *info)
 {
+    if (info->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        return EXCEPTION_EXECUTE_HANDLER; // reportStackOverflow wrote it
+    }
     std::fprintf(stderr,
         "recomp host: event=host-crash kind=unhandled-exception"
         " exception_code=0x%08lx address=%p expectation_applied=false\n",
@@ -34,6 +83,14 @@ LONG CALLBACK reportUnhandledException(EXCEPTION_POINTERS *info)
         info->ExceptionRecord->ExceptionAddress);
     std::fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void installCrashReporters()
+{
+    SetUnhandledExceptionFilter(reportUnhandledException);
+    AddVectoredExceptionHandler(1u, reportStackOverflow);
+    std::signal(SIGABRT, reportAbort);
+    _set_invalid_parameter_handler(reportInvalidParameter);
 }
 }
 #endif
@@ -113,8 +170,9 @@ LONG CALLBACK reportObservedException(EXCEPTION_POINTERS *info)
 {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
 
+    /* Not a stack overflow: symbol lookup needs more stack than is left, so
+       reportStackOverflow reports it instead. */
     if (code != EXCEPTION_ACCESS_VIOLATION &&
-        code != EXCEPTION_STACK_OVERFLOW &&
         code != EXCEPTION_ILLEGAL_INSTRUCTION &&
         code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
         code != EXCEPTION_PRIV_INSTRUCTION) {
@@ -193,7 +251,7 @@ void recomp_install_host_diagnostics(void)
 {
     bufferStderr();
 #ifdef _WIN32
-    SetUnhandledExceptionFilter(reportUnhandledException);
+    installCrashReporters();
 #endif
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), nullptr, TRUE);
@@ -214,7 +272,7 @@ void recomp_install_host_diagnostics(void)
 {
     bufferStderr();
 #ifdef _WIN32
-    SetUnhandledExceptionFilter(reportUnhandledException);
+    installCrashReporters();
 #endif
 }
 
