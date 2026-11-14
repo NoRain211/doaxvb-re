@@ -28,25 +28,41 @@ void bufferStderr()
 #include <cstdlib>
 
 namespace {
-char overflowLine[192]; // static: an overflowed stack has only a few KiB left
+/* Straight to the handle, with no CRT formatting or stdio lock: safe on an
+   overflowed stack, and while the flusher thread holds stderr's lock. */
+void writeStderr(const char *text, size_t size)
+{
+    DWORD written;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, static_cast<DWORD>(size),
+        &written, nullptr);
+}
+
+template <size_t N>
+void writeStderr(const char (&text)[N])
+{
+    writeStderr(text, N - 1u);
+}
 
 /* The unhandled-exception filter's stdio needs more stack than an overflow
-   leaves, so it died without a line. This reports first, with one direct
-   write, then flushes what stderr's buffer still holds. */
+   leaves, so it died without a line. This drains stderr's buffer first, so
+   the crash line stays last, then writes the line with the address in hex
+   by hand. */
 LONG CALLBACK reportStackOverflow(EXCEPTION_POINTERS *info)
 {
     if (info->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    const int size = std::snprintf(overflowLine, sizeof overflowLine,
-        "recomp host: event=host-crash kind=stack-overflow"
-        " exception_code=0x%08lx address=%p expectation_applied=false\n",
-        static_cast<unsigned long>(EXCEPTION_STACK_OVERFLOW),
-        info->ExceptionRecord->ExceptionAddress);
-    DWORD written;
-    WriteFile(GetStdHandle(STD_ERROR_HANDLE), overflowLine,
-        static_cast<DWORD>(size > 0 ? size : 0), &written, nullptr);
+    char address[2u * sizeof(void *)];
+    uintptr_t value =
+        reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+    for (size_t i = sizeof address; i-- > 0u; value >>= 4u) {
+        address[i] = "0123456789ABCDEF"[value & 15u];
+    }
     std::fflush(stderr);
+    writeStderr("recomp host: event=host-crash kind=stack-overflow"
+        " exception_code=0xc00000fd address=");
+    writeStderr(address, sizeof address);
+    writeStderr(" expectation_applied=false\n");
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -54,9 +70,7 @@ LONG CALLBACK reportStackOverflow(EXCEPTION_POINTERS *info)
    skips the unhandled-exception filter; SIGABRT is raised before it. */
 void reportAbort(int)
 {
-    std::fprintf(stderr,
-        "recomp host: event=host-crash kind=abort expectation_applied=false\n");
-    std::fflush(stderr);
+    writeStderr("recomp host: event=host-crash kind=abort expectation_applied=false\n");
 }
 
 /* A bad CRT argument would also fail fast silently. Ending the process here
@@ -64,10 +78,8 @@ void reportAbort(int)
 void reportInvalidParameter(const wchar_t *, const wchar_t *, const wchar_t *,
     unsigned, uintptr_t)
 {
-    std::fprintf(stderr,
-        "recomp host: event=host-crash kind=invalid-crt-parameter"
+    writeStderr("recomp host: event=host-crash kind=invalid-crt-parameter"
         " expectation_applied=false\n");
-    std::fflush(stderr);
     TerminateProcess(GetCurrentProcess(), 0xC0000417u); // STATUS_INVALID_CRUNTIME_PARAMETER
 }
 
