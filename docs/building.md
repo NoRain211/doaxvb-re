@@ -428,6 +428,12 @@ Tick **Free camera** in the launcher, or set `RECOMP_FREE_CAMERA=1`, to fly
 the game's camera with F1; see [`docs/free-camera.md`](free-camera.md).
 The game renders 16:9 in an 854x480 window. Set `RECOMP_D3D_WIDESCREEN=0` for
 its 4:3 view in a 640x480 window.
+The game itself keeps Voice and Message language only until it closes; on the
+console they came from the dashboard language. The runner remembers the last
+choice made in Options in `.recomp-storage/language-v1` beside the game and
+applies it at each start (#207). Set `RECOMP_LANGUAGE` to `en` or `ja` to
+start in that language for both without changing the remembered choice.
+Netplay sessions and scripted runs play in English.
 Set `RECOMP_D3D_SCALE` from 1 to 8 to multiply the render height, for example
 3 for 1440p; above 1 the window is borderless, centered, and shrinks to fit the
 screen.
