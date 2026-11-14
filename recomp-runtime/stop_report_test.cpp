@@ -4,11 +4,23 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 /* Diagnostics read these only for Debug context; this fixture runs no guest. */
 RecompRuntime recomp_runtime{};
 uint32_t recomp_last_dispatch_address;
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4717) // the recursion is the test
+#endif
+static int overflow(int depth)
+{
+    volatile char frame[4096];
+    frame[0] = static_cast<char>(depth);
+    return overflow(depth + 1) + frame[0];
+}
 
 int main(int argc, char **argv)
 {
@@ -42,5 +54,8 @@ int main(int argc, char **argv)
         recomp_stop_configure("completed", nullptr);
         RaiseException(EXCEPTION_INT_DIVIDE_BY_ZERO, 0, 0, nullptr);
     }
+    if (std::strcmp(mode, "overflow") == 0) return overflow(0);
+    if (std::strcmp(mode, "abort") == 0) std::abort();
+    if (std::strcmp(mode, "invalid-parameter") == 0) return std::fclose(nullptr);
     return 65;
 }
