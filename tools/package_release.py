@@ -73,6 +73,14 @@ def unix_members(common):
     return {n: d for n, d in common.items() if not (n.endswith(".cmd") and "/" not in n)}
 
 
+def unix_package(target, common, modes):
+    """The members and git modes of one Unix ZIP; only macOS gets the DOAXBV entry."""
+    kept, modes = unix_members(common), dict(modes)
+    if target == "macOS":
+        kept["DOAXBV"], modes["DOAXBV"] = MACOS_ENTRY, "100755"
+    return kept, modes
+
+
 def check(kept, recipe, gitlinks, allowed_private, banned_suffixes):
     # Custody: nothing private, generated, retail or agent-facing ships.
     require(not any(n in gitlinks for n in kept), "a submodule would ship")
@@ -174,11 +182,8 @@ def main():
     results["windows"] = write(args.out_dir / f"DOAXBV-{version}.zip", f"DOAXBV-{version}/", win)
 
     for target, (platform_name, readme, prerequisites) in UNIX_PLATFORMS.items():
-        kept = unix_members(common)
+        kept, unix_modes = unix_package(target, common, modes)
         kept["README.txt"] = readmes[readme].encode()
-        unix_modes = dict(modes)
-        if target == "macOS":
-            kept["DOAXBV"], unix_modes["DOAXBV"] = MACOS_ENTRY, "100755"
         kept["package.json"] = (json.dumps(dict(
             name=f"DOAXBV-{version}", version=version, channel=channel, platform=platform_name,
             package_kind="source-and-iso-setup", prebuilt_game_runner=False, cmake_generator="Ninja",
