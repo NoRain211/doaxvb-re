@@ -94,7 +94,7 @@ def linux_compiler_args():
 
 LINUX_AUDIO_DRIVERS = ("PIPEWIRE", "PULSEAUDIO", "ALSA", "JACK", "SNDIO", "OSS")
 LINUX_AUDIO_PACKAGES = ("Install your distribution's audio development packages, then run setup again: "
-                        "on Ubuntu libasound2-dev libpulse-dev, "
+                        "on Ubuntu libasound2-dev libpulse-dev libpipewire-0.3-dev, "
                         "on Fedora pipewire-devel pulseaudio-libs-devel alsa-lib-devel. "
                         "See docs/building.md.")
 
@@ -105,9 +105,14 @@ def fetched_sdl3_audio_drivers(output):
     Without audio headers SDL3 configures with only its dummy and disk drivers,
     so the game builds and then runs silently.
     """
-    configs = sorted((output / "_deps/sdl3-build").glob("**/SDL_build_config.h"))
-    if not configs:
+    build = output / "_deps/sdl3-build"
+    if not build.is_dir():
         return None
+    # SDL3 writes this header with configure_file, so a configured build always has it.
+    configs = sorted(build.glob("**/SDL_build_config.h"))
+    if not configs:
+        raise ValueError(f"SDL3 was fetched but {build} has no SDL_build_config.h; "
+                         "cannot confirm it was configured with an audio driver")
     defined = set()
     for config in configs:
         defined.update(re.findall(r"^\s*#\s*define\s+SDL_AUDIO_DRIVER_([A-Z0-9_]+)\b",

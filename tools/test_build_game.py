@@ -36,8 +36,14 @@ class ProgramManifestTests(unittest.TestCase):
         self.assertEqual(build_game.fetched_sdl3_audio_drivers(audible), {"ALSA", "PIPEWIRE"})
         build_game.require_sdl3_audio(audible)
 
-        system_sdl3 = configured([])
-        (system_sdl3 / "_deps/sdl3-build/include-config-release/build_config/SDL_build_config.h").unlink()
+        unconfigured = configured([])
+        (unconfigured / "_deps/sdl3-build/include-config-release/build_config/SDL_build_config.h").unlink()
+        with self.assertRaisesRegex(ValueError, "no SDL_build_config.h"):
+            build_game.require_sdl3_audio(unconfigured)
+
+        system_folder = tempfile.TemporaryDirectory()
+        self.addCleanup(system_folder.cleanup)
+        system_sdl3 = Path(system_folder.name)
         self.assertIsNone(build_game.fetched_sdl3_audio_drivers(system_sdl3))
         build_game.require_sdl3_audio(system_sdl3)
 
