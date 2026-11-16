@@ -1,5 +1,6 @@
 #include "netplay_internal.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void put_pad(uint8_t *out, const RecompInputGamepad *pad)
@@ -347,6 +348,7 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
     t.profiles = profiles;
     uint8_t packet[RECOMP_NETPLAY_MAX_PACKET + 1u], welcome[LOBBY_BYTES];
     const size_t welcome_size = encode_lobby(LOBBY_WELCOME, lobby, profiles->mine_size, welcome);
+    bool refused = false; /* logged once, so a flood of hellos cannot stall on stderr */
     for (;;) {
         struct sockaddr_in from;
         int size;
@@ -366,8 +368,13 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
                 }
                 if (theirs > RECOMP_NETPLAY_MAX_PROFILE) continue;
                 netplay_send_to(net, from.sin_addr.s_addr, from.sin_port, welcome, welcome_size);
-                if (memcmp(hello.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0)
-                    return RECOMP_NETPLAY_LOBBY_MISMATCH;
+                // Keep waiting, so a stray hello cannot end the lobby; the welcome tells that joiner.
+                if (memcmp(hello.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0) {
+                    if (!refused)
+                        fprintf(stderr, "recomp netplay: refused a player who runs a different build; still waiting\n");
+                    refused = true;
+                    continue;
+                }
                 net->peer_address = from.sin_addr.s_addr;
                 net->peer_port = from.sin_port;
                 transfer_start(&t, theirs);

@@ -116,6 +116,7 @@ static void match_answer(RecompNetplay *net, const uint8_t *packet, size_t size)
     } else if (packet[5] == MATCH_GONE) {
         m->gone = true;
     } else if (packet[5] == MATCH_PEER && size == MATCH_PEER_BYTES) {
+        if (m->busy) return;
         uint32_t address[2];
         uint16_t port[2];
         for (unsigned i = 0u; i < 2u; ++i) {
@@ -229,7 +230,8 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
         const uint8_t *sender = packet + ROOM_BYTES - 8u;
         if (room->blocked != NULL && room->blocked((uint64_t)get32(sender + 4u) << 32 | get32(sender))) {
             /* Say nothing back. Relay stays on, so the server's relayed packets end here quietly. */
-            room->refused = true;
+            /* Only this room's own peer, a candidate or, for an empty host, the would-be peer. */
+            if (from_peer(net, &from) || candidate || (room->hosting && !room->joined)) room->refused = true;
             if (from_peer(net, &from) || candidate) {
                 net->peer_port = 0u;
                 m->punching = false;
@@ -252,6 +254,7 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
         }
         const uint8_t *at = packet + 6u + RECOMP_NETPLAY_DIGEST_BYTES;
         room->joined = true;
+        m->busy = true;
         room->heard_ms = now;
         room->mismatch = memcmp(packet + 6u, digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0;
         room->ready = (at[0] & ROOM_READY) != 0u;
@@ -265,14 +268,19 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
         room->echo_at_ms = now;
         const uint32_t echo = get32(at + 4u), age = get16(at + 8u);
         if (echo != 0u) {
-            room->ping_ms = (uint32_t)now - echo - age;
+            /* Signed: the echoed clock is forced odd, so it can be 1 ms ahead. */
+            const int64_t ping = (int64_t)(int32_t)((uint32_t)now - echo) - (int64_t)age;
+            room->ping_ms = ping > 0 ? (uint32_t)ping : 0u;
             room->pinged = true;
         }
         at += 10u;
         const uint32_t id = get32(at);
         const size_t said = at[4];
-        if (id != room->heard_id && said != 0u && said <= RECOMP_NETPLAY_CHAT_BYTES) {
+        /* One line a second; a line held back here comes again in a later repeat. */
+        if (id != room->heard_id && said != 0u && said <= RECOMP_NETPLAY_CHAT_BYTES &&
+            now - room->heard_line_ms >= 1000u) {
             room->heard_id = id;
+            room->heard_line_ms = now;
             char line[RECOMP_NETPLAY_CHAT_BYTES + 1u];
             bool printable = true;
             for (size_t i = 0u; i < said; ++i) printable = printable && at[5u + i] >= 0x20u && at[5u + i] < 0x7fu;
@@ -285,7 +293,8 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
         }
     }
     if (room->joined && now - room->heard_ms > ROOM_SILENCE_MS) recomp_netplay_room_drop(net, room);
-    if (net->match.punching && now - net->match.punch_ms > PUNCH_MS) relay_on(net, "no direct path after 5 s");
+    /* punch_ms can be newer than now when this tick read the match itself. */
+    if (net->match.punching && now > net->match.punch_ms + PUNCH_MS) relay_on(net, "no direct path after 5 s");
     if (net->peer_port == 0u || (!start && now - room->sent_ms < 100u)) return;
     room->sent_ms = now;
     memset(packet, 0, ROOM_BYTES);
@@ -339,6 +348,7 @@ void recomp_netplay_room_drop(RecompNetplay *net, RecompNetplayRoom *room)
 {
     room->joined = room->ready = room->start = room->pinged = room->mismatch = false;
     room->echo = 0u;
+    net->match.busy = false;
     if (room->hosting) { /* let another player in */
         net->peer_port = 0u;
         net->match.relay = false;

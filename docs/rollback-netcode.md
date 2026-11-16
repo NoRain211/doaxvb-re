@@ -206,7 +206,8 @@ carries the joiner's build: a SHA-256 of the source commit, the generated
 program's manifest and the XBE's SHA-256. The commit comes from
 `RECOMP_NETPLAY_VERSION`, else a release ZIP's `package.json`
 (`source_base`), else Git, so every platform's ZIP of one release and a
-checkout of that commit pair. The host refuses any other build and answers with its input delay
+checkout of that commit pair. The host refuses any other build and keeps
+waiting. It answers with its input delay
 and the settings that change guest RAM, which the joiner adopts: the
 swimsuit unlock, widescreen and music shuffle. Both sides then run at
 60 Hz from the game's own title with no free camera and no custom
