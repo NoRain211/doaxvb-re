@@ -217,11 +217,15 @@ static void startReplay()
 {
     namespace fs = std::filesystem;
     const fs::path folder = rollback.disc / ".recomp-storage" / "replays";
-    char name[32];
+    char stamp[24], name[32];
     const std::time_t now = std::time(nullptr);
-    std::strftime(name, sizeof name, "%Y%m%d-%H%M%S.dxbr", std::localtime(&now));
+    std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&now));
     std::error_code error;
     fs::create_directories(folder, error);
+    // A second session within the same second gets a suffix instead of truncating the first one's replay.
+    std::snprintf(name, sizeof name, "%s.dxbr", stamp);
+    for (unsigned n = 2u; fs::exists(folder / name, error); ++n)
+        std::snprintf(name, sizeof name, "%s-%u.dxbr", stamp, n);
     rollback.replayFile.open(folder / name, std::ios::binary | std::ios::trunc);
     RecompReplayInfo info{};
     std::memcpy(info.digest, rollback.digest.data(), std::min(rollback.digest.size(), sizeof info.digest));

@@ -712,9 +712,24 @@ if(RECOMP_PROGRAM_DIR)
         string(JSON _netplay_version ERROR_VARIABLE _netplay_package_error GET "${_netplay_package}" source_base)
     endif()
     if(NOT _netplay_version)
-        # shortcut: read at configure time; build_game.py configures every build, a bare cmake --build may lag a commit.
         execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             OUTPUT_VARIABLE _netplay_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        # Configure again when HEAD moves: a checkout rewrites HEAD, a commit its branch's ref and HEAD's log.
+        execute_process(COMMAND git symbolic-ref -q HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _git_branch OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT _git_branch)
+            set(_git_branch HEAD)
+        endif()
+        execute_process(COMMAND git rev-parse --git-path HEAD --git-path logs/HEAD --git-path "${_git_branch}" --git-path packed-refs
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _git_head_files OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        string(REPLACE "\n" ";" _git_head_files "${_git_head_files}")
+        foreach(_git_head_file IN LISTS _git_head_files)
+            get_filename_component(_git_head_file "${_git_head_file}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+            if(EXISTS "${_git_head_file}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_git_head_file}")
+            endif()
+        endforeach()
     endif()
     if(NOT _netplay_version)
         message(FATAL_ERROR "Netplay needs a release package.json, a Git checkout or RECOMP_NETPLAY_VERSION")
