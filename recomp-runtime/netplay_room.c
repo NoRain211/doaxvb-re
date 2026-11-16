@@ -140,11 +140,8 @@ static void match_answer(RecompNetplay *net, const uint8_t *packet, size_t size)
         net->peer_port = port[first];
         m->punching = true;
         m->punch_ms = now_ms();
-        char text[2][INET_ADDRSTRLEN];
-        for (unsigned i = 0u; i < 2u; ++i)
-            if (inet_ntop(AF_INET, &address[i], text[i], sizeof text[i]) == NULL) text[i][0] = '\0';
-        fprintf(stderr, "recomp netplay: matched; punching to %s:%u and %s:%u\n", text[0], ntohs(port[0]), text[1],
-            ntohs(port[1]));
+        /* No addresses here or below: players paste this log into public issues. */
+        fprintf(stderr, "recomp netplay: matched; punching to the other player\n");
     }
 }
 
@@ -246,9 +243,7 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
         }
         if (m->punching) { /* relayed packets end punching first, so this one came directly */
             m->punching = false;
-            char text[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &from.sin_addr, text, sizeof text) == NULL) text[0] = '\0';
-            fprintf(stderr, "recomp netplay: reached the other player directly at %s:%u\n", text, ntohs(from.sin_port));
+            fprintf(stderr, "recomp netplay: reached the other player directly\n");
         }
         const uint8_t *at = packet + 6u + RECOMP_NETPLAY_DIGEST_BYTES;
         room->joined = true;
