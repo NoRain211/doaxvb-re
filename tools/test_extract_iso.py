@@ -20,6 +20,12 @@ def listing(entries, count=1):
 
 
 class ExtractionTests(unittest.TestCase):
+    def setUp(self):
+        # The launcher's Vulkan choice exports RECOMP_RENDERER=vulkan; a shell
+        # that inherited it must not change which runner build_inputs() picks.
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("RECOMP_RENDERER", None)
+
     def test_live_log_and_failed_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -66,8 +72,6 @@ class ExtractionTests(unittest.TestCase):
                              (work / "runner", work / "disc/synthetic.xbe", work / "build-receipt.json"))
 
     def test_built_runner_receipt_selection_and_identity(self):
-        self.enterContext(patch.dict(os.environ))
-        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
             work = root / "private/setup-synthetic"
@@ -163,8 +167,6 @@ class ExtractionTests(unittest.TestCase):
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_FREE_CAMERA"), expected)
 
     def test_launch_prerequisites_and_command(self):
-        self.enterContext(patch.dict(os.environ))
-        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with self.assertRaisesRegex(ValueError, "No playable runner"):
