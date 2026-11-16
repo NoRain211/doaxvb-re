@@ -218,6 +218,16 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
             }
             continue;
         }
+        if (size == 4 && get32(packet) == ROOM_CLOSED_MAGIC) {
+            /* A session's goodbye can linger into the room, so leaving has its own packet. */
+            if (net->peer_port != 0u && from_peer(net, &from)) {
+                fprintf(stderr, "recomp netplay: the other player left the room\n");
+                recomp_netplay_room_drop(net, room);
+                net->peer_port = 0u; /* a joiner stops calling the closed room */
+                room->left = true;
+            }
+            continue;
+        }
         if (size != ROOM_BYTES || get32(packet) != LOBBY_MAGIC || packet[4] != LOBBY_VERSION ||
             packet[5] != LOBBY_ROOM)
             continue;
@@ -343,6 +353,14 @@ void recomp_netplay_room_drop(RecompNetplay *net, RecompNetplayRoom *room)
         net->peer_port = 0u;
         net->match.relay = false;
     }
+}
+
+void recomp_netplay_room_leave(const RecompNetplay *net)
+{
+    if (net->peer_port == 0u) return;
+    uint8_t packet[4];
+    put32(packet, ROOM_CLOSED_MAGIC);
+    for (int i = 0; i < 3; ++i) netplay_send_to(net, net->peer_address, net->peer_port, packet, sizeof packet);
 }
 
 bool recomp_netplay_match_server(RecompNetplay *net, const char *host, uint16_t port)

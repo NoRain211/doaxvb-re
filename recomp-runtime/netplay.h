@@ -143,6 +143,7 @@ typedef struct RecompNetplayRoom {
        calling or punching to them stops. */
     bool (*blocked)(uint64_t id);
     bool refused;  /* a blocked player spoke; the caller clears it */
+    bool left;     /* the other player left the room and is forgotten; the caller clears it */
     bool joined;   /* the other player spoke in the last 3 s */
     bool mismatch; /* the other player runs another build */
     bool ready;
@@ -178,6 +179,10 @@ void recomp_netplay_room_say(RecompNetplayRoom *room, const char *text);
 /* Forgets the other player as if they went quiet; a host stops answering
    them and lets another player in. */
 void recomp_netplay_room_drop(RecompNetplay *net, RecompNetplayRoom *room);
+/* Tells the other player this side is leaving the room, before the socket
+   closes. Their tick sets left: a host lets another player in, and a joiner
+   stops calling, so a room opened again on the same port starts empty. */
+void recomp_netplay_room_leave(const RecompNetplay *net);
 
 /* Matchmaking, all from the room's own socket so the server sees the
    endpoint the room uses. False when host does not resolve. */
