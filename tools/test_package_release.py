@@ -14,6 +14,10 @@ class PlatformMemberTests(unittest.TestCase):
         self.assertEqual(set(package_release.windows_members(common)), windows | shared)
         self.assertEqual(set(package_release.unix_members(common)), unix | shared)
 
+    def test_macos_entry_is_an_extensionless_script_for_the_launcher(self):
+        self.assertTrue(package_release.MACOS_ENTRY.startswith(b"#!"))
+        self.assertIn(b"launcher.sh", package_release.MACOS_ENTRY)
+
     def test_packaging_inputs_never_ship(self):
         for name, packaging in (("tools/package_release.py", True), ("tools/test_package_release.py", True),
                                 ("tools/release/README-macos.txt", True), ("tools/build_game.py", False),

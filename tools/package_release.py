@@ -54,6 +54,11 @@ def tree(ref):
     return {i.filename: archive.read(i) for i in archive.infolist() if not i.is_dir()}
 
 
+# Quiver starts a macOS download without a catalog setting only from an .app or an extensionless executable.
+MACOS_ENTRY = (b'#!/usr/bin/env bash\n'
+               b'exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/launcher.sh" "$@"\n')
+
+
 def is_packaging(name):
     return name.startswith(PACKAGING)
 
@@ -171,6 +176,9 @@ def main():
     for target, (platform_name, readme, prerequisites) in UNIX_PLATFORMS.items():
         kept = unix_members(common)
         kept["README.txt"] = readmes[readme].encode()
+        unix_modes = dict(modes)
+        if target == "macOS":
+            kept["DOAXBV"], unix_modes["DOAXBV"] = MACOS_ENTRY, "100755"
         kept["package.json"] = (json.dumps(dict(
             name=f"DOAXBV-{version}", version=version, channel=channel, platform=platform_name,
             package_kind="source-and-iso-setup", prebuilt_game_runner=False, cmake_generator="Ninja",
@@ -180,7 +188,7 @@ def main():
         for script in ("build_game.sh", "run_game.sh", "launcher.sh"):
             require(modes.get(script) == "100755", f"{script} is not executable")
         results[target] = write(args.out_dir / f"DOAXBV-{version}-{target}.zip", f"DOAXBV-{version}-{target}/",
-                                kept, modes, date)
+                                kept, unix_modes, date)
     print(json.dumps(dict(commit=commit, **results), indent=2))
 
 
