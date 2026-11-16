@@ -195,8 +195,22 @@ SDL3's build dependencies:
 sudo apt install cmake ninja-build clang git python3-venv \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
   libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
-  libasound2-dev libpulse-dev libvulkan-dev libshaderc1
+  libasound2-dev libpulse-dev libpipewire-0.3-dev libvulkan-dev libshaderc1
 ```
+
+On Fedora:
+
+```bash
+sudo dnf install cmake ninja-build clang git python3 \
+  libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXfixes-devel libXi-devel \
+  libXScrnSaver-devel libXtst-devel libxkbcommon-devel wayland-devel libdecor-devel \
+  alsa-lib-devel pulseaudio-libs-devel pipewire-devel vulkan-loader-devel libshaderc
+```
+
+SDL3 picks its audio drivers when setup configures it. Without the ALSA,
+PulseAudio or PipeWire development headers it has none, and the game would
+run silently, so setup stops before compiling and names the packages to
+install. Install them and run setup again; each run configures SDL3 afresh.
 
 Setup compiles with clang when `clang` and `clang++` are installed, as the
 Windows and macOS builds do; otherwise it uses the system's C++17 compiler.

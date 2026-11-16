@@ -92,6 +92,40 @@ def linux_compiler_args():
     return ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
 
 
+LINUX_AUDIO_DRIVERS = ("PIPEWIRE", "PULSEAUDIO", "ALSA", "JACK", "SNDIO", "OSS")
+LINUX_AUDIO_PACKAGES = ("Install your distribution's audio development packages, then run setup again: "
+                        "on Ubuntu libasound2-dev libpulse-dev, "
+                        "on Fedora pipewire-devel pulseaudio-libs-devel alsa-lib-devel. "
+                        "See docs/building.md.")
+
+
+def fetched_sdl3_audio_drivers(output):
+    """The real audio drivers SDL3 was configured with, or None when setup did not build SDL3.
+
+    Without audio headers SDL3 configures with only its dummy and disk drivers,
+    so the game builds and then runs silently.
+    """
+    configs = sorted((output / "_deps/sdl3-build").glob("**/SDL_build_config.h"))
+    if not configs:
+        return None
+    defined = set()
+    for config in configs:
+        defined.update(re.findall(r"^\s*#\s*define\s+SDL_AUDIO_DRIVER_([A-Z0-9_]+)\b",
+                                  config.read_text(encoding="utf-8", errors="replace"), re.M))
+    return {name for name in LINUX_AUDIO_DRIVERS if name in defined}
+
+
+def require_sdl3_audio(output):
+    """Stop before compiling when the SDL3 that setup builds could not play sound."""
+    drivers = fetched_sdl3_audio_drivers(output)
+    if drivers is None:
+        return
+    if not drivers:
+        raise ValueError("SDL3 was configured without an audio driver (PipeWire, PulseAudio or ALSA), "
+                         "so the game would run without sound. " + LINUX_AUDIO_PACKAGES)
+    print("SDL3 audio drivers: " + ", ".join(sorted(drivers)).lower() + ".", flush=True)
+
+
 def build(args, verify_parity=True, lifter_revision=None):
     prefer_bundled_tools(ROOT)
     windows = sys.platform == "win32"
@@ -217,6 +251,8 @@ def build(args, verify_parity=True, lifter_revision=None):
             if icon.is_file():
                 configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
         command(configure, ROOT, work / "configure.log")
+        if sys.platform.startswith("linux"):
+            require_sdl3_audio(output)
         targets = ["recomp_program_runner"]
         if windows or sys.platform.startswith("linux"):  # macOS compiles its Swift launcher on first use
             targets.append("recomp_launcher")
