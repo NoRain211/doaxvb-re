@@ -43,7 +43,12 @@ replay tag (`DXBR`, `.dxbr`) renamed: `rollback.c`, `replay.c`,
 `musl_math/` (MIT, see NOTICE) and their tests.
 The matchmaker's packets keep doa2u-re's `D2MM` tag, so both games use one
 server; rooms pair only runners whose build digest matches, and the digest
-includes the XBE hash.
+includes the XBE hash. The client speaks the server's version 2: each
+socket's packets carry a random nonce that the server's answers echo, and
+HOST, JOIN, LEAVE and RELAY carry the cookie the server sends to the
+sender's address. FIND MATCH shows each room's ping as an estimate, its own
+round trip to the server plus the host's, and sends no direct ping probe to
+a listed host.
 
 `synctest.c` no longer checks which routine called Present. doa2u-re's
 frame boundary is the Swap, where that routine decides the main thread's
@@ -256,8 +261,9 @@ Pasting uses the Windows clipboard only.
 When both players are ready, doa2u-re reboots the game in the same process.
 Here each runner starts again instead (`recomp_runner_relaunch`) with its
 own arguments plus `--netplay-host` or `--netplay-join` and the room
-socket's port, peer and matchmaker (`--netplay-room-socket`), so the path
-the routers opened and a relay stay in use. Resetting every adapter that
+socket's port, peer, matchmaker, nonce and cookie (`--netplay-room-socket`),
+so the path the routers opened and a relay stay in use; the server relays a
+pair with the nonces from its JOIN. Resetting every adapter that
 keeps state between boots would be needed for an in-process reboot. The
 window closes and opens again. A session started from a room that ends
 (the other player left or went quiet, a desync, a failed lobby) starts the

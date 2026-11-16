@@ -1,5 +1,10 @@
+#ifdef _WIN32
+#define _CRT_RAND_S /* rand_s, from the system's secure random source */
+#endif
 #include "netplay_internal.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void put_pad(uint8_t *out, const RecompInputGamepad *pad)
@@ -154,10 +159,28 @@ static uint32_t chunk_size(uint32_t size, uint32_t index)
     return left < CHUNK_BYTES ? left : CHUNK_BYTES;
 }
 
+static bool random_bytes(uint8_t *out, size_t size)
+{
+#ifdef _WIN32
+    for (size_t i = 0u; i < size; ++i) {
+        unsigned int value;
+        if (rand_s(&value) != 0) return false;
+        out[i] = (uint8_t)value;
+    }
+    return true;
+#else
+    FILE *source = fopen("/dev/urandom", "rb");
+    const bool read = source != NULL && fread(out, 1u, size, source) == size;
+    if (source != NULL) fclose(source);
+    return read;
+#endif
+}
+
 static bool open_socket(RecompNetplay *net, uint16_t local_port)
 {
     memset(net, 0, sizeof *net);
     net->socket = (uintptr_t)INVALID_SOCKET;
+    if (!random_bytes(net->match.nonce, sizeof net->match.nonce)) return false;
 #ifdef _WIN32
     WSADATA data;
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return false;
@@ -347,11 +370,13 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
     t.profiles = profiles;
     uint8_t packet[RECOMP_NETPLAY_MAX_PACKET + 1u], welcome[LOBBY_BYTES];
     const size_t welcome_size = encode_lobby(LOBBY_WELCOME, lobby, profiles->mine_size, welcome);
+    /* A room's socket arrives with its peer, so a forged hello from elsewhere cannot take the match. */
+    const bool had_peer = net->peer_port != 0u;
     for (;;) {
         struct sockaddr_in from;
         int size;
         while ((size = netplay_receive_from(net, packet, sizeof packet, &from)) >= 0) {
-            if (t.known && !from_peer(net, &from)) continue;
+            if ((t.known || had_peer) && !from_peer(net, &from)) continue;
             /* A room's host already knows its joiner, whose goodbye can beat a lost hello. */
             if (is_goodbye(packet, size) && (t.known || (net->peer_port != 0u && from_peer(net, &from)))) {
                 net->peer_left = true;
