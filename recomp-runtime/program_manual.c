@@ -160,11 +160,53 @@ void sub_0001B340(void);
 void sub_000E8100(void);
 void sub_000B8F70(void);
 void sub_000B9790(void);
+#endif
 
+/* Per port: a byte each from 0x416559 (Vibration) and 0x41655D (Analog),
+   4 bytes from 0x416561 and 8 from 0x416571 (Digital and Analog buttons). */
+enum {
+    PAD_VIBRATION = 0x00416559u,
+    PAD_MODE = 0x0041655du,
+    PAD_WORD = 0x00416561u,
+    PAD_BUTTONS = 0x00416571u
+};
+static bool session_pads;
+static uint8_t session_mode;
+static bool session_joiner_set;
+static uint8_t session_joiner[RECOMP_PROGRAM_PAD_BYTES];
+
+void recomp_program_read_pad(uint32_t port, uint8_t record[RECOMP_PROGRAM_PAD_BYTES])
+{
+    record[0] = *recomp_memory(PAD_VIBRATION + port, 1u);
+    record[1] = *recomp_memory(PAD_MODE + port, 1u);
+    memcpy(record + 2, recomp_memory(PAD_WORD + port * 4u, 4u), 4u);
+    memcpy(record + 6, recomp_memory(PAD_BUTTONS + port * 8u, 8u), 8u);
+}
+
+void recomp_program_set_session_pads(bool analog, const uint8_t *joiner)
+{
+    session_pads = true;
+    session_mode = analog ? 1u : 0u;
+    session_joiner_set = joiner != NULL;
+    if (joiner != NULL) memcpy(session_joiner, joiner, sizeof session_joiner);
+}
+
+#ifdef RECOMP_FULL_PROGRAM
 static void restore_controller_settings(void)
 {
     uint8_t modes[4];
     sub_0001B340();
+    if (session_pads) {
+        /* Both guests load the host's save, which gives every port the host's
+           record; port 1 then takes the joiner's own, the same on both sides. */
+        memset(recomp_memory(PAD_MODE, 4u), session_mode, 4u);
+        if (!session_joiner_set) return;
+        *recomp_memory(PAD_VIBRATION + 1u, 1u) = session_joiner[0];
+        *recomp_memory(PAD_MODE + 1u, 1u) = session_joiner[1];
+        memcpy(recomp_memory(PAD_WORD + 4u, 4u), session_joiner + 2, 4u);
+        memcpy(recomp_memory(PAD_BUTTONS + 8u, 8u), session_joiner + 6, 8u);
+        return;
+    }
     if (!recomp_controller_settings_load(recomp_disc_root_path, modes)) {
         recomp_stop(1, "controls:read-preference");
         return;
@@ -178,7 +220,8 @@ static void update_controller_settings(void)
     uint8_t *modes = recomp_memory(0x0041655du, sizeof before);
     memcpy(before, modes, sizeof before);
     sub_000E8100();
-    if (memcmp(before, modes, sizeof before) != 0 &&
+    // A session's ports hold both players' choices, not this player's own.
+    if (!session_pads && memcmp(before, modes, sizeof before) != 0 &&
         !recomp_controller_settings_save(recomp_disc_root_path, modes)) {
         recomp_stop(1, "controls:write-preference");
     }
