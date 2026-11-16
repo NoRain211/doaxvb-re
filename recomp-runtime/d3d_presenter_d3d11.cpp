@@ -16,6 +16,7 @@
 #include <windows.h>
 
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi.h>
 #include <dxgi1_5.h>
 #include <d3dcompiler.h>
@@ -608,6 +609,12 @@ struct RecompD3dPresenter {
     ID3D11Buffer *draw_vertex_buffer = nullptr;
     ID3D11Buffer *draw_index_buffer = nullptr;
     ID3D11Buffer *draw_constant_buffer = nullptr;
+    /* D3D11.1 ring of per-draw constants, bound by offset; null falls back to
+       a discard per draw on draw_constant_buffer and the sun buffers. */
+    ID3D11DeviceContext1 *context1 = nullptr;
+    ID3D11Buffer *constant_ring = nullptr;
+    UINT constant_ring_capacity = 0u;
+    UINT constant_ring_used = 0u;
     ID3D11RasterizerState *draw_rasterizer_states[3] = {};
     SmoothNormalsCache smooth_normals;
     UINT draw_vertex_capacity = 0u;
@@ -829,6 +836,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseSmaa(presenter);
     for (auto &state : presenter->draw_rasterizer_states) releaseCom(state);
     releaseCom(presenter->draw_constant_buffer);
+    releaseCom(presenter->constant_ring);
+    releaseCom(presenter->context1);
     releaseCom(presenter->draw_index_buffer);
     releaseCom(presenter->draw_vertex_buffer);
     for (uint32_t i = 0u; i < presenter->draw_pipeline_count; ++i) {
@@ -890,6 +899,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->draw_index_capacity = 0u;
     presenter->draw_vertex_used = 0u;
     presenter->draw_index_used = 0u;
+    presenter->constant_ring_capacity = 0u;
+    presenter->constant_ring_used = 0u;
     presenter->draw_shared_ready = false;
 #ifdef RECOMP_RTGI
     d3d_rtgi_destroy(presenter->rtgi);
@@ -1992,6 +2003,8 @@ bool createDrawPipeline(
     return true;
 }
 
+void createConstantRing(RecompD3dPresenter *presenter);
+
 /* Device state every draw shares, independent of vertex format. */
 bool ensureSharedDrawState(RecompD3dPresenter *presenter)
 {
@@ -2017,6 +2030,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     if (FAILED(result)) {
         return false;
     }
+    createConstantRing(presenter);
 
     for (unsigned mode = 0; mode < 3; ++mode) {
         D3D11_RASTERIZER_DESC rasterizer_desc{};
@@ -2217,6 +2231,50 @@ bool uploadRing(
     presenter->context->Unmap(*buffer, 0u);
     offset = used;
     used += (size + 15u) & ~15u;
+    return true;
+}
+
+/* A discard per draw renames the whole constant buffer every time. AMD's D3D11
+   driver stalls on that at a thousand or more draws a frame (DOA2U issue #69),
+   so constants share one ring that is discarded only when it wraps. */
+void createConstantRing(RecompD3dPresenter *presenter)
+{
+    D3D11_FEATURE_DATA_D3D11_OPTIONS options{};
+    if (FAILED(presenter->context->QueryInterface(IID_PPV_ARGS(&presenter->context1))) ||
+        FAILED(presenter->device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof options)) ||
+        !options.ConstantBufferOffsetting || !options.MapNoOverwriteOnDynamicConstantBuffer ||
+        !ensureDynamicBuffer(presenter, &presenter->constant_ring, presenter->constant_ring_capacity,
+            1u << 24, D3D11_BIND_CONSTANT_BUFFER)) {
+        releaseCom(presenter->context1);
+        return;
+    }
+    presenter->constant_ring_used = presenter->constant_ring_capacity; // the first write discards
+}
+
+/* Writes constants and binds them to the vertex and pixel stages at slot. */
+bool bindConstants(
+    RecompD3dPresenter *presenter,
+    ID3D11Buffer *fallback,
+    UINT slot,
+    const void *source,
+    UINT size)
+{
+    if (presenter->constant_ring == nullptr) {
+        if (!uploadBuffer(presenter, fallback, source, size)) return false;
+        presenter->context->VSSetConstantBuffers(slot, 1u, &fallback);
+        presenter->context->PSSetConstantBuffers(slot, 1u, &fallback);
+        return true;
+    }
+    // Whole multiples of 16 constants, as VSSetConstantBuffers1 requires.
+    const UINT slot_bytes = (size + 255u) & ~255u;
+    UINT offset = 0u;
+    if (!uploadRing(presenter, &presenter->constant_ring, presenter->constant_ring_capacity,
+            presenter->constant_ring_used, source, slot_bytes, D3D11_BIND_CONSTANT_BUFFER, offset, 0u, size)) {
+        return false;
+    }
+    const UINT first = offset / 16u, count = slot_bytes / 16u;
+    presenter->context1->VSSetConstantBuffers1(slot, 1u, &presenter->constant_ring, &first, &count);
+    presenter->context1->PSSetConstantBuffers1(slot, 1u, &presenter->constant_ring, &first, &count);
     return true;
 }
 
@@ -3354,11 +3412,8 @@ RecompD3dPresenterError submitDraw(
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
             presenter->draw_index_capacity, presenter->draw_index_used,
             upload_indices, index_size, D3D11_BIND_INDEX_BUFFER, index_offset) ||
-        !uploadBuffer(
-            presenter,
-            presenter->draw_constant_buffer,
-            draw_constants,
-            sizeof draw_constants)) {
+        !bindConstants(presenter, presenter->draw_constant_buffer, 0u,
+            draw_constants, sizeof draw_constants)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
@@ -3370,11 +3425,7 @@ RecompD3dPresenterError submitDraw(
         presenter->draw_index_buffer, DXGI_FORMAT_R16_UINT, index_offset);
     presenter->context->IASetPrimitiveTopology(topology);
     presenter->context->VSSetShader(pipeline->vertex_shader, nullptr, 0u);
-    presenter->context->VSSetConstantBuffers(
-        0u, 1u, &presenter->draw_constant_buffer);
     presenter->context->PSSetShader(pipeline->pixel_shader, nullptr, 0u);
-    presenter->context->PSSetConstantBuffers(
-        0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
     const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
@@ -3460,12 +3511,10 @@ RecompD3dPresenterError submitDraw(
         constants[19] = lit_model ? 1.0f : 0.0f;
         std::memcpy(constants + 20, draw.world[0], sizeof draw.world[0]);
         for (unsigned i = 0; i < 3; ++i) constants[36 + i] = -sun.direction[i];
-        if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
+        if (!bindConstants(presenter, sun.constants, 1u, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
-        presenter->context->VSSetConstantBuffers(1, 1, &sun.constants);
-        presenter->context->PSSetConstantBuffers(1, 1, &sun.constants);
         ID3D11ShaderResourceView *view = sun.casting ? nullptr : sun.view;
         presenter->context->PSSetShaderResources(2, 1, &view);
         presenter->context->PSSetSamplers(2, 1, &sun.sampler);
@@ -4874,7 +4923,7 @@ RecompD3dPresenterError submitSunCaster(RecompD3dPresenter *presenter,
         !uploadRing(presenter, &presenter->draw_index_buffer, presenter->draw_index_capacity,
             presenter->draw_index_used, draw.index_bytes, draw.index_count*2u,
             D3D11_BIND_INDEX_BUFFER, index_offset) ||
-        !uploadBuffer(presenter, sun.caster_constants, constants, sizeof constants))
+        !bindConstants(presenter, sun.caster_constants, 0u, constants, sizeof constants))
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     auto *context = presenter->context;
     if (!sun.caster_bound) {
@@ -4889,8 +4938,6 @@ RecompD3dPresenterError submitSunCaster(RecompD3dPresenter *presenter,
         context->RSSetState(sun.rasterizer);
         context->OMSetDepthStencilState(depth_state, 0);
         context->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
-        context->VSSetConstantBuffers(0, 1, &sun.caster_constants);
-        context->PSSetConstantBuffers(0, 1, &sun.caster_constants);
         sun.caster_bound = true;
     }
     const UINT stride = draw.vertex_stride;
