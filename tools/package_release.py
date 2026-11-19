@@ -57,6 +57,11 @@ def tree(ref):
     return {i.filename: archive.read(i) for i in archive.infolist() if not i.is_dir()}
 
 
+# Quiver starts a macOS download without a catalog setting only from an .app or an extensionless executable.
+MACOS_ENTRY = (b'#!/usr/bin/env bash\n'
+               b'exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/launcher.sh" "$@"\n')
+
+
 def is_packaging(name):
     return name.startswith(PACKAGING)
 
@@ -69,6 +74,14 @@ def windows_members(common):
 def unix_members(common):
     """macOS and Linux run the shell scripts, so the root .cmd launchers stay out."""
     return {n: d for n, d in common.items() if not (n.endswith(".cmd") and "/" not in n)}
+
+
+def unix_package(target, common, modes):
+    """The members and git modes of one Unix ZIP; only macOS gets the DOAXBV entry."""
+    kept, modes = unix_members(common), dict(modes)
+    if target == "macOS":
+        kept["DOAXBV"], modes["DOAXBV"] = MACOS_ENTRY, "100755"
+    return kept, modes
 
 
 def prebuilt_launcher(data):
@@ -182,11 +195,11 @@ def main():
     results["windows"] = write(args.out_dir / f"DOAXBV-{version}.zip", f"DOAXBV-{version}/", win)
 
     for target, (platform_name, readme, prerequisites) in UNIX_PLATFORMS.items():
-        kept = unix_members(common)
+        kept, unix_modes = unix_package(target, common, modes)
         kept["README.txt"] = readmes[readme].encode()
         if target == "Linux":
             kept[PREBUILT_LAUNCHER] = launcher
-            modes[PREBUILT_LAUNCHER] = "100755"
+            unix_modes[PREBUILT_LAUNCHER] = "100755"
         kept["package.json"] = (json.dumps(dict(
             name=f"DOAXBV-{version}", version=version, channel=channel, platform=platform_name,
             package_kind="source-and-iso-setup", prebuilt_game_runner=False, cmake_generator="Ninja",
@@ -196,7 +209,7 @@ def main():
         for script in ("build_game.sh", "run_game.sh", "launcher.sh"):
             require(modes.get(script) == "100755", f"{script} is not executable")
         results[target] = write(args.out_dir / f"DOAXBV-{version}-{target}.zip", f"DOAXBV-{version}-{target}/",
-                                kept, modes, date)
+                                kept, unix_modes, date)
     print(json.dumps(dict(commit=commit, **results), indent=2))
 
 

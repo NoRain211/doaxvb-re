@@ -1239,13 +1239,18 @@ if(MSVC)
     set(_stop_report_check
         "${CMAKE_CURRENT_BINARY_DIR}/check-stop-report-$<CONFIG>.cmake")
     file(GENERATE OUTPUT "${_stop_report_check}" CONTENT [=[
-foreach(mode IN ITEMS normal mismatch expected-error error boundary handled crash)
+set(crash_kind_crash unhandled-exception)
+set(crash_kind_overflow stack-overflow)
+set(crash_kind_abort abort)
+set(crash_kind_invalid-parameter invalid-crt-parameter)
+foreach(mode IN ITEMS normal mismatch expected-error error boundary handled
+        crash overflow abort invalid-parameter)
     set(log "${CMAKE_CURRENT_LIST_DIR}/stop-report-${mode}.log")
     file(REMOVE "${log}")
     execute_process(COMMAND "$<TARGET_FILE:recomp_stop_report_test>" "${mode}" "${log}"
         RESULT_VARIABLE result ERROR_VARIABLE error TIMEOUT 10)
-    if(mode STREQUAL "crash")
-        if(result STREQUAL "0" OR NOT error MATCHES "event=host-crash kind=unhandled-exception"
+    if(DEFINED crash_kind_${mode})
+        if(result STREQUAL "0" OR NOT error MATCHES "event=host-crash kind=${crash_kind_${mode}}"
                 OR error MATCHES "event=runtime-stop" OR EXISTS "${log}")
             message(FATAL_ERROR "${mode}: exit=${result}, diagnostic=${error}")
         endif()

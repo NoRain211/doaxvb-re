@@ -14,6 +14,20 @@ class PlatformMemberTests(unittest.TestCase):
         self.assertEqual(set(package_release.windows_members(common)), windows | shared)
         self.assertEqual(set(package_release.unix_members(common)), unix | shared)
 
+    def test_macos_entry_is_an_extensionless_script_for_the_launcher(self):
+        self.assertTrue(package_release.MACOS_ENTRY.startswith(b"#!"))
+        self.assertIn(b"launcher.sh", package_release.MACOS_ENTRY)
+
+    def test_only_the_macos_zip_gets_an_executable_doaxbv_entry(self):
+        self.assertEqual(set(package_release.UNIX_PLATFORMS), {"macOS", "Linux"})
+        common, modes = {"launcher.sh": b""}, {"launcher.sh": "100755"}
+        kept, mode = package_release.unix_package("macOS", common, modes)
+        self.assertEqual((kept["DOAXBV"], mode["DOAXBV"]), (package_release.MACOS_ENTRY, "100755"))
+        kept, mode = package_release.unix_package("Linux", common, modes)
+        self.assertNotIn("DOAXBV", kept)
+        self.assertNotIn("DOAXBV", mode)
+        self.assertNotIn("DOAXBV", modes)
+
     def test_packaging_inputs_never_ship(self):
         for name, packaging in (("tools/package_release.py", True), ("tools/test_package_release.py", True),
                                 ("tools/release/README-macos.txt", True), ("tools/build_game.py", False),
