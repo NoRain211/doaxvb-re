@@ -8,8 +8,14 @@ set -euo pipefail
 DOAXBV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DOAXBV_ROOT}/tools/setup_env.sh"
 # Progress stays visible: a first run may download SDL headers or build SDL3.
-"${PYTHON}" "${DOAXBV_ROOT}/tools/build_launcher.py"
-# The launcher exits 0 for Play and 1 when closed.
-if "${DOAXBV_ROOT}/private/launcher-build/recomp_launcher" "${DOAXBV_ROOT}" "$@"; then
-    exec "${DOAXBV_ROOT}/run_game.sh"
+LAUNCHER="${DOAXBV_ROOT}/private/launcher-build/recomp_launcher"
+if ! "${PYTHON}" "${DOAXBV_ROOT}/tools/build_launcher.py"; then
+    # SteamOS has no compiler: reuse the launcher built earlier in a container.
+    [[ -x "${LAUNCHER}" ]] || exit 1
+    echo "Using the launcher built earlier." >&2
+fi
+# The launcher exits 0 for Play and 1 when closed. Arguments, such as a build
+# receipt, go to run_game.sh.
+if "${LAUNCHER}" "${DOAXBV_ROOT}"; then
+    exec "${DOAXBV_ROOT}/run_game.sh" "$@"
 fi

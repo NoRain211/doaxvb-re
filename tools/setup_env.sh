@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Sourced by build_game.sh and launcher.sh: prepare private/venv with Capstone.
 # The caller sets DOAXBV_ROOT; this sets PYTHON.
+: "${DOAXBV_ROOT:?DOAXBV_ROOT must be set by the caller}"
 VENV="${DOAXBV_ROOT}/private/venv"
 PYTHON="${VENV}/bin/python3"
 

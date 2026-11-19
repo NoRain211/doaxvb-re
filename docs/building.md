@@ -223,8 +223,9 @@ SteamOS has a read-only system and no compiler, so build inside a container
 such as an Ubuntu 24.04 `distrobox` that shares your home folder. Run
 `./launcher.sh` inside it too: the launcher is built on its first run with
 the container's compiler, and its **Build** page builds the game there. The
-finished build carries its own SDL3, so `./run_game.sh` also starts the game
-with the saved choices on SteamOS itself.
+launcher and the finished build carry their own SDL3, so `./launcher.sh` and
+`./run_game.sh` also work on SteamOS itself: without a compiler, `launcher.sh`
+opens the launcher built in the container.
 
 On Ubuntu 24.04, including that `distrobox`, this installs the build tools and
 SDL3's build dependencies:
