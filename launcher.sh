@@ -24,3 +24,4 @@ fi
 if "${LAUNCHER}" "${DOAXBV_ROOT}"; then
     exec "${DOAXBV_ROOT}/run_game.sh" "$@"
 fi
+exit 1

@@ -26,6 +26,8 @@ BUNDLED_REF = "v0.6.0-rc1"
 PACKAGING = ("tools/package_release.py", "tools/test_package_release.py", "tools/release/")
 # The Linux ZIP ships the launcher tools/build_linux_launcher.sh builds, so it opens without a compiler.
 PREBUILT_LAUNCHER = "tools/artifacts/launcher-linux-x86_64"
+LAUNCHER_ASSET = ROOT / "private/release-assets/launcher-linux-x86_64"
+LAUNCHER_SOURCES = ("launcher_sdl.cpp", "build_linux_launcher.sh")
 GAME_DATA = {".xbe", ".iso", ".xiso", ".afs", ".xpr", ".xbx", ".sav", ".jsonl"}
 UNIX_PLATFORMS = {
     "macOS": ("macOS (arm64, x64)", "README-macos.txt",
@@ -89,6 +91,11 @@ def prebuilt_launcher(data):
     require(data[:6] == b"\x7fELF\x02\x01" and data[18:20] == b"\x3e\x00",
             "the prebuilt launcher is not an x86-64 Linux executable")
     return data
+
+
+def launcher_sources(common):
+    """The sha256sum listing tools/build_linux_launcher.sh writes for the sources it compiled."""
+    return "".join(f"{sha(common['tools/' + name])}  {name}\n" for name in LAUNCHER_SOURCES)
 
 
 def check(kept, recipe, gitlinks, allowed_private, banned_suffixes):
@@ -162,9 +169,8 @@ def main():
     bundled_tools = (RELEASE / "BUNDLED-TOOLS.md").read_text(encoding="utf-8")
     require(f"/tree/v{version}" in bundled_tools, "BUNDLED-TOOLS.md links another source tag")
     icon = (ROOT / "private/release-assets/doaxbv.ico").read_bytes()
-    launcher = ROOT / "private/release-assets/launcher-linux-x86_64"
-    require(launcher.is_file(), f"{launcher} is missing; build it with tools/build_linux_launcher.sh")
-    launcher = prebuilt_launcher(launcher.read_bytes())
+    require(LAUNCHER_ASSET.is_file(), f"{LAUNCHER_ASSET} is missing; build it with tools/build_linux_launcher.sh")
+    launcher = prebuilt_launcher(LAUNCHER_ASSET.read_bytes())
     require(extras["private/doaxbv.ico"] == icon, "RC1 icon differs from the release asset")
 
     commit = git("rev-parse", args.ref + "^{commit}").decode().strip()
@@ -175,6 +181,9 @@ def main():
     latest = next(line for line in changelog.splitlines() if line.startswith("## "))
     require(latest.startswith(f"## {version} "), f"{args.ref} is not the {version} release commit; its CHANGELOG opens with {latest!r}")
     common = source(args.ref)
+    built_from = LAUNCHER_ASSET.with_name(LAUNCHER_ASSET.name + ".sources")
+    require(built_from.is_file() and built_from.read_text(encoding="utf-8") == launcher_sources(common),
+            f"the prebuilt launcher was not built from {args.ref}; rerun tools/build_linux_launcher.sh there")
     recipe = json.loads(common["tools/game-recipe/recipe.json"])
     identity = dict(source_base=commit, lifter_revision=recipe["lifter_revision"],
                     recipe_sha256=sha(common["tools/game-recipe/recipe.json"]),

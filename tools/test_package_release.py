@@ -35,6 +35,12 @@ class PlatformMemberTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(package_release.is_packaging(name), packaging)
 
+    def test_launcher_sources_read_like_sha256sum(self):
+        common = {"tools/launcher_sdl.cpp": b"a", "tools/build_linux_launcher.sh": b"b"}
+        self.assertEqual(package_release.launcher_sources(common),
+                         "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb  launcher_sdl.cpp\n"
+                         "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d  build_linux_launcher.sh\n")
+
     def test_prebuilt_launcher_must_be_x86_64_linux(self):
         elf = b"\x7fELF\x02\x01" + bytes(12) + b"\x3e\x00"
         self.assertEqual(package_release.prebuilt_launcher(elf), elf)

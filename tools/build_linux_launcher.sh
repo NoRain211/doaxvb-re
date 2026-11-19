@@ -41,6 +41,8 @@ cmake --install sdl-build
 g++ -O2 -std=c++17 -o "/out/$NAME" /src/launcher_sdl.cpp -I/opt/sdl/include -isystem /tmp \
     -static-libstdc++ -static-libgcc $(PKG_CONFIG_PATH=/opt/sdl/lib/pkgconfig pkg-config --static --libs sdl3)
 strip "/out/$NAME"
+# package_release.py checks this listing against the release ref.
+(cd /src && sha256sum launcher_sdl.cpp build_linux_launcher.sh) > "/out/$NAME.sources"
 objdump -p "/out/$NAME" | grep NEEDED
 objdump -T "/out/$NAME" | grep -o "GLIBC_[0-9.]*" | sort -uV | tail -1
 '
