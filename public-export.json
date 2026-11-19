@@ -99,6 +99,7 @@
     "tools/launcher/CMakeLists.txt",
     "tools/build_launcher.py",
     "tools/test_build_launcher.py",
+    "tools/build_linux_launcher.sh",
     "tools/setup_env.sh",
     "tools/test_extract_iso.py",
     "tools/xboxrecomp",

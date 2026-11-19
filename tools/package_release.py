@@ -7,8 +7,9 @@ usage: python tools/package_release.py REF OUT_DIR --bundled RC1_ZIP
 The Windows ZIP adds the bundled tools (Python with Capstone, MinGit, CMake,
 extract-xiso, SMAA) and icon that the shipped 0.6.0 RC1 Windows ZIP carries
 beyond its tagged source; --check proves this script still rebuilds that ZIP.
-Version, change note and release text come from tools/release/, and the icon
-must match private/release-assets/doaxbv.ico.
+Version, change note and release text come from tools/release/, the icon
+must match private/release-assets/doaxbv.ico, and the Linux ZIP ships
+private/release-assets/launcher-linux-x86_64 (tools/build_linux_launcher.sh).
 """
 import argparse
 import hashlib
@@ -23,6 +24,8 @@ RELEASE = ROOT / "tools/release"
 BUNDLED_REF = "v0.6.0-rc1"
 # Packaging inputs stay in the repository, like CI and export tooling.
 PACKAGING = ("tools/package_release.py", "tools/test_package_release.py", "tools/release/")
+# The Linux ZIP ships the launcher tools/build_linux_launcher.sh builds, so it opens without a compiler.
+PREBUILT_LAUNCHER = "tools/artifacts/launcher-linux-x86_64"
 GAME_DATA = {".xbe", ".iso", ".xiso", ".afs", ".xpr", ".xbx", ".sav", ".jsonl"}
 UNIX_PLATFORMS = {
     "macOS": ("macOS (arm64, x64)", "README-macos.txt",
@@ -66,6 +69,13 @@ def windows_members(common):
 def unix_members(common):
     """macOS and Linux run the shell scripts, so the root .cmd launchers stay out."""
     return {n: d for n, d in common.items() if not (n.endswith(".cmd") and "/" not in n)}
+
+
+def prebuilt_launcher(data):
+    """An x86-64 Linux executable: ELF magic, 64-bit, little-endian, EM_X86_64."""
+    require(data[:6] == b"\x7fELF\x02\x01" and data[18:20] == b"\x3e\x00",
+            "the prebuilt launcher is not an x86-64 Linux executable")
+    return data
 
 
 def check(kept, recipe, gitlinks, allowed_private, banned_suffixes):
@@ -139,6 +149,9 @@ def main():
     bundled_tools = (RELEASE / "BUNDLED-TOOLS.md").read_text(encoding="utf-8")
     require(f"/tree/v{version}" in bundled_tools, "BUNDLED-TOOLS.md links another source tag")
     icon = (ROOT / "private/release-assets/doaxbv.ico").read_bytes()
+    launcher = ROOT / "private/release-assets/launcher-linux-x86_64"
+    require(launcher.is_file(), f"{launcher} is missing; build it with tools/build_linux_launcher.sh")
+    launcher = prebuilt_launcher(launcher.read_bytes())
     require(extras["private/doaxbv.ico"] == icon, "RC1 icon differs from the release asset")
 
     commit = git("rev-parse", args.ref + "^{commit}").decode().strip()
@@ -171,6 +184,9 @@ def main():
     for target, (platform_name, readme, prerequisites) in UNIX_PLATFORMS.items():
         kept = unix_members(common)
         kept["README.txt"] = readmes[readme].encode()
+        if target == "Linux":
+            kept[PREBUILT_LAUNCHER] = launcher
+            modes[PREBUILT_LAUNCHER] = "100755"
         kept["package.json"] = (json.dumps(dict(
             name=f"DOAXBV-{version}", version=version, channel=channel, platform=platform_name,
             package_kind="source-and-iso-setup", prebuilt_game_runner=False, cmake_generator="Ninja",

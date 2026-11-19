@@ -21,6 +21,14 @@ class PlatformMemberTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(package_release.is_packaging(name), packaging)
 
+    def test_prebuilt_launcher_must_be_x86_64_linux(self):
+        elf = b"\x7fELF\x02\x01" + bytes(12) + b"\x3e\x00"
+        self.assertEqual(package_release.prebuilt_launcher(elf), elf)
+        for name, data in (("arm64", elf[:18] + b"\xb7\x00"), ("32-bit", elf[:4] + b"\x01" + elf[5:]),
+                           ("Mach-O", b"\xcf\xfa\xed\xfe" + elf[4:]), ("empty", b"")):
+            with self.subTest(name=name), self.assertRaises(SystemExit):
+                package_release.prebuilt_launcher(data)
+
 
 if __name__ == "__main__":
     unittest.main()
