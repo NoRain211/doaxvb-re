@@ -88,11 +88,17 @@ showing the launcher, or opens it on the Build page when nothing is built) or
 `RunGame.cmd` (default settings) in the same folder. Setup builds both exes
 with the runner and embeds `private/doaxbv.ico` in them; the launcher window
 shows that icon too. `Launcher.cmd`
-opens the same window when the exe is absent. Keep that folder in place after
-setup: build receipts identify the exact local paths. Setup does not launch the
-game automatically.
+opens the same window when the exe is absent. Setup does not launch the game
+automatically.
 
-The Windows launcher copies the game's island map menus: glass panels, green
+Build receipts name the runner and the extracted disc relative to the game
+folder, so a built folder can move or be copied to another folder or machine.
+Builds made before this keep absolute paths; build again to make them movable.
+Saves, settings and logs already live under `private/`. On macOS and Linux,
+`launcher.sh` and `build_game.sh` rebuild `private/venv` after a move, because
+a venv records its own path.
+
+Every launcher copies the game's island map menus: glass panels, green
 name plates and A/B prompts. It draws game images from `private/launcher`.
 Setup copies `logo.png`, `button-a.png`, `button-b.png` and a sunny beach
 preview, `beach.png`, from your disc, finding each texture by its content key
@@ -161,15 +167,46 @@ Windows package bundles into `tools/extract-xiso`, using Apple's command line
 tools (`xcode-select --install`). An `extract-xiso` on `PATH` or one passed with
 `--extractor` is used instead.
 
-Then build the runner:
+Then open the launcher, which builds the game the first time:
 
 ```bash
-./build_game.sh /path/to/game.iso
+./launcher.sh
 ```
 
-`./launcher.sh` opens the launcher to pick resolution, anti-aliasing, volume
-and soundtrack options, then starts the game. `./run_game.sh` starts the game
-with the saved choices.
+### The macOS and Linux launcher
+
+`launcher.sh` opens the counterpart of the Windows launcher
+(`tools/launcher_sdl.cpp`), with its sections, island map look and controls.
+On its first run, `tools/build_launcher.py` builds only the launcher, in
+`private/launcher-build`, with the compiler and SDL3 the game build uses. This
+takes seconds, and the launcher exists before any game build. It rebuilds
+only when its source, its toolchain or the folder's location changes.
+
+Without a build, the launcher opens on its **Build** page. It searches your
+home folder, EmuDeck's `Emulation/roms/xbox` and removable drives such as the
+Steam Deck's SD card for Xbox disc images (`.iso` or `.xiso` of 1 GB or
+more). **Browse...** opens the system file picker where one exists, and an ISO
+dropped on the window is added too. **Build game** runs `build_game.sh` in the
+background, shows its output, and saves it to `private/launcher-build.log`.
+When it finishes, **Play** saves your choices to `private/launcher.json` and
+starts `run_game.sh`, which applies them. `./build_game.sh /path/to/game.iso`
+still builds without the launcher, and `./run_game.sh` plays with the saved
+choices without opening it.
+
+The launcher offers resolution, MSAA, fog, volume, shuffle, unlocked
+swimsuits, shorter demo cuts, the free camera and the title screen idle
+choice. SMAA, VRR pacing, sun shadows, per-pixel lighting, smooth normals,
+RTGI, texture packs and the music folder belong to Direct3D 11 or Media
+Foundation on Windows, so it leaves them out. Their saved values in
+`private/launcher.json` stay untouched. A keyboard, mouse, touch screen or
+controller works: LB and RB (or Tab) switch sections, the d-pad or arrows move
+between options and left or right changes one, A or Enter ticks or presses,
+Start plays and B or Esc quits. While a build runs, the launcher stays open.
+
+Set `DOAXBV_LAUNCHER_SCREENSHOTS=/some/prefix` with
+`SDL_VIDEO_DRIVER=offscreen` to save every section as `<prefix>-<n>.bmp` and
+exit without a display. CI uses this to check that the launcher draws on macOS
+and Linux.
 
 ### Linux and SteamOS build
 
@@ -183,10 +220,12 @@ distribution has none, and `extract-xiso` as on macOS.
 Ubuntu that needs the `python3-venv` package.
 
 SteamOS has a read-only system and no compiler, so build inside a container
-such as an Ubuntu 24.04 `distrobox` that shares your home folder; the
-finished checkout then runs on SteamOS itself. Run `./build_game.sh` as on
-macOS. `./launcher.sh` opens a gamepad-friendly settings screen, then starts
-the game; `./run_game.sh` starts the game with the saved choices.
+such as an Ubuntu 24.04 `distrobox` that shares your home folder. Run
+`./launcher.sh` inside it too: the launcher is built on its first run with
+the container's compiler, and its **Build** page builds the game there. The
+launcher and the finished build carry their own SDL3, so `./launcher.sh` and
+`./run_game.sh` also work on SteamOS itself: without a compiler, `launcher.sh`
+opens the launcher built in the container.
 
 On Ubuntu 24.04, including that `distrobox`, this installs the build tools and
 SDL3's build dependencies:
