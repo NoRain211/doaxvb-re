@@ -95,6 +95,14 @@ jobs:
         run: |
           ./build_game.sh --help
           private/venv/bin/python3 -c "import capstone"
+      - name: Build the launcher the way launcher.sh does and draw every page
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          private/venv/bin/python3 tools/build_launcher.py
+          # Screenshot mode exits 1 once every page is saved, 2 if one fails.
+          DOAXBV_LAUNCHER_SCREENSHOTS="$RUNNER_TEMP/launcher" private/launcher-build/recomp_launcher "$PWD" || test $? -eq 1
+          ls "$RUNNER_TEMP"/launcher-5.bmp
       - name: Build extract-xiso the way setup does
         run: |
           mkdir -p private/ci-xiso
@@ -126,6 +134,13 @@ jobs:
           mkdir -p private/ci-xiso
           tool=$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, 'tools'); import build_prerequisites as p; print(p.ensure_extract_xiso(Path.cwd(), Path('private/ci-xiso')))" | tail -n 1)
           "$tool" -h 2>&1 | grep extract-xiso
+      - name: Build the launcher the way launcher.sh does and draw every page
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          python3 tools/build_launcher.py
+          DOAXBV_LAUNCHER_SCREENSHOTS="$RUNNER_TEMP/launcher" private/launcher-build/recomp_launcher "$PWD" || test $? -eq 1
+          ls "$RUNNER_TEMP"/launcher-5.bmp
       - name: Configure public runtime tests with clang, as setup does
         run: >-
           cmake -S recomp-runtime -B build/recomp-runtime -G Ninja -DRECOMP_FETCH_SDL3=ON
@@ -144,3 +159,4 @@ jobs:
           build/recomp-runtime/recomp_d3d_presenter_sdl_gpu_test > presenter.log 2>&1
           cat presenter.log
           if grep -E 'need shaderc|shaderc compilation failed|SPIR-V shader' presenter.log; then exit 1; fi
+

@@ -44,35 +44,7 @@ if(WIN32)
             copy_if_different "${RECOMP_SHADERC_DLL}" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
 else()
-    # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
-    # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
-    # 24.04 has no package). Hosts with neither only configure, which the
-    # tools tests do without it.
-    option(RECOMP_FETCH_SDL3 "Build SDL3 when the system has none" OFF)
-    find_package(SDL3 QUIET)
-    if(APPLE AND NOT SDL3_FOUND)
-        message(FATAL_ERROR "SDL3 is required: brew install sdl3")
-    endif()
-    if(NOT SDL3_FOUND AND RECOMP_FETCH_SDL3)
-        if(POLICY CMP0135)
-            cmake_policy(SET CMP0135 NEW)
-        endif()
-        include(FetchContent)
-        # The release the Steam Deck build was tested with, pinned like the Windows zip.
-        FetchContent_Declare(SDL3
-            URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-3.4.12.tar.gz
-            URL_HASH SHA256=f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7)
-        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-        set(SDL_SHARED ON CACHE BOOL "" FORCE)
-        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
-        FetchContent_MakeAvailable(SDL3)
-        set(SDL3_FOUND TRUE)
-    endif()
-    function(recomp_use_sdl3 target)
-        if(SDL3_FOUND)
-            target_link_libraries(${target} PRIVATE SDL3::SDL3)
-        endif()
-    endfunction()
+    include(cmake/RecompSDL3.cmake)
 endif()
 
 # Dear ImGui draws the runtime's overlay text over the game, through the SDL
@@ -911,13 +883,6 @@ if(RECOMP_PROGRAM_DIR)
             target_sources(${_runner} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
         endif()
     endforeach()
-
-    # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
-    # beside the runner rather than on first use like the macOS launcher.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        add_executable(recomp_launcher ../tools/launcher_sdl.cpp)
-        recomp_use_sdl3(recomp_launcher)
-    endif()
 endif()
 
 option(RECOMP_BUILD_DXR_SMOKE_TEST "Build the hardware DXR 1.1 smoke test" OFF)
