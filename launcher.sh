@@ -6,16 +6,23 @@
 # private/launcher.json and starts run_game.sh, which applies them.
 set -euo pipefail
 DOAXBV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${DOAXBV_ROOT}/tools/setup_env.sh"
-# Progress stays visible: a first run may download SDL headers or build SDL3.
 LAUNCHER="${DOAXBV_ROOT}/private/launcher-build/recomp_launcher"
-if ! "${PYTHON}" "${DOAXBV_ROOT}/tools/build_launcher.py"; then
-    # SteamOS has no compiler: reuse the launcher built earlier in a container.
-    [[ -x "${LAUNCHER}" ]] || exit 1
-    echo "Using the launcher built earlier." >&2
+# The tools tools/build_prerequisites.py find_toolchain requires.
+have_toolchain() {
+    command -v cmake >/dev/null && { command -v c++ || command -v clang++ || command -v g++; } >/dev/null
+}
+if [[ -x "${LAUNCHER}" ]] && ! have_toolchain; then
+    # SteamOS has no compiler: reuse the launcher built earlier in a container,
+    # without the venv setup or a rebuild.
+    echo "No compiler found; using the launcher built earlier." >&2
+else
+    source "${DOAXBV_ROOT}/tools/setup_env.sh"
+    # Progress stays visible: a first run may download SDL headers or build SDL3.
+    "${PYTHON}" "${DOAXBV_ROOT}/tools/build_launcher.py"
 fi
 # The launcher exits 0 for Play and 1 when closed. Arguments, such as a build
 # receipt, go to run_game.sh.
 if "${LAUNCHER}" "${DOAXBV_ROOT}"; then
     exec "${DOAXBV_ROOT}/run_game.sh" "$@"
 fi
+exit 1
