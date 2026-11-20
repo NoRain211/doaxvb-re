@@ -3,6 +3,7 @@
 import itertools
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -67,6 +68,15 @@ class LauncherShTest(unittest.TestCase):
                     if missing:
                         self.assertEqual(result.returncode, 1)
                         self.assertIn("No compiler found", result.stderr)
+
+    @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64",
+                         "the prebuilt launcher is for x86-64 Linux")
+    def test_prebuilt_launcher_needs_no_setup_even_with_a_toolchain(self):
+        self.built_launcher()
+        self.write("tools/artifacts/launcher-linux-x86_64", '#!/bin/sh\n: > "$1/prebuilt-ran"\nexit 1\n', True)
+        result, setup, launcher = self.run_launcher("cmake", "c++")
+        prebuilt = (self.root / "prebuilt-ran").exists()
+        self.assertEqual((result.returncode, setup, launcher, prebuilt), (1, False, False, True))
 
     def test_without_a_built_launcher_sets_up_and_builds(self):
         result, setup, launcher = self.run_launcher()

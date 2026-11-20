@@ -180,7 +180,11 @@ Then open the launcher, which builds the game the first time:
 On its first run, `tools/build_launcher.py` builds only the launcher, in
 `private/launcher-build`, with the compiler and SDL3 the game build uses. This
 takes seconds, and the launcher exists before any game build. It rebuilds
-only when its source, its toolchain or the folder's location changes.
+only when its source, its toolchain or the folder's location changes. The
+Linux release ZIP also ships a prebuilt x86-64 launcher,
+`tools/artifacts/launcher-linux-x86_64`, which `launcher.sh` opens instead,
+without Python or a compiler. `tools/build_linux_launcher.sh` builds it in
+Docker against a static SDL3, so it needs only glibc 2.34.
 
 Without a build, the launcher opens on its **Build** page. It searches your
 home folder, EmuDeck's `Emulation/roms/xbox` and removable drives such as the
@@ -224,8 +228,9 @@ such as an Ubuntu 24.04 `distrobox` that shares your home folder. Run
 `./launcher.sh` inside it too: the launcher is built on its first run with
 the container's compiler, and its **Build** page builds the game there. The
 launcher and the finished build carry their own SDL3, so `./launcher.sh` and
-`./run_game.sh` also work on SteamOS itself: without a compiler, `launcher.sh`
-opens the launcher built in the container.
+`./run_game.sh` also work on SteamOS itself. From the release ZIP,
+`./launcher.sh` opens its prebuilt launcher there; from a checkout, it opens
+the launcher built in the container.
 
 On Ubuntu 24.04, including that `distrobox`, this installs the build tools and
 SDL3's build dependencies:

@@ -32,7 +32,7 @@ PLAY
 The game compiles its shaders with shaderc at runtime, so the system needs
 libshaderc_shared.so.1 (SteamOS includes it; on Ubuntu install libshaderc1).
 ./launcher.sh opens a gamepad-friendly settings screen, then starts the
-game. ./run_game.sh starts it with the saved choices. For Steam Game Mode,
+game. It is prebuilt, so it opens on SteamOS itself without a container. ./run_game.sh starts it with the saved choices. For Steam Game Mode,
 add launcher.sh with "Add a Non-Steam Game" in Desktop Mode; if one
 controller drives two players, turn Steam Input off for that shortcut.
 Keep this folder in place after setup; saves live in private/.

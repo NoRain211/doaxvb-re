@@ -37,7 +37,14 @@ python tools/package_release.py v0.6.2 private/rel/final --bundled <0.6.0 RC1 Wi
 The Windows ZIP adds the tools and icon the shipped RC1 Windows ZIP bundles
 beyond its tagged source; `--check` proves the script still rebuilds that ZIP.
 Each platform ships only its own root launchers, and the packager and
-`tools/release/` stay out of every ZIP.
+`tools/release/` stay out of every ZIP. The Linux ZIP also ships a prebuilt
+launcher, so it opens on a Steam Deck without a compiler. Build it with Docker
+at the release commit before packaging; the packager refuses a launcher whose
+recorded source hashes differ from the release ref:
+
+```bash
+tools/build_linux_launcher.sh   # writes private/release-assets/launcher-linux-x86_64
+```
 
 ## Scripted play
 
