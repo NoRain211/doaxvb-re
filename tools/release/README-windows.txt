@@ -1,4 +1,4 @@
-DOAXBV 0.6.2 BETA
+DOAXBV 0.7.0 BETA
 Fully playable, with known issues. See CHANGELOG.md for the full history.
 
 QUICK START
@@ -17,18 +17,28 @@ REQUIREMENTS
 Windows 10/11 x64, a supported USA game ISO, internet access and enough disk
 space for extracted game files and compilation. Python, Capstone, Git,
 CMake and extract-xiso are included. Setup downloads the llvm-mingw
-compiler (190 MB, about 715 MB extracted), the DXC shader compiler (32 MB)
-and SDL3. No administrator approval, Visual Studio or Windows SDK is needed.
+compiler (190 MB, about 715 MB extracted), the DXC shader compiler (32 MB),
+SDL3 and the shaderc library for the Vulkan renderer. No administrator approval, Visual Studio or Windows SDK is needed.
 If extract-xiso reports a missing VCRUNTIME140.dll, install the included
 Prerequisites/vc_redist.x86.exe and retry (it is for the 32-bit extractor).
 
 UPGRADING
-The game program is the same as 0.6.0 and 0.6.1. If your build works, you
-don't need this release. Otherwise extract this ZIP into a new folder and
+The game program changed in 0.7.0. Extract this ZIP into a new folder and
 build again. Saves are unchanged; copy your private saves over from your
 previous install. Saves are not imported automatically.
 
-WHAT CHANGED SINCE 0.5.3
+WHAT'S NEW IN 0.7.0
+Online Exhibition (experimental): press A on EXHIBITION to host or join a
+room, or use FIND MATCH. Both players need the same build. It has been
+tested only with two runners on one PC; see docs/rollback-netcode.md.
+
+Renderer: Vulkan on the launcher's Graphics page draws through Vulkan.
+Direct3D 11 stays the default and keeps the D3D11-only options.
+
+Ray-traced GI now works in these builds; setup downloads the DXC shader
+compiler for it. Voice and Message language choices are now remembered.
+
+WHAT CHANGED IN 0.6
 Setup: no Visual Studio needed. The launcher has a new look, builds the game
 from its BUILD page, works with a controller, and setup adds DOAXBV.exe.
 
@@ -58,7 +68,7 @@ launch the game through Steam, turn Steam Input off for it.
 
 This package contains source and setup tools. It includes no prebuilt game
 runner, game files or generated game code. These are produced locally from
-your ISO. Keep the folder in place after setup. Saves and logs remain under
+your ISO. A built folder can be moved or copied; saves and logs remain under
 private/. Default game volume is 100%.
 
 KNOWN ISSUES
@@ -68,6 +78,7 @@ KNOWN ISSUES
 - An upside-down map can flash when leaving the pool (#55).
 - Some underwater beach textures may be missing (#56).
 - PlayStation controllers have not yet been confirmed on physical hardware.
+- Online play has not had a full match with real input or between two PCs.
 
 LICENSES AND SOURCE
 See LICENSE, NOTICE and BUNDLED-TOOLS.md for third-party licenses, versions

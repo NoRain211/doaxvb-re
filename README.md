@@ -85,6 +85,7 @@ and morph blend have been rewritten.
 | Sun shadows, per-pixel lighting and smooth normals (Direct3D 11) | Opt-in in 0.6.0; see [`docs/sun-shadow.md`](docs/sun-shadow.md) |
 | Whole-game high frame rate (`RECOMP_GAME_HZ`, Windows) | Experimental in 0.6.0; slight streaking at 120 Hz |
 | Launcher that builds the game, works with a controller, and `DOAXBV.exe` | Added in 0.6.0; controller checked with a virtual gamepad only |
+| Vulkan renderer on Windows (launcher choice) and fog on macOS and Linux | Added in 0.7.0; Direct3D 11 stays the default on Windows |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
