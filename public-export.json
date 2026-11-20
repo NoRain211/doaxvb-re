@@ -100,6 +100,7 @@
     "tools/build_launcher.py",
     "tools/test_build_launcher.py",
     "tools/build_linux_launcher.sh",
+    "tools/test_launcher_sh.py",
     "tools/setup_env.sh",
     "tools/test_extract_iso.py",
     "tools/xboxrecomp",
