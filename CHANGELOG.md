@@ -46,6 +46,11 @@ build.
   (32 MB).
 - **Ray-traced GI bled across silhouettes and left trails behind moving
   objects** (#182).
+- **Linux setup could build a game with no sound** (#212). Without the ALSA,
+  PulseAudio or PipeWire development headers, the SDL3 that setup builds has
+  no audio driver, and the game ran silently. Setup now stops before the long
+  compile and names the packages to install, and `docs/building.md` adds the
+  Fedora packages and PipeWire headers.
 - **Some crashes left no crash line in the log** (#209). Stack overflows,
   aborts and invalid C runtime arguments now print a `host-crash` line.
 
