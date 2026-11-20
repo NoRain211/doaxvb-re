@@ -88,6 +88,12 @@ struct RollbackRun {
     std::uint32_t rewindDepth = 0u;
     std::chrono::steady_clock::time_point rewoundAt{};
     bool padSeen = false; // this player has used a gamepad, so losing it shows a notice
+    // The live-round second measureHitch is adding up, and when the last frontier wait ended.
+    std::chrono::steady_clock::time_point hitchSince{}, frameLeft{};
+    std::uint32_t hitchFrom = 0u, heldBack = 0u;
+    double peerWaitMs = 0.0, longestWaitMs = 0.0, slowestFrameMs = 0.0;
+    // The last frontier wait: how late this side first saw its frame due, and how long it then lacked pads.
+    double lateMs = 0.0, blockedMs = 0.0;
 };
 static RollbackRun rollback;
 static RecompNetplaySessionHost host;
@@ -287,14 +293,24 @@ static std::uint32_t awaitFrontier(bool last)
     const bool udp = rollback.mode == RollbackMode::Udp;
     Clock::time_point sent{};
     const Clock::time_point began = Clock::now();
+    // For measureHitch: when this side first saw its frame due, and first found it lacked the other's pads.
+    Clock::time_point due{}, blocked{};
+    const auto measured = [&] {
+        const auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+        rollback.lateMs = due == Clock::time_point{} ? 0.0 : ms(due - std::max(began, rollback.next_frame));
+        rollback.blockedMs = blocked == Clock::time_point{} ? 0.0 : ms(Clock::now() - blocked);
+    };
     for (;;) {
         receivePads();
         if (udp) compareChecks();
         // The local pad is read at the frame's start, so pacing adds no input lag.
-        const bool started = !udp || Clock::now() >= rollback.next_frame;
+        const Clock::time_point checked = Clock::now();
+        const bool started = !udp || checked >= rollback.next_frame;
+        if (started && due == Clock::time_point{}) due = checked;
         const std::uint32_t target = started ? recomp_rollback_take_rewind(&s) : RECOMP_ROLLBACK_NONE;
         if (target != RECOMP_ROLLBACK_NONE) {
             resumed(began);
+            measured();
             return target;
         }
         if (started) {
@@ -308,8 +324,10 @@ static std::uint32_t awaitFrontier(bool last)
             : started && recomp_rollback_can_run(&s) && (!udp || rollback.net.peer_seen);
         if (ready) {
             resumed(began);
+            measured();
             return RECOMP_ROLLBACK_NONE;
         }
+        if (started && blocked == Clock::time_point{}) blocked = checked;
         if (!udp) recomp_stop(4, "rollback:stalled");
         const Clock::time_point now = Clock::now();
         if (now - sent >= std::chrono::milliseconds(rollback.net.match.relay ? 16 : 4)) {
@@ -363,6 +381,41 @@ static void scheduleFrame()
     rollback.next_frame = std::max(rollback.next_frame + interval, now - 2 * interval);
     if (rollback.wait != 0u) rollback.next_frame = std::max(rollback.next_frame, now) + rollback.wait * interval;
     rollback.wait = 0u;
+}
+
+/* In live rounds, a second with a visible hitch gets one log line that says
+   whose side it came from: time this side lacked the other player's pads once
+   its frame was due, its own slowest frame (the guest, any rerun frames and
+   present between two frontier waits, or a frame it noticed late), and frames
+   that frame sync held back so the other side could catch up. Waiting is not
+   now minus the due time, which would blame a stalled process on the other
+   player. Quiet seconds log nothing. */
+static void measureHitch(std::chrono::steady_clock::time_point entered)
+{
+    using namespace std::chrono;
+    RollbackRun &r = rollback;
+    const steady_clock::time_point left = steady_clock::now();
+    const bool live = r.session.window != 0u;
+    // frameLeft is only set after a live wait, so a round's last frame counts as its window closes.
+    if (r.frameLeft != steady_clock::time_point{})
+        r.slowestFrameMs = std::max(r.slowestFrameMs, duration<double, std::milli>(entered - r.frameLeft).count());
+    if (live && r.frameLeft != steady_clock::time_point{}) {
+        r.slowestFrameMs = std::max(r.slowestFrameMs, r.lateMs);
+        r.peerWaitMs += r.blockedMs;
+        r.longestWaitMs = std::max(r.longestWaitMs, r.blockedMs);
+    }
+    r.frameLeft = live ? left : steady_clock::time_point{};
+    // A round's end flushes its last part second.
+    const bool measuring = r.hitchSince != steady_clock::time_point{};
+    if (measuring && live && left - r.hitchSince < seconds(1)) return;
+    if (measuring && (r.peerWaitMs >= 50.0 || r.slowestFrameMs >= 33.0 || r.heldBack >= 2u))
+        std::fprintf(stderr, "recomp netplay: hitch in frames %u-%u: waited %.0f ms for the other player "
+            "(longest %.0f ms), slowest frame here %.0f ms, held back %u frames for them\n",
+            r.hitchFrom, r.session.frame, r.peerWaitMs, r.longestWaitMs, r.slowestFrameMs, r.heldBack);
+    r.hitchSince = live ? left : steady_clock::time_point{};
+    r.hitchFrom = r.session.frame;
+    r.peerWaitMs = r.longestWaitMs = r.slowestFrameMs = 0.0;
+    r.heldBack = 0u;
 }
 
 /* Every 30th frame of a UDP session, each side hashes guest RAM as the frame
@@ -512,7 +565,9 @@ static void onFrame()
             scheduleFrame();
             rollback.paced = s.frame;
         }
+        const auto entered = std::chrono::steady_clock::now();
         const std::uint32_t target = awaitFrontier(s.frame == rollback.stop);
+        if (rollback.mode == RollbackMode::Udp) measureHitch(entered);
         if (target != RECOMP_ROLLBACK_NONE) {
             if (!recomp_rollback_ring_load(target)) endSession("rollback:unrestorable");
             ++rollback.rollbacks;
@@ -536,6 +591,7 @@ static void onFrame()
                 recomp_netplay_send(&rollback.net, &s, rollback.advantage);
                 rollback.wait = recomp_netplay_wait_frames(&rollback.net, rollback.advantage);
                 rollback.waited += rollback.wait;
+                if (s.window != 0u) rollback.heldBack += rollback.wait;
             }
         }
     } else {
