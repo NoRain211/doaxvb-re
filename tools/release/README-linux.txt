@@ -22,7 +22,8 @@ SETUP (Ubuntu 24.04 or similar; on SteamOS, use an Ubuntu distrobox)
      sudo apt install cmake ninja-build clang git python3-venv \
        libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
        libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
-       libdecor-0-dev libasound2-dev libpulse-dev libvulkan-dev libshaderc1
+       libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev \
+       libvulkan-dev libshaderc1
 2. In this folder: ./launcher.sh, then choose your ISO on its Build page
    and build the game, or run ./build_game.sh /path/to/game.iso instead.
    The first build installs Capstone into private/venv, builds extract-xiso,

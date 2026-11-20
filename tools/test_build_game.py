@@ -14,6 +14,39 @@ from extract_iso import sha256
 
 
 class ProgramManifestTests(unittest.TestCase):
+    def test_fetched_sdl3_without_audio_driver_stops_setup(self):
+        """Fedora without audio headers built a silent SDL3 and setup still succeeded."""
+        def configured(lines):
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            config = Path(folder.name) / "_deps/sdl3-build/include-config-release/build_config/SDL_build_config.h"
+            config.parent.mkdir(parents=True)
+            config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return Path(folder.name)
+
+        silent = configured(["/* #undef SDL_AUDIO_DRIVER_ALSA */", "#define SDL_AUDIO_DRIVER_DISK 1",
+                             "#define SDL_AUDIO_DRIVER_DUMMY 1", "/* #undef SDL_AUDIO_DRIVER_PIPEWIRE */",
+                             "/* #undef SDL_AUDIO_DRIVER_PULSEAUDIO */"])
+        self.assertEqual(build_game.fetched_sdl3_audio_drivers(silent), set())
+        with self.assertRaisesRegex(ValueError, "pipewire-devel pulseaudio-libs-devel alsa-lib-devel"):
+            build_game.require_sdl3_audio(silent)
+
+        audible = configured(["#define SDL_AUDIO_DRIVER_ALSA 1", "#define SDL_AUDIO_DRIVER_ALSA_DYNAMIC \"libasound.so.2\"",
+                              "#define SDL_AUDIO_DRIVER_PIPEWIRE 1", "#define SDL_AUDIO_DRIVER_DUMMY 1"])
+        self.assertEqual(build_game.fetched_sdl3_audio_drivers(audible), {"ALSA", "PIPEWIRE"})
+        build_game.require_sdl3_audio(audible)
+
+        unconfigured = configured([])
+        (unconfigured / "_deps/sdl3-build/include-config-release/build_config/SDL_build_config.h").unlink()
+        with self.assertRaisesRegex(ValueError, "no SDL_build_config.h"):
+            build_game.require_sdl3_audio(unconfigured)
+
+        system_folder = tempfile.TemporaryDirectory()
+        self.addCleanup(system_folder.cleanup)
+        system_sdl3 = Path(system_folder.name)
+        self.assertIsNone(build_game.fetched_sdl3_audio_drivers(system_sdl3))
+        build_game.require_sdl3_audio(system_sdl3)
+
     def test_linux_compiler_prefers_clang_unless_chosen(self):
         clang = ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
         for env, installed, expected in (({}, {"clang", "clang++"}, clang),
