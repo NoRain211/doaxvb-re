@@ -4169,6 +4169,27 @@ int main()
             }
         }
     }
+    // Object motion edits every fixed-function variant after the others; each must still compile.
+    object_motion_shaders = true;
+    for (const bool coverage : {false, true}) for (const bool pixel : {false, true})
+    for (const bool sun : {false, true}) for (const uint32_t fvf : kBootDrawFvfs) {
+        RecompD3dVertexLayout layout;
+        std::string source;
+        bool compiled = drawShaderSource(fvf, DrawPipeline{}, layout, source, coverage, sun, pixel);
+        compiled = compiled && source.find("SV_Target1") != std::string::npos;
+        for (const bool vertex : {true, false}) {
+            ID3DBlob *blob = nullptr;
+            compiled = compiled && compileDrawShader(source.c_str(), vertex ? "vs_main" : "ps_main",
+                vertex ? "vs_4_0" : coverage ? "ps_4_1" : "ps_4_0", &blob);
+            releaseCom(blob);
+        }
+        if (!compiled) {
+            std::fprintf(stderr, "FAIL object motion shader fvf=0x%x coverage=%d sun=%d pixel=%d\n",
+                fvf, coverage, sun, pixel);
+            return 1;
+        }
+    }
+    object_motion_shaders = false;
 #ifdef _MSC_VER
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     for (int report : {_CRT_ERROR, _CRT_ASSERT}) {

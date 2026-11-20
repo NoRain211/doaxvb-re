@@ -50,6 +50,14 @@ ghidra_projects/
 *.gzf
 third_party/**
 !third_party/README.md
+!third_party/fsr1/
+!third_party/fsr1/**
+
+# NVIDIA DLSS stays local: its SDK license is incompatible with the GPL
+recomp-runtime/dlss_bridge.cpp
+tools/build_dlss_bridge.cmd
+dlss_bridge.dll
+nvngx_dlss.dll
 
 # Build and runtime output
 out/

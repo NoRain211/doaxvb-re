@@ -1,5 +1,6 @@
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
+#include "d3d_draw_shader.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 #include "input_text.h"
@@ -18,6 +19,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_5.h>
+#include <dxgi1_6.h>
 #include <d3dcompiler.h>
 
 #include <cmath>
@@ -38,6 +40,9 @@
 
 #include "d3d_sun_shadow.h"
 #include "d3d_gbuffer.h"
+#include "d3d_dlss.h"
+#include "d3d_fsr.h"
+#include "d3d_motion.h"
 
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
@@ -51,6 +56,19 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"DOAXBVRecompPresenterWindow";
 constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
+
+// Float indices of taa_jitter, previous_wvp and motion_flags in the draw
+// constant buffer (kDrawShaderPrologue in d3d_draw_shader.cpp), and its size.
+constexpr size_t kJitterConstant = 140u + 192u * 4u + 336u + 76u + 16u;
+constexpr size_t kPreviousWvpConstant = kJitterConstant + 4u;
+constexpr size_t kMotionFlagsConstant = kPreviousWvpConstant + 64u;
+constexpr size_t kDrawConstantFloats = kMotionFlagsConstant + 4u;
+
+// Set before any draw pipeline compiles: every pipeline then carries object motion.
+bool object_motion_shaders = false;
+
+// Legacy keeps the original fixed 1x window or screen-sized borderless popup.
+enum class WindowMode { Legacy, Windowed, Borderless };
 
 struct FrameRateCounter {
     ULONGLONG start_ms = 0;
@@ -75,330 +93,6 @@ bool sampleFrameRate(FrameRateCounter &counter, ULONGLONG now, double &fps, doub
     return true;
 }
 
-
-/* Untransformed positions with a host-side world-view-projection composite.
-
-   Vertex components other than position vary by FVF: this title draws both
-   XYZ|NORMAL|TEX1 and XYZ|DIFFUSE|TEX1, whose texcoords sit at different
-   offsets and whose colors come from different sources. One shader cannot
-   serve both, so the shader is assembled per FVF from the decoded layout and
-   cached with its matching input layout.
-
-   Vertex color comes from the stream or the admitted fixed-function lighting
-   path. Unsupported lighting configurations retain the earlier texture/normal
-   fallback. Texture alpha remains independent of lit diffuse RGB. */
-constexpr char kDrawShaderPrologue[] =
-    "cbuffer Transform : register(b0) {\n"
-    "    row_major float4x4 wvp[4];\n"
-    "    float4 draw_flags;\n"
-    "    float4 blend_flags;\n"
-    "    float4 texture_factor;\n"
-    "    float4 lighting_flags;\n"
-    "    float4 texture_flags;\n"
-    "    row_major float4x4 reflection_world_view;\n"
-    "    row_major float4x4 reflection_normal;\n"
-    "    row_major float4x4 reflection_transform;\n"
-    "    float4 reflection_diffuse;\n"
-    "    float4 reflection_flags;\n"
-    "    float4 vc[192];\n"
-    "    row_major float4x4 directional_normals[4];\n"
-    "    float4 directional_base;\n"
-    "    float4 directional_material;\n"
-    "    float4 directional_directions[8];\n"
-    "    float4 directional_colors[8];\n"
-    "    float4 directional_flags;\n"
-    "    row_major float4x4 light_world[4];\n"
-    "    float4 light_positions[8];\n"
-    "    float4 light_attenuation[8];\n"
-    "    float4 light_ambient[8];\n"
-    "    float4 light_specular[8];\n"
-    "    float4 light_view;\n"
-    "    float4 fog_color;\n"
-    "    float4 fog_params; // start, end, density, mode\n"
-    "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
-    "    row_major float4x4 fog_world_view[4];\n"
-    "    float4 combiner[4];\n"
-    "}\n"
-    "float fogFactor(float depth) {\n"
-    "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
-    "    if (fog_params.w == 2) { float d = depth * fog_params.z; return saturate(exp(-d*d)); }\n"
-    "    if (fog_params.w == 3) {\n"
-    "        float span = fog_params.y - fog_params.x;\n"
-    "        return span == 0 ? (depth < fog_params.y ? 1 : 0) : saturate((fog_params.y-depth)/span);\n"
-    "    }\n"
-    "    return saturate(depth);\n"
-    "}\n"
-    "Texture2D guest_texture : register(t0);\n"
-    "SamplerState guest_sampler : register(s0);\n"
-    "Texture2D alpha_mask : register(t1);\n"
-    "SamplerState mask_sampler : register(s1);\n"
-    /* Xbox D3DTA selectors 0-4 with COMPLEMENT (0x10) and ALPHAREPLICATE
-       (0x20); absent specular is black. */
-    "float4 ff_arg(int a, float4 cur, float4 dif, float4 tex) {\n"
-    "    int s = a & 15;\n"
-    "    float4 v = s == 0 ? dif : s == 2 ? tex : s == 3 ? texture_factor\n"
-    "        : s == 4 ? float4(0, 0, 0, 0) : cur;\n"
-    "    if (a & 0x20) v = v.aaaa;\n"
-    "    if (a & 0x10) v = 1.0f - v;\n"
-    "    return v;\n"
-    "}\n"
-    /* Xbox values differ from PC D3D8: BLENDCURRENTALPHA=13,
-       DOTPRODUCT3=22, MULTIPLYADD=23, LERP=24. See Cxbx XbD3D8Types.h:
-       https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/hle/D3D8/XbD3D8Types.h
-       PREMODULATE is declined by the adapter. */
-    "float4 ff_op(float4 o, float4 cur, float4 dif, float4 tex) {\n"
-    "    float4 a0 = ff_arg((int)o.y, cur, dif, tex);\n"
-    "    float4 a1 = ff_arg((int)o.z, cur, dif, tex);\n"
-    "    float4 a2 = ff_arg((int)o.w, cur, dif, tex);\n"
-    "    float4 r = cur;\n"
-    "    switch ((int)o.x) {\n"
-    "    case 2: r = a1; break;\n"
-    "    case 3: r = a2; break;\n"
-    "    case 4: r = a1 * a2; break;\n"
-    "    case 5: r = 2.0f * a1 * a2; break;\n"
-    "    case 6: r = 4.0f * a1 * a2; break;\n"
-    "    case 7: r = a1 + a2; break;\n"
-    "    case 8: r = a1 + a2 - 0.5f; break;\n"
-    "    case 9: r = 2.0f * (a1 + a2 - 0.5f); break;\n"
-    "    case 10: r = a1 - a2; break;\n"
-    "    case 11: r = a1 + a2 - a1 * a2; break;\n"
-    "    case 12: r = lerp(a2, a1, dif.a); break;\n"
-    "    case 13: r = lerp(a2, a1, cur.a); break;\n"
-    "    case 14: r = lerp(a2, a1, tex.a); break;\n"
-    "    case 15: r = lerp(a2, a1, texture_factor.a); break;\n"
-    "    case 16: r = a1 + a2 * (1.0f - tex.a); break;\n"
-    "    case 18: r = a1 + a1.a * a2; break;\n"
-    "    case 19: r = a1 * a2 + a1.a; break;\n"
-    "    case 20: r = a1 + (1.0f - a1.a) * a2; break;\n"
-    "    case 21: r = (1.0f - a1) * a2 + a1.a; break;\n"
-    "    case 22: r = saturate(4.0f * dot(a1.rgb - 0.5f, a2.rgb - 0.5f)).xxxx; break;\n"
-    "    case 23: r = a0 + a1 * a2; break;\n"
-    "    case 24: r = lerp(a2, a1, a0); break;\n"
-    "    }\n"
-    "    return saturate(r);\n"
-    "}\n"
-    "float4 ff_combine(float4 dif, float4 t0, float4 t1) {\n"
-    "    float4 cur = dif;\n"
-    "    [unroll] for (int s = 0; s < 2; ++s) {\n"
-    "        float4 c = combiner[s * 2], a = combiner[s * 2 + 1];\n"
-    "        if (c.x < 1.5f) break;\n"
-    "        float4 tex = s == 0 ? t0 : t1;\n"
-    "        float4 next = ff_op(c, cur, dif, tex);\n"
-    "        if (a.x > 1.5f) next.a = ff_op(a, cur, dif, tex).a; else next.a = cur.a;\n"
-    "        cur = next;\n"
-    "    }\n"
-    "    return cur;\n"
-    "}\n";
-
-/* Builds the draw shader for one decoded vertex layout. Only the components
-   the layout actually carries appear in VSIn, so the input layout and the
-   shader signature always agree. */
-void buildDrawShaderSource(
-    const RecompD3dVertexLayout &layout,
-    char *out,
-    size_t out_size)
-{
-    const bool has_normal =
-        layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
-    const bool has_diffuse =
-        layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
-    const bool has_texcoord =
-        layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
-    const bool four_coords = layout.texcoord_count == 4u;
-    const char *extra_coords = four_coords
-        ? "    float2 texcoord1 : TEXCOORD1;\n"
-          "    float2 texcoord2 : TEXCOORD2;\n"
-          "    float2 texcoord3 : TEXCOORD3;\n"
-        : layout.texcoord_count == 2u ? "    float2 texcoord1 : TEXCOORD1;\n" : "";
-
-    char position[768];
-    if (layout.pretransformed) {
-        std::snprintf(position, sizeof position,
-            "    output.position = mul(float4(input.position.xyz, 1.0f), wvp[0]) / input.position.w;\n");
-    } else if (layout.blend_weight_count != 0u) {
-        std::snprintf(position, sizeof position,
-            "    if (blend_flags.x > 0.5f) {\n"
-            "    output.position = float4(0, 0, 0, 0);\n"
-            "    float remainder = 1.0f;\n"
-            "    [unroll] for (uint i = 0; i < %u; ++i) {\n"
-            "        output.position += input.weights[i] * mul(float4(input.position, 1), wvp[i]);\n"
-            "        remainder -= input.weights[i];\n"
-            "    }\n"
-            "    output.position += remainder * mul(float4(input.position, 1), wvp[%u]);\n"
-            "    } else { output.position = mul(float4(input.position, 1), wvp[0]); }\n",
-            layout.blend_weight_count, layout.blend_weight_count);
-    } else {
-        std::snprintf(position, sizeof position,
-            "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
-    }
-    std::snprintf(
-        out,
-        out_size,
-        "%s"
-        "struct VSIn {\n"
-        "    %s position : POSITION;\n"
-        "%s%s%s%s%s"
-        "};\n"
-        "struct VSOut {\n"
-        "    float4 position : SV_POSITION;\n"
-        "    float4 color : COLOR0;\n"
-        "    float3 lit_specular : TEXCOORD15;\n"
-        "    float2 texcoord : TEXCOORD0;\n"
-        "    float2 reflection_coord : TEXCOORD4;\n"
-        "%s"
-        "};\n"
-        "VSOut vs_main(VSIn input) {\n"
-        "    VSOut output; output.lit_specular=0;\n"
-        "%s"
-        "%s"
-        "%s"
-        "%s"
-        "    output.reflection_coord = float2(0, 0);\n"
-        "%s"
-        "    return output;\n"
-        "}\n"
-        "float4 ps_main(VSOut input) : SV_TARGET {\n"
-        "    float4 shaded = input.color;\n"
-        "    if (reflection_flags.x > 2.5f) {\n"
-        "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
-        "        if (lighting_flags.y > 0.5f) t0.rgb = 1.0f;\n"
-        "        float4 t1 = alpha_mask.Sample(mask_sampler, input.reflection_coord * lighting_flags.zw);\n"
-        "        if (reflection_flags.y > 0.5f) t1.rgb = 1.0f;\n"
-        "        float4 dif = input.color;\n"
-        "        if (directional_flags.x > 0.5f) dif.a *= blend_flags.z;\n"
-        "        shaded = ff_combine(dif, t0, t1);\n"
-        "    } else if (reflection_flags.x > 0.5f) {\n"
-        "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
-        "        base.a *= reflection_diffuse.a;\n"
-        "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
-        "        float4 diffuse = reflection_diffuse;\n"
-        "        if (directional_flags.x > 0.5f) diffuse.rgb = input.color.rgb;\n"
-        "        shaded = lerp(base, env, env.a) * diffuse;\n"
-        "    } else\n"
-        "%s"
-        "    if (blend_flags.y == 1.0f) {\n"
-        "        shaded = texture_factor;\n"
-        "    } else if (draw_flags.x > 0.5f) {\n"
-        "        float4 sampled = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
-        "        if (lighting_flags.y > 0.5f) sampled.rgb = 1.0f;\n"
-        "        shaded %s sampled;\n"
-        "        if (directional_flags.x > 0.5f) shaded.rgb *= input.color.rgb;\n"
-        "        if (lighting_flags.x > 0.5f) shaded.rgb = 0.0f;\n"
-        "        shaded.a = blend_flags.w > 0.5f\n"
-        "            ? blend_flags.z : shaded.a * blend_flags.z;\n"
-        "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
-        "    }\n"
-        "    if (reflection_flags.z > 0.5f) shaded.a *= alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
-        "    if (directional_flags.x > 0.5f && light_view.w > 0) shaded.rgb += input.lit_specular;\n"
-        /* NV2A compares rounded 8-bit alpha. Function values follow
-           RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
-        "    if (draw_flags.y > 0.5f) {\n"
-        "        float alpha = round(saturate(shaded.a) * 255.0f);\n"
-        "        float ref = draw_flags.w;\n"
-        "        int func = (int)draw_flags.z;\n"
-        "        bool alpha_pass = func == 7 ||\n"
-        "            (func == 1 && alpha < ref) ||\n"
-        "            (func == 2 && alpha == ref) ||\n"
-        "            (func == 3 && alpha <= ref) ||\n"
-        "            (func == 4 && alpha > ref) ||\n"
-        "            (func == 5 && alpha != ref) ||\n"
-        "            (func == 6 && alpha >= ref);\n"
-        "#ifdef EXPLICIT_COVERAGE\n"
-        "        if (draw_flags.y > 1.5f) {\n"
-        /* Coverage is independent of stored alpha, including flat hard passes. */
-        "            float threshold = (ref + (func == 4 ? 0.5f : -0.5f)) / 255.0f;\n"
-        "            float width = fwidth(shaded.a);\n"
-        "            float coverage = saturate((shaded.a - threshold) / max(width, 1e-4f) + 0.5f);\n"
-        "            coverage = width <= 1e-4f || (func == 6 && (ref == 0 || ref == 255))\n"
-        "                ? (alpha_pass ? 1.0f : 0.0f)\n"
-        "                : (shaded.a > 0 && (func != 4 || ref < 255) ? coverage : 0);\n"
-        "            uint count = (uint)round(coverage * draw_flags.y);\n"
-        "            sample_coverage = count >= 32 ? 0xffffffffu : (1u << count) - 1u;\n"
-        "        } else\n"
-        "#endif\n"
-        "        if (!alpha_pass) discard;\n"
-        "    }\n"
-        "    if (fog_flags.x > 0.5f) {\n"
-        "        float depth = fog_flags.y > 0.5f && fog_flags.z < 0.5f ? abs(input.position.z) : input.fog_depth;\n"
-        "        float factor = fog_params.w == 0 ? saturate(input.fog_factor) : fogFactor(depth);\n"
-        "        shaded.rgb = fog_flags.w > 0.5f ? factor.xxx : lerp(fog_color.rgb, shaded.rgb, factor);\n"
-        "    }\n"
-        /* Dither before the first UNORM quantization; post-process input is already 8-bit. */
-        "    if (directional_flags.w > 0.5f) {\n"
-        "        uint2 p = (uint2)input.position.xy;\n"
-        "        uint b = ((p.x ^ p.y) & 1) * 8 + (p.y & 1) * 4\n"
-        "            + (((p.x ^ p.y) >> 1) & 1) * 2 + ((p.y >> 1) & 1);\n"
-        "        shaded.rgb += ((b + 0.5f) / 16.0f - 0.5f) / 255.0f;\n"
-        "    }\n"
-        "    return shaded;\n"
-        "}\n",
-        kDrawShaderPrologue,
-        layout.pretransformed ? "float4" : "float3",
-        layout.blend_weight_count ? "    float3 weights : BLENDWEIGHT;\n" : "",
-        has_normal ? "    float3 normal : NORMAL;\n" : "",
-        has_diffuse ? "    float4 diffuse : COLOR0;\n" : "",
-        has_texcoord ? "    float2 texcoord : TEXCOORD0;\n" : "",
-        extra_coords,
-        extra_coords,
-        position,
-        /* Guest vertex color when the stream has one; otherwise the normal
-           stands in so surfaces remain distinguishable. */
-        has_diffuse
-            ? "    output.color = input.diffuse;\n"
-            : (has_normal
-                   ? "    output.color = "
-                     "float4(abs(normalize(input.normal)), 1.0f);\n"
-                   : "    output.color = float4(0.75f, 0.75f, 0.78f, 1.0f);\n"),
-        has_texcoord
-            ? "    output.texcoord = input.texcoord;\n"
-            : "    output.texcoord = float2(0.0f, 0.0f);\n",
-        four_coords
-            ? "    output.texcoord1 = input.texcoord1;\n"
-              "    output.texcoord2 = input.texcoord2;\n"
-              "    output.texcoord3 = input.texcoord3;\n"
-            : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
-        has_texcoord && !layout.pretransformed
-            ? (has_normal
-                ? "    if (reflection_flags.x > 2.5f) {\n"
-                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
-                  "    } else if (reflection_flags.x > 1.5f) {\n"
-                  "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f) {\n"
-                  "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
-                  "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
-                  "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
-                  "        float3 r = reflect(normalize(eye), n);\n"
-                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
-                  "    }\n"
-                : "    if (reflection_flags.x > 2.5f) {\n"
-                  "        output.reflection_coord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
-                  "    } else if (reflection_flags.x > 1.5f) {\n"
-                  "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f) {\n"
-                  "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
-                  "        float3 r = normalize(eye);\n"
-                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
-                  "    }\n")
-            : "",
-        four_coords
-            ? "    if (texture_flags.z > 0.5f) {\n"
-              "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
-              "        float4 t1 = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy);\n"
-              "        float4 t2 = guest_texture.Sample(guest_sampler, input.texcoord2 * texture_flags.xy);\n"
-              "        float4 t3 = guest_texture.Sample(guest_sampler, input.texcoord3 * texture_flags.xy);\n"
-              "        shaded = 0.5f * (saturate((128.0f / 255.0f) * (t0 + t1))\n"
-              "                        + saturate((128.0f / 255.0f) * (t2 + t3)));\n"
-              "    } else\n"
-            : layout.texcoord_count == 2u
-            ? "    if (texture_flags.w > 0.5f) {\n"
-              "        float3 rgb = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy).rgb;\n"
-              "        float alpha = alpha_mask.Sample(mask_sampler, input.texcoord * lighting_flags.zw).a;\n"
-              "        shaded = input.color * float4(rgb, alpha);\n"
-              "    } else\n" : "",
-        /* The fixed-function diffuse default is white. Preserve texture alpha
-           before the shared alpha test and SRC_ALPHA blending. */
-        has_diffuse ? "*=" : "=");
-}
 
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
@@ -593,6 +287,54 @@ struct RecompD3dPresenter {
     ID3D11VertexShader *vrr_vs = nullptr;
     ID3D11PixelShader *vrr_ps = nullptr;
     ID3D11SamplerState *vrr_sampler = nullptr;
+    /* RECOMP_D3D_WINDOW_MODE=windowed|borderless: the swap chain matches the
+       window and the main-sized output is scaled into it, letterboxed to the
+       game's aspect (the VRR resources above). Alt+Enter switches modes. */
+    WindowMode window_mode = WindowMode::Legacy;
+    uint32_t window_height_request = 0u; // RECOMP_D3D_WINDOW_HEIGHT: windowed client height
+    WINDOWPLACEMENT windowed_placement{}; // restored when leaving borderless
+    bool resize_pending = false;
+    UINT swap_flags = 0u;
+    // RECOMP_D3D_UPSCALE=fsr: FSR 1.0 EASU upscale and RCAS sharpen into the window.
+    bool fsr_requested = false;
+    float fsr_sharpness = 0.2f;  // RECOMP_D3D_SHARPNESS 0..1, mapped to RCAS stops
+    D3dFsr *fsr = nullptr;
+    uint32_t anisotropy = 0u;    // RECOMP_D3D_ANISOTROPY: force anisotropic filtering, 2..16
+    /* Temporal upscaler inputs (docs/motion-vectors.md). Camera motion comes
+       from scene depth reprojected with the previous frame's camera. */
+    bool motion_requested = false; // RECOMP_D3D_MOTION_VECTORS=1, or the debug view
+    bool motion_debug = false;     // RECOMP_D3D_MOTION_DEBUG=1: show vectors as colour
+    bool jitter_enabled = false;   // RECOMP_D3D_JITTER=1: sub-pixel offset per frame
+    uint32_t jitter_phases = 8u;
+    uint32_t jitter_index = 0u;
+    float jitter[2]{};             // this frame's offset, clip units
+    float jitter_pixels[2]{};      // the same offset, render pixels
+    float camera[16]{};            // this frame's scene view-projection
+    float previous_camera[16]{};
+    uint32_t camera_weight = 0u;   // indices of the draw that named the camera
+    bool has_previous_camera = false;
+    bool scene_pending = false;    // 3D scene drawn since the last motion pass
+    bool motion_done = false;
+    D3dMotion *motion = nullptr;  // d3d_motion.h, while motion_requested
+    /* RECOMP_D3D_DLSS (docs/dlss.md): the 3D scene renders into a smaller
+       target set, DLSS reconstructs it into the full-size set, and the HUD
+       draws there. The fields above always name the set in use; `other`
+       holds the set not in use. */
+    struct MainTargets {
+        ID3D11RenderTargetView *color = nullptr;
+        ID3D11Texture2D *depth_texture = nullptr;
+        ID3D11DepthStencilView *depth_view = nullptr;
+        ID3D11ShaderResourceView *depth_sample = nullptr;
+        ID3D11Texture2D *back_copy = nullptr;
+        ID3D11ShaderResourceView *back_sample = nullptr;
+    } other;
+    int dlss_mode = -1;            // DlssBridgeMode, or -1 for off
+    bool dlss_active = false;
+    bool scene_phase = false;      // drawing the 3D scene into the DLSS input set
+    bool dlss_reset = true;
+    uint32_t dlss_render_width = 0u, dlss_render_height = 0u;
+    D3dDlss *dlss = nullptr;
+    ID3D11ShaderResourceView *scene_color = nullptr;  // scene-set colour, for the fallback copy
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -692,6 +434,7 @@ RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
 static bool split_presentation;
+static bool unlocked_present;
 
 /* kernel_config.c reports the Xbox widescreen video flag unless
    RECOMP_D3D_WIDESCREEN=0, so the game renders anamorphic 16:9 (or 4:3) into
@@ -705,15 +448,29 @@ uint32_t presentClientWidth(const RecompD3dPresenter *presenter, uint64_t height
 
 /* A scaled main target renders at the display aspect, so the anamorphic guest
    width gets full horizontal detail too. Scale 1 keeps the guest size. */
+/* While DLSS's 3D scene is drawn, the main target set is the smaller input. */
 uint32_t mainHeight(const RecompD3dPresenter *presenter)
 {
+    if (presenter->scene_phase) return presenter->dlss_render_height;
     return static_cast<uint32_t>(presenter->config.height * presenter->scale + 0.5f);
 }
 
 uint32_t mainWidth(const RecompD3dPresenter *presenter)
 {
+    if (presenter->scene_phase) return presenter->dlss_render_width;
     return presenter->scale == 1.0f
         ? presenter->config.width : presentClientWidth(presenter, mainHeight(presenter));
+}
+
+// The 3D scene's size: the DLSS input while DLSS is on, else the main target.
+uint32_t sceneWidth(const RecompD3dPresenter *presenter)
+{
+    return presenter->dlss_active ? presenter->dlss_render_width : mainWidth(presenter);
+}
+
+uint32_t sceneHeight(const RecompD3dPresenter *presenter)
+{
+    return presenter->dlss_active ? presenter->dlss_render_height : mainHeight(presenter);
 }
 
 /* Beyond the screen the swap chain downsamples into the largest window at the
@@ -747,6 +504,48 @@ bool vrrScaled(const RecompD3dPresenter *presenter)
          mainHeight(presenter) != windowHeight(presenter));
 }
 
+// The swap chain is window-sized and the presenter scales the frame into it.
+bool outputScaled(const RecompD3dPresenter *presenter)
+{
+    return presenter->window_mode != WindowMode::Legacy || vrrScaled(presenter);
+}
+
+constexpr DWORD kWindowedStyle = WS_OVERLAPPEDWINDOW;
+
+/* Fills the window's monitor without a frame, or restores the framed window.
+   Flip-model swap chains on a borderless window still get direct flip. */
+void setBorderless(RecompD3dPresenter *presenter, bool borderless)
+{
+    HWND window = presenter->window;
+    const LONG_PTR visible = GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE;
+    if (borderless) {
+        presenter->windowed_placement.length = sizeof presenter->windowed_placement;
+        if (presenter->window_mode == WindowMode::Windowed) {
+            GetWindowPlacement(window, &presenter->windowed_placement);
+        }
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof monitor;
+        GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+        SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP | visible);
+        SetWindowPos(window, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
+            monitor.rcMonitor.right - monitor.rcMonitor.left,
+            monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | (visible ? SWP_SHOWWINDOW : 0u));
+        presenter->window_mode = WindowMode::Borderless;
+    } else {
+        SetWindowLongPtrW(window, GWL_STYLE, kWindowedStyle | visible);
+        if (presenter->windowed_placement.length != 0u) {
+            WINDOWPLACEMENT placement = presenter->windowed_placement;
+            if (!visible) placement.showCmd = SW_HIDE;
+            SetWindowPlacement(window, &placement);
+        }
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        presenter->window_mode = WindowMode::Windowed;
+    }
+    presenter->resize_pending = true;
+}
+
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
@@ -759,6 +558,37 @@ LRESULT CALLBACK presenterWindowProc(
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
     if (message == WM_CHAR) recomp_input_text_char(static_cast<uint32_t>(wparam));
+    auto *scaled = reinterpret_cast<RecompD3dPresenter *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (scaled != nullptr && scaled->window_mode != WindowMode::Legacy) {
+        switch (message) {
+        case WM_SIZE:
+            if (wparam != SIZE_MINIMIZED) scaled->resize_pending = true;
+            break;
+        case WM_GETMINMAXINFO:
+            reinterpret_cast<MINMAXINFO *>(lparam)->ptMinTrackSize = {320, 240};
+            return 0;
+        case WM_SYSKEYDOWN:
+            // Alt+Enter: the presenter's own borderless switch; DXGI's is disabled.
+            if (wparam == VK_RETURN && (lparam & (1 << 29)) && !(lparam & (1 << 30))) {
+                setBorderless(scaled, scaled->window_mode != WindowMode::Borderless);
+                return 0;
+            }
+            break;
+        case WM_SYSCHAR:
+            if (wparam == VK_RETURN) return 0;  // no beep for Alt+Enter
+            break;
+        case WM_MENUCHAR:
+            return MAKELRESULT(0, MNC_CLOSE);
+        case WM_SETCURSOR:
+            if (scaled->window_mode == WindowMode::Borderless && LOWORD(lparam) == HTCLIENT) {
+                SetCursor(nullptr);
+                return TRUE;
+            }
+            break;
+        default:
+            break;
+        }
+    }
     // Shift+F12 is the screenshot key (screenshot.h).
     if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30)) &&
         (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
@@ -790,6 +620,8 @@ bool configSupported(const RecompD3dPresenterConfig &config)
         config.depth_format == RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8;
 }
 
+void releaseDlss(RecompD3dPresenter *presenter);
+
 void releaseSmaa(RecompD3dPresenter *presenter)
 {
     for (auto &shader : presenter->smaa_vs) releaseCom(shader);
@@ -807,6 +639,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         presenter->context->ClearState();
         presenter->context->Flush();
     }
+    releaseDlss(presenter);  // NGX needs the device it was created on
     // Keep the opt-in across the hardware-to-WARP retry; sunCreate failure still disables it.
     const bool sun_enabled = presenter->sun.enabled;
     sunRelease(presenter->sun);
@@ -823,6 +656,10 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->vrr_vs);
     releaseCom(presenter->vrr_ps);
     releaseCom(presenter->vrr_sampler);
+    d3d_fsr_destroy(presenter->fsr);
+    presenter->fsr = nullptr;
+    d3d_motion_destroy(presenter->motion);
+    presenter->motion = nullptr;
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -958,14 +795,71 @@ void releasePresenter(RecompD3dPresenter *presenter)
         UnregisterClassW(kWindowClassName, presenter->instance);
         presenter->owns_window_class = false;
     }
+    object_motion_shaders = false;  // a later presenter may have no object target
+}
+
+bool registerWindowClass(RecompD3dPresenter *presenter);
+
+/* Windowed and borderless modes start from a framed window centred on the
+   primary work area; the client keeps the game's aspect at the requested
+   height, or 85% of the work area by default. */
+bool createScaledWindow(RecompD3dPresenter *presenter)
+{
+    SetProcessDPIAware();
+    if (!registerWindowClass(presenter)) return false;
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0u, &work, 0u);
+    const LONG work_width = work.right - work.left, work_height = work.bottom - work.top;
+    uint32_t height = presenter->window_height_request != 0u
+        ? presenter->window_height_request : static_cast<uint32_t>(work_height * 0.85);
+    height = (std::max)(240u, (std::min)(height, static_cast<uint32_t>(work_height)));
+    uint32_t width = presentClientWidth(presenter, height);
+    if (width > static_cast<uint32_t>(work_width)) {
+        width = static_cast<uint32_t>(work_width);
+        height = presenter->widescreen ? width * 9u / 16u : width * 3u / 4u;
+    }
+    RECT rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    AdjustWindowRectEx(&rect, kWindowedStyle, FALSE, 0u);
+    const LONG outer_width = rect.right - rect.left, outer_height = rect.bottom - rect.top;
+    presenter->window = CreateWindowExW(0u, kWindowClassName, kWindowTitle, kWindowedStyle,
+        work.left + (std::max)(0L, (work_width - outer_width) / 2),
+        work.top + (std::max)(0L, (work_height - outer_height) / 2),
+        outer_width, outer_height, nullptr, nullptr, presenter->instance, presenter);
+    if (presenter->window == nullptr) return false;
+    if (presenter->window_mode == WindowMode::Borderless) {
+        presenter->window_mode = WindowMode::Windowed;  // remembers this placement
+        setBorderless(presenter, true);
+    }
+    presenter->resize_pending = false;  // the swap chain is created at this size
+    return true;
+}
+
+bool registerWindowClass(RecompD3dPresenter *presenter)
+{
+    WNDCLASSEXW window_class{};
+    presenter->instance = GetModuleHandleW(nullptr);
+    window_class.cbSize = sizeof window_class;
+    window_class.lpfnWndProc = presenterWindowProc;
+    window_class.hInstance = presenter->instance;
+    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    window_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
+    window_class.hIcon = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
+        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
+    window_class.hIconSm = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+    window_class.lpszClassName = kWindowClassName;
+    if (RegisterClassExW(&window_class) == 0u) return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    presenter->owns_window_class = true;
+    return true;
 }
 
 bool createWindow(RecompD3dPresenter *presenter)
 {
+    if (presenter->window_mode != WindowMode::Legacy) return createScaledWindow(presenter);
     /* Screen metrics and the borderless window must be physical pixels; a
        DPI-virtualized window is downsampled and then stretched by DWM. */
     if (presenter->scale > 1.0f) SetProcessDPIAware();
-    WNDCLASSEXW window_class{};
     const uint32_t client_width = presentClientWidth(presenter, windowHeight(presenter));
     RECT window_rect = {
         0,
@@ -979,26 +873,7 @@ bool createWindow(RecompD3dPresenter *presenter)
     const DWORD style = borderless
         ? WS_POPUP : WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
 
-    presenter->instance = GetModuleHandleW(nullptr);
-    window_class.cbSize = sizeof window_class;
-    window_class.lpfnWndProc = presenterWindowProc;
-    window_class.hInstance = presenter->instance;
-    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
-    window_class.hIcon = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
-        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
-    window_class.hIconSm = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
-        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
-    window_class.lpszClassName = kWindowClassName;
-
-    const ATOM window_class_atom = RegisterClassExW(&window_class);
-    if (window_class_atom == 0u) {
-        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-            return false;
-        }
-    } else {
-        presenter->owns_window_class = true;
-    }
+    if (!registerWindowClass(presenter)) return false;
     if (!AdjustWindowRectEx(&window_rect, style, FALSE, 0u)) {
         return false;
     }
@@ -1047,10 +922,16 @@ HRESULT createDeviceWithDriver(
     };
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
-        ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
-    swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
-        ? windowHeight(presenter) : mainHeight(presenter);
+    RECT client{};
+    if (presenter->window_mode != WindowMode::Legacy && GetClientRect(presenter->window, &client)) {
+        swap_chain_desc.BufferDesc.Width = static_cast<UINT>((std::max)(1L, client.right - client.left));
+        swap_chain_desc.BufferDesc.Height = static_cast<UINT>((std::max)(1L, client.bottom - client.top));
+    } else {
+        swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
+            ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
+        swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
+            ? windowHeight(presenter) : mainHeight(presenter);
+    }
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 0u;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1u;
     swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1065,10 +946,28 @@ HRESULT createDeviceWithDriver(
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swap_chain_desc.Flags = immediate ? 0u : DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     if (presenter->vrr) swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    presenter->swap_flags = swap_chain_desc.Flags;  // ResizeBuffers must repeat them
 
+    /* Hybrid laptops default to the integrated GPU, which also lacks DLSS.
+       Ask DXGI for the high-performance adapter unless RECOMP_D3D_GPU=integrated. */
+    IDXGIAdapter1 *adapter = nullptr;
+    if (driver_type == D3D_DRIVER_TYPE_HARDWARE) {
+        const char *gpu = std::getenv("RECOMP_D3D_GPU");
+        const DXGI_GPU_PREFERENCE preference = gpu != nullptr && std::strcmp(gpu, "integrated") == 0
+            ? DXGI_GPU_PREFERENCE_MINIMUM_POWER : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+        IDXGIFactory6 *factory = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+            if (FAILED(factory->EnumAdapterByGpuPreference(0u, preference, IID_PPV_ARGS(&adapter)))) adapter = nullptr;
+            factory->Release();
+        }
+        DXGI_ADAPTER_DESC1 adapter_desc{};
+        if (adapter != nullptr && SUCCEEDED(adapter->GetDesc1(&adapter_desc))) {
+            std::fprintf(stderr, "recomp d3d presenter: adapter %ls\n", adapter_desc.Description);
+        }
+    }
     HRESULT result = D3D11CreateDeviceAndSwapChain(
-        nullptr,
-        driver_type,
+        adapter,
+        adapter != nullptr ? D3D_DRIVER_TYPE_UNKNOWN : driver_type,
         nullptr,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         feature_levels,
@@ -1079,12 +978,21 @@ HRESULT createDeviceWithDriver(
         &presenter->device,
         &selected_feature_level,
         &presenter->context);
+    if (adapter != nullptr) adapter->Release();
     // Flip chains use the per-chain limit; immediate presents retain the default.
     if (SUCCEEDED(result) && !immediate) {
         IDXGISwapChain2 *chain = nullptr;
         result = presenter->swap_chain->QueryInterface(IID_PPV_ARGS(&chain));
         if (SUCCEEDED(result)) result = chain->SetMaximumFrameLatency(1u);
         releaseCom(chain);
+    }
+    // DXGI's Alt+Enter would enter exclusive fullscreen; the window proc owns it.
+    if (SUCCEEDED(result) && presenter->window_mode != WindowMode::Legacy) {
+        IDXGIFactory *factory = nullptr;
+        if (SUCCEEDED(presenter->swap_chain->GetParent(IID_PPV_ARGS(&factory)))) {
+            factory->MakeWindowAssociation(presenter->window, DXGI_MWA_NO_ALT_ENTER);
+            factory->Release();
+        }
     }
     return result;
 }
@@ -1093,7 +1001,8 @@ HRESULT createMainDepth(RecompD3dPresenter *presenter)
 {
     // Keep the D24S8 DSV; only opt-in consumers need a typeless resource and SRV.
     HRESULT result = S_OK;
-    for (const bool readable_depth : {presenter->rtgi_requested || presenter->gbuffer.enabled, false}) {
+    for (const bool readable_depth : {presenter->rtgi_requested || presenter->gbuffer.enabled ||
+             presenter->motion_requested, false}) {
         releaseCom(presenter->depth_sample);
         releaseCom(presenter->depth_view);
         releaseCom(presenter->depth_texture);
@@ -1137,6 +1046,281 @@ HRESULT createMainDepth(RecompD3dPresenter *presenter)
     }
     return result;
 }
+
+/* After a window resize: the back buffer view is the only swap chain
+   reference held between frames. A minimized window keeps its old buffers. */
+bool resizeSwapChain(RecompD3dPresenter *presenter)
+{
+    RECT client{};
+    if (!GetClientRect(presenter->window, &client) ||
+        client.right - client.left <= 0 || client.bottom - client.top <= 0) {
+        return true;
+    }
+    presenter->resize_pending = false;
+    const UINT width = static_cast<UINT>(client.right - client.left);
+    const UINT height = static_cast<UINT>(client.bottom - client.top);
+    DXGI_SWAP_CHAIN_DESC current{};
+    presenter->swap_chain->GetDesc(&current);
+    if (current.BufferDesc.Width == width && current.BufferDesc.Height == height) return true;
+    presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
+    presenter->context->ClearState();
+    releaseCom(presenter->present_target_view);
+    presenter->context->Flush();
+    HRESULT result = presenter->swap_chain->ResizeBuffers(
+        0u, width, height, DXGI_FORMAT_UNKNOWN, presenter->swap_flags);
+    ID3D11Texture2D *back_buffer = nullptr;
+    if (SUCCEEDED(result)) result = presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+    if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(
+        back_buffer, nullptr, &presenter->present_target_view);
+    releaseCom(back_buffer);
+    if (FAILED(result)) {
+        std::fprintf(stderr, "recomp d3d presenter: resize to %ux%u failed hr=0x%08lX\n",
+            width, height, static_cast<unsigned long>(result));
+        return false;
+    }
+    return true;
+}
+
+/* Draws the main-sized output into the window's back buffer at the largest
+   rectangle with the game's aspect, black outside it. FSR runs EASU into a
+   letterbox-sized texture, then RCAS into the window; it only upscales. */
+void scaleOutput(RecompD3dPresenter *presenter)
+{
+    auto *context = presenter->context;
+    ID3D11Texture2D *back_buffer = nullptr;
+    presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+    if (back_buffer == nullptr) return;
+    D3D11_TEXTURE2D_DESC window{};
+    back_buffer->GetDesc(&window);
+    releaseCom(back_buffer);
+    const double aspect = presenter->widescreen ? 16.0 / 9.0 : 4.0 / 3.0;
+    uint32_t width = window.Width, height = window.Height;
+    if (width > height * aspect) width = static_cast<uint32_t>(height * aspect + 0.5);
+    else height = static_cast<uint32_t>(width / aspect + 0.5);
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+    const int32_t left = static_cast<int32_t>((window.Width - width) / 2u);
+    const int32_t top = static_cast<int32_t>((window.Height - height) / 2u);
+    const D3D11_VIEWPORT viewport = {static_cast<float>(left), static_cast<float>(top),
+        static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+    context->ClearState();
+    if (width != window.Width || height != window.Height) {
+        const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        context->ClearRenderTargetView(presenter->present_target_view, black);
+    }
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
+    if (d3d_fsr_scale(presenter->fsr, context, presenter->vrr_source, presenter->present_target_view, viewport))
+        return;
+    context->RSSetViewports(1u, &viewport);
+    context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
+    context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
+    context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
+    context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
+    context->Draw(3u, 0u);
+    context->ClearState();
+}
+
+void setFrameJitter(RecompD3dPresenter *presenter)
+{
+    if (!presenter->jitter_enabled) {
+        presenter->jitter[0] = presenter->jitter[1] = 0.0f;
+        presenter->jitter_pixels[0] = presenter->jitter_pixels[1] = 0.0f;
+        return;
+    }
+    // RECOMP_D3D_JITTER_SCALE exaggerates the offset so a capture can show what moves.
+    static const float exaggerate = [] {
+        const char *value = std::getenv("RECOMP_D3D_JITTER_SCALE");
+        const float scale = value ? static_cast<float>(std::atof(value)) : 1.0f;
+        return std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
+    }();
+    const uint32_t phase = presenter->jitter_index % presenter->jitter_phases + 1u;
+    presenter->jitter_pixels[0] = (d3d_motion_halton(phase, 2u) - 0.5f) * exaggerate;
+    presenter->jitter_pixels[1] = (d3d_motion_halton(phase, 3u) - 0.5f) * exaggerate;
+    presenter->jitter[0] = presenter->jitter_pixels[0] * 2.0f / static_cast<float>(sceneWidth(presenter));
+    presenter->jitter[1] = -presenter->jitter_pixels[1] * 2.0f / static_cast<float>(sceneHeight(presenter));
+}
+
+// Motion vectors at the 3D scene's size, which createDlss has already set.
+void createMotion(RecompD3dPresenter *presenter)
+{
+    if (!presenter->motion_requested) return;
+    if (presenter->depth_sample == nullptr) {
+        std::fprintf(stderr, "recomp motion: readable depth unavailable; disabled\n");
+    } else {
+        // Object vectors share SV_Target1 with the G-buffer and need single-sampled targets.
+        presenter->motion = d3d_motion_create(presenter->device, presenter->context,
+            sceneWidth(presenter), sceneHeight(presenter), presenter->msaa > 1u,
+            !presenter->gbuffer.enabled && presenter->msaa == 1u);
+    }
+    if (presenter->motion == nullptr) {
+        presenter->motion_requested = presenter->motion_debug = presenter->jitter_enabled = false;
+        return;
+    }
+    const bool objects = d3d_motion_object_target(presenter->motion) != nullptr;
+    if (objects) object_motion_shaders = true;
+    setFrameJitter(presenter);
+    std::fprintf(stderr, "recomp motion: camera%s vectors on%s%s\n", objects ? " and object" : "",
+        presenter->jitter_enabled ? ", jitter" : "", presenter->motion_debug ? ", debug view" : "");
+}
+
+/* Once per frame, after the 3D scene and before its screen-space UI. A frame
+   without a camera, or the first one, reports no motion. */
+void runMotionPass(RecompD3dPresenter *presenter)
+{
+    if (presenter->motion == nullptr || presenter->motion_done) return;
+    presenter->motion_done = true;
+    const bool camera = presenter->scene_pending && presenter->camera_weight != 0u;
+    d3d_motion_reproject(presenter->motion, presenter->context, presenter->depth_sample,
+        camera ? presenter->camera : nullptr,
+        presenter->has_previous_camera ? presenter->previous_camera : presenter->camera,
+        presenter->jitter);
+}
+
+// RECOMP_D3D_MOTION_DEBUG: blends the vectors over the frame's main-sized output.
+void drawMotionDebug(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
+{
+    if (!presenter->motion_debug || presenter->motion == nullptr) return;
+    d3d_motion_draw_debug(presenter->motion, presenter->context, output,
+        mainWidth(presenter), mainHeight(presenter));
+}
+
+// Exchanges the main target set in use with the other one (scene input <-> full size).
+void swapMainTargets(RecompD3dPresenter *presenter)
+{
+    auto &other = presenter->other;
+    std::swap(presenter->render_target_view, other.color);
+    std::swap(presenter->depth_texture, other.depth_texture);
+    std::swap(presenter->depth_view, other.depth_view);
+    std::swap(presenter->depth_sample, other.depth_sample);
+    std::swap(presenter->back_buffer_copy, other.back_copy);
+    std::swap(presenter->back_buffer_sample, other.back_sample);
+    presenter->scene_phase = !presenter->scene_phase;
+}
+
+void releaseDlss(RecompD3dPresenter *presenter)
+{
+    if (presenter->scene_phase) swapMainTargets(presenter);
+    auto &other = presenter->other;
+    releaseCom(other.color);
+    releaseCom(other.depth_texture);
+    releaseCom(other.depth_view);
+    releaseCom(other.depth_sample);
+    releaseCom(other.back_copy);
+    releaseCom(other.back_sample);
+    releaseCom(presenter->scene_color);
+    d3d_dlss_destroy(presenter->dlss);
+    presenter->dlss = nullptr;
+    presenter->dlss_active = false;
+}
+
+/* Loads the DLSS bridge and builds the scene input set at DLSS's optimal size
+   for the chosen mode. Any failure leaves DLSS off and the frame renders at
+   full size, with the effects DLSS replaced (MSAA, SMAA, RTGI, the G-buffer)
+   still off. Called after the full-size main set exists. */
+void createDlss(RecompD3dPresenter *presenter)
+{
+    if (presenter->dlss_mode < 0) return;
+    const uint32_t output_width = mainWidth(presenter), output_height = mainHeight(presenter);
+    uint32_t render_width = 0u, render_height = 0u;
+    auto *device = presenter->device;
+    presenter->dlss = d3d_dlss_create(device, presenter->context, presenter->dlss_mode,
+        output_width, output_height, &render_width, &render_height);
+    if (presenter->dlss == nullptr) {
+        presenter->dlss_mode = -1;
+        return;
+    }
+    auto &other = presenter->other;
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = render_width;
+    desc.Height = render_height;
+    desc.MipLevels = desc.ArraySize = 1u;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1u;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ID3D11Texture2D *texture = nullptr;
+    HRESULT result = device->CreateTexture2D(&desc, nullptr, &texture);
+    if (SUCCEEDED(result)) result = device->CreateRenderTargetView(texture, nullptr, &other.color);
+    if (SUCCEEDED(result)) result = device->CreateShaderResourceView(texture, nullptr, &presenter->scene_color);
+    releaseCom(texture);
+    desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    if (SUCCEEDED(result)) result = device->CreateTexture2D(&desc, nullptr, &other.depth_texture);
+    D3D11_DEPTH_STENCIL_VIEW_DESC depth_desc{};
+    depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depth_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    if (SUCCEEDED(result)) result = device->CreateDepthStencilView(other.depth_texture, &depth_desc, &other.depth_view);
+    D3D11_SHADER_RESOURCE_VIEW_DESC sample_desc{};
+    sample_desc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    sample_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    sample_desc.Texture2D.MipLevels = 1u;
+    if (SUCCEEDED(result)) result = device->CreateShaderResourceView(other.depth_texture, &sample_desc, &other.depth_sample);
+    if (FAILED(result)) {
+        std::fprintf(stderr, "recomp dlss: could not create its targets; off\n");
+        releaseDlss(presenter);
+        presenter->dlss_mode = -1;
+        return;
+    }
+
+    presenter->dlss_render_width = render_width;
+    presenter->dlss_render_height = render_height;
+    presenter->dlss_active = true;
+    presenter->dlss_reset = true;
+    // NVIDIA's guide: at least 8 phases, times the square of the upscale ratio.
+    const double ratio = static_cast<double>(output_height) / render_height;
+    presenter->jitter_phases = (std::max)(8u, static_cast<uint32_t>(std::ceil(8.0 * ratio * ratio)));
+    swapMainTargets(presenter);  // frames start in the scene phase
+    static const char *names[] = {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
+    std::fprintf(stderr, "recomp dlss: %s, scene %ux%u -> %ux%u, %u jitter phases\n",
+        names[presenter->dlss_mode], render_width, render_height, output_width, output_height,
+        presenter->jitter_phases);
+}
+
+/* Ends the frame's 3D scene: motion vectors, then DLSS reconstructs the scene
+   into the full-size set, which the HUD and the output pass use. */
+void finishScene(RecompD3dPresenter *presenter)
+{
+    runMotionPass(presenter);
+    if (!presenter->dlss_active || !presenter->scene_phase) return;
+    ID3D11Resource *color = nullptr, *motion = nullptr;
+    presenter->render_target_view->GetResource(&color);
+    d3d_motion_target(presenter->motion)->GetResource(&motion);
+    DlssBridgeFrame frame{};
+    frame.color = color;
+    frame.depth = presenter->depth_texture;
+    frame.motion = motion;
+    frame.jitter_x = presenter->jitter_pixels[0];
+    frame.jitter_y = presenter->jitter_pixels[1];
+    frame.render_width = presenter->dlss_render_width;
+    frame.render_height = presenter->dlss_render_height;
+    frame.reset = presenter->dlss_reset || !presenter->has_previous_camera ? 1 : 0;
+    swapMainTargets(presenter);
+    d3d_dlss_resolve(presenter->dlss, presenter->context, frame, presenter->scene_color,
+        presenter->render_target_view);
+    releaseCom(color);
+    releaseCom(motion);
+    presenter->dlss_reset = false;
+    // The HUD draws over the reconstructed scene with no scene depth left.
+    presenter->context->ClearDepthStencilView(presenter->depth_view,
+        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0u);
+}
+
+// After a present: this frame's camera becomes the previous one and the jitter advances.
+void endMotionFrame(RecompD3dPresenter *presenter)
+{
+    if (presenter->dlss_active && !presenter->scene_phase) swapMainTargets(presenter);
+    if (!presenter->motion_requested) return;
+    presenter->has_previous_camera = presenter->camera_weight != 0u;
+    if (presenter->has_previous_camera) {
+        std::memcpy(presenter->previous_camera, presenter->camera, sizeof presenter->camera);
+    }
+    presenter->camera_weight = 0u;
+    presenter->scene_pending = presenter->motion_done = false;
+    d3d_motion_end_frame(presenter->motion, presenter->context);
+    ++presenter->jitter_index;
+    setFrameJitter(presenter);
+}
+
 
 HRESULT createGraphics(RecompD3dPresenter *presenter)
 {
@@ -1210,7 +1394,7 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         }
         releaseCom(guest_buffer);
     }
-    if (SUCCEEDED(result) && vrrScaled(presenter)) {
+    if (SUCCEEDED(result) && outputScaled(presenter)) {
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = mainWidth(presenter);
         desc.Height = mainHeight(presenter);
@@ -1250,6 +1434,9 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         sampler.MaxLOD = D3D11_FLOAT32_MAX;
         if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
             &sampler, &presenter->vrr_sampler);
+        // FSR is optional: a failure here leaves the bilinear scale.
+        if (SUCCEEDED(result) && presenter->fsr_requested)
+            presenter->fsr = d3d_fsr_create(presenter->device, presenter->fsr_sharpness);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -1258,6 +1445,15 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
 
     result = createMainDepth(presenter);
     if (FAILED(result)) return result;
+    createDlss(presenter);    // switches to the scene set, which motion vectors measure
+    createMotion(presenter);
+    // DLSS reads the motion target every frame. Without it DLSS is off, and MSAA,
+    // SMAA, RTGI and the G-buffer stay off as d3d11_backend_create set them.
+    if (presenter->dlss_active && (!presenter->motion_requested || presenter->motion == nullptr)) {
+        std::fprintf(stderr, "recomp dlss: motion vectors unavailable; off\n");
+        releaseDlss(presenter);
+        presenter->dlss_mode = -1;
+    }
     if (presenter->gbuffer.enabled) {
         if (presenter->depth_sample) {
             presenter->gbuffer.create(presenter->device, mainWidth(presenter), mainHeight(presenter), presenter->msaa);
@@ -1546,7 +1742,7 @@ RecompD3dPresenterError bindTarget(
     /* ponytail: an offscreen target cannot share the scaled/MSAA main depth;
        it draws without depth. Give it its own depth if one ever needs it. */
     if (target.offscreen && depth_view == presenter->depth_view &&
-        (presenter->scale != 1.0f || presenter->msaa > 1u)) {
+        (presenter->scale != 1.0f || presenter->msaa > 1u || presenter->dlss_active)) {
         depth_view = nullptr;
     }
     const float host_width = static_cast<float>(
@@ -1563,6 +1759,11 @@ RecompD3dPresenterError bindTarget(
     if (presenter->gbuffer.enabled && !presenter->sun.casting && !target.offscreen &&
         depth_view == presenter->depth_view) {
         ID3D11RenderTargetView *targets[] = {color_view, presenter->gbuffer.target};
+        presenter->context->OMSetRenderTargets(2u, targets, depth_view);
+    } else if (d3d_motion_object_target(presenter->motion) != nullptr && !presenter->sun.casting &&
+        !target.offscreen && depth_view == presenter->depth_view &&
+        (!presenter->dlss_active || presenter->scene_phase)) {
+        ID3D11RenderTargetView *targets[] = {color_view, d3d_motion_object_target(presenter->motion)};
         presenter->context->OMSetRenderTargets(2u, targets, depth_view);
     } else {
         presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
@@ -1710,7 +1911,7 @@ bool drawShaderSource(
     }
 
     char source[12288];
-    buildDrawShaderSource(layout, source, sizeof source);
+    recomp_d3d_draw_shader_source(layout, source, sizeof source);
     compiled_source = source;
     const auto fields = compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {");
     compiled_source.insert(fields, "\n    float fog_depth : TEXCOORD6;\n"
@@ -1842,6 +2043,7 @@ bool drawShaderSource(
         compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
     }
     if (gbuffer) gbufferShaderSource(compiled_source, layout, pipeline.program_count != 0);
+    else if (object_motion_shaders) d3d_motion_shader_source(compiled_source);
     return true;
 }
 
@@ -2008,7 +2210,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient, specular and viewer (336 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 336u + 76u + 16u) * sizeof(float);
+    constant_desc.ByteWidth = static_cast<UINT>(kDrawConstantFloats * sizeof(float));
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2589,6 +2791,8 @@ ID3D11SamplerState *lookupDrawSampler(
             ? static_cast<D3D11_TEXTURE_ADDRESS_MODE>(mode) : D3D11_TEXTURE_ADDRESS_WRAP;
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
+    // The forced setting upgrades the shared linear sampler; point-filtered draws build their own.
+    anisotropic = anisotropic || presenter->anisotropy != 0u;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
     ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
     if (sampler == nullptr) {
@@ -2598,7 +2802,7 @@ ID3D11SamplerState *lookupDrawSampler(
         desc.AddressV = v;
         if (anisotropic) {
             desc.Filter = D3D11_FILTER_ANISOTROPIC;
-            desc.MaxAnisotropy = 16u;
+            desc.MaxAnisotropy = presenter->anisotropy != 0u ? presenter->anisotropy : 16u;
         }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
@@ -2860,7 +3064,8 @@ ID3D11BlendState *lookupBlendState(
 
     D3D11_BLEND_DESC desc{};
     desc.AlphaToCoverageEnable = alpha_to_coverage;
-    desc.IndependentBlendEnable = presenter->gbuffer.enabled;
+    const bool second_target = presenter->gbuffer.enabled || object_motion_shaders;
+    desc.IndependentBlendEnable = second_target;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2870,7 +3075,8 @@ ID3D11BlendState *lookupBlendState(
     target.DestBlendAlpha = hostBlendFactor(blend.dst_factor, true);
     target.BlendOpAlpha = hostBlendOp(blend.op);
     target.RenderTargetWriteMask = blend.color_write_mask;
-    if (presenter->gbuffer.enabled) {
+    // normal_write: this draw writes SV_Target1 (G-buffer normals or object motion).
+    if (second_target) {
         desc.RenderTarget[1] = target;
         desc.RenderTarget[1].BlendEnable = FALSE;
         desc.RenderTarget[1].RenderTargetWriteMask = normal_write ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
@@ -3205,7 +3411,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     if (!presenter->sun.casting) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 336 + 76 + 16]{};
+    float draw_constants[kDrawConstantFloats]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -3349,6 +3555,34 @@ RecompD3dPresenterError submitDraw(
                 static_cast<float>(draw.combiner[i / 8u][i % 8u]);
         }
     }
+    /* Temporal inputs: depth-tested draws into the main target are the 3D
+       scene. They take the frame's jitter, and the one with the most indices
+       names the camera that motion vectors reproject with. */
+    const bool scene_draw = presenter->motion_requested && !presenter->sun.casting &&
+        (!presenter->dlss_active || presenter->scene_phase) &&
+        !draw.target.offscreen && !layout.pretransformed && draw.depth.depth_test_enable &&
+        depth_view == presenter->depth_view;
+    if (scene_draw) {
+        draw_constants[kJitterConstant] = presenter->jitter[0];
+        draw_constants[kJitterConstant + 1] = presenter->jitter[1];
+        presenter->scene_pending = true;
+        bool finite = true;
+        for (float value : draw.view_projection) finite &= std::isfinite(value);
+        if (!draw.program_count && finite && draw_index_count > presenter->camera_weight) {
+            presenter->camera_weight = draw_index_count;
+            std::memcpy(presenter->camera, draw.view_projection, sizeof presenter->camera);
+        }
+    }
+    // Object motion: last frame's draw of the same mesh supplies its previous matrices.
+    bool object_write = false;
+    if (scene_draw && presenter->motion != nullptr &&
+        d3d_motion_object(presenter->motion, draw, draw_constants + kPreviousWvpConstant)) {
+        draw_constants[kMotionFlagsConstant] = 1.0f;
+        draw_constants[kMotionFlagsConstant + 2] = static_cast<float>(sceneWidth(presenter));
+        draw_constants[kMotionFlagsConstant + 3] = static_cast<float>(sceneHeight(presenter));
+        // Opaque surfaces only; blended ones would overwrite what shows through them.
+        object_write = draw.depth.depth_write_enable && !draw.blend.blend_enable;
+    }
 
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
@@ -3424,7 +3658,7 @@ RecompD3dPresenterError submitDraw(
             !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
             draw.directional.enabled && draw.depth.depth_test_enable && draw.depth.depth_write_enable &&
             draw.blend.color_write_mask != 0;
-        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage, normal_write);
+        ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage, normal_write || object_write);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
@@ -4313,6 +4547,9 @@ RecompD3dPresenterError submitPresent(
                 GetLastError());
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
+        if (presenter->resize_pending && !resizeSwapChain(presenter)) {
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
     }
 
     /* SyncInterval, not the flag, is what paces a present. Passing 0 here
@@ -4324,6 +4561,7 @@ RecompD3dPresenterError submitPresent(
     presenter->rtgi_applied = false;
 #endif
     if (presenter->gbuffer.enabled) presenter->gbuffer.resolveFrame(presenter->context, presenter->depth_sample);
+    finishScene(presenter);  // frames without screen-space UI
     // Before the output pass: its back-buffer write waits for the display.
     endFrameCost(presenter);
     auto *output = presenter->vrr_target_view != nullptr ? presenter->vrr_target_view : presenter->present_target_view;
@@ -4338,27 +4576,9 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     copyFrontBuffer(presenter);
-    if (presenter->vrr_target_view != nullptr) {
-        auto *context = presenter->context;
-        D3D11_TEXTURE2D_DESC window{};
-        ID3D11Texture2D *back_buffer = nullptr;
-        presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
-        if (back_buffer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
-        back_buffer->GetDesc(&window);
-        releaseCom(back_buffer);
-        const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
-            static_cast<float>(window.Width), static_cast<float>(window.Height), 0.0f, 1.0f};
-        context->ClearState();
-        context->RSSetViewports(1u, &viewport);
-        context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
-        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
-        context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
-        context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
-        context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
-        context->Draw(3u, 0u);
-        context->ClearState();
-    }
+    drawMotionDebug(presenter, output);  // after the copy the game reads back
+    endMotionFrame(presenter);
+    if (presenter->vrr_target_view != nullptr) scaleOutput(presenter);
     // A held frame updates the front buffer the game reads back, but the
     // window keeps the last picture presented.
     if (present.hold) return RECOMP_D3D_PRESENTER_OK;
@@ -4392,7 +4612,9 @@ RecompD3dPresenterError submitPresent(
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
     const bool immediate = immediatePresent(presenter);
-    const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
+    // Unlocked never waits for vblank. Without tearing support the flip model
+    // still shows the newest finished frame at each refresh instead of tearing.
+    const UINT sync_interval = immediate || presenter->vrr || unlocked_present ? 0u : syncInterval(presenter);
     const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
         : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
     if (presenter->vrr && !split_presentation) {
@@ -4596,6 +4818,37 @@ RecompD3dPresenterError d3d11_backend_create(
     if (const char *msaa = std::getenv("RECOMP_D3D_MSAA")) {
         created->msaa = std::clamp(std::atoi(msaa), 1, 32);
     }
+    if (const char *mode = std::getenv("RECOMP_D3D_WINDOW_MODE")) {
+        if (std::strcmp(mode, "windowed") == 0) created->window_mode = WindowMode::Windowed;
+        if (std::strcmp(mode, "borderless") == 0) created->window_mode = WindowMode::Borderless;
+    }
+    if (const char *height = std::getenv("RECOMP_D3D_WINDOW_HEIGHT")) {
+        created->window_height_request = static_cast<uint32_t>(std::clamp(std::atoi(height), 0, 8640));
+    }
+    if (const char *upscale = std::getenv("RECOMP_D3D_UPSCALE")) {
+        created->fsr_requested = std::strcmp(upscale, "fsr") == 0;
+    }
+    if (const char *sharpness = std::getenv("RECOMP_D3D_SHARPNESS")) {
+        const float value = static_cast<float>(std::atof(sharpness));
+        if (std::isfinite(value)) created->fsr_sharpness = std::clamp(value, 0.0f, 1.0f);
+    }
+    const auto flag = [](const char *name) {
+        const char *value = std::getenv(name);
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    };
+    created->motion_debug = flag("RECOMP_D3D_MOTION_DEBUG");
+    created->jitter_enabled = flag("RECOMP_D3D_JITTER");
+    if (const char *dlss = std::getenv("RECOMP_D3D_DLSS")) {
+        static const char *modes[] = {"dlaa", "quality", "balanced", "performance", "ultra"};
+        for (int i = 0; i < 5; ++i) if (std::strcmp(dlss, modes[i]) == 0) created->dlss_mode = i;
+    }
+    created->jitter_enabled = created->jitter_enabled || created->dlss_mode >= 0;
+    created->motion_requested = flag("RECOMP_D3D_MOTION_VECTORS") ||
+        created->motion_debug || created->jitter_enabled;
+    if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY")) {
+        const int value = std::atoi(anisotropy);
+        created->anisotropy = value >= 2 ? static_cast<uint32_t>((std::min)(value, 16)) : 0u;
+    }
     created->sun.enabled = sunShadowRequested();
     created->gbuffer.enabled = gbufferRequested();
     if (created->gbuffer.enabled) {
@@ -4608,7 +4861,8 @@ RecompD3dPresenterError d3d11_backend_create(
     /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
        evenly. DXGI cannot tell whether VRR is active; without it this tears. */
     const char *vrr = std::getenv("RECOMP_D3D_VRR");
-    if (vrr != nullptr && std::strcmp(vrr, "1") == 0) {
+    // An unlocked frame rate presents through the same tearing path.
+    if (unlocked_present || (vrr != nullptr && std::strcmp(vrr, "1") == 0)) {
         IDXGIFactory5 *factory = nullptr;
         BOOL tearing = FALSE;
         if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
@@ -4616,7 +4870,9 @@ RecompD3dPresenterError d3d11_backend_create(
             factory->Release();
         }
         created->vrr = tearing != FALSE;
-        std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+        std::fprintf(stderr, "recomp d3d presenter: vrr %s%s\n", created->vrr ? "on" : "unsupported",
+            !unlocked_present ? "" : created->vrr ? " (unlocked frame rate)"
+                : " (unlocked frame rate without tearing: newest frame at each refresh)");
     }
     if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
         created->present_log = std::fopen(log, "w");
@@ -4637,6 +4893,14 @@ RecompD3dPresenterError d3d11_backend_create(
         created->rtgi_requested = false;
     }
 #endif
+    if (created->dlss_mode >= 0) {
+        /* DLSS anti-aliases and needs single-sampled inputs; RTGI and the
+           G-buffer are sized for one main target set. */
+        created->msaa = 1u;
+        created->smaa = false;
+        created->rtgi_requested = false;
+        created->gbuffer.enabled = false;
+    }
     created->owner_thread = GetCurrentThreadId();
     if (!createWindow(created)) {
         releasePresenter(created);
@@ -4924,6 +5188,12 @@ bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
         sun.triangles = sun.casters = 0;
         return sunCreate(sun, presenter->device);
     }
+    if (sun.map_current) {
+        sun.casting = false;
+        sun.valid = sun.triangles != 0;
+        sun.casters = sun.map_casters;
+        return false;
+    }
     sun.valid = sun.triangles && sunFit(sun);
     if (!sun.valid) { sun.casting = false; return false; }
     sun.compact.clear();
@@ -4931,6 +5201,11 @@ bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
     presenter->context->PSSetShaderResources(2, 1, &empty);
     presenter->context->ClearDepthStencilView(sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
     return true;
+}
+
+void d3d11_backend_shadow_tick(RecompD3dPresenter *presenter)
+{
+    presenter->sun.map_current = false;
 }
 
 void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
@@ -4984,6 +5259,10 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
 void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
 {
     auto &sun = presenter->sun;
+    if (sun.casting) {
+        sun.map_current = sun.casters != 0;
+        sun.map_casters = sun.casters;
+    }
     sun.casting = false;
     sun.caster_bound = false;
     sun.epoch = 0;
@@ -5031,10 +5310,13 @@ RecompD3dPresenterError d3d11_backend_submit(
         return submitPresent(presenter, command->data.present);
     case RECOMP_D3D_PRESENTER_COMMAND_DRAW: {
         const RecompD3dPresenterDrawCommand &draw = command->data.draw;
-#ifdef RECOMP_RTGI
+        // The first screen-space draw on the main target ends the 3D scene.
         RecompD3dVertexLayout layout{};
-        if (presenter->rtgi_pending && !draw.target.offscreen &&
-            recomp_d3d_fvf_layout(draw.fvf, &layout) && layout.pretransformed) {
+        const bool interface_draw = !draw.target.offscreen &&
+            recomp_d3d_fvf_layout(draw.fvf, &layout) && layout.pretransformed;
+        if (interface_draw && presenter->scene_pending) finishScene(presenter);
+#ifdef RECOMP_RTGI
+        if (presenter->rtgi_pending && interface_draw) {
             applyRtgi(presenter);
         }
 #endif
@@ -5149,6 +5431,11 @@ void d3d11_backend_set_immediate_present(bool enabled)
 void d3d11_backend_set_split_presentation(bool enabled)
 {
     split_presentation = enabled;
+}
+
+void d3d11_backend_set_unlocked_present(bool enabled)
+{
+    unlocked_present = enabled;
 }
 
 void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay)
