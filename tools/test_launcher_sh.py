@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Which launcher launcher.sh opens, and when it sets up the venv and rebuilds."""
+import itertools
 import os
 from pathlib import Path
 import platform
@@ -7,9 +8,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+
+import build_prerequisites
 
 ROOT = Path(__file__).resolve().parents[1]
 STUB = "#!/bin/sh\nexit 0\n"
+TOOLS = ("cmake", "c++", "clang++", "g++")
 
 
 @unittest.skipIf(os.name == "nt", "launcher.sh runs on macOS and Linux")
@@ -38,7 +43,7 @@ class LauncherShTest(unittest.TestCase):
         self.write("private/launcher-build/recomp_launcher", '#!/bin/sh\n: > "$1/launcher-ran"\nexit 1\n', True)
 
     def run_launcher(self, *tools):
-        for name in ("bin/cmake", "bin/c++", "setup-ran", "launcher-ran"):
+        for name in (*(f"bin/{tool}" for tool in TOOLS), "setup-ran", "launcher-ran"):
             (self.root / name).unlink(missing_ok=True)
         for tool in tools:
             self.write(f"bin/{tool}", STUB, True)
@@ -46,18 +51,23 @@ class LauncherShTest(unittest.TestCase):
                                 env={"PATH": str(self.bin)}, capture_output=True, text=True)
         return result, (self.root / "setup-ran").exists(), (self.root / "launcher-ran").exists()
 
-    def test_without_a_toolchain_reuses_the_built_launcher(self):
+    def test_reuses_the_built_launcher_exactly_when_find_toolchain_fails(self):
         self.built_launcher()
-        for tools in ((), ("cmake",), ("c++",)):
-            with self.subTest(tools=tools):
-                result, setup, launcher = self.run_launcher(*tools)
-                self.assertEqual((result.returncode, setup, launcher), (1, False, True))
-                self.assertIn("No compiler found", result.stderr)
-
-    def test_with_a_toolchain_sets_up_and_rebuilds(self):
-        self.built_launcher()
-        result, setup, launcher = self.run_launcher("cmake", "c++")
-        self.assertEqual((setup, launcher), (True, False))
+        for count in range(len(TOOLS) + 1):
+            for tools in itertools.combinations(TOOLS, count):
+                with self.subTest(tools=tools):
+                    result, setup, launcher = self.run_launcher(*tools)
+                    # have_toolchain in launcher.sh must stay in step with find_toolchain.
+                    with mock.patch.dict(os.environ, {"PATH": str(self.bin)}):
+                        try:
+                            build_prerequisites.find_toolchain(self.root)
+                            missing = False
+                        except ValueError:
+                            missing = True
+                    self.assertEqual((setup, launcher), (not missing, missing))
+                    if missing:
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn("No compiler found", result.stderr)
 
     @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64",
                          "the prebuilt launcher is for x86-64 Linux")
