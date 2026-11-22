@@ -1075,11 +1075,12 @@ bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const
     if (!recomp_netplay_room_state_parse(launch.room, state) || !room.parse(launch.roomSocket)) return false;
     RecompNetplay socket;
     // The session's runner may still hold the port while it exits, its IPv6 socket too. A room that
-    // reached its peer over IPv6 waits for both; the last try takes IPv4 alone.
+    // reached its peer over IPv6 waits briefly for both, since the exit frees them together, then
+    // takes IPv4 alone, so a machine that lost IPv6 does not stall.
     bool open = false;
     for (int tries = 0; tries < 20; ++tries) {
         open = recomp_netplay_listen(&socket, room.localPort) &&
-            (room.peer6Port == 0u || socket.match.has_socket6 || tries == 19);
+            (room.peer6Port == 0u || socket.match.has_socket6 || tries >= 4);
         if (open) break;
         recomp_netplay_close(&socket);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
