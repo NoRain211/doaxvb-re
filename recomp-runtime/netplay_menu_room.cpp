@@ -22,6 +22,9 @@ static std::uint16_t upnpPort;
 static char upnpAddress[80];
 static std::string lanAddress;
 static const std::chrono::seconds RejoinEvery(3);
+// After a matchmaker restart a live room is gone only until its host drops the silent joiner (3 s)
+// and says HOST again (at once, or within 5 s), so a room still gone after this is gone.
+static const std::chrono::seconds GoneFor(15);
 
 static void openRouterPort(std::uint16_t port)
 {
@@ -74,6 +77,7 @@ void enterRoom(bool hosting)
     menu.lobby.blockAsked = Clock::time_point{};
     menu.lobby.checkedIn = Clock::time_point{}; // a host lists its room on the first tick
     menu.lobby.rejoinDue = Clock::now() + RejoinEvery;
+    menu.lobby.goneSince = Clock::time_point{};
     char stale[64]; // typed before the room opened, such as a game's Enter
     (void)recomp_input_text_take(stale, sizeof stale);
     menu.screen = Screen::Room;
@@ -308,6 +312,16 @@ bool updateRoom(std::uint16_t keys)
     // heartbeat lists its room again under the same ID, so the joiner asks for it again every 3 s.
     if (room.joined || !menu.net.match.relay) {
         menu.lobby.rejoinDue = Clock::now() + RejoinEvery;
+        menu.lobby.goneSince = Clock::time_point{};
+    } else if (menu.net.match.gone && foundRoom() != 0u) {
+        menu.net.match.gone = false;
+        if (menu.lobby.goneSince == Clock::time_point{}) {
+            menu.lobby.goneSince = Clock::now();
+        } else if (Clock::now() - menu.lobby.goneSince >= GoneFor) {
+            leaveRoom();
+            menu.message = "THAT ROOM IS GONE.";
+            return false;
+        }
     } else if (foundRoom() != 0u && Clock::now() >= menu.lobby.rejoinDue) {
         menu.lobby.rejoinDue = Clock::now() + RejoinEvery;
         recomp_netplay_match_join(&menu.net, foundRoom(), menu.digest.data(), menu.name.c_str());

@@ -54,6 +54,7 @@ struct LobbyState : RecompNetplayRoomState {
     RecompNetplayRoom room{};
     Clock::time_point opened, startAt, saidAt, checkedIn;
     Clock::time_point rejoinDue; // when a relayed joiner whose host stays silent asks the matchmaker for its room again
+    Clock::time_point goneSince; // the first GONE answering those asks since the room was last heard
     bool saidOpen = false;       // the open state of this host's last HOST
     // Room chat: the last few lines as name and text, and the line being typed.
     std::vector<ChatLine> chat;
