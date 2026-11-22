@@ -82,8 +82,8 @@ static inline uint64_t now_ms(void)
     /* Monotonic, so a wall-clock correction cannot end a wait or skew a round trip. */
 #ifdef _WIN32
     LARGE_INTEGER count, frequency;
+    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return 0u;
     QueryPerformanceCounter(&count);
-    QueryPerformanceFrequency(&frequency);
     return (uint64_t)(count.QuadPart / frequency.QuadPart * 1000 +
         count.QuadPart % frequency.QuadPart * 1000 / frequency.QuadPart);
 #else
