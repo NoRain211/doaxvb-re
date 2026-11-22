@@ -197,6 +197,26 @@ In the last run character select showed at frame 182 and the match at 441;
 slots 0 and 1 were people on ports 0 and 1, slots 2 and 3 their CPU
 partners. Every 30th frame's guest RAM hash matched the other side's.
 
+Later doa2u-re session fixes ported here:
+
+- While a save waits for the other side (`confirmSaveFrame`), pads repeat
+  at the session's rate, every 4 ms or every 16 ms through the relay, as in
+  `62605ee`. The wait used to send on every 1 ms pass, which tripped the
+  relay's limit of 250 packets a second.
+- During a session the game sees only the directory and read-only bits of
+  a file, or normal, and a directory lists with size 0, so both machines
+  read the same listing bytes (`f0fe65c`, `d44787b`, `42ee4e4`). A session
+  is detected by its save name (`recomp_save_set_session`), which a replay
+  also sets.
+- The end-of-session line also reports load, re-run and save times
+  (`1dae1ee`): `... after N rollbacks loading X ms (M frames run again in
+  Y ms, W waited, S saves in Z ms) in T s`.
+
+Not ported: `1bec245`'s cancel of the STARTING MATCH wait. Here the wait
+runs in the session's new runner before it has a window, so no key is read
+and no notice shows. Until that runner opens a window first, the console's
+close ends the wait.
+
 ## Hosting and joining
 
 `--netplay-host <port>` waits up to 10 minutes for a joiner, with
