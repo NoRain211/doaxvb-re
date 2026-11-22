@@ -857,25 +857,6 @@ static std::vector<std::uint8_t> padRecord(const std::string &hex)
     return record;
 }
 
-/* One pass of the STARTING MATCH wait. The runner opens its window only after
-   the lobby, so the wait has nothing to draw on, and its only keys are the pad
-   source: B or Back cancels, as it does in the online menu. The notice is
-   presented again every 100 ms, as a stalled session does, for the frame the
-   menu left up. A press already held must be let go first. */
-static bool startWaitHeld;
-static const char *startWaitDetail = "";
-static bool startWaitCancelled()
-{
-    using namespace std::chrono;
-    if (steady_clock::now() - noticeShown >= milliseconds(100)) showNotice("STARTING MATCH", startWaitDetail);
-    RecompInputGamepad pad{};
-    (void)recomp_input_host_sample(0u, &pad);
-    const bool down = pad.analog_buttons[RECOMP_INPUT_ANALOG_B] > 0u || (pad.buttons & 0x20u) != 0u; // B, Back
-    const bool pressed = down && !startWaitHeld;
-    startWaitHeld = down;
-    return pressed;
-}
-
 /* A room's socket, as --netplay-room-socket carries it to the session's
    runner and back: <local port>,<peer address>,<peer port>,<server
    address>,<server port>,<relay>, all but the local port in network order. */
@@ -985,16 +966,12 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
     if (modes[0] != 0u && !recomp_netplay_latest_profile(partition1).empty())
         lobby.flags |= LobbyHostAnalog;
     RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
-    // The wait below polls this; a room's runner goes back to its room on a cancel.
-    startWaitDetail = hosting ? "WAITING FOR THE OTHER PLAYER" : "CONNECTING TO THE HOST";
-    startWaitHeld = true;
-    showNotice("STARTING MATCH", startWaitDetail);
     const RecompNetplayLobbyResult result = hosting
-        ? recomp_netplay_host(&rollback.net, &lobby, &profiles, 10u * 60u * 1000u, startWaitCancelled)
-        : recomp_netplay_join(&rollback.net, &lobby, &profiles, 2u * 60u * 1000u, startWaitCancelled);
+        ? recomp_netplay_host(&rollback.net, &lobby, &profiles, 10u * 60u * 1000u, nullptr)
+        : recomp_netplay_join(&rollback.net, &lobby, &profiles, 2u * 60u * 1000u, nullptr);
     if (result != RECOMP_NETPLAY_LOBBY_OK) {
         std::cerr << "recomp runner: netplay " << (result == RECOMP_NETPLAY_LOBBY_CANCELLED
-            ? (rollback.net.peer_left ? "cancelled by the other player" : "cancelled")
+            ? "cancelled by the other player"
             : result == RECOMP_NETPLAY_LOBBY_MISMATCH ? "refused: the other player runs a different build"
             : result == RECOMP_NETPLAY_LOBBY_TIMEOUT ? "timed out" : "could not open its UDP port") << '\n';
         recomp_netplay_close(&rollback.net);
