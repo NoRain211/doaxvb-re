@@ -139,11 +139,17 @@ static void leaveBlockedHost(const std::string &message)
     menu.message = message;
 }
 
+// A peer's name as the screens show it: one the filter refuses never appears.
+static std::string shownName(const char *name)
+{
+    return recomp_netplay_name_banned(name) ? "HIDDEN NAME" : name;
+}
+
 // Keeps the other player's ID and name; then a host drops them and keeps hosting, and a joiner leaves.
 static void blockPeer()
 {
     RecompNetplayRoom &room = menu.lobby.room;
-    const std::string name = room.name;
+    const std::string name = shownName(room.name);
     menu.lobby.blockAsked = Clock::time_point{};
     if (!blockedId(room.peer_id)) {
         menu.blocked.emplace_back(room.peer_id, name);
@@ -276,7 +282,7 @@ bool updateRoom(std::uint16_t keys)
             return false;
         }
         menu.lobby.blockAsked = now;
-        menu.message = "PRESS X AGAIN TO BLOCK " + std::string(room.name) + ".";
+        menu.message = "PRESS X AGAIN TO BLOCK " + shownName(room.name) + ".";
     } else if ((keys & X) && menu.lobby.hosting) {
         copyText(shownAddress());
         menu.message = "ADDRESS COPIED.";
@@ -317,7 +323,7 @@ void drawRoom()
     title("ONLINE LOBBY ROOM");
     const std::string ping = room.pinged ? std::to_string(room.ping_ms) + " MS" + (menu.net.match.relay ? "  RELAY" : "") : "";
     const bool peer = room.joined;
-    const std::string peerName = room.mismatch ? "OTHER BUILD" : room.name;
+    const std::string peerName = room.mismatch ? "OTHER BUILD" : shownName(room.name);
     if (menu.lobby.hosting) {
         plate(40.0f, "P1  HOST", menu.name, true, "YOU", menu.lobby.ready);
         plate(350.0f, "P2", peerName, peer, ping, room.ready);
