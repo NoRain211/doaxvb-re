@@ -4,8 +4,9 @@ Status: in progress. The rollback core from
 [doa2u-re](https://github.com/NoRain211/doa2u-re) (branch
 `codex/rollback-netcode`) is ported: input prediction, the snapshot ring,
 SyncTest, replays, the UDP transport and the matchmaker client. The
-matchmaker server is doa2u-re's `tools/matchmaker.py`, shared by both
-games. Players pair through the runner's online menu, or with
+matchmaker server is `tools/matchmaker.py`, doa2u-re's last room server
+([The version 2 matchmaker](#the-version-2-matchmaker)). Players pair
+through the runner's online menu, or with
 `--netplay-host` and `--netplay-join`, and play a Two Players Exhibition
 match over UDP with rollback.
 
@@ -41,9 +42,14 @@ replay tag (`DXBR`, `.dxbr`) renamed: `rollback.c`, `replay.c`,
 `netplay.c`, `netplay_names.c`, `netplay_settings.cpp`,
 `netplay_upnp.c`, `guest_snapshot.c`, `synctest.c`, `native_fiber.c`,
 `musl_math/` (MIT, see NOTICE) and their tests.
-The matchmaker's packets keep doa2u-re's `D2MM` tag, so both games use one
-server; rooms pair only runners whose build digest matches, and the digest
-includes the XBE hash.
+The matchmaker's packets keep doa2u-re's `D2MM` tag; rooms pair only
+runners whose build digest matches, and the digest includes the XBE hash.
+`netplay.c`, `netplay_room.c` and `netplay_wire.h` follow doa2u-re's room
+protocol at `fc1de4f` (the same files as `0cf84f4` before its IPv6 path),
+with this repo's own lobby checks on top: a joiner's goodbye ends a room
+host's lobby before its hello, a delay past the rollback window is a
+mismatch, a refused build is logged once, profile serving stops at exactly
+eight copies, and dropping a room forgets the other build.
 
 `synctest.c` no longer checks which routine called Present. doa2u-re's
 frame boundary is the Swap, where that routine decides the main thread's
@@ -316,9 +322,13 @@ over the game: LOCAL, HOST ONLINE, JOIN ONLINE, FIND MATCH and NETPLAY
 SETTINGS. LOCAL hands the game the A press, so Exhibition starts as before;
 B closes the menu. The menu opens while the main menu runs with its cursor
 on EXHIBITION (`0x9D9E0C` 1, `viewer_menu_adapter.c`) and list 0 is open.
-The rooms, chat, blocks, FIND MATCH, the shared matchmaker and
+The rooms, chat, blocks, FIND MATCH, the matchmaker and
 `.recomp-storage/netplay.txt` work as in doa2u-re
-([matchmaking](https://github.com/NoRain211/doa2u-re/blob/codex/rollback-netcode/docs/matchmaking.md)).
+([matchmaking](https://github.com/NoRain211/doa2u-re/blob/0cf84f4/docs/matchmaking.md)).
+FIND MATCH shows each room's ping as an estimate (`~45 MS`): this socket's
+LIST to ROOMS round trip plus the host's HOST to HOSTED, which the list
+carries. No runner pings a listed host, and the list never says where a
+host is.
 Enter or Tab opens the room's chat line.
 
 The menu draws with doa2u-re's quads and 5 x 7 font (`overlay_screen.c`).
@@ -333,8 +343,9 @@ Pasting uses the Windows clipboard only.
 When both players are ready, doa2u-re reboots the game in the same process.
 Here each runner starts again instead (`recomp_runner_relaunch`) with its
 own arguments plus `--netplay-host` or `--netplay-join` and the room
-socket's port, peer and matchmaker (`--netplay-room-socket`), so the path
-the routers opened and a relay stay in use. Resetting every adapter that
+socket's port, peer, matchmaker, nonce and cookie (`--netplay-room-socket`),
+so the path the routers opened and a relay stay in use; the server relays a
+pair with the nonces from its JOIN. Resetting every adapter that
 keeps state between boots would be needed for an in-process reboot. The
 window closes and opens again. A session started from a room that ends
 (the other player left or went quiet, a desync, a failed lobby, or
@@ -376,6 +387,49 @@ back into its room, a new joiner joined it from the menu, both pressed
 READY and the second session played with every check matching. Killing the
 host instead brought the joiner back into its room, and it joined a new
 host's room on the same port for a second session.
+
+## The version 2 matchmaker
+
+The client speaks the matchmaker's protocol version 2. Each socket's
+packets carry a random nonce that the server's answers must echo, so a
+packet forged from the server's address is dropped. HOST, JOIN, LEAVE and
+RELAY also carry the cookie the server last sent to the sender's address;
+the server answers a missing or stale cookie with a new one, and the client
+sends its last HOST, JOIN or LEAVE again with it.
+
+A room admits players as doa2u-re's does:
+
+- An empty host hears anyone, at an address that may be forged. It answers
+  one room packet for one and stores nothing, and it seats the caller only
+  once that caller echoes a clock the host sent to that address in the last
+  3 s. Those clocks carry an offset keyed to each address, so a clock shown
+  to one address seats no other.
+- A host whose player proved its own address that way drops relayed
+  packets, since the server relays for whoever joined the room last.
+- A host back from a session holds its seat for its last joiner for up to
+  10 s, lists the room closed meanwhile, and seats no one else.
+- A room's lobby hears hellos only from the room's peer.
+
+doa2u-re replaced its rooms with Xbox Live and now drops every room packet,
+so this repo keeps the server: `tools/matchmaker.py` and
+`tools/test_matchmaker.py` are doa2u-re's at `0cf84f4`, with the default
+port changed to 47702. `0cf84f4` also has the IPv6 path; a client without
+it never asks for one, and the server pairs it over IPv4 as before.
+
+The runner's default matchmaker is UDP 47702 on the same host as before.
+Version 1 runners (0.7.0 and older) still use 47700 and the version 1
+server there, so the two run side by side. To run the version 2 server:
+
+1. Copy `tools/matchmaker.py` to `/opt/doaxbv-matchmaker-v2/` and
+   `tools/matchmaker.service` to
+   `/etc/systemd/system/doaxbv-matchmaker-v2.service`, then
+   `sudo systemctl enable --now doaxbv-matchmaker-v2`.
+2. Accept UDP 47702 in the host's firewall and in the cloud provider's
+   security list.
+3. `python tools/matchmaker.py --probe <server>:47702` must answer.
+
+Until the server answers on 47702, a runner with this client cannot list
+or find rooms; JOIN ONLINE by address still works.
 
 ## Replays and the network display
 

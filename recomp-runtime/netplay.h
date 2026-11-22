@@ -18,7 +18,7 @@ enum {
     RECOMP_NETPLAY_PAD_BYTES = 18u,
     RECOMP_NETPLAY_HEADER_BYTES = 33u,
     RECOMP_NETPLAY_MAX_PADS = RECOMP_ROLLBACK_HISTORY,
-    /* At most the 1,200 bytes the matchmaker relays (doa2u-re's tools/matchmaker.py). */
+    /* At most the 1,200 bytes the matchmaker relays (tools/matchmaker.py). */
     RECOMP_NETPLAY_MAX_PACKET =
         RECOMP_NETPLAY_HEADER_BYTES + RECOMP_NETPLAY_MAX_PADS * RECOMP_NETPLAY_PAD_BYTES,
     RECOMP_NETPLAY_SYNC_FRAMES = 32u,
@@ -45,7 +45,7 @@ typedef struct RecompNetplayProfiles {
     const uint8_t *mine;
     uint32_t mine_size;   /* at most RECOMP_NETPLAY_MAX_PROFILE */
     uint8_t *theirs;      /* holds RECOMP_NETPLAY_MAX_PROFILE bytes */
-    uint32_t theirs_size; /* set by a successful lobby */
+    uint32_t theirs_size; /* set by a successful lobby; 0 after a failed one */
 } RecompNetplayProfiles;
 
 typedef enum RecompNetplayLobbyResult {
@@ -56,7 +56,10 @@ typedef enum RecompNetplayLobbyResult {
     RECOMP_NETPLAY_LOBBY_CANCELLED, /* by this side, or by the other when peer_left is set */
 } RecompNetplayLobbyResult;
 
-enum { RECOMP_NETPLAY_LISTED_ROOMS = 12u };
+enum {
+    RECOMP_NETPLAY_LISTED_ROOMS = 12u,
+    RECOMP_NETPLAY_TOKEN_BYTES = 8u, /* a socket's nonce and the matchmaker's cookie */
+};
 
 /* One open room from the matchmaker's list. */
 typedef struct RecompNetplayListedRoom {
@@ -64,20 +67,21 @@ typedef struct RecompNetplayListedRoom {
     uint32_t age_s;
     uint8_t delay;
     char name[RECOMP_NETPLAY_NAME_BYTES + 1u];
-    /* The host's public endpoint, network order; port 0 when the server sent none. */
-    uint32_t address;
-    uint16_t port;
-    /* From recomp_netplay_match_probe's echo, kept while the room stays listed. */
+    /* An estimate: this socket's LIST to ROOMS round trip plus the host's
+       HOST to HOSTED, which the list carries. Not pinged when the host's is
+       unknown; the list never says where a host is. */
     uint32_t ping_ms;
     bool pinged;
 } RecompNetplayListedRoom;
 
-/* What a socket heard from the matchmaker (doa2u-re's tools/matchmaker.py), which the
+/* What a socket heard from the matchmaker (tools/matchmaker.py), which the
    socket's receives record on their way, and how it reaches its peer. */
 typedef struct RecompNetplayMatch {
     uint32_t server_address; /* network order; port 0 means none */
     uint16_t server_port;
     uint32_t room_id; /* this host's listing, once the server answered */
+    uint64_t host_sent_ms, list_sent_ms; /* when the last HOST or LIST went out; 0 once answered */
+    uint16_t host_rtt_ms; /* HOST to HOSTED, said in the next HOST; 0 unknown */
     RecompNetplayListedRoom rooms[RECOMP_NETPLAY_LISTED_ROOMS];
     uint32_t room_count;
     bool listed;  /* a list arrived; the caller clears it */
@@ -90,7 +94,20 @@ typedef struct RecompNetplayMatch {
     bool punching;
     uint64_t punch_ms;
     bool relay; /* packets to the peer go through the server, as do its answers */
-    bool busy;  /* the room's peer is talking, so a late pairing for another player is ignored */
+    bool busy;  /* the room's seat is taken or held, so a late pairing for another player is ignored */
+    /* A host's peer came by address and proved it, so a relayed packet is not theirs and is dropped. */
+    bool direct;
+    /* Random for each socket; the server's packets echo it, so forged ones are dropped. */
+    uint8_t nonce[RECOMP_NETPLAY_TOKEN_BYTES];
+    /* Random for each socket and never sent: it keys the offset of the clocks a host's room
+       sends an address it was not given. */
+    uint64_t clock_key;
+    /* The server's proof of this socket's address, zeros until it sends one. */
+    uint8_t cookie[RECOMP_NETPLAY_TOKEN_BYTES];
+    /* The last HOST, JOIN or LEAVE, sent once more when a new cookie answers it. */
+    uint8_t asked[160];
+    size_t asked_size;
+    uint64_t asked_ms;
 } RecompNetplayMatch;
 
 typedef struct RecompNetplay {
@@ -160,10 +177,16 @@ typedef struct RecompNetplayRoom {
     bool heard_new;
     /* Kept between ticks. */
     uint64_t heard_ms, sent_ms, echo_at_ms, heard_line_ms;
+    /* A host back from a session holds its seat for the last joiner until then; 0 when it holds none. */
+    uint64_t held_until_ms;
     uint32_t echo;
     char say[RECOMP_NETPLAY_CHAT_BYTES + 1u];
     uint32_t say_id, heard_id;
     uint64_t said_ms;
+    /* Added to the clocks this side sends. A host that took its player from that player's own
+       room packet, whose address may be forged, uses a number that differs for each address:
+       the player was taken only once it echoed such a clock. */
+    uint32_t salt;
 } RecompNetplayRoom;
 
 /* Reads what the other player said and, every 100 ms or every call while
@@ -181,6 +204,10 @@ void recomp_netplay_room_say(RecompNetplayRoom *room, const char *text);
 /* Forgets the other player as if they went quiet; a host stops answering
    them and lets another player in. */
 void recomp_netplay_room_drop(RecompNetplay *net, RecompNetplayRoom *room);
+/* A host back from a session keeps its seat for the socket's peer, the last
+   joiner, whose runner is booting too. The tick drops them if they have not
+   spoken within 10 s. */
+void recomp_netplay_room_hold(RecompNetplay *net, RecompNetplayRoom *room);
 /* Tells the other player this side is leaving the room, before the socket
    closes. Their tick sets left: a host lets another player in, and a joiner
    stops calling, so a room opened again on the same port starts empty. */
@@ -193,14 +220,10 @@ bool recomp_netplay_match_server(RecompNetplay *net, const char *host, uint16_t 
 void recomp_netplay_match_host(RecompNetplay *net, const char *digest, uint8_t delay, bool open,
     const char *name);
 void recomp_netplay_match_list(RecompNetplay *net, const char *digest);
-/* Sends each listed room with an endpoint a ping. A listed host's room ticks
-   echo it, and recomp_netplay_match_poll records the echo as the room's ping. */
-void recomp_netplay_match_probe(RecompNetplay *net);
 /* Asks to join a listed room; again until met or gone. */
 void recomp_netplay_match_join(RecompNetplay *net, uint32_t room_id, const char *digest, const char *name);
 void recomp_netplay_match_leave(RecompNetplay *net);
-/* Drains the socket outside a room, keeping only the matchmaker's answers
-   and the listed rooms' pings. */
+/* Drains the socket outside a room, keeping only the matchmaker's answers. */
 void recomp_netplay_match_poll(RecompNetplay *net);
 /* The input delay to suggest for a round trip: none up to 20 ms, then a
    frame per 33 ms rounded up, at most RECOMP_ROLLBACK_WINDOW. */
@@ -208,10 +231,11 @@ uint32_t recomp_netplay_suggested_delay(uint32_t rtt_ms);
 /* Waits on a socket from recomp_netplay_listen, or a room's, for a joiner's
    hello, answering each with the host's
    digest and settings. The first joiner with the same digest becomes the
-   peer; one with another digest learns it from the answer and is ignored.
+   peer; one with another digest learns it from the answer and is ignored. A
+   room's socket, which already has a peer, hears only that peer.
    Returns once both sides hold both profiles. cancelled, when not null, is
-   polled every 20 ms; either side
-   cancelling sends the other a goodbye, which ends its wait too. */
+   polled every 20 ms; either side cancelling sends the other a goodbye,
+   which ends its wait too. */
 RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNetplayLobby *lobby,
     RecompNetplayProfiles *profiles, uint32_t timeout_ms, bool (*cancelled)(void));
 /* Says hello to the peer of a socket from recomp_netplay_open, or a room's,

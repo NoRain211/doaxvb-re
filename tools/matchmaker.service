@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The version 2 room matchmaker as a systemd service; docs/rollback-netcode.md has the install steps.
+[Unit]
+Description=DOAXBV netplay room matchmaker, protocol version 2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/doaxbv-matchmaker-v2/matchmaker.py --port 47702
+Restart=always
+RestartSec=2
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# AF_INET6 for the IPv6 socket, AF_UNIX for asyncio's internal socket pair.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

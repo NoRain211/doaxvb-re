@@ -108,6 +108,9 @@
     "xbe/**",
     "docs/research/rollback-engine-audit.md",
     "tools/check-rollback-seal-span.c",
+    "tools/matchmaker.py",
+    "tools/matchmaker.service",
+    "tools/test_matchmaker.py",
     "tools/recomp-net-patches/README.md",
     "tools/recomp-net-patches/rollback-seals.patch",
     "third_party/rbengine",
@@ -189,7 +192,7 @@
   ],
   "byte_literal_exceptions": [
     {
-      "sha256": "3678064993b9a107c5cd38e2cd987029c88ad69b623c1d0e77efb39613a22e4a",
+      "sha256": "888f210ee7b25c934e2f4b09a64805dc2aaaf1f3e120d4f975c0f15715b6b7c1",
       "reason": "Hand-written: the default netplay matchmaker's host:port, XORed with 0x5a, in netplay_menu.cpp (from doa2u-re). Not game data."
     },
     {

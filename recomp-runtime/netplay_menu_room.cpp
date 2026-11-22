@@ -281,8 +281,9 @@ bool updateRoom(std::uint16_t keys)
     if (menu.lobby.hosting) (void)takeLookup();
     if (menu.lobby.hosting && menu.net.match.server_port != 0u && Clock::now() - menu.lobby.checkedIn >= std::chrono::seconds(5)) {
         menu.lobby.checkedIn = Clock::now();
+        // Back from a session, the seat is the last joiner's until they return or the room gives up on them.
         recomp_netplay_match_host(&menu.net, menu.digest.data(), static_cast<std::uint8_t>(menu.delay),
-            !room.joined && !menu.lobby.starting, menu.name.c_str());
+            !room.joined && !menu.lobby.starting && room.held_until_ms == 0u, menu.name.c_str());
     }
     if (room.heard_new) {
         room.heard_new = false;
