@@ -197,13 +197,17 @@ static bool save_write_allowed(const FileHandleEntry *entry, uint32_t owner)
 }
 
 /* A host file's attributes as the game sees them. In a session the saves live
-   in their own folder (recomp_save_set_session) and only the directory bit or
-   normal is reported: Windows adds archive, and index or cloud bits by folder,
-   that POSIX hosts never report, and both sides must see the same bytes. */
+   in their own folder (recomp_save_set_session) and only the directory and
+   read-only bits, or normal, are reported: Windows adds archive, and index or
+   cloud bits by folder, that POSIX hosts never report, and both sides must see
+   the same bytes. Read-only is the game's own, kept in a POSIX file's mode, and
+   it refuses a delete, so the game sees it. */
 static uint32_t session_attributes(uint32_t host)
 {
+    uint32_t kept;
     if (recomp_save_get_session() == NULL) return host;
-    return (host & FILE_ATTRIBUTE_DIRECTORY) != 0u ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    kept = host & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY);
+    return kept != 0u ? kept : FILE_ATTRIBUTE_NORMAL;
 }
 
 static uint32_t register_file_handle(

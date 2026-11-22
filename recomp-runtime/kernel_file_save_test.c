@@ -1034,6 +1034,13 @@ int recomp_kernel_file_save_test(void)
         passed &= expect("session query hides host attribute bits",
             query_information(handle, 0x22u, 0x38u, &passed) == 0u &&
             *recomp_memory_u32(TEST_INFORMATION + 0x30u) == FILE_ATTRIBUTE_NORMAL);
+        passed &= expect("session file set read-only",
+            set_file_attributes(handle, FILE_ATTRIBUTE_READONLY, &passed) == 0u);
+        passed &= expect("session query keeps read-only alone",
+            query_information(handle, 0x22u, 0x38u, &passed) == 0u &&
+            *recomp_memory_u32(TEST_INFORMATION + 0x30u) == FILE_ATTRIBUTE_READONLY);
+        passed &= expect("session file set normal",
+            set_file_attributes(handle, FILE_ATTRIBUTE_NORMAL, &passed) == 0u);
         if (status == 0u) passed &= close_file(handle, &passed);
         recomp_save_set_session(NULL);
         SetFileAttributesA(session_file, FILE_ATTRIBUTE_NORMAL);
