@@ -39,10 +39,10 @@ bool recomp_netplay_open_router_port(uint16_t port, char *address, size_t size)
     if (found != UPNP_CONNECTED_IGD && found != UPNP_PRIVATEIP_IGD) {
         if (found != UPNP_NO_IGD) FreeUPNPUrls(&urls);
         fprintf(stderr, "recomp netplay: no router answered UPnP; if the other player cannot join, "
-            "forward UDP port %u to this computer by hand\n", port);
+            "forward UDP port %u to this computer by hand\n", (unsigned)port);
         return false;
     }
-    snprintf(text, sizeof text, "%u", port);
+    snprintf(text, sizeof text, "%u", (unsigned)port);
     /* Routers that overwrite instead of refusing would take another device's or program's forward. */
     bool ours;
     if (look_up_forward(text, lan, &ours) == UPNPCOMMAND_SUCCESS && !ours) {
@@ -61,7 +61,7 @@ bool recomp_netplay_open_router_port(uint16_t port, char *address, size_t size)
     if (result != UPNPCOMMAND_SUCCESS) {
         FreeUPNPUrls(&urls);
         fprintf(stderr, "recomp netplay: the router refused to forward UDP port %u (%s); "
-            "forward it to this computer by hand\n", port, strupnperror(result));
+            "forward it to this computer by hand\n", (unsigned)port, strupnperror(result));
         return false;
     }
     snprintf(mapped_port, sizeof mapped_port, "%s", text);
@@ -73,7 +73,7 @@ bool recomp_netplay_open_router_port(uint16_t port, char *address, size_t size)
         /* No address: players paste this log into public issues. */
         fprintf(stderr, "recomp netplay: the router forwards UDP port %u; the other player joins your "
             "public address on that port\n", port);
-        if (size != 0u) snprintf(address, size, "%s:%u", wan, port);
+        if (size != 0u) snprintf(address, size, "%s:%u", wan, (unsigned)port);
     }
     return true;
 }
