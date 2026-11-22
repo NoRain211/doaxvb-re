@@ -210,7 +210,9 @@ Later doa2u-re session fixes ported here:
   also sets.
 - The end-of-session line also reports load, re-run and save times
   (`1dae1ee`): `... after N rollbacks loading X ms (M frames run again in
-  Y ms, W waited, S saves in Z ms) in T s`.
+  Y ms, W waited, S saves in Z ms) in T s`. As in doa2u-re, Y runs from
+  each load to the next newest frame, so it includes X and the saves made
+  while frames run again.
 
 Not ported: `1bec245`'s cancel of the STARTING MATCH wait. Here the wait
 runs in the session's new runner before it has a window, so no key is read
