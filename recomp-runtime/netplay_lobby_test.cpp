@@ -142,15 +142,47 @@ static bool relayOverridesIpv6()
         netplay_relay_on(&host, "the test relays");
         const std::uint8_t hello[2] = {'h', 'i'};
         netplay_send_to(&host, host.peer_address, host.peer_port, hello, sizeof hello);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // Polled up to a second, so a slow machine's late datagram still counts.
         std::uint8_t packet[256];
-        for (int got; (got = static_cast<int>(recv(static_cast<RawSocket>(server.socket),
-                           reinterpret_cast<char *>(packet), sizeof packet, 0))) > 0;)
-            wrapped = wrapped || (got > 6 && std::memcmp(packet, "D2MM", 4) == 0 && packet[5] == 9u);
+        for (int i = 0; i < 200 && !wrapped; ++i) {
+            const int got = static_cast<int>(recv(static_cast<RawSocket>(server.socket),
+                reinterpret_cast<char *>(packet), sizeof packet, 0));
+            if (got > 6 && std::memcmp(packet, "D2MM", 4) == 0 && packet[5] == 9u) wrapped = true;
+            else if (got <= 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
     }
     recomp_netplay_close(&server);
     recomp_netplay_close(&host);
     return wrapped && !host.match.direct6;
+}
+
+// A host that kept a dropped peer's IPv6 path seats a caller who proved its own IPv4 address, and
+// forgets that path, or its packets for the caller would go to the old peer over IPv6.
+static bool byAddressCallerDropsIpv6()
+{
+    RecompNetplay host, joiner = unopened();
+    char digest[RECOMP_NETPLAY_DIGEST_BYTES];
+    std::memset(digest, 'a', sizeof digest);
+    RecompNetplayRoom hostRoom{}, joinerRoom{};
+    hostRoom.hosting = true;
+    const bool listening = recomp_netplay_listen(&host, 0u);
+    const std::uint16_t port = listening ? recomp_netplay_local_port(&host) : 0u;
+    bool met = false;
+    if (port != 0u && recomp_netplay_open(&joiner, 0u, "127.0.0.1", port)) {
+        host.match.direct6 = true; // left over from an IPv6 peer that went quiet
+        host.match.candidate6[15] = 1u;
+        host.match.candidate6_port = htons(9u);
+        for (int i = 0; i < 50 && !(joinerRoom.joined && hostRoom.joined); ++i) {
+            recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
+            recomp_netplay_room_tick(&host, &hostRoom, digest, "HOST", false, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        met = joinerRoom.joined && hostRoom.joined;
+    }
+    const bool forgot = !host.match.direct6 && host.match.candidate6_port == 0u;
+    recomp_netplay_close(&host);
+    recomp_netplay_close(&joiner);
+    return met && forgot;
 }
 
 // Counts the lobby packets of one kind waiting on a socket.
@@ -962,6 +994,7 @@ int main()
     check("matched rooms relay without endpoints", matchRooms(0u, 0u, 5000, relayed) && relayed);
     check("matched rooms relay when punching fails", matchRooms(47629u, 47628u, 10000, relayed) && relayed);
     check("a relay fallback wins over a kept IPv6 path", relayOverridesIpv6());
+    check("a caller seated by address forgets a dropped peer's IPv6 path", byAddressCallerDropsIpv6());
     estimatePings();
     serveBounds();
 

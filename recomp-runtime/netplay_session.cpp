@@ -1074,9 +1074,13 @@ bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const
     RoomSocket room;
     if (!recomp_netplay_room_state_parse(launch.room, state) || !room.parse(launch.roomSocket)) return false;
     RecompNetplay socket;
-    // The session's runner may still hold the port while it exits.
+    // The session's runner may still hold the port while it exits, its IPv6 socket too. A room that
+    // reached its peer over IPv6 waits for both; the last try takes IPv4 alone.
     bool open = false;
-    for (int tries = 0; tries < 20 && !(open = recomp_netplay_listen(&socket, room.localPort)); ++tries) {
+    for (int tries = 0; tries < 20; ++tries) {
+        open = recomp_netplay_listen(&socket, room.localPort) &&
+            (room.peer6Port == 0u || socket.match.has_socket6 || tries == 19);
+        if (open) break;
         recomp_netplay_close(&socket);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -1085,6 +1089,8 @@ bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const
         std::fprintf(stderr, "recomp netplay: cannot open UDP port %u again; the room stays closed\n", room.localPort);
         return false;
     }
+    if (room.peer6Port != 0u && !socket.match.has_socket6)
+        std::fprintf(stderr, "recomp netplay: the room reopens without IPv6, which reached the other player\n");
     room.applyTo(socket);
     std::fprintf(stderr, "recomp netplay: back in the room as the %s\n", state.hosting ? "host" : "joiner");
     recomp_netplay_menu_return_to_room(socket, state, reason);
