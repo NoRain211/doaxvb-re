@@ -837,6 +837,7 @@ if(RECOMP_PROGRAM_DIR)
         netplay_names.c
         netplay_upnp.c
         netplay_game.c
+        netplay_game_pad.c
         netplay_profile.cpp
         netplay_settings.cpp
         netplay_menu.cpp
@@ -1027,7 +1028,7 @@ add_executable(recomp_rollback_test rollback.c rollback_test.c)
 add_test(NAME recomp-runtime-rollback COMMAND recomp_rollback_test)
 add_executable(recomp_replay_test replay.c replay_test.c)
 add_test(NAME recomp-runtime-replay COMMAND recomp_replay_test)
-add_executable(recomp_netplay_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_test.c)
+add_executable(recomp_netplay_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_game_pad.c netplay_test.c)
 add_executable(recomp_netplay_lobby_test netplay.c netplay_room.c netplay_names.c rollback.c netplay_lobby_test.cpp)
 if(WIN32)
     target_link_libraries(recomp_netplay_test PRIVATE ws2_32)

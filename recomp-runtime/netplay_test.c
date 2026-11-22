@@ -1,4 +1,5 @@
 #include "netplay.h"
+#include "netplay_game.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -171,6 +172,28 @@ int main(void)
     static const uint32_t delays[] = {0u, 0u, 1u, 1u, 2u, 2u, 4u, 8u, 8u, 8u};
     for (size_t i = 0u; i < sizeof rtts / sizeof *rtts; ++i)
         check("suggested delay", recomp_netplay_suggested_delay(rtts[i]) == delays[i]);
+
+    // Values the game reads as zero become zero; any value it reads stays as it is.
+    RecompInputGamepad noisy;
+    memset(&noisy, 0, sizeof noisy);
+    noisy.thumb_lx = 0x1fff;
+    noisy.thumb_ly = -0x1fff;
+    noisy.thumb_rx = 0x2000;
+    noisy.thumb_ry = -0x2000;
+    // Under each threshold on even buttons (A, X, Black, L, plus R below), at it on odd ones (B, Y, White).
+    for (unsigned i = 0u; i < 6u; ++i) noisy.analog_buttons[i] = i % 2u == 0u ? 0x1fu : 0x20u;
+    noisy.analog_buttons[6] = 0x7fu;
+    noisy.analog_buttons[7] = 0x31u;
+    RecompInputGamepad canonical = recomp_netplay_game_canonical_pad(noisy);
+    check("canonical sticks", canonical.thumb_lx == 0 && canonical.thumb_ly == 0 &&
+        canonical.thumb_rx == 0x2000 && canonical.thumb_ry == -0x2000);
+    bool kept = canonical.analog_buttons[6] == 0u && canonical.analog_buttons[7] == 0u;
+    for (unsigned i = 0u; i < 6u; ++i) kept = kept && canonical.analog_buttons[i] == (i % 2u == 0u ? 0u : 0x20u);
+    check("canonical analog", kept);
+    noisy.analog_buttons[6] = 0x80u;
+    noisy.analog_buttons[7] = 0x32u; // the R trigger's value counts from 0x32, under its 0x80 digital bit
+    canonical = recomp_netplay_game_canonical_pad(noisy);
+    check("canonical triggers", canonical.analog_buttons[6] == 0x80u && canonical.analog_buttons[7] == 0x32u);
 
     if (failures != 0) return 1;
     puts("PASS netplay carries pads, acks, advantage and goodbyes over UDP and screens names");

@@ -28,6 +28,9 @@ bool recomp_netplay_game_main_menu(void);
 /* The main menu runs with its cursor on EXHIBITION, where the runner's
    online menu opens on A. */
 bool recomp_netplay_game_exhibition_chosen(void);
+/* The pad with what the game reads as zero stored as zero, so noise there
+   is no misprediction (netplay_game_pad.c). */
+RecompInputGamepad recomp_netplay_game_canonical_pad(RecompInputGamepad pad);
 
 #ifdef __cplusplus
 }
