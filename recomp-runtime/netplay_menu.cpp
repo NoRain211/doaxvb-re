@@ -508,6 +508,7 @@ void recomp_netplay_menu_install(const std::filesystem::path &storage, const std
     if (!menu.installed) {
         menu.storage = storage;
         loadSettings();
+        std::atexit(recomp_netplay_menu_exit);
     }
     menu.installed = true;
     menu.digest = digest;
@@ -551,7 +552,8 @@ void recomp_netplay_menu_filter(std::uint32_t port, RecompInputGamepad *pad)
     if (!menu.installed || port >= RECOMP_INPUT_PORT_COUNT) return;
     std::lock_guard<std::mutex> guard(menu.lock);
     const std::uint16_t keys = keysOf(*pad);
-    const std::uint16_t edges = keys & ~menu.held[port];
+    const std::uint16_t edges = menu.settling[port] ? 0u : keys & ~menu.held[port];
+    menu.settling[port] = false;
     menu.held[port] = keys;
     if (menu.screen == Screen::Closed) {
         if (menu.swallow) {
@@ -623,6 +625,9 @@ void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const Recom
     menu.openedBy = 0u;
     menu.message.clear();
     menu.covering = true;
+    // This runner started again for the room, so a B still held from leaving the match would leave it.
+    std::fill(std::begin(menu.settling), std::end(menu.settling), true);
+    menu.pressed = 0u;
     // The socket, its peer and how it reaches the peer carry over; the host's room greets the last joiner first.
     menu.net = RecompNetplay{};
     menu.net.socket = socket.socket;
@@ -644,4 +649,12 @@ void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const Recom
     }
     if (menu.screen != Screen::Room) recomp_netplay_close(&menu.net);
     else menu.message = endedBecause(reason);
+}
+
+void recomp_netplay_menu_exit()
+{
+    // Nothing that can end the run is called under the lock: a session's relaunch and the window's close
+    // both stop the runner outside it. A runner relaunching into its session closed the room screen first.
+    std::lock_guard<std::mutex> guard(menu.lock);
+    if (menu.screen == Screen::Room) sayLeaving();
 }

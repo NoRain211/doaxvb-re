@@ -9,6 +9,13 @@
 
 namespace netplay_menu {
 
+// A new socket has no list yet: it asks on the first tick after the matchmaker's address is known.
+static void awaitList()
+{
+    menu.find.listOk = false;
+    menu.find.listedAt = Clock::time_point{};
+}
+
 // FIND MATCH asks from a socket that becomes this joiner's room socket, so the
 // endpoint the matchmaker sees is the one the host punches to.
 void find()
@@ -20,20 +27,21 @@ void find()
         return;
     }
     lookUpMatchmaker();
-    menu.find.listOk = menu.find.quick = false;
+    awaitList();
+    menu.find.quick = false;
     menu.find.choice = 0;
+    menu.find.chosen = 0u;
     menu.find.joining = 0u;
-    menu.find.listedAt = Clock::time_point{};
     menu.message.clear();
     menu.screen = Screen::Find;
 }
 
-// The listed rooms whose names pass the name check, oldest first, as many as fit.
-static std::vector<const RecompNetplayListedRoom *> shownRooms()
+// The listed rooms whose names pass the name check, newest first as the server lists them, as many as fit.
+static std::vector<const RecompNetplayListedRoom *> shownRooms(std::size_t limit = 6u)
 {
     std::vector<const RecompNetplayListedRoom *> rooms;
     const RecompNetplayMatch &match = menu.net.match;
-    for (std::uint32_t i = 0u; i < match.room_count && rooms.size() < 6u; ++i)
+    for (std::uint32_t i = 0u; i < match.room_count && rooms.size() < limit; ++i)
         if (!recomp_netplay_name_banned(match.rooms[i].name) &&
             std::find(menu.find.blockedRooms.begin(), menu.find.blockedRooms.end(), match.rooms[i].id) == menu.find.blockedRooms.end())
             rooms.push_back(&match.rooms[i]);
@@ -65,8 +73,7 @@ static bool forgetJoin()
     }
     menu.net.match.server_address = serverAddress;
     menu.net.match.server_port = serverPort;
-    menu.find.listOk = false; // the new socket has no list yet
-    menu.find.listedAt = Clock::time_point{};
+    awaitList();
     return true;
 }
 
@@ -133,25 +140,35 @@ void updateFind(std::uint16_t keys)
         return;
     }
     if (match.server_port != 0u && now - menu.find.listedAt >= std::chrono::seconds(2)) {
+        if (menu.find.listedAt == Clock::time_point{}) menu.find.askingSince = now; // the wait counts from the first ask
         menu.find.listedAt = now;
         recomp_netplay_match_list(&menu.net, menu.digest.data());
     }
     const auto rooms = shownRooms();
     const int count = static_cast<int>(rooms.size());
+    // A newer room pushes the others down the list, so the highlight follows its room.
+    const auto kept = std::find_if(rooms.begin(), rooms.end(),
+        [](const RecompNetplayListedRoom *room) { return room->id == menu.find.chosen; });
+    if (kept != rooms.end()) menu.find.choice = static_cast<int>(kept - rooms.begin());
     if (menu.find.choice >= count) menu.find.choice = count > 0 ? count - 1 : 0;
     if ((keys & Up) && count > 0) menu.find.choice = (menu.find.choice + count - 1) % count;
     if ((keys & Down) && count > 0) menu.find.choice = (menu.find.choice + 1) % count;
+    if (count > 0) menu.find.chosen = rooms[static_cast<std::size_t>(menu.find.choice)]->id;
     if ((keys & A) && count > 0) askToJoin(rooms[static_cast<std::size_t>(menu.find.choice)]->id, now);
     if (keys & Y) menu.find.quick = true;
-    // Quick match takes the open room with the lowest estimated ping, the oldest when no host's
-    // round trip is known, or hosts one when none is open.
-    const RecompNetplayListedRoom *nearest = nullptr;
-    for (const RecompNetplayListedRoom *room : rooms)
-        if (room->pinged && (nearest == nullptr || room->ping_ms < nearest->ping_ms)) nearest = room;
     if (menu.find.quick && menu.find.listOk) {
         menu.find.quick = false;
-        if (count > 0) {
-            askToJoin((nearest != nullptr ? nearest : rooms.front())->id, now);
+        // Quick match takes the listed room with the lowest estimated ping, the oldest when no host's
+        // round trip is known, or hosts one when none is open. It looks past the six shown.
+        const auto listed = shownRooms(RECOMP_NETPLAY_LISTED_ROOMS);
+        const RecompNetplayListedRoom *nearest = nullptr;
+        for (const RecompNetplayListedRoom *room : listed)
+            if (room->pinged && (nearest == nullptr || room->ping_ms < nearest->ping_ms)) nearest = room;
+        if (!listed.empty()) {
+            // Newest first, so the last of rooms equally old is the oldest.
+            const auto oldest = std::max_element(listed.rbegin(), listed.rend(),
+                [](const RecompNetplayListedRoom *a, const RecompNetplayListedRoom *b) { return a->age_s < b->age_s; });
+            askToJoin((nearest != nullptr ? nearest : *oldest)->id, now);
         } else {
             recomp_netplay_close(&menu.net);
             menu.screen = Screen::Online; // where a failed host leaves its message
@@ -176,8 +193,13 @@ void drawFind()
         recomp_overlay_text(588.0f - recomp_overlay_text_width(detail.c_str(), 2.0f), y + 2.0f, 2.0f,
             selected ? White : Gray, detail.c_str());
     }
+    // A slow address lookup is not the matchmaker's silence.
+    const bool silent = menu.find.listedAt != Clock::time_point{} &&
+        Clock::now() - menu.find.askingSince > std::chrono::seconds(6);
+    const char *asking = silent
+        ? "NO ANSWER FROM THE MATCHMAKER. STILL ASKING..." : "ASKING THE MATCHMAKER...";
     const char *status = menu.find.joining != 0u ? "JOINING..."
-        : !menu.find.listOk ? "ASKING THE MATCHMAKER..."
+        : !menu.find.listOk ? asking
         : rooms.empty() ? "NO OPEN ROOMS. Y HOSTS ONE FOR OTHERS TO FIND."
         : menu.find.quick ? "FINDING THE NEAREST ROOM..." : nullptr;
     if (status != nullptr && menu.message.empty()) recomp_overlay_text(40.0f, 396.0f, 2.0f, Yellow, status);

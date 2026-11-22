@@ -283,6 +283,28 @@ carries. No runner pings a listed host, and the list never says where a
 host is.
 Enter or Tab opens the room's chat line.
 
+As in doa2u-re:
+- FIND MATCH says NO ANSWER FROM THE MATCHMAKER. STILL ASKING after 6 s
+  without a list, counted from its first ask, not from the name lookup.
+- The highlight stays on its room when newer rooms push it down, since the
+  server lists the newest first.
+- Quick match looks at every listed room, not only the six shown.
+- A host says HOST at once when its room fills, opens or is held, so a
+  taken seat leaves the list before the server's 10 s claim on it ends.
+- A relayed joiner whose host stays silent says JOIN for its room again
+  every 3 s, which pairs them anew after a matchmaker restart. A room
+  reopened after a session doesn't know its FIND MATCH id, so it doesn't
+  ask.
+- Closing the window in a room tells the other player and the matchmaker,
+  as B does (`recomp_netplay_menu_exit`, an atexit hook). A runner
+  relaunching into its session has closed the room screen first, so it
+  says nothing.
+- A button still held when the room reopens after a session counts only
+  once it is let go.
+- The host sends the newest save folder that the other player's unpack
+  takes (the checks in `netplay_profile.cpp`), so a newer folder with a
+  stray file doesn't stop the match.
+
 The menu draws with doa2u-re's quads and 5 x 7 font (`overlay_screen.c`).
 The game thread publishes each frame's quads, and the presenter's thread
 draws them with Dear ImGui into a 640 x 480 area centered on the window,

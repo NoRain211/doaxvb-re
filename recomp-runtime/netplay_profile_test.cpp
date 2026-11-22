@@ -106,6 +106,23 @@ int main()
         fs::last_write_time(mine / "UDATA/54430007/0F515488395E/doaxuser.dat") - std::chrono::hours(1));
     const std::string latest = recomp_netplay_latest_profile(mine);
     check("latest profile", latest == "UDATA/54430007/0F515488395E");
+    // Newer saves the other player would refuse are passed over: a short doaxuser.dat, a file the game
+    // never writes, and a folder name the unpack refuses.
+    const fs::path picky = root / "picky";
+    write(picky / "UDATA/54430007/0F515488395E/SaveMeta.xbx", kasumi);
+    write(picky / "UDATA/54430007/0F515488395E/doaxuser.dat", data);
+    write(picky / "UDATA/54430007/CCCCCCCCCCCC/SaveMeta.xbx", meta(u"Name=Short\r\n"));
+    write(picky / "UDATA/54430007/CCCCCCCCCCCC/doaxuser.dat", title);
+    write(picky / "UDATA/54430007/DDDDDDDDDDDD/SaveMeta.xbx", meta(u"Name=Extra\r\n"));
+    write(picky / "UDATA/54430007/DDDDDDDDDDDD/doaxuser.dat", data);
+    write(picky / "UDATA/54430007/DDDDDDDDDDDD/notes.txt", title);
+    write(picky / "UDATA/54430007/EEEE EEEE/SaveMeta.xbx", meta(u"Name=Spaced\r\n"));
+    write(picky / "UDATA/54430007/EEEE EEEE/doaxuser.dat", data);
+    for (const char *save : {"CCCCCCCCCCCC/doaxuser.dat", "DDDDDDDDDDDD/notes.txt", "EEEE EEEE/doaxuser.dat"})
+        fs::last_write_time(picky / "UDATA/54430007" / save,
+            fs::last_write_time(picky / "UDATA/54430007/0F515488395E/doaxuser.dat") + std::chrono::hours(2));
+    check("latest profile the other player takes",
+        recomp_netplay_latest_profile(picky) == "UDATA/54430007/0F515488395E");
     check("own name", recomp_netplay_own_profile_name(mine) == "Kasumi \xc3\xa9\xe4\xb8\x80");
 
     // A host's blob carries its profile and the title saves; a joiner's only its profile.
