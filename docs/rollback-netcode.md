@@ -68,6 +68,20 @@ Ported, because this runtime differs:
   DPCs, file cursors, allocations, the heap cursors, input, the D3D frame
   state and the DirectSound buffer clocks (`synctest_modules.c`).
 
+Snapshot and frame costs came over from doa2u-re's `ae35d38` (`guest_snapshot.c`,
+`guest_snapshot_test.c`) and `1dae1ee`, with `e5fe8f0`'s bound on the stale-hash
+bitmap: a rewind walks the undone records oldest first and writes each page
+once, from the record that last held its pre-rewind value; a save keeps
+write-watch tracking running, compares only the pages it reports with the
+shadow, and restarts tracking once most of that list has stopped changing; a
+page's hash is marked stale on save or load and brought up to date at the
+desync check rather than during every save; packed SSE loads and stores to
+guest RAM compile inline through `recomp_memory_bytes`, as `MEM32`/`MEMF`
+already did; and the audio pump no longer reserves its 80 KB frame when a
+buffer has nothing to hand the host. `ae35d38`'s `canonical()` pad zeroing is
+not here: it depends on doa2u's pad-update thresholds and needs re-deriving in
+`game_rollback.c`.
+
 ## Determinism found so far
 
 `RECOMP_SYNCTEST=loop` saves a frame at the loop top, runs
