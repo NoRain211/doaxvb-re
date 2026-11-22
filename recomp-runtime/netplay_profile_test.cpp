@@ -92,20 +92,20 @@ int main()
     const std::vector<std::uint8_t> wide = meta(u"Name=\U0001F600" + std::u16string(1u, char16_t(0xd800u)) + u"a");
     check("surrogates", recomp_netplay_profile_name(wide.data(), wide.size()) == "\xf0\x9f\x98\x80\xef\xbf\xbd" "a");
 
-    // A profile, a second one, title saves and a file beside the profiles.
-    const std::vector<std::uint8_t> data{1u, 2u, 3u}, title{4u}, beside{5u}, other{6u};
-    write(mine / "UDATA/54430006/0F515488395E/SaveMeta.xbx", kasumi);
-    write(mine / "UDATA/54430006/0F515488395E/ups.dat", data);
-    write(mine / "UDATA/54430006/AAAAAAAAAAAA/SaveMeta.xbx", meta(u"Name=Other\r\n"));
-    write(mine / "UDATA/54430006/AAAAAAAAAAAA/ups.dat", other);
-    write(mine / "UDATA/54430006/TitleMeta.xbx", beside);
-    write(mine / "TDATA/54430006/title.dat", title);
-    fs::last_write_time(mine / "UDATA/54430006/AAAAAAAAAAAA/ups.dat",
-        fs::last_write_time(mine / "UDATA/54430006/0F515488395E/ups.dat") - std::chrono::hours(1));
-    fs::last_write_time(mine / "UDATA/54430006/AAAAAAAAAAAA/SaveMeta.xbx",
-        fs::last_write_time(mine / "UDATA/54430006/0F515488395E/ups.dat") - std::chrono::hours(1));
+    // A profile, a second one, title saves and a file beside the profiles. doaxuser.dat is 11,176 bytes in every save.
+    const std::vector<std::uint8_t> data(11176u, 3u), title{4u}, beside{5u}, other(11176u, 6u);
+    write(mine / "UDATA/54430007/0F515488395E/SaveMeta.xbx", kasumi);
+    write(mine / "UDATA/54430007/0F515488395E/doaxuser.dat", data);
+    write(mine / "UDATA/54430007/AAAAAAAAAAAA/SaveMeta.xbx", meta(u"Name=Other\r\n"));
+    write(mine / "UDATA/54430007/AAAAAAAAAAAA/doaxuser.dat", other);
+    write(mine / "UDATA/54430007/TitleMeta.xbx", beside);
+    write(mine / "TDATA/54430007/title.dat", title);
+    fs::last_write_time(mine / "UDATA/54430007/AAAAAAAAAAAA/doaxuser.dat",
+        fs::last_write_time(mine / "UDATA/54430007/0F515488395E/doaxuser.dat") - std::chrono::hours(1));
+    fs::last_write_time(mine / "UDATA/54430007/AAAAAAAAAAAA/SaveMeta.xbx",
+        fs::last_write_time(mine / "UDATA/54430007/0F515488395E/doaxuser.dat") - std::chrono::hours(1));
     const std::string latest = recomp_netplay_latest_profile(mine);
-    check("latest profile", latest == "UDATA/54430006/0F515488395E");
+    check("latest profile", latest == "UDATA/54430007/0F515488395E");
     check("own name", recomp_netplay_own_profile_name(mine) == "Kasumi \xc3\xa9\xe4\xb8\x80");
 
     // A host's blob carries its profile and the title saves; a joiner's only its profile.
@@ -115,17 +115,17 @@ int main()
     std::vector<std::string> names;
     check("unpack host", recomp_netplay_unpack_profile(host.data(), host.size(), theirs / "host", names));
     check("host names", names == std::vector<std::string>{"Kasumi \xc3\xa9\xe4\xb8\x80"});
-    check("host files", read(theirs / "host/UDATA/54430006/0F515488395E/ups.dat") == data &&
-        read(theirs / "host/TDATA/54430006/title.dat") == title &&
-        read(theirs / "host/UDATA/54430006/TitleMeta.xbx") == beside &&
-        !fs::exists(theirs / "host/UDATA/54430006/AAAAAAAAAAAA"));
+    check("host files", read(theirs / "host/UDATA/54430007/0F515488395E/doaxuser.dat") == data &&
+        read(theirs / "host/TDATA/54430007/title.dat") == title &&
+        read(theirs / "host/UDATA/54430007/TitleMeta.xbx") == beside &&
+        !fs::exists(theirs / "host/UDATA/54430007/AAAAAAAAAAAA"));
     check("unpack joiner", unpacks(joiner, theirs / "joiner"));
-    check("joiner files", fs::exists(theirs / "joiner/UDATA/54430006/0F515488395E/ups.dat") &&
-        !fs::exists(theirs / "joiner/TDATA") && !fs::exists(theirs / "joiner/UDATA/54430006/TitleMeta.xbx"));
+    check("joiner files", fs::exists(theirs / "joiner/UDATA/54430007/0F515488395E/doaxuser.dat") &&
+        !fs::exists(theirs / "joiner/TDATA") && !fs::exists(theirs / "joiner/UDATA/54430007/TitleMeta.xbx"));
     std::vector<std::uint8_t> none;
     check("pack no profile", recomp_netplay_pack_profile(root / "missing", "", false, none) && unpacks(none, theirs / "none"));
     // The host refuses to send what the joiner would refuse to unpack.
-    write(root / "spaced/UDATA/54430006/a b", data);
+    write(root / "spaced/UDATA/54430007/a b", data);
     check("pack unsafe name", !recomp_netplay_pack_profile(root / "spaced", "", true, none));
 
     // Damaged blobs.
@@ -158,6 +158,29 @@ int main()
         !fs::exists(root / "escape"));
     check("device-like names are fine", unpacks(blobOf({{1u, "UDATA/CONSOLE", data}, {1u, "UDATA/COM10", data}}),
         theirs / "names"));
+
+    // A save folder holds only the game's files, so a crafted one never reaches its loader.
+    const std::string save = "UDATA/54430007/0F515488395E";
+    const std::vector<std::uint8_t> named = meta(u"Name=Vacation 1\r\nNoCopy=1\r\n");
+    check("a game save", unpacks(blobOf({{0u, save, {}}, {1u, save + "/SaveMeta.xbx", named},
+        {1u, save + "/DOAXUSER.DAT", data}}), theirs / "save"));
+    std::vector<std::uint8_t> odd = named, big = meta(u"Name=A\r\n");
+    odd.push_back(0u);
+    big.resize(0x1002u);
+    const std::pair<const char *, Entry> refused[] = {
+        {"short doaxuser.dat", {1u, save + "/doaxuser.dat", std::vector<std::uint8_t>(11175u)}},
+        {"long doaxuser.dat", {1u, save + "/doaxuser.dat", std::vector<std::uint8_t>(11177u)}},
+        {"another file", {1u, save + "/SaveImage.xbx", beside}},
+        {"a folder inside", {0u, save + "/sub", {}}},
+        {"a file below a folder inside", {1u, save + "/sub/doaxuser.dat", data}},
+        {"SaveMeta.xbx without a mark", {1u, save + "/SaveMeta.xbx", std::vector<std::uint8_t>(named.begin() + 2, named.end())}},
+        {"SaveMeta.xbx of odd size", {1u, save + "/SaveMeta.xbx", odd}},
+        {"SaveMeta.xbx over 4 KiB", {1u, save + "/SaveMeta.xbx", big}},
+        {"SaveMeta.xbx without a name", {1u, save + "/SaveMeta.xbx", meta(u"NoCopy=1\r\n")}},
+        {"SaveMeta.xbx with two names", {1u, save + "/SaveMeta.xbx", meta(u"NoCopy=1\r\nTitle=Name=B\r\nName=A\r\n")}},
+    };
+    for (const auto &[label, entry] : refused) check(label, !unpacks(blobOf({entry}), theirs / "refused"));
+    check("nothing refused was written", !fs::exists(theirs / "refused" / save));
 
     std::error_code error;
     fs::remove_all(root, error);
