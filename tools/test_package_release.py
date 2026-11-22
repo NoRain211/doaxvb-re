@@ -28,6 +28,11 @@ class PlatformMemberTests(unittest.TestCase):
         self.assertNotIn("DOAXBV", mode)
         self.assertNotIn("DOAXBV", modes)
 
+    def test_only_the_linux_zip_gets_the_package_and_steam_deck_scripts(self):
+        common = {name: b"" for name in ("launcher.sh", *package_release.LINUX_ONLY)}
+        self.assertEqual(set(package_release.unix_package("Linux", common, {})[0]), set(common))
+        self.assertEqual(set(package_release.unix_package("macOS", common, {})[0]), {"launcher.sh", "DOAXBV"})
+
     def test_packaging_inputs_never_ship(self):
         for name, packaging in (("tools/package_release.py", True), ("tools/test_package_release.py", True),
                                 ("tools/release/README-macos.txt", True), ("tools/build_game.py", False),

@@ -34,8 +34,9 @@ UNIX_PLATFORMS = {
               "Xcode command line tools; Homebrew cmake, ninja, sdl3; setup installs capstone 5.0.9 "
               "into private/venv and builds extract-xiso build-202505152050"),
     "Linux": ("Linux x86-64 (SteamOS via a container build)", "README-linux.txt",
-              "Ubuntu packages in README.txt (cmake, ninja, clang, python3-venv, SDL3 build "
-              "dependencies, libshaderc1); setup installs capstone 5.0.9 into private/venv, builds "
+              "install_deps.sh installs the apt, dnf or pacman packages (cmake, ninja, clang, "
+              "python3-venv, SDL3 build dependencies, shaderc); build_steamdeck.sh does it in an Ubuntu "
+              "24.04 distrobox on SteamOS; setup installs capstone 5.0.9 into private/venv, builds "
               "extract-xiso build-202505152050 and fetches SDL3 3.4.12 by hash when absent"),
 }
 
@@ -59,6 +60,8 @@ def tree(ref):
     return {i.filename: archive.read(i) for i in archive.infolist() if not i.is_dir()}
 
 
+# SteamOS and distribution package helpers; macOS uses Homebrew.
+LINUX_ONLY = ("install_deps.sh", "build_steamdeck.sh")
 # Quiver starts a macOS download without a catalog setting only from an .app or an extensionless executable.
 MACOS_ENTRY = (b'#!/usr/bin/env bash\n'
                b'exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/launcher.sh" "$@"\n')
@@ -79,9 +82,10 @@ def unix_members(common):
 
 
 def unix_package(target, common, modes):
-    """The members and git modes of one Unix ZIP; only macOS gets the DOAXBV entry."""
+    """The members and git modes of one Unix ZIP; only macOS gets the DOAXBV entry, only Linux LINUX_ONLY."""
     kept, modes = unix_members(common), dict(modes)
     if target == "macOS":
+        kept = {n: d for n, d in kept.items() if n not in LINUX_ONLY}
         kept["DOAXBV"], modes["DOAXBV"] = MACOS_ENTRY, "100755"
     return kept, modes
 
@@ -215,7 +219,7 @@ def main():
             configuration="Release", full_gameplay_acceptance=False, prerequisites=prerequisites,
             **identity), indent=2) + "\n").encode()
         check(kept, recipe, gitlinks, ("private/README.md",), GAME_DATA | {".exe", ".dll", ".ico"})
-        for script in ("build_game.sh", "run_game.sh", "launcher.sh"):
+        for script in ("build_game.sh", "run_game.sh", "launcher.sh") + (LINUX_ONLY if target == "Linux" else ()):
             require(modes.get(script) == "100755", f"{script} is not executable")
         results[target] = write(args.out_dir / f"DOAXBV-{version}-{target}.zip", f"DOAXBV-{version}-{target}/",
                                 kept, unix_modes, date)

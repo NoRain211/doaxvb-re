@@ -223,20 +223,27 @@ distribution has none, and `extract-xiso` as on macOS.
 `build_game.sh` installs Capstone into `private/venv` on its first run; on
 Ubuntu that needs the `python3-venv` package.
 
-SteamOS has a read-only system and no compiler, so build inside a container
-such as an Ubuntu 24.04 `distrobox` that shares your home folder. Run
-`./launcher.sh` inside it too: the launcher is built on its first run with
-the container's compiler, and its **Build** page builds the game there. The
-launcher and the finished build carry their own SDL3, so `./launcher.sh` and
-`./run_game.sh` also work on SteamOS itself. From the release ZIP,
-`./launcher.sh` opens its prebuilt launcher there; from a checkout, it opens
-the launcher built in the container.
+`./install_deps.sh` installs the build tools and SDL3's build dependencies
+with apt, dnf or pacman (`--print` shows the command instead).
+`build_game.sh` checks for Git, CMake, a C++ compiler and Python's venv
+first. Run in a terminal, it runs `install_deps.sh` when one is missing;
+otherwise, as from the launcher, it names the missing tools and stops.
 
-On Ubuntu 24.04, including that `distrobox`, this installs the build tools and
-SDL3's build dependencies:
+SteamOS has a read-only system and no compiler, so on SteamOS
+`build_game.sh`, and with it the launcher's **Build** page, runs
+`./build_steamdeck.sh`. That script installs distrobox 1.8.2.5 into
+`~/.local` when SteamOS has none, creates an Ubuntu 24.04 container named
+`doaxbv-build` that shares your home folder, runs `install_deps.sh` in it and
+builds there, so the game folder must be under your home folder. The
+launcher and the finished build carry their own SDL3, so `./launcher.sh` and
+`./run_game.sh` work on SteamOS itself. From the release ZIP,
+`./launcher.sh` opens its prebuilt launcher there; from a checkout, run it
+once inside the container so that it builds the launcher.
+
+On Ubuntu 24.04, `install_deps.sh` runs:
 
 ```bash
-sudo apt install cmake ninja-build clang git python3-venv \
+sudo apt install build-essential clang cmake ninja-build git pkg-config python3-venv \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
   libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev libvulkan-dev libshaderc1
@@ -245,7 +252,7 @@ sudo apt install cmake ninja-build clang git python3-venv \
 On Fedora:
 
 ```bash
-sudo dnf install cmake ninja-build clang git python3 \
+sudo dnf install gcc-c++ clang cmake ninja-build git pkgconf python3 \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXfixes-devel libXi-devel \
   libXScrnSaver-devel libXtst-devel libxkbcommon-devel wayland-devel libdecor-devel \
   alsa-lib-devel pulseaudio-libs-devel pipewire-devel vulkan-loader-devel libshaderc

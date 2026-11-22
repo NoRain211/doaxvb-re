@@ -17,18 +17,25 @@ UPGRADING
 The game program changed in 0.7.0. Extract this ZIP into a new folder and
 build again. Saves are unchanged; copy your private saves over.
 
-SETUP (Ubuntu 24.04 or similar; on SteamOS, use an Ubuntu distrobox)
-1. Install build tools and SDL3's build dependencies:
-     sudo apt install cmake ninja-build clang git python3-venv \
-       libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
-       libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
-       libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev \
-       libvulkan-dev libshaderc1
+SETUP
+1. Install the build tools (compiler, CMake, Ninja, Git, Python and SDL3's
+   build dependencies) with apt, dnf or pacman:
+     ./install_deps.sh
+   ./build_game.sh run in a terminal also does this when a tool is missing.
 2. In this folder: ./launcher.sh, then choose your ISO on its Build page
    and build the game, or run ./build_game.sh /path/to/game.iso instead.
    The first build installs Capstone into private/venv, builds extract-xiso,
    and builds SDL3 when your distribution has none. Setup compiles with
    clang.
+
+STEAM DECK
+SteamOS has no compiler, so the build runs in an Ubuntu 24.04 distrobox that
+shares your home folder; you then play on SteamOS itself. Extract this ZIP
+under your home folder and, in Desktop Mode, run ./launcher.sh and build
+from its Build page, or run in Konsole:
+     ./build_steamdeck.sh /path/to/game.iso
+Either one installs distrobox when needed, creates the container and
+installs the build tools in it.
 
 PLAY
 The game compiles its shaders with shaderc at runtime, so the system needs
