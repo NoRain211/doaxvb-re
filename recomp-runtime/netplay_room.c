@@ -122,6 +122,10 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
             room->pinged = false;
             m->direct = !candidate; /* a caller who proved its own address */
             m->relay = false; /* heard directly */
+            if (!candidate) { /* a dropped peer's IPv6 path is not this caller's */
+                m->direct6 = false;
+                m->candidate6_port = 0u;
+            }
         }
         if (m->punching) { /* relayed packets end punching first, so this one came directly */
             m->punching = false;
@@ -188,6 +192,7 @@ void recomp_netplay_room_tick(RecompNetplay *net, RecompNetplayRoom *room, const
     /* Sending first opens this side's router for the other's answer. */
     for (unsigned i = 0u; i < 2u; ++i)
         if (m->candidate_port[i] != 0u) netplay_send_raw(net, m->candidate_address[i], m->candidate_port[i], packet, ROOM_BYTES);
+    netplay_punch6(net, packet, ROOM_BYTES);
 }
 
 void recomp_netplay_room_say(RecompNetplayRoom *room, const char *text)
@@ -211,7 +216,7 @@ void recomp_netplay_room_drop(RecompNetplay *net, RecompNetplayRoom *room)
     room->salt = 0u;
     room->held_until_ms = 0u;
     net->match.busy = false;
-    net->match.direct = false;
+    net->match.direct = false; /* direct6 stays, as relay does for a joiner: IPv6 may be the only path */
     if (room->hosting) { /* let another player in */
         net->peer_port = 0u;
         net->match.relay = false;

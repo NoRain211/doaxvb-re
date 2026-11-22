@@ -860,22 +860,32 @@ static std::vector<std::uint8_t> padRecord(const std::string &hex)
 
 /* A room's socket, as --netplay-room-socket carries it to the session's
    runner and back: <local port>,<peer address>,<peer port>,<server
-   address>,<server port>,<relay>,<nonce>,<cookie>, all but the local port in
-   network order. The matchmaker relays a pair with each side's nonce from its
-   JOIN, so the new runner's socket keeps it. */
+   address>,<server port>,<relay>,<nonce>,<cookie>,<peer IPv6 address>,<peer
+   IPv6 port>, all but the local port in network order. The matchmaker relays
+   a pair with each side's nonce from its JOIN, so the new runner's socket
+   keeps it. The IPv6 endpoint, 32 hex digits and a port, is carried only when
+   the peer answered there (direct6), else zeros: the new runner binds IPv6 on
+   the same port, and an IPv6-only pair would otherwise never meet again. */
 struct RoomSocket {
     std::uint16_t localPort = 0u;
     std::uint32_t peerAddress = 0u, serverAddress = 0u;
     std::uint16_t peerPort = 0u, serverPort = 0u;
     bool relay = false;
     unsigned long long nonce = 0u, cookie = 0u; // the 8 bytes of each, as memcpy packs them
+    std::uint8_t peer6[16] = {};
+    std::uint16_t peer6Port = 0u; // 0 unless the peer answered over IPv6
 
     bool parse(const std::string &text)
     {
-        unsigned long field[6] = {};
-        if (std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu,%llx,%llx", &field[0], &field[1], &field[2], &field[3],
-                &field[4], &field[5], &nonce, &cookie) != 8 || field[0] == 0u || field[0] > 65535u)
+        unsigned long field[7] = {};
+        char hex6[33] = {};
+        if (std::sscanf(text.c_str(), "%lu,%lu,%lu,%lu,%lu,%lu,%llx,%llx,%32[0-9a-f],%lu", &field[0], &field[1],
+                &field[2], &field[3], &field[4], &field[5], &nonce, &cookie, hex6, &field[6]) != 10 ||
+            field[0] == 0u || field[0] > 65535u || std::strlen(hex6) != 32u || field[6] > 65535u)
             return false;
+        for (std::size_t i = 0u; i < sizeof peer6; ++i)
+            peer6[i] = static_cast<std::uint8_t>(std::stoul(std::string(hex6 + 2u * i, 2u), nullptr, 16));
+        peer6Port = static_cast<std::uint16_t>(field[6]);
         localPort = static_cast<std::uint16_t>(field[0]);
         peerAddress = static_cast<std::uint32_t>(field[1]);
         peerPort = static_cast<std::uint16_t>(field[2]);
@@ -891,11 +901,15 @@ struct RoomSocket {
         static_assert(sizeof nonce == RECOMP_NETPLAY_TOKEN_BYTES, "a token packs into one number");
         std::memcpy(&nonce, socket.match.nonce, sizeof nonce);
         std::memcpy(&cookie, socket.match.cookie, sizeof cookie);
-        char text[128];
-        std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u,%llx,%llx", recomp_netplay_local_port(&socket),
+        const bool six = socket.match.direct6;
+        char hex6[33] = {};
+        for (std::size_t i = 0u; i < sizeof socket.match.candidate6; ++i)
+            std::snprintf(hex6 + 2u * i, 3u, "%02x", six ? socket.match.candidate6[i] : 0u);
+        char text[192];
+        std::snprintf(text, sizeof text, "%u,%lu,%u,%lu,%u,%u,%llx,%llx,%s,%u", recomp_netplay_local_port(&socket),
             static_cast<unsigned long>(socket.peer_address), socket.peer_port,
             static_cast<unsigned long>(socket.match.server_address), socket.match.server_port,
-            socket.match.relay ? 1u : 0u, nonce, cookie);
+            socket.match.relay ? 1u : 0u, nonce, cookie, hex6, six ? socket.match.candidate6_port : 0u);
         return text;
     }
 
@@ -909,6 +923,9 @@ struct RoomSocket {
         net.match.relay = relay;
         std::memcpy(net.match.nonce, &nonce, sizeof nonce);
         std::memcpy(net.match.cookie, &cookie, sizeof cookie);
+        std::memcpy(net.match.candidate6, peer6, sizeof peer6);
+        net.match.candidate6_port = peer6Port;
+        net.match.direct6 = peer6Port != 0u && net.match.has_socket6;
     }
 };
 
@@ -1080,9 +1097,14 @@ bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const
     RoomSocket room;
     if (!recomp_netplay_room_state_parse(launch.room, state) || !room.parse(launch.roomSocket)) return false;
     RecompNetplay socket;
-    // The session's runner may still hold the port while it exits.
+    // The session's runner may still hold the port while it exits, its IPv6 socket too. A room that
+    // reached its peer over IPv6 waits briefly for both, since the exit frees them together, then
+    // takes IPv4 alone, so a machine that lost IPv6 does not stall.
     bool open = false;
-    for (int tries = 0; tries < 20 && !(open = recomp_netplay_listen(&socket, room.localPort)); ++tries) {
+    for (int tries = 0; tries < 20; ++tries) {
+        open = recomp_netplay_listen(&socket, room.localPort) &&
+            (room.peer6Port == 0u || socket.match.has_socket6 || tries >= 4);
+        if (open) break;
         recomp_netplay_close(&socket);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -1091,6 +1113,8 @@ bool recomp_netplay_session_reopen_room(const RecompNetplayLaunch &launch, const
         std::fprintf(stderr, "recomp netplay: cannot open UDP port %u again; the room stays closed\n", room.localPort);
         return false;
     }
+    if (room.peer6Port != 0u && !socket.match.has_socket6)
+        std::fprintf(stderr, "recomp netplay: the room reopens without IPv6, which reached the other player\n");
     room.applyTo(socket);
     std::fprintf(stderr, "recomp netplay: back in the room as the %s\n", state.hosting ? "host" : "joiner");
     recomp_netplay_menu_return_to_room(socket, state, reason);
