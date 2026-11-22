@@ -36,6 +36,7 @@ struct RecompNetplayLaunch {
        routers opened stays; a session that ends goes back to the menu. */
     std::string roomSocket;
     std::string room;           // the room's state (--netplay-room), handed back when the session ends
+    std::string pad;            // a room joiner's controller settings (--netplay-pad), in hex
     std::string digest;         // this build; the other runner must match it
     std::filesystem::path disc; // the play folder
 };

@@ -85,6 +85,7 @@ and morph blend have been rewritten.
 | Sun shadows, per-pixel lighting and smooth normals (Direct3D 11) | Opt-in in 0.6.0; see [`docs/sun-shadow.md`](docs/sun-shadow.md) |
 | Whole-game high frame rate (`RECOMP_GAME_HZ`, Windows) | Experimental in 0.6.0; slight streaking at 120 Hz |
 | Launcher that builds the game, works with a controller, and `DOAXBV.exe` | Added in 0.6.0; controller checked with a virtual gamepad only |
+| Vulkan renderer on Windows (launcher choice) and fog on macOS and Linux | Added in 0.7.0; Direct3D 11 stays the default on Windows |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |
@@ -119,13 +120,14 @@ installer, which needs administrator approval and several GB of disk space.
    choices without opening the launcher. Running `RunGame.cmd` directly uses
    the defaults.
 
-On macOS:
-1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build).
-2. Run `./build_game.sh /path/to/game.iso` and wait for setup to complete.
-3. Run `./launcher.sh` to select resolution, volume, and soundtrack options, then press **Play** (or run `./run_game.sh` directly).
-
-On Linux and Steam Deck, follow [docs/building.md](docs/building.md#linux-and-steamos-build);
-the scripts are the same as on macOS.
+On macOS, Linux and Steam Deck:
+1. Install the prerequisites in [docs/building.md](docs/building.md#macos-build)
+   on macOS, or follow [docs/building.md](docs/building.md#linux-and-steamos-build)
+   on Linux and Steam Deck.
+2. Run `./launcher.sh`. It opens on **Build** and finds your ISO; press **Build
+   game** and wait for **Build complete**.
+3. Pick your options, then press **Play**. Afterwards `./run_game.sh` starts the
+   game with those saved choices without opening the launcher.
 
 Setup extracts your ISO and builds a native Release runner locally; the package
 contains tools and source, never a prebuilt runner or game data. When updating,

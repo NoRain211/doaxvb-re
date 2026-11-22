@@ -217,16 +217,42 @@ The game keeps all three vacations in one save
 (`UDATA/54430007/<save>/doaxuser.dat`), so both players' saves would
 collide. The host recovers its save journal, packs its saves and title
 saves with doa2u-re's `netplay_profile.cpp` (at most 1 MiB, with a
-SHA-256), and the joiner sends none. Each side clears
+SHA-256), and the joiner sends no saves. Each side clears
 `.recomp-storage/netplay`, writes the host's copy there after checking the
 hash and every path, and plays the session from it with its own journal
-(`recomp_save_set_session`), so neither player's own saves change.
+(`recomp_save_set_session`), so neither player's own saves change. A save
+folder may hold only what the game writes there: `doaxuser.dat` at the
+11,176 bytes of every real save, and a UTF-16 `SaveMeta.xbx` of at most
+4 KiB that names the save once. Anything else, including a folder inside
+it, refuses the copy, so a modified host cannot hand the game a crafted
+save.
+
+The save also holds one set of controller settings, which loading it
+(`0x01B340`, from the newest vacation at boot) gives every port:
+Vibration (`0x416559`), Digital or Analog (`0x41655D`), a word at
+`0x416561` and the Digital and Analog button maps (`0x416571`, 8 bytes a
+port). The runner then puts its own Digital or Analog preference
+(`controller_settings.cpp`) on every port, so two players who chose
+differently desynced at frame 30. In a session each player keeps their own
+instead (`usePads`): the host's Digital or Analog choice goes to every port
+with the host's options, and a joiner from a room sends port 0's settings
+from its own game as its profile, which port 1 takes. A joiner started
+with `--netplay-join` sends none, so port 1 plays the host's settings.
+A host with no vacation save loads none, so port 0, and without a joiner
+profile every port, plays the defaults.
+Choices made in a session's Controller Settings stay out of the player's own
+preference. With the joiner on Analog and the host on Digital, two scripted
+runners matched from a room gave port 0 Digital and port 1 Analog, and
+matched guest RAM through frame 600; the joiner's replay ended with the
+same guest RAM.
 
 The host asks the router to forward its UDP port with UPnP (miniupnpc
 2.3.3) and removes the forward when the runner exits. The forward is leased
 for a day, so one left by a crash expires, except on routers that take only
-permanent forwards. The log names the public address the other player
-joins, or says to forward the port by hand.
+permanent forwards. The log says the port is forwarded, that the router's
+own address is private so outside players cannot reach it, or that the port
+must be forwarded by hand. It leaves out the public address, since players
+paste this log into public issues; a host's room shows it after Y.
 
 Two runners on one machine paired this way at delay 2, with the joiner's
 own saves moved away: both walked to character select at frame 182 and
@@ -245,13 +271,15 @@ on EXHIBITION (`0x9D9E0C` 1, `viewer_menu_adapter.c`) and list 0 is open.
 The rooms, chat, blocks, FIND MATCH, the shared matchmaker and
 `.recomp-storage/netplay.txt` work as in doa2u-re
 ([matchmaking](https://github.com/NoRain211/doa2u-re/blob/codex/rollback-netcode/docs/matchmaking.md)).
+Enter or Tab opens the room's chat line.
 
 The menu draws with doa2u-re's quads and 5 x 7 font (`overlay_screen.c`).
 The game thread publishes each frame's quads, and the presenter's thread
 draws them with Dear ImGui into a 640 x 480 area centered on the window,
 in the same pass as the overlay text (`overlay_imgui_panel.cpp`). Typed
 characters come from the window's `WM_CHAR` (`input_text.c`); the SDL
-presenter feeds its text events and Enter, Backspace and Esc the same way.
+presenter feeds its text events and Enter, Tab, Backspace and Esc the same
+way.
 Pasting uses the Windows clipboard only.
 
 When both players are ready, doa2u-re reboots the game in the same process.
@@ -261,15 +289,24 @@ socket's port, peer and matchmaker (`--netplay-room-socket`), so the path
 the routers opened and a relay stay in use. Resetting every adapter that
 keeps state between boots would be needed for an in-process reboot. The
 window closes and opens again. A session started from a room that ends
-(the other player left or went quiet, a desync, a failed lobby) starts the
-runner offline again with `--netplay-return`, the room socket and the
-room's state (`--netplay-room`: hosting, listed, found by FIND MATCH, the
+(the other player left or went quiet, a desync, a failed lobby, or
+`netplay:left-exhibition` after the session reaches Exhibition and returns
+to the main menu, menu screen 0, which both sides see at the start of the
+same lockstep frame) starts the runner offline again with
+`--netplay-return`, the room socket and the room's state
+(`--netplay-room`: hosting, listed, found by FIND MATCH, the
 peer's address), which the room's runner passed to the session. The room
 opens again at once over the game on the same port, and the reason shows in
 it; the host lists it again and waits, and the joiner calls the host again.
 A runner that cannot have the port back within 2 s opens the menu with the
 reason once the main menu has EXHIBITION chosen. Leaving the room leaves
 the game where it booted to.
+
+Two runners matched from a private room; the joiner pressed B in character
+select and again in Exhibition's setup. Both left at frame 290 with equal
+kernel call counts and replay lengths and went back to their rooms. Before
+this, both stayed in the session on the main menu and then the title until
+one closed the window.
 
 Two runners on one machine, each driven by an input script, went through
 the menu: the host opened a private room, the joiner joined it from its
@@ -291,6 +328,7 @@ Each session started by `--netplay-host` or `--netplay-join`, and so
 each room's session, records a replay in the player's own
 `.recomp-storage/replays` (doa2u-re's `replay.c`, tag `DXBR`). It holds
 the build digest, the side, the input delay, the host's options and saves,
+the joiner's controller settings,
 the loop pass the session started at and both ports' confirmed pads, so it
 stays on this computer. `--replay <file>` plays it again at 60 Hz from the
 same saves and options, walks the menus as the session did, and stops at
@@ -316,6 +354,15 @@ the session ends on a goodbye. A wait inside a frame, for a profile write,
 only logs. With one runner frozen for 3 s, the other kept presenting at
 10 fps, both went on to frame 3,000 and guest RAM matched; with one killed,
 the other presented at 10 fps until its 15 s grace ended the session.
+
+Shorter hitches in a live round are logged once per second when the second
+had one: the time this side waited for the other player's pads after its
+frame was due, its own slowest frame, and frames frame sync held back so the
+other side could catch up. Long waits point at the other machine; a slow
+frame here points at this one, and it includes any frames run again after a
+rewind, since the player sees them as one late frame. Both renderers log
+each draw shader built outside their boot precompile, with how long it
+took.
 
 ## Decisions
 

@@ -256,7 +256,9 @@ RecompFunction recomp_program_lookup(uint32_t guest_address)
     /* Every indirect call resolves here, and the manual chain is long. Manual
        and generated results are fixed once their environment reads are done.
        Kernel thunks stay uncached: one is time-dependent and the kernel
-       lookup records each call. */
+       lookup records each call. Nothing clears the cache, because a session
+       starts a new runner (recomp_runner_relaunch); an in-process reboot must
+       clear it, or hooks chosen from the first boot's settings would stay. */
     static _Thread_local struct {
         uint32_t address;
         RecompFunction function;

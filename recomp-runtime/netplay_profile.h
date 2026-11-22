@@ -26,8 +26,9 @@ bool recomp_netplay_pack_profile(const std::filesystem::path &root, const std::s
     std::vector<std::uint8_t> &blob);
 /* Writes a blob from the other player below root, adding its save names.
    False for a damaged blob or one whose paths leave UDATA and TDATA, use
-   anything but plain names or name a Windows device; it may have written
-   part of the blob by then. */
+   anything but plain names or name a Windows device, or whose save folders
+   hold anything but the game's doaxuser.dat and SaveMeta.xbx; it may have
+   written part of the blob by then. */
 bool recomp_netplay_unpack_profile(const std::uint8_t *blob, std::size_t size, const std::filesystem::path &root,
     std::vector<std::string> &names);
 

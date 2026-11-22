@@ -51,7 +51,7 @@ int main()
         read.blocked[1].second == "BAD?NAME");
 
     // A file from before IDs gets one; a bad ID or block line is skipped.
-    std::ofstream(path, std::ios::trunc) << "delay 3\nid 00000000000000zz\nblock 0000000000000000 ZERO\n";
+    std::ofstream(path, std::ios::trunc) << "delay 3\nid 00000000000000zz\nblock 0000000000000000 ZERO\ndelay abc\n";
     RecompNetplaySettings old;
     recomp_netplay_settings_load(path, old);
     RecompNetplaySettings reread;

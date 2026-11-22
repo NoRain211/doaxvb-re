@@ -60,6 +60,21 @@ Its packaged setup was checked on Windows and on Linux (WSL Ubuntu 24.04);
 the macOS setup steps ran only in CI. It does not expand the play-test
 coverage below.
 
+0.7.0 Beta (tag `v0.7.0`) has a new generation recipe: the lifter pin moves
+to `4500b88`, which computes x87 transcendentals with musl on every host
+(#186), and a manual call target remembers the Voice and Message language
+(#208). It adds experimental online Exhibition with rollback netcode
+(#187–#191), a Windows Vulkan runner with fog on the SDL GPU renderer (#192),
+ray-traced GI in llvm-mingw builds (#181, #182), crash lines for stack
+overflows and aborts (#209), relative build receipts (#211), and one SDL
+launcher with a Build page on macOS and Linux, prebuilt in the Linux ZIP
+(#213, #215), and Linux setup stops when the SDL3 it builds has no audio
+driver (#212). Its packaged setup was checked on Windows and on Linux (WSL
+Ubuntu 24.04). Online play was tested only by agent runs with two runners on
+one Windows machine. The language fix was checked in an agent run of a local
+build of this recipe; the new SDL launcher has not run on a Mac. It does not
+expand the play-test coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel

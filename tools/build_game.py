@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
 LIFTER_REPOSITORY = "https://github.com/NoRain211/xboxrecomp.git"
 LIFTER_REVISION = "4500b88f25275cfcbc6c413842d9f84e102333e4"
-RECIPE_SHA256 = "914191506b713569a31066daa6333306cdff6cf5fa5ea018797768f086b1b662"
+RECIPE_SHA256 = "b280ad57b75ff3ff78eb61af10ec70a996dc1d6d354a2b2538405b7ff37e2206"
 SUPPORTED_XBE_SHA256 = "053d44e885fa33c1d15d909a533f39dfbd976e97eeaf67e4fdef8438ea7e5c54"
 
 
@@ -92,6 +92,63 @@ def linux_compiler_args():
     return ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
 
 
+LINUX_AUDIO_DRIVERS = ("PIPEWIRE", "PULSEAUDIO", "ALSA", "JACK", "SNDIO", "OSS")
+LINUX_AUDIO_PACKAGES = ("Install your distribution's audio development packages, then run setup again: "
+                        "on Ubuntu libasound2-dev libpulse-dev libpipewire-0.3-dev, "
+                        "on Fedora pipewire-devel pulseaudio-libs-devel alsa-lib-devel. "
+                        "See docs/building.md.")
+
+
+def fetched_sdl3_audio_drivers(output):
+    """The real audio drivers SDL3 was configured with, or None when setup did not build SDL3.
+
+    Without audio headers SDL3 configures with only its dummy and disk drivers,
+    so the game builds and then runs silently.
+    """
+    build = output / "_deps/sdl3-build"
+    if not build.is_dir():
+        return None
+    # SDL3 writes this header with configure_file, so a configured build always has it.
+    configs = sorted(build.glob("**/SDL_build_config.h"))
+    if not configs:
+        raise ValueError(f"SDL3 was fetched but {build} has no SDL_build_config.h; "
+                         "cannot confirm it was configured with an audio driver")
+    defined = set()
+    for config in configs:
+        defined.update(re.findall(r"^\s*#\s*define\s+SDL_AUDIO_DRIVER_([A-Z0-9_]+)\b",
+                                  config.read_text(encoding="utf-8", errors="replace"), re.M))
+    return {name for name in LINUX_AUDIO_DRIVERS if name in defined}
+
+
+def require_sdl3_audio(output):
+    """Stop before compiling when the SDL3 that setup builds could not play sound."""
+    drivers = fetched_sdl3_audio_drivers(output)
+    if drivers is None:
+        return
+    if not drivers:
+        raise ValueError("SDL3 was configured without an audio driver (PipeWire, PulseAudio or ALSA), "
+                         "so the game would run without sound. " + LINUX_AUDIO_PACKAGES)
+    print("SDL3 audio drivers: " + ", ".join(sorted(drivers)).lower() + ".", flush=True)
+
+
+def unix_cmake_args(compiler):
+    """Generator, CMake arguments and receipt fields for a macOS or Linux build.
+
+    tools/build_launcher.py configures the launcher with the same compiler and SDL3.
+    """
+    generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+    if sys.platform.startswith("linux"):
+        # RECOMP_FETCH_SDL3 builds SDL3 only when the system has none.
+        return generator, ["-DRECOMP_FETCH_SDL3=ON", *linux_compiler_args()], {}
+    return generator, [], {}
+
+
+def folder_path(path):
+    """A path inside the game folder as a portable relative string; other paths stay absolute."""
+    path = Path(path).resolve()
+    return path.relative_to(ROOT.resolve()).as_posix() if path.is_relative_to(ROOT.resolve()) else str(path)
+
+
 def build(args, verify_parity=True, lifter_revision=None):
     prefer_bundled_tools(ROOT)
     windows = sys.platform == "win32"
@@ -145,13 +202,14 @@ def build(args, verify_parity=True, lifter_revision=None):
         xbe = images[0]
         receipt.update(iso_sha256=imported_receipt["iso_sha256"],
                        xbe_sha256=SUPPORTED_XBE_SHA256, disc=str(disc))
-        if windows:  # before configure, which embeds private/doaxbv.ico in the runner
-            try:
-                written = launcher_art.install(disc)
-                print(f"Copied {len(written)} launcher art files from the disc." if written
-                      else "Launcher art is already in place.", flush=True)
-            except (OSError, ValueError) as error:  # cosmetic; never block the build
-                print(f"Skipped launcher art: {error}", flush=True)
+        # Every launcher draws this art; on Windows it comes before configure, which embeds
+        # private/doaxbv.ico in the runner.
+        try:
+            written = launcher_art.install(disc)
+            print(f"Copied {len(written)} launcher art files from the disc." if written
+                  else "Launcher art is already in place.", flush=True)
+        except (OSError, ValueError) as error:  # cosmetic; never block the build
+            print(f"Skipped launcher art: {error}", flush=True)
         prepare_lifter(work, lifter_revision)
         # Reuse the proven function boundaries and ordered recoveries, not fresh discovery.
         functions = work / "functions.json"
@@ -193,45 +251,45 @@ def build(args, verify_parity=True, lifter_revision=None):
             receipt["status"] = "generated-unverified"
             return work
         output = work / "build"
-        if windows:
-            generator = "MinGW Makefiles"
-        else:
-            generator = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
         arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+        if windows:
+            generator, host_args = "MinGW Makefiles", []
+            receipt["compiler"] = subprocess.check_output(
+                [compiler, "--version"], text=True).splitlines()[0]
+            host_args += [f"-DCMAKE_C_COMPILER={compiler.as_posix()}",
+                          f"-DCMAKE_CXX_COMPILER={compiler.with_name('clang++.exe').as_posix()}"]
+            icon = ROOT / "private/doaxbv.ico"
+            if icon.is_file():
+                host_args.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
+        else:
+            generator, host_args, fields = unix_cmake_args(compiler)
+            receipt.update(fields)
         # Generated chunks are large; more jobs than this can exhaust memory.
         receipt.update(cmake_generator=generator, platform=arch,
                        configuration="Release", build_parallelism=4)
         configure = ["cmake", "-S", ROOT / "recomp-runtime", "-B", output, "-G", generator,
                      "-DCMAKE_BUILD_TYPE=Release",
                      f"-DRECOMP_PROGRAM_DIR={generated}", f"-DRECOMP_PROGRAM_MANIFEST_SHA256={manifest}",
-                     f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}"]
-        if sys.platform.startswith("linux"):
-            configure.append("-DRECOMP_FETCH_SDL3=ON")  # used only when the system has no SDL3
-            configure += linux_compiler_args()
-        if windows:
-            receipt["compiler"] = subprocess.check_output(
-                [compiler, "--version"], text=True).splitlines()[0]
-            configure += [f"-DCMAKE_C_COMPILER={compiler.as_posix()}",
-                          f"-DCMAKE_CXX_COMPILER={compiler.with_name('clang++.exe').as_posix()}"]
-            icon = ROOT / "private/doaxbv.ico"
-            if icon.is_file():
-                configure.append(f"-DRECOMP_APP_ICON={icon.as_posix()}")
+                     f"-DRECOMP_PROGRAM_EBP_EXPECTED={ebp}", *host_args]
         command(configure, ROOT, work / "configure.log")
+        if sys.platform.startswith("linux"):
+            require_sdl3_audio(output)
+        # macOS and Linux build their launcher on its own first; see tools/build_launcher.py.
         targets = ["recomp_program_runner"]
-        if windows or sys.platform.startswith("linux"):  # macOS compiles its Swift launcher on first use
-            targets.append("recomp_launcher")
         if windows:
-            targets += ["recomp_play", "recomp_program_runner_vulkan"]
+            targets += ["recomp_launcher", "recomp_play", "recomp_program_runner_vulkan"]
         command(["cmake", "--build", output, "--parallel", "4", "--target", *targets],
                 ROOT, work / "build.log")
         runner = output / ("recomp_program_runner.exe" if windows else "recomp_program_runner")
         if windows:
             shutil.copy2(output / "recomp_launcher.exe", ROOT / "Launcher.exe")
             shutil.copy2(output / "recomp_play.exe", ROOT / "DOAXBV.exe")
-        receipt.update(status="built-unverified", runner=str(runner), runner_sha256=sha256(runner))
+        # Paths relative to the game folder let the folder move; see tools/run_game.py.
+        receipt.update(status="built-unverified", runner=folder_path(runner), runner_sha256=sha256(runner),
+                       disc=folder_path(disc))
         if windows:
             vulkan = output / "recomp_program_runner_vulkan.exe"
-            receipt.update(vulkan_runner=str(vulkan), vulkan_runner_sha256=sha256(vulkan))
+            receipt.update(vulkan_runner=folder_path(vulkan), vulkan_runner_sha256=sha256(vulkan))
         print(f"Built diagnostic runner: {runner}. Gameplay has not been validated.", flush=True)
         return work
     except Exception as error:
