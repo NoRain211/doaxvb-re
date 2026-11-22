@@ -14,7 +14,6 @@ DISTROBOX_SHA256="0c3bc4785ee3be3b89f93abb7cc0a9f60e56989e81319af140a4b60403b18f
 if [[ "${1:-}" == "--inside" ]]; then
     shift
     cd "${ROOT}"
-    sudo apt-get update
     ./install_deps.sh
     exec ./build_game.sh "$@"
 fi
@@ -36,9 +35,14 @@ if ! command -v distrobox >/dev/null 2>&1; then
     echo "${DISTROBOX_SHA256}  ${tmp}/distrobox.tar.gz" | sha256sum -c -
     tar xzf "${tmp}/distrobox.tar.gz" -C "${tmp}"
     "${tmp}/distrobox-${DISTROBOX_VERSION}/install" --prefix "${HOME}/.local"
+    # The exec below skips EXIT traps.
+    rm -rf "${tmp}"
+    trap - EXIT
 fi
 
-if ! distrobox list | grep -q "[| ]${CONTAINER} "; then
-    distrobox create --yes --name "${CONTAINER}" --image ubuntu:24.04
+# Captured first: grep -q can end the pipe early, and pipefail would report that as no container.
+if ! grep -q "[| ]${CONTAINER} " <<<"$(distrobox list)"; then
+    # Fully qualified, so podman's short-name search cannot pick another registry.
+    distrobox create --yes --name "${CONTAINER}" --image docker.io/library/ubuntu:24.04
 fi
 exec distrobox enter "${CONTAINER}" -- "${ROOT}/build_steamdeck.sh" --inside "$@"

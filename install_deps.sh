@@ -10,7 +10,10 @@ if [[ -r /etc/os-release ]] && grep -qx 'ID=steamos' /etc/os-release; then
     echo "which builds in an Ubuntu 24.04 distrobox." >&2
     exit 1
 fi
+refresh=()
 if command -v apt-get >/dev/null; then
+    # Fresh or stale package lists cannot find the packages.
+    refresh=(apt-get update)
     cmd=(apt-get install -y build-essential clang cmake ninja-build git pkg-config python3-venv
          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev
          libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev
@@ -28,9 +31,14 @@ else
     echo "No apt, dnf or pacman found. Install the packages listed in docs/building.md by hand." >&2
     exit 1
 fi
-if [[ ${EUID} -ne 0 ]]; then cmd=(sudo "${cmd[@]}"); fi
+if [[ ${EUID} -ne 0 ]]; then
+    cmd=(sudo "${cmd[@]}")
+    if (( ${#refresh[@]} )); then refresh=(sudo "${refresh[@]}"); fi
+fi
 if [[ "${1:-}" == "--print" ]]; then
+    if (( ${#refresh[@]} )); then echo "${refresh[*]}"; fi
     echo "${cmd[*]}"
 else
+    if (( ${#refresh[@]} )); then "${refresh[@]}"; fi
     "${cmd[@]}"
 fi
