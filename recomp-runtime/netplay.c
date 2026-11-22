@@ -179,6 +179,32 @@ static bool random_bytes(uint8_t *out, size_t size)
 #endif
 }
 
+/* The IPv6 sibling of the socket just opened; any failure leaves a socket without IPv6, as on a host that has none. */
+static void open_socket6(RecompNetplay *net, uint16_t local_port)
+{
+    const SOCKET handle = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (handle == INVALID_SOCKET) return;
+    struct sockaddr_in6 local;
+    memset(&local, 0, sizeof local);
+    local.sin6_family = AF_INET6;
+    local.sin6_port = htons(local_port);
+    local.sin6_addr = in6addr_any;
+    const int only = 1; /* IPv4 stays on its own socket */
+#ifdef _WIN32
+    u_long nonblocking = 1u;
+    const bool configured = ioctlsocket(handle, FIONBIO, &nonblocking) == 0;
+#else
+    const bool configured = fcntl(handle, F_SETFL, fcntl(handle, F_GETFL) | O_NONBLOCK) == 0;
+#endif
+    if (!configured || setsockopt(handle, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&only, sizeof only) != 0 ||
+        bind(handle, (const struct sockaddr *)&local, sizeof local) != 0) {
+        closesocket(handle);
+        return;
+    }
+    net->match.socket6 = (uintptr_t)handle;
+    net->match.has_socket6 = true;
+}
+
 static bool open_socket(RecompNetplay *net, uint16_t local_port)
 {
     memset(net, 0, sizeof *net);
@@ -208,6 +234,19 @@ static bool open_socket(RecompNetplay *net, uint16_t local_port)
         return false;
     }
     net->socket = (uintptr_t)handle;
+    open_socket6(net, local_port);
+    return true;
+}
+
+static bool resolve6(const char *host, uint8_t address[16])
+{
+    struct addrinfo hints, *found = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET6;
+    hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo(host, NULL, &hints, &found) != 0 || found == NULL) return false;
+    memcpy(address, &((const struct sockaddr_in6 *)(const void *)found->ai_addr)->sin6_addr, 16u);
+    freeaddrinfo(found);
     return true;
 }
 
@@ -239,6 +278,8 @@ void recomp_netplay_close(RecompNetplay *net)
 {
     if ((SOCKET)net->socket != INVALID_SOCKET) closesocket((SOCKET)net->socket);
     net->socket = (uintptr_t)INVALID_SOCKET;
+    if (net->match.has_socket6) closesocket((SOCKET)net->match.socket6);
+    net->match.has_socket6 = false;
 }
 
 uint16_t recomp_netplay_local_port(const RecompNetplay *net)
@@ -283,13 +324,14 @@ static const uint8_t MATCH_MAGIC[4] = {'D', '2', 'M', 'M'};
 enum {
     MATCH_VERSION = 2u,
     MATCH_HOST = 1u, MATCH_HOSTED, MATCH_LIST, MATCH_ROOMS, MATCH_JOIN, MATCH_PEER, MATCH_GONE, MATCH_LEAVE,
-    MATCH_RELAY, MATCH_COOKIE,
+    MATCH_RELAY, MATCH_COOKIE, MATCH_ADDR6,
     MATCH_HEADER = 6u,
     MATCH_BODY = MATCH_HEADER + RECOMP_NETPLAY_TOKEN_BYTES, /* after the nonce */
     MATCH_ASKED = MATCH_BODY + RECOMP_NETPLAY_TOKEN_BYTES,  /* after the cookie */
     MATCH_LIST_BYTES = 512u, /* a list request is padded, so its answer is never larger */
     MATCH_ENTRY = 42u, /* ends with the host's round trip to the server */
     MATCH_PEER_BYTES = MATCH_BODY + 6u + 6u + 1u + RECOMP_NETPLAY_NAME_BYTES,
+    MATCH_PEER6_BYTES = MATCH_PEER_BYTES + 18u, /* with the other player's IPv6 endpoint */
 };
 
 void netplay_send_raw(const RecompNetplay *net, uint32_t address, uint16_t port,
@@ -317,12 +359,34 @@ static uint8_t *match_header(const RecompNetplay *net, uint8_t *out, uint8_t kin
     return out + MATCH_ASKED;
 }
 
+static void send_raw6(const RecompNetplay *net, const uint8_t address[16], uint16_t port,
+    const uint8_t *packet, size_t size)
+{
+    struct sockaddr_in6 peer;
+    memset(&peer, 0, sizeof peer);
+    peer.sin6_family = AF_INET6;
+    peer.sin6_port = port;
+    memcpy(&peer.sin6_addr, address, 16u);
+    (void)sendto((SOCKET)net->match.socket6, (const char *)packet, (int)size, 0,
+        (const struct sockaddr *)&peer, sizeof peer);
+}
+
+void netplay_punch6(const RecompNetplay *net, const uint8_t *packet, size_t size)
+{
+    const RecompNetplayMatch *m = &net->match;
+    if (m->has_socket6 && m->candidate6_port != 0u) send_raw6(net, m->candidate6, m->candidate6_port, packet, size);
+}
+
 /* A relaying socket reaches its peer through the matchmaker, which knows
-   where to forward. */
+   where to forward. A peer that answered over IPv6 is sent to there. */
 void netplay_send_to(const RecompNetplay *net, uint32_t address, uint16_t port,
     const uint8_t *packet, size_t size)
 {
     uint8_t wrapped[MATCH_ASKED + RECOMP_NETPLAY_MAX_PACKET];
+    if (net->match.direct6 && address == net->peer_address && port == net->peer_port) {
+        netplay_punch6(net, packet, size);
+        return;
+    }
     if (net->match.relay && address == net->peer_address && port == net->peer_port &&
         size <= RECOMP_NETPLAY_MAX_PACKET) {
         memcpy(match_header(net, wrapped, MATCH_RELAY), packet, size);
@@ -360,6 +424,7 @@ void netplay_relay_on(RecompNetplay *net, const char *why)
     if (m->relay) return;
     m->relay = true;
     m->punching = false;
+    m->direct6 = false; /* netplay_send_to tries IPv6 first, so a kept flag would bypass the relay */
     /* Without an endpoint the server's own stands for the peer; wrapped packets ignore it. */
     if (net->peer_port == 0u) {
         net->peer_address = m->server_address;
@@ -412,7 +477,7 @@ static void match_answer(RecompNetplay *net, const uint8_t *packet, size_t size)
             netplay_send_raw(net, m->server_address, m->server_port, m->asked, m->asked_size);
         }
         m->asked_size = 0u; /* once */
-    } else if (packet[5] == MATCH_PEER && size == MATCH_PEER_BYTES) {
+    } else if (packet[5] == MATCH_PEER && (size == MATCH_PEER_BYTES || size == MATCH_PEER6_BYTES)) {
         if (m->busy) return;
         uint32_t address[2];
         uint16_t port[2];
@@ -420,10 +485,27 @@ static void match_answer(RecompNetplay *net, const uint8_t *packet, size_t size)
             memcpy(&address[i], packet + MATCH_BODY + 6u * i, 4u);
             memcpy(&port[i], packet + MATCH_BODY + 6u * i + 4u, 2u);
         }
-        /* The server says it again for a repeated join; the pair is already met. */
+        /* The other player's IPv6 endpoint comes only when both have one; this socket needs IPv6 too. */
+        const bool six = size == MATCH_PEER6_BYTES && m->has_socket6;
+        uint8_t address6[16] = {0};
+        uint16_t port6 = 0u;
+        if (six) {
+            memcpy(address6, packet + MATCH_PEER_BYTES, 16u);
+            memcpy(&port6, packet + MATCH_PEER_BYTES + 16u, 2u);
+        }
+        /* The server says it again for a repeated join; the pair is already met. A late IPv6 endpoint joins
+           it without restarting the punch. */
         if (m->met && memcmp(address, m->candidate_address, sizeof address) == 0 &&
-            memcmp(port, m->candidate_port, sizeof port) == 0)
+            memcmp(port, m->candidate_port, sizeof port) == 0) {
+            if (m->candidate6_port == 0u && port6 != 0u) {
+                memcpy(m->candidate6, address6, sizeof address6);
+                m->candidate6_port = port6;
+            }
             return;
+        }
+        memcpy(m->candidate6, address6, sizeof address6);
+        m->candidate6_port = port6;
+        m->direct6 = false;
         memcpy(m->candidate_address, address, sizeof address);
         memcpy(m->candidate_port, port, sizeof port);
         m->met = true;
@@ -443,6 +525,8 @@ static void match_answer(RecompNetplay *net, const uint8_t *packet, size_t size)
     }
 }
 
+static void send_addr6(RecompNetplay *net);
+
 /* The next queued packet's size, or -1 when none is left. The matchmaker's
    answers are recorded in net->match on the way, and a relayed packet comes
    out unwrapped, from the peer. */
@@ -451,9 +535,12 @@ int netplay_receive_from(RecompNetplay *net, uint8_t *packet, size_t capacity,
 {
     uint8_t raw[MATCH_BODY + RECOMP_NETPLAY_MAX_PACKET + 1u];
     for (;;) {
+        RecompNetplayMatch *m = &net->match;
         SocketLength from_size = sizeof *from;
-        const int size = (int)recvfrom((SOCKET)net->socket, (char *)raw, (int)sizeof raw, 0,
+        int size = (int)recvfrom((SOCKET)net->socket, (char *)raw, (int)sizeof raw, 0,
             (struct sockaddr *)from, &from_size);
+        bool over6 = false;
+        struct sockaddr_in6 from6;
         /* Windows reports an ICMP port-unreachable from an earlier send as a
            failed receive; it is not fatal before the peer has bound its port. */
         if (size < 0) {
@@ -461,12 +548,55 @@ int netplay_receive_from(RecompNetplay *net, uint8_t *packet, size_t capacity,
             /* Nor is a datagram longer than any packet here, which Windows fails where others cut it. */
             if (WSAGetLastError() == WSAECONNRESET || WSAGetLastError() == WSAEMSGSIZE) continue;
 #endif
-            return -1;
+            if (!m->has_socket6) return -1;
+            from_size = sizeof from6;
+            size = (int)recvfrom((SOCKET)m->socket6, (char *)raw, (int)sizeof raw, 0, (struct sockaddr *)&from6,
+                &from_size);
+            if (size < 0) {
+#ifdef _WIN32
+                if (WSAGetLastError() == WSAECONNRESET || WSAGetLastError() == WSAEMSGSIZE) continue;
+#endif
+                return -1;
+            }
+            over6 = true;
         }
-        if (from->sin_family != AF_INET) continue;
         const uint8_t *body = raw;
         size_t length = (size_t)size;
-        RecompNetplayMatch *m = &net->match;
+        if (over6) {
+            if (from6.sin6_family != AF_INET6) continue;
+            const bool server = m->server6_port != 0u && from6.sin6_port == m->server6_port &&
+                memcmp(&from6.sin6_addr, m->server6, 16u) == 0;
+            if (server) {
+                /* The server only answers an ADDR6 with a cookie; the nonce keeps forged ones out. */
+                if (length == MATCH_BODY + RECOMP_NETPLAY_TOKEN_BYTES && memcmp(raw, MATCH_MAGIC, sizeof MATCH_MAGIC) == 0 &&
+                    raw[4] == MATCH_VERSION && raw[5] == MATCH_COOKIE &&
+                    memcmp(raw + MATCH_HEADER, m->nonce, RECOMP_NETPLAY_TOKEN_BYTES) == 0) {
+                    memcpy(m->cookie6, raw + MATCH_BODY, sizeof m->cookie6);
+                    send_addr6(net);
+                }
+                continue;
+            }
+            /* The peer, at the IPv6 endpoint the server proved; it keeps its IPv4 identity above this. */
+            if (m->candidate6_port == 0u || from6.sin6_port != m->candidate6_port ||
+                memcmp(&from6.sin6_addr, m->candidate6, 16u) != 0)
+                continue;
+            /* A host that dropped its quiet peer takes it back as relay_on does, or an IPv6-only pair never meets again. */
+            if (net->peer_port == 0u) {
+                if (!m->direct6 || m->candidate_port[0] == 0u) continue;
+                net->peer_address = m->candidate_address[0];
+                net->peer_port = m->candidate_port[0];
+            }
+            if (!m->direct6) fprintf(stderr, "recomp netplay: the other player answers over IPv6\n");
+            m->direct6 = true;
+            m->relay = false;
+            from->sin_family = AF_INET;
+            from->sin_addr.s_addr = net->peer_address;
+            from->sin_port = net->peer_port;
+            if (length > capacity) length = capacity;
+            memcpy(packet, body, length);
+            return (int)length;
+        }
+        if (from->sin_family != AF_INET) continue;
         if (m->server_port != 0u && from->sin_addr.s_addr == m->server_address && from->sin_port == m->server_port) {
             /* Anyone can send from the server's address; only the server knows this socket's nonce. */
             if (length < MATCH_BODY || memcmp(raw, MATCH_MAGIC, sizeof MATCH_MAGIC) != 0 || raw[4] != MATCH_VERSION ||
@@ -477,7 +607,7 @@ int netplay_receive_from(RecompNetplay *net, uint8_t *packet, size_t capacity,
                 continue;
             }
             /* The peer proved its own address, so the server relays for someone it paired here since. */
-            if (m->direct) continue;
+            if (m->direct || m->direct6) continue;
             /* The other side gave up on a direct path, so this one follows. */
             netplay_relay_on(net, "the other player relays");
             from->sin_addr.s_addr = net->peer_address;
@@ -514,14 +644,36 @@ uint64_t netplay_now_ms(void)
 
 bool recomp_netplay_match_server(RecompNetplay *net, const char *host, uint16_t port)
 {
-    if (port == 0u || !resolve(host, &net->match.server_address)) return false;
-    net->match.server_port = htons(port);
+    RecompNetplayMatch *m = &net->match;
+    if (port == 0u) return false;
+    /* The server's IPv6 name is optional: without one, or without IPv6 here, matches stay on IPv4. */
+    m->server6_port = m->has_socket6 && resolve6(host, m->server6) ? htons(port) : 0u;
+    if (!resolve(host, &m->server_address)) {
+        m->server6_port = 0u; /* ADDR6 alone cannot match: every other ask goes over IPv4 */
+        return false;
+    }
+    m->server_port = htons(port);
     return true;
+}
+
+/* Says this socket's IPv6 endpoint to the server, which proves it with a cookie before it keeps it. */
+static void send_addr6(RecompNetplay *net)
+{
+    RecompNetplayMatch *m = &net->match;
+    if (m->server6_port == 0u) return;
+    uint8_t packet[MATCH_ASKED];
+    memcpy(packet, MATCH_MAGIC, sizeof MATCH_MAGIC);
+    packet[4] = MATCH_VERSION;
+    packet[5] = MATCH_ADDR6;
+    memcpy(packet + MATCH_HEADER, m->nonce, RECOMP_NETPLAY_TOKEN_BYTES);
+    memcpy(packet + MATCH_BODY, m->cookie6, RECOMP_NETPLAY_TOKEN_BYTES);
+    send_raw6(net, m->server6, m->server6_port, packet, sizeof packet);
 }
 
 static void send_match(RecompNetplay *net, const uint8_t *packet, size_t size)
 {
     RecompNetplayMatch *m = &net->match;
+    send_addr6(net); /* with every ask, so it is fresh when a JOIN or HOST pairs this socket */
     if (m->server_port == 0u) return;
     netplay_send_raw(net, m->server_address, m->server_port, packet, size);
     if (packet[5] != MATCH_LIST && size <= sizeof m->asked) {
@@ -618,8 +770,13 @@ static void wait_readable(const RecompNetplay *net, unsigned milliseconds)
     fd_set readable;
     FD_ZERO(&readable);
     FD_SET((SOCKET)net->socket, &readable);
+    int highest = (int)net->socket;
+    if (net->match.has_socket6) {
+        FD_SET((SOCKET)net->match.socket6, &readable);
+        if ((int)net->match.socket6 > highest) highest = (int)net->match.socket6;
+    }
     struct timeval timeout = {0, (long)milliseconds * 1000L};
-    (void)select((int)net->socket + 1, &readable, NULL, NULL, &timeout);
+    (void)select(highest + 1, &readable, NULL, NULL, &timeout);
 }
 
 /* One direction each way: this side serves its profile in chunks on request

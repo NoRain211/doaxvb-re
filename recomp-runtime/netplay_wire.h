@@ -80,6 +80,8 @@ void netplay_send_to(const RecompNetplay *net, uint32_t address, uint16_t port,
 /* The next queued packet's size, or -1 when none is left; a relayed packet comes out unwrapped, from the peer. */
 int netplay_receive_from(RecompNetplay *net, uint8_t *packet, size_t capacity,
     struct sockaddr_in *from);
+/* A punching room's packet to the peer's IPv6 endpoint too, when the matchmaker gave one. */
+void netplay_punch6(const RecompNetplay *net, const uint8_t *packet, size_t size);
 bool netplay_from_peer(const RecompNetplay *net, const struct sockaddr_in *from);
 void netplay_relay_on(RecompNetplay *net, const char *why);
 

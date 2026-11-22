@@ -97,6 +97,19 @@ typedef struct RecompNetplayMatch {
     bool busy;  /* the room's seat is taken or held, so a late pairing for another player is ignored */
     /* A host's peer came by address and proved it, so a relayed packet is not theirs and is dropped. */
     bool direct;
+    /* IPv6, as a second path to the same peer. The IPv4 socket stays primary: the matchmaker learns this
+       socket's IPv6 endpoint over socket6 (ADDR6) and, when both players have one, passes the peer's in
+       PEER. Room packets then go to both until one answers; direct6 means the peer answered over IPv6,
+       and its sends go there. The peer keeps its IPv4 identity, so nothing above the transport changes.
+       has_socket6 is false where the host has no IPv6. */
+    bool has_socket6;
+    uintptr_t socket6;
+    uint8_t server6[16];
+    uint16_t server6_port; /* network order; 0 means none */
+    uint8_t cookie6[RECOMP_NETPLAY_TOKEN_BYTES]; /* the server's proof of socket6's address */
+    uint8_t candidate6[16];
+    uint16_t candidate6_port; /* the peer's proven IPv6 endpoint, network order; 0 means none */
+    bool direct6;
     /* Random for each socket; the server's packets echo it, so forged ones are dropped. */
     uint8_t nonce[RECOMP_NETPLAY_TOKEN_BYTES];
     /* Random for each socket and never sent: it keys the offset of the clocks a host's room
@@ -142,7 +155,7 @@ typedef struct RecompNetplay {
 } RecompNetplay;
 
 /* Binds local_port on all interfaces; packets from any other address are
-   dropped. shortcut: IPv4 only; add AF_INET6 when the lobby needs it. */
+   dropped. A direct address is IPv4; IPv6 only reaches a matchmade peer, see RecompNetplayMatch. */
 bool recomp_netplay_open(RecompNetplay *net, uint16_t local_port,
     const char *peer_host, uint16_t peer_port);
 /* Binds port on all interfaces with no peer yet, for a room's host. */
