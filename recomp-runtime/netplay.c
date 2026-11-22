@@ -410,6 +410,8 @@ static void match_answer(RecompNetplay *net, const uint8_t *packet, size_t size)
         if (m->asked_size != 0u && netplay_now_ms() - m->asked_ms < 2000u) {
             memcpy(m->asked + MATCH_BODY, m->cookie, sizeof m->cookie);
             netplay_send_raw(net, m->server_address, m->server_port, m->asked, m->asked_size);
+            /* Time the HOST the server can take, so the room's ping leaves out the cookie's round trip. */
+            if (m->asked[5] == MATCH_HOST) m->host_sent_ms = netplay_now_ms();
         }
         m->asked_size = 0u; /* once */
     } else if (packet[5] == MATCH_PEER && size == MATCH_PEER_BYTES) {

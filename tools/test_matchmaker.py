@@ -199,6 +199,13 @@ class MatchmakerTest(unittest.TestCase):
         self.assertEqual(answered, mm.JOINS_PER_SECOND)
         self.assertTrue(self.send(joining(room_id), JOINER_AT, 2.5))  # a new second
 
+    def test_lists_are_rate_limited_per_address(self):
+        self.host()
+        answered = sum(bool(self.send(listing(), ("192.0.2.1", 50000 + i), 1.0))
+                       for i in range(mm.LISTS_PER_SECOND + 5))
+        self.assertEqual(answered, mm.LISTS_PER_SECOND)
+        self.assertTrue(self.send(listing(), ("192.0.2.1", 1), 2.5))  # a new second
+
     def test_a_repeated_join_answers_again(self):
         room_id, _ = self.host()
         first = self.send(joining(room_id), JOINER_AT, 1.0)

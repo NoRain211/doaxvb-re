@@ -557,16 +557,16 @@ int main()
     }
     check("chat arrives", hostRoom.heard_new && std::strcmp(hostRoom.heard, "gg, one more?") == 0);
     hostRoom.heard_new = false;
+    const std::uint64_t firstHeard = hostRoom.heard_line_ms;
     // The next line waits out the receiver's second, then is read and dropped as not printable.
     recomp_netplay_room_say(&joinerRoom, "bell\a");
-    const auto bellSaid = std::chrono::steady_clock::now();
     for (int i = 0; i < 100 && hostRoom.heard_id != joinerRoom.say_id; ++i) {
         recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", true, false);
         recomp_netplay_room_tick(&host, &hostRoom, digest, "HOST", false, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     check("chat a line a second", hostRoom.heard_id == joinerRoom.say_id &&
-        std::chrono::steady_clock::now() - bellSaid >= std::chrono::milliseconds(900));
+        hostRoom.heard_line_ms - firstHeard >= 1000u);
     check("chat once, printable only", !hostRoom.heard_new);
     recomp_netplay_close(&host);
     recomp_netplay_close(&joiner);
@@ -624,8 +624,11 @@ int main()
         hostRoom = RecompNetplayRoom{};
         joinerRoom = RecompNetplayRoom{};
         hostRoom.hosting = true;
-        check("leave room opens", recomp_netplay_listen(&host, 47626u) &&
-            recomp_netplay_open(&joiner, 0u, "127.0.0.1", 47626u) && meet(joinerRoom, hostRoom));
+        // A port the system picks, so another test or runner holding a fixed one cannot fail this.
+        const bool listening = recomp_netplay_listen(&host, 0u);
+        const std::uint16_t roomPort = listening ? recomp_netplay_local_port(&host) : 0u;
+        check("leave room opens", roomPort != 0u && recomp_netplay_open(&joiner, 0u, "127.0.0.1", roomPort) &&
+            meet(joinerRoom, hostRoom));
         recomp_netplay_send_goodbye(&host);
         for (int i = 0; i < 10; ++i) {
             recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
@@ -653,7 +656,7 @@ int main()
         check("joiner hears the host leave", joinerRoom.left && !joinerRoom.joined && joiner.peer_port == 0u);
         hostRoom = RecompNetplayRoom{};
         hostRoom.hosting = true;
-        check("leave room reopens", recomp_netplay_listen(&host, 47626u));
+        check("leave room reopens", recomp_netplay_listen(&host, roomPort));
         for (int i = 0; i < 25; ++i) {
             recomp_netplay_room_tick(&joiner, &joinerRoom, digest, "JOINER", false, false);
             recomp_netplay_room_tick(&host, &hostRoom, digest, "HOST", false, false);
@@ -682,7 +685,7 @@ int main()
 
     // A room packet from an address that never heard this host draws one room packet, not ten a second.
     {
-        RecompNetplay forger;
+        RecompNetplay forger = unopened();
         RecompNetplayRoom doubtedRoom{};
         doubtedRoom.hosting = true;
         check("doubted room opens", recomp_netplay_listen(&host, 47643u) &&
@@ -716,7 +719,7 @@ int main()
     {
         RecompNetplayRoom backRoom{};
         backRoom.hosting = true;
-        RecompNetplay stranger;
+        RecompNetplay stranger = unopened();
         const bool opened = recomp_netplay_listen(&host, 47643u) &&
             recomp_netplay_open(&stranger, 0u, "127.0.0.1", 47643u);
         host.peer_address = htonl(0x7f000001u);
@@ -735,7 +738,7 @@ int main()
 
     // A clock the host sent one address seats no one from another: each address is sent its own.
     {
-        RecompNetplay visitor, forger;
+        RecompNetplay visitor = unopened(), forger = unopened();
         RecompNetplayRoom saltedRoom{};
         saltedRoom.hosting = true;
         const bool opened = recomp_netplay_listen(&host, 47646u) &&
@@ -765,7 +768,7 @@ int main()
 
     // A flood of chunk requests draws one 16-chunk burst per 50 ms, not 16 chunks per request.
     {
-        RecompNetplay flooder;
+        RecompNetplay flooder = unopened();
         RecompNetplayProfiles served{hostSent.data(), static_cast<std::uint32_t>(hostSent.size()), hostGot.data(), 0u};
         cancelNow = false;
         wait = std::thread([&] { hosted = hostOn(&host, 47640u, &offered, &served, 5000u, cancelled); });
@@ -810,7 +813,7 @@ int main()
 
     // A room's socket arrives with its peer, so a hello from any other address cannot take the match.
     {
-        RecompNetplay forger;
+        RecompNetplay forger = unopened();
         check("handed-over socket", recomp_netplay_listen(&host, 47641u) &&
             recomp_netplay_open(&forger, 0u, "127.0.0.1", 47641u));
         host.peer_address = htonl(0x7f000001u);

@@ -34,6 +34,7 @@ MAX_ROOMS = 4096
 ROOMS_PER_ADDRESS = 4
 NEW_ROOMS_PER_MINUTE = 4  # per address; without it, leaving and hosting again keeps one's rooms the newest listed
 JOINS_PER_SECOND = 10  # per address; a joiner repeats JOIN until it hears
+LISTS_PER_SECOND = 10  # per address; LIST needs no cookie, and each one sorts every room
 RELAY_PER_SECOND = 250  # per direction: 60 frames a second, plus repeats while waiting for the other player
 RELAY_PER_ADDRESS = 2 * RELAY_PER_SECOND  # a second, so one address cannot relay through every pair it makes
 PAIRS_PER_ADDRESS = 16  # each lasts PAIR_SECONDS; without a cap one address adds 10 a second
@@ -103,6 +104,7 @@ class Matchmaker:
         self.pairs = {}  # by endpoint, both ways
         self.claims = {}  # the room each joining address holds; one each, so one address cannot hide the list
         self.join_counts = {}  # JOINs per address since the last sweep
+        self.list_counts = {}  # LISTs per address since the last sweep
         self.relay_counts = {}  # RELAYs per address since the last sweep
         self.addr6_counts = {}  # ADDR6s per address since the last sweep
         self.v6 = {}  # a client's IPv6 endpoint by its nonce, proven by a cookie, and when it last said it
@@ -176,6 +178,8 @@ class Matchmaker:
         return [(header(HOSTED) + nonce + struct.pack(">I", room.id) + endpoint(sender), sender)]
 
     def list(self, digest, sender, nonce, now):
+        if over(self.list_counts, sender[0], LISTS_PER_SECOND):
+            return []
         rooms = sorted((room for room in self.rooms.values()
                         if room.digest == digest and room.open and room.claimed_until <= now and room.host != sender),
                        key=lambda room: room.born, reverse=True)  # newest first: a full list would never show a new room
@@ -250,6 +254,7 @@ class Matchmaker:
     def sweep(self, now):
         self.swept = now
         self.join_counts.clear()
+        self.list_counts.clear()
         self.relay_counts.clear()
         self.addr6_counts.clear()
         for nonce in [nonce for nonce, (_, seen) in self.v6.items() if now - seen > ADDR6_SECONDS]:
@@ -295,6 +300,7 @@ async def serve(address, port, relay_only, status_seconds, address6="::"):
     print(f"matchmaker: UDP {address}:{port}{' relay only' if relay_only else ''}", flush=True)
     if address6:
         # Its own socket, v6 only, so the IPv4 socket keeps its endpoints and a v4-only host still starts.
+        six = None
         try:
             six = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
             six.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
@@ -302,6 +308,8 @@ async def serve(address, port, relay_only, status_seconds, address6="::"):
             await loop.create_datagram_endpoint(lambda: Server(matchmaker), sock=six)
             print(f"matchmaker: UDP [{address6}]:{port}", flush=True)
         except OSError as error:
+            if six is not None:
+                six.close()
             print(f"matchmaker: no IPv6 ({error})", flush=True)
     if status_seconds <= 0:
         await asyncio.Event().wait()
