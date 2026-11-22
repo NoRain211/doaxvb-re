@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
 #endif
@@ -239,6 +240,38 @@ int recomp_sse_semantics_test(void)
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
         _mm_setcsr(saved_csr);
 #endif
+    }
+
+    /* Packed transfers: whole guest RAM takes the inline path, a small region the translated one. */
+    for (int whole_ram = 0; whole_ram < 2; ++whole_ram) {
+        const size_t size = whole_ram ? RECOMP_XBOX_RAM_SIZE : 0x40u;
+        uint8_t *image = calloc(1u, size);
+        RecompMemoryRegion region = {0u, size, image};
+        RecompXmm value = row(1.0f, 2.0f, 3.0f, 4.0f), low = row(0.0f, 0.0f, 0.0f, 0.0f);
+        const float written[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+        recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+        passed &= expect_u32("packed path", recomp_fast_ram != NULL, (uint32_t)whole_ram);
+        XMM_STORE(0x10u, value);
+        passed &= expect_u32("movaps store", (memcmp)(image + 0x10, written, 16u) == 0, 1u);
+        passed &= expect_float("movaps load", XMM_MEM(0x10u).f[3], 4.0f);
+        if (whole_ram) {
+            passed &= expect_float("movaps load through the cached alias",
+                XMM_MEM(RECOMP_XBOX_CACHED_ALIAS + 0x10u).f[2], 3.0f);
+            passed &= expect_u32("a packed span ends at the RAM boundary",
+                recomp_memory_bytes(RECOMP_XBOX_RAM_SIZE - 16u, 16u) != NULL, 1u);
+            passed &= expect_u32("a packed span across the RAM end is translated",
+                recomp_memory_bytes(RECOMP_XBOX_RAM_SIZE - 8u, 16u) == NULL, 1u);
+        }
+        XMM_LOAD_LOW(low, 0x18u);
+        XMM_LOAD_HIGH(low, 0x10u);
+        passed &= expect_float("movlps load", low.f[1], 4.0f);
+        passed &= expect_float("movhps load", low.f[2], 1.0f);
+        XMM_STORE_HIGH(0x20u, value);
+        XMM_STORE_LOW(0x28u, value);
+        passed &= expect_float("movhps store", MEMF(0x24u), 4.0f);
+        passed &= expect_float("movlps store", MEMF(0x28u), 1.0f);
+        recomp_runtime_init(NULL, 0u, NULL, 0u, NULL, 0u);
+        free(image);
     }
 
     return passed;

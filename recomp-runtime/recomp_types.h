@@ -207,21 +207,38 @@ static inline uint32_t ROR32(uint32_t value, unsigned int count)
    register itself is a host local and is addressed as a host pointer. */
 #define XMM_MEM(address) recomp_xmm_mem((uint32_t)(address))
 #define XMM_STORE(address, reg) \
-    recomp_guest_store((uint32_t)(address), &(reg), 16u)
+    recomp_packed_store((uint32_t)(address), &(reg), 16u)
 #define XMM_LOAD_LOW(reg, address) \
-    recomp_guest_load(&(reg).f[0], (uint32_t)(address), 8u)
+    recomp_packed_load(&(reg).f[0], (uint32_t)(address), 8u)
 #define XMM_STORE_LOW(address, reg) \
-    recomp_guest_store((uint32_t)(address), &(reg).f[0], 8u)
+    recomp_packed_store((uint32_t)(address), &(reg).f[0], 8u)
 #define XMM_LOAD_HIGH(reg, address) \
-    recomp_guest_load(&(reg).f[2], (uint32_t)(address), 8u)
+    recomp_packed_load(&(reg).f[2], (uint32_t)(address), 8u)
 #define XMM_STORE_HIGH(address, reg) \
-    recomp_guest_store((uint32_t)(address), &(reg).f[2], 8u)
+    recomp_packed_store((uint32_t)(address), &(reg).f[2], 8u)
+
+/* Guest RAM inline, as the scalar accessors do; everything else translated. */
+static inline void recomp_packed_load(void *destination, uint32_t source, size_t size)
+{
+    const uint8_t *memory = recomp_memory_bytes(source, size);
+
+    if (memory != NULL) (memcpy)(destination, memory, size);
+    else recomp_guest_load(destination, source, size);
+}
+
+static inline void recomp_packed_store(uint32_t destination, const void *source, size_t size)
+{
+    uint8_t *memory = recomp_memory_bytes(destination, size);
+
+    if (memory != NULL) (memcpy)(memory, source, size);
+    else recomp_guest_store(destination, source, size);
+}
 
 static inline RecompXmm recomp_xmm_mem(uint32_t address)
 {
     RecompXmm value;
 
-    recomp_guest_load(&value, address, 16u);
+    recomp_packed_load(&value, address, 16u);
     return value;
 }
 
