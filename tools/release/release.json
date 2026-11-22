@@ -1,5 +1,5 @@
 {
-  "version": "0.6.2",
+  "version": "0.7.0",
   "channel": "Beta",
-  "runtime_change": "llvm-mingw move retried under antivirus (#176); macOS/Linux setup installs Capstone and builds extract-xiso (#177, #179); Linux clang and CI (#178); program unchanged from 0.6.0"
+  "runtime_change": "new recipe: musl x87 math (#186) and remembered language (#208); experimental online Exhibition with rollback netcode (#187-#191); Windows Vulkan runner and SDL GPU fog (#192); RTGI in player builds (#181, #182); crash lines for stack overflows and aborts (#209); relative build receipts (#211); SDL launcher on macOS and Linux (#213, #215)"
 }

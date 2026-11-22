@@ -269,7 +269,10 @@ class Session:
         # the saves as a PC preference (docs/recomp-controls.md).
         preference = image.parent / ".recomp-storage/controller-mode-v1"
         preference_bytes = preference.read_bytes().hex() if preference.is_file() else None
+        # English, for the labels steps select by; a forced language also
+        # leaves the player's stored Voice and Message choice alone.
         environment = dict(os.environ, RECOMP_AUTO_LOG="1", RECOMP_AUDIO_GAIN="0", RECOMP_D3D_SCALE="1",
+                           RECOMP_LANGUAGE="en",
                            RECOMP_SCREENSHOT_TRIGGER=str(self.trigger_path),
                            RECOMP_SCREENSHOT_DIR=str(self.frames))
         environment.update(env or {})

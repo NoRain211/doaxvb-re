@@ -21,9 +21,11 @@
 #include "synctest.h"
 #include "xapi_time_adapter.h"
 extern "C" {
+#include "controller_settings.h"
 #include "dsound_service_adapter.h"
 #include "game_scheduler.h"
 #include "kernel_abi.h"
+#include "program_manual.h"
 #include "runtime.h"
 #include "stop_report.h"
 }
@@ -55,6 +57,7 @@ struct RollbackRun {
     bool hidden = false;
     bool interrupted = false;
     bool walking = false; // the menus are walked to Two Players for both sides
+    bool inExhibition = false; // the walk is done; backing out to the main menu ends the session
     bool fromRoom = false; // a room started this runner, so an ending session goes back to the menu
     RecompNetplayLaunch launch; // a room's session hands its socket and state back (recomp_netplay_session_return_args)
     std::uint32_t pass = 0u; // loop passes since boot
@@ -65,6 +68,7 @@ struct RollbackRun {
     std::chrono::steady_clock::time_point next_frame{};
     std::int32_t advantage = 0;
     std::chrono::steady_clock::time_point started;
+    std::chrono::steady_clock::time_point contact{}; // when a stall first saw the other player
     const char *dump = nullptr;
     std::uint32_t checkFrame = 0u, compared = 0u, matched = 0u;
     std::uint64_t checkHash = 0u;
@@ -78,6 +82,7 @@ struct RollbackRun {
     std::string digest;
     std::uint8_t flags = 0u;
     std::vector<std::uint8_t> hostSaves;
+    std::vector<std::uint8_t> joinerPad; // the joiner's controller settings (usePads), or empty
     std::ofstream replayFile; // the replay being recorded (startReplay)
     RecompReplayWriter replayWriter{};
     std::uint32_t replayFrames = 0u;
@@ -88,6 +93,12 @@ struct RollbackRun {
     std::uint32_t rewindDepth = 0u;
     std::chrono::steady_clock::time_point rewoundAt{};
     bool padSeen = false; // this player has used a gamepad, so losing it shows a notice
+    // The live-round second measureHitch is adding up, and when the last frontier wait ended.
+    std::chrono::steady_clock::time_point hitchSince{}, frameLeft{};
+    std::uint32_t hitchFrom = 0u, heldBack = 0u;
+    double peerWaitMs = 0.0, longestWaitMs = 0.0, slowestFrameMs = 0.0;
+    // The last frontier wait: how late this side first saw its frame due, and how long it then lacked pads.
+    double lateMs = 0.0, blockedMs = 0.0;
 };
 static RollbackRun rollback;
 static RecompNetplaySessionHost host;
@@ -185,8 +196,10 @@ static void stalled(std::chrono::steady_clock::time_point began, bool atBoundary
     }
     const auto now = steady_clock::now();
     const bool heard = rollback.net.peer_seen;
+    if (heard && rollback.contact == steady_clock::time_point{}) rollback.contact = now;
     const seconds grace(heard ? 15 : 120);
-    const auto waited = now - began;
+    // Contact heard during this wait starts its 15 s afresh.
+    const auto waited = now - (heard ? std::max(began, rollback.contact) : began);
     if (waited > grace) endSession("rollback:peer-timeout");
     if (waited < seconds(1)) return;
     if (!rollback.interrupted && heard)
@@ -217,11 +230,15 @@ static void startReplay()
 {
     namespace fs = std::filesystem;
     const fs::path folder = rollback.disc / ".recomp-storage" / "replays";
-    char name[32];
+    char stamp[24], name[32];
     const std::time_t now = std::time(nullptr);
-    std::strftime(name, sizeof name, "%Y%m%d-%H%M%S.dxbr", std::localtime(&now));
+    std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&now));
     std::error_code error;
     fs::create_directories(folder, error);
+    // A second session within the same second gets a suffix instead of truncating the first one's replay.
+    std::snprintf(name, sizeof name, "%s.dxbr", stamp);
+    for (unsigned n = 2u; fs::exists(folder / name, error); ++n)
+        std::snprintf(name, sizeof name, "%s-%u.dxbr", stamp, n);
     rollback.replayFile.open(folder / name, std::ios::binary | std::ios::trunc);
     RecompReplayInfo info{};
     std::memcpy(info.digest, rollback.digest.data(), std::min(rollback.digest.size(), sizeof info.digest));
@@ -229,10 +246,11 @@ static void startReplay()
     info.delay = static_cast<std::uint8_t>(rollback.delay);
     info.flags = rollback.flags;
     info.start_frame = rollback.pass;
-    info.blob_size[0] = static_cast<std::uint32_t>(rollback.hostSaves.size()); // the joiner sends none
-    std::vector<std::uint8_t> header(RECOMP_REPLAY_HEADER_BYTES + rollback.hostSaves.size());
+    info.blob_size[0] = static_cast<std::uint32_t>(rollback.hostSaves.size());
+    info.blob_size[1] = static_cast<std::uint32_t>(rollback.joinerPad.size());
+    std::vector<std::uint8_t> header(RECOMP_REPLAY_HEADER_BYTES + rollback.hostSaves.size() + rollback.joinerPad.size());
     header.resize(recomp_replay_header(&rollback.replayWriter, &info, rollback.hostSaves.data(),
-        rollback.hostSaves.data(), header.data()));
+        rollback.joinerPad.data(), header.data()));
     rollback.replayFile.write(reinterpret_cast<const char *>(header.data()),
         static_cast<std::streamsize>(header.size()));
     rollback.replayFile.flush();
@@ -287,14 +305,24 @@ static std::uint32_t awaitFrontier(bool last)
     const bool udp = rollback.mode == RollbackMode::Udp;
     Clock::time_point sent{};
     const Clock::time_point began = Clock::now();
+    // For measureHitch: when this side first saw its frame due, and first found it lacked the other's pads.
+    Clock::time_point due{}, blocked{};
+    const auto measured = [&] {
+        const auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+        rollback.lateMs = due == Clock::time_point{} ? 0.0 : ms(due - std::max(began, rollback.next_frame));
+        rollback.blockedMs = blocked == Clock::time_point{} ? 0.0 : ms(Clock::now() - blocked);
+    };
     for (;;) {
         receivePads();
         if (udp) compareChecks();
         // The local pad is read at the frame's start, so pacing adds no input lag.
-        const bool started = !udp || Clock::now() >= rollback.next_frame;
+        const Clock::time_point checked = Clock::now();
+        const bool started = !udp || checked >= rollback.next_frame;
+        if (started && due == Clock::time_point{}) due = checked;
         const std::uint32_t target = started ? recomp_rollback_take_rewind(&s) : RECOMP_ROLLBACK_NONE;
         if (target != RECOMP_ROLLBACK_NONE) {
             resumed(began);
+            measured();
             return target;
         }
         if (started) {
@@ -308,8 +336,10 @@ static std::uint32_t awaitFrontier(bool last)
             : started && recomp_rollback_can_run(&s) && (!udp || rollback.net.peer_seen);
         if (ready) {
             resumed(began);
+            measured();
             return RECOMP_ROLLBACK_NONE;
         }
+        if (started && blocked == Clock::time_point{}) blocked = checked;
         if (!udp) recomp_stop(4, "rollback:stalled");
         const Clock::time_point now = Clock::now();
         if (now - sent >= std::chrono::milliseconds(rollback.net.match.relay ? 16 : 4)) {
@@ -363,6 +393,41 @@ static void scheduleFrame()
     rollback.next_frame = std::max(rollback.next_frame + interval, now - 2 * interval);
     if (rollback.wait != 0u) rollback.next_frame = std::max(rollback.next_frame, now) + rollback.wait * interval;
     rollback.wait = 0u;
+}
+
+/* In live rounds, a second with a visible hitch gets one log line that says
+   whose side it came from: time this side lacked the other player's pads once
+   its frame was due, its own slowest frame (the guest, any rerun frames and
+   present between two frontier waits, or a frame it noticed late), and frames
+   that frame sync held back so the other side could catch up. Waiting is not
+   now minus the due time, which would blame a stalled process on the other
+   player. Quiet seconds log nothing. */
+static void measureHitch(std::chrono::steady_clock::time_point entered)
+{
+    using namespace std::chrono;
+    RollbackRun &r = rollback;
+    const steady_clock::time_point left = steady_clock::now();
+    const bool live = r.session.window != 0u;
+    // frameLeft is only set after a live wait, so a round's last frame counts as its window closes.
+    if (r.frameLeft != steady_clock::time_point{})
+        r.slowestFrameMs = std::max(r.slowestFrameMs, duration<double, std::milli>(entered - r.frameLeft).count());
+    if (live && r.frameLeft != steady_clock::time_point{}) {
+        r.slowestFrameMs = std::max(r.slowestFrameMs, r.lateMs);
+        r.peerWaitMs += r.blockedMs;
+        r.longestWaitMs = std::max(r.longestWaitMs, r.blockedMs);
+    }
+    r.frameLeft = live ? left : steady_clock::time_point{};
+    // A round's end flushes its last part second.
+    const bool measuring = r.hitchSince != steady_clock::time_point{};
+    if (measuring && live && left - r.hitchSince < seconds(1)) return;
+    if (measuring && (r.peerWaitMs >= 50.0 || r.slowestFrameMs >= 33.0 || r.heldBack >= 2u))
+        std::fprintf(stderr, "recomp netplay: hitch in frames %u-%u: waited %.0f ms for the other player "
+            "(longest %.0f ms), slowest frame here %.0f ms, held back %u frames for them\n",
+            r.hitchFrom, r.session.frame, r.peerWaitMs, r.longestWaitMs, r.slowestFrameMs, r.heldBack);
+    r.hitchSince = live ? left : steady_clock::time_point{};
+    r.hitchFrom = r.session.frame;
+    r.peerWaitMs = r.longestWaitMs = r.slowestFrameMs = 0.0;
+    r.heldBack = 0u;
 }
 
 /* Every 30th frame of a UDP session, each side hashes guest RAM as the frame
@@ -472,6 +537,7 @@ static void walkPads()
     if (!rollback.walking) return;
     if (recomp_netplay_game_walk(rollback.session.frame, &rollback.pads[0])) {
         rollback.walking = false;
+        rollback.inExhibition = true;
         recomp_dsound_service_adapter_set_muted(0);
         std::fprintf(stderr, "recomp netplay: Two Players character select from frame %u\n", rollback.session.frame);
     }
@@ -506,13 +572,22 @@ static void onFrame()
     recordReplay();
     bool saved = true;
     if (s.frame == rollback.frontier) {
+        /* Backing out of Exhibition to the main menu ends the session. Menus run
+           in lockstep, so both sides start this frame from the same confirmed
+           state and leave together, before waiting on each other's pads. */
+        if (rollback.inExhibition && recomp_netplay_game_main_menu()) {
+            std::fprintf(stderr, "recomp netplay: left Exhibition at frame %u\n", s.frame);
+            endSession("netplay:left-exhibition");
+        }
         if (rollback.mode == RollbackMode::Udp)
             setWindow(recomp_netplay_game_rally_live() ? RECOMP_ROLLBACK_WINDOW : 0u);
         if (rollback.mode == RollbackMode::Udp && rollback.paced != s.frame) {
             scheduleFrame();
             rollback.paced = s.frame;
         }
+        const auto entered = std::chrono::steady_clock::now();
         const std::uint32_t target = awaitFrontier(s.frame == rollback.stop);
+        if (rollback.mode == RollbackMode::Udp) measureHitch(entered);
         if (target != RECOMP_ROLLBACK_NONE) {
             if (!recomp_rollback_ring_load(target)) endSession("rollback:unrestorable");
             ++rollback.rollbacks;
@@ -536,6 +611,7 @@ static void onFrame()
                 recomp_netplay_send(&rollback.net, &s, rollback.advantage);
                 rollback.wait = recomp_netplay_wait_frames(&rollback.net, rollback.advantage);
                 rollback.waited += rollback.wait;
+                if (s.window != 0u) rollback.heldBack += rollback.wait;
             }
         }
     } else {
@@ -634,7 +710,8 @@ bool recomp_netplay_session_read_env(const char *mode)
     if (std::strcmp(mode, "loopback") == 0) {
         rollback.mode = RollbackMode::Loopback;
         rollback.player = 1u;
-        if (std::getenv("RECOMP_ROLLBACK_FRAMES") == nullptr) rollback.stop = 600u;
+        if (const char *frames = std::getenv("RECOMP_ROLLBACK_FRAMES"); frames == nullptr || *frames == '\0')
+            rollback.stop = 600u;
         envNumber("RECOMP_ROLLBACK_LAG", rollback.lag);
         if (rollback.lag <= RECOMP_ROLLBACK_WINDOW) return true;
         std::fprintf(stderr, "recomp runner: RECOMP_ROLLBACK_LAG is at most %u\n", RECOMP_ROLLBACK_WINDOW);
@@ -671,7 +748,7 @@ bool recomp_netplay_session_enabled()
 }
 
 /* Settings that change guest RAM, which the joiner takes from the host. */
-enum : std::uint8_t { LobbyUnlockSwimsuits = 1u, LobbyNormalScreen = 2u, LobbyMusicShuffle = 4u };
+enum : std::uint8_t { LobbyUnlockSwimsuits = 1u, LobbyNormalScreen = 2u, LobbyMusicShuffle = 4u, LobbyHostAnalog = 8u };
 
 static bool settingIs(const char *name, const char *value)
 {
@@ -718,6 +795,8 @@ static void adoptSettings(std::uint8_t flags, const std::filesystem::path &stora
     putSetting("RECOMP_GAME_HZ", "60");
     putSetting("RECOMP_TITLE_IDLE", "default");
     putSetting("RECOMP_FREE_CAMERA", "0");
+    // Each side's stored language would differ in guest RAM; both play in English.
+    putSetting("RECOMP_LANGUAGE", "en");
     // The game lists custom soundtracks in guest RAM; a session's folder has none.
     putSetting("RECOMP_USER_MUSIC", (storage / "netplay" / "UserMusic").string().c_str());
 }
@@ -735,6 +814,25 @@ static bool useSessionSaves(const std::uint8_t *saves, std::size_t size, const s
     recomp_save_set_session("netplay");
     rollback.hostSaves.assign(saves, saves + size);
     return true;
+}
+
+/* The host's saves give every port the host's controller settings. The host
+   keeps its own Digital or Analog choice (LobbyHostAnalog), and port 1 the
+   joiner's own record, which a joiner from a room sends as its profile. */
+static void usePads(std::uint8_t flags, const std::vector<std::uint8_t> &joiner)
+{
+    const bool record = joiner.size() == RECOMP_PROGRAM_PAD_BYTES && joiner[0] <= 1u && joiner[1] <= 1u;
+    rollback.joinerPad = record ? joiner : std::vector<std::uint8_t>{};
+    recomp_program_set_session_pads((flags & LobbyHostAnalog) != 0u, record ? joiner.data() : nullptr);
+}
+
+// --netplay-pad's hex, which recomp_netplay_launch_parse checks.
+static std::vector<std::uint8_t> padRecord(const std::string &hex)
+{
+    std::vector<std::uint8_t> record;
+    for (std::size_t i = 0u; i < hex.size(); i += 2u)
+        record.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2u), nullptr, 16)));
+    return record;
 }
 
 /* A room's socket, as --netplay-room-socket carries it to the session's
@@ -808,7 +906,7 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
             std::cerr << "recomp runner: --netplay-join needs <host>:<port>\n";
             return false;
         }
-        std::fprintf(stderr, "recomp netplay: joining %s\n", launch.join.c_str());
+        std::fprintf(stderr, "recomp netplay: joining the host\n"); // no address: logs end up in public issues
         if (!recomp_netplay_open(&rollback.net, room.localPort, launch.join.substr(0u, colon).c_str(),
                 static_cast<std::uint16_t>(port))) {
             std::cerr << "recomp runner: netplay could not open its UDP port\n";
@@ -817,11 +915,12 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
     }
     if (rollback.fromRoom) room.applyTo(rollback.net);
     /* The game keeps all three vacations in one save, so both sides play
-       from the host's, and the joiner sends none. Recovery first, so an
-       interrupted save is never sent. */
+       from the host's, and the joiner sends only its controller settings.
+       Recovery first, so an interrupted save is never sent. */
     const std::filesystem::path storage = launch.disc / ".recomp-storage",
         partition1 = recomp_save_partition1(storage, nullptr);
     std::vector<std::uint8_t> mine, theirs(RECOMP_NETPLAY_MAX_PROFILE);
+    if (!hosting) mine = padRecord(launch.pad);
     if (hosting && (!recomp_save_initialize(launch.disc.string().c_str()) ||
             !recomp_netplay_pack_profile(partition1, recomp_netplay_latest_profile(partition1), true, mine) ||
             mine.size() > RECOMP_NETPLAY_MAX_PROFILE)) {
@@ -835,6 +934,15 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
     lobby.flags = static_cast<std::uint8_t>((settingIs("RECOMP_UNLOCK_SWIMSUITS", "1") ? LobbyUnlockSwimsuits : 0u) |
         (settingIs("RECOMP_D3D_WIDESCREEN", "0") ? LobbyNormalScreen : 0u) |
         (settingIs("RECOMP_MUSIC_SHUFFLE", "1") ? LobbyMusicShuffle : 0u));
+    std::uint8_t modes[4] = {};
+    if (hosting && !recomp_controller_settings_load(launch.disc.string().c_str(), modes)) {
+        std::cerr << "recomp runner: cannot read your controller settings\n";
+        recomp_netplay_close(&rollback.net);
+        return false;
+    }
+    // Without a vacation save the host's port plays the defaults.
+    if (modes[0] != 0u && !recomp_netplay_latest_profile(partition1).empty())
+        lobby.flags |= LobbyHostAnalog;
     RecompNetplayProfiles profiles{mine.data(), static_cast<std::uint32_t>(mine.size()), theirs.data(), 0u};
     const RecompNetplayLobbyResult result = hosting
         ? recomp_netplay_host(&rollback.net, &lobby, &profiles, 10u * 60u * 1000u, nullptr)
@@ -852,6 +960,7 @@ bool recomp_netplay_session_connect(const RecompNetplayLaunch &launch)
         return false;
     }
     adoptSettings(lobby.flags, storage);
+    usePads(lobby.flags, hosting ? std::vector<std::uint8_t>(theirs.begin(), theirs.begin() + profiles.theirs_size) : mine);
     rollback.mode = RollbackMode::Udp;
     rollback.player = hosting ? 0u : 1u;
     rollback.delay = lobby.delay;
@@ -883,6 +992,7 @@ bool recomp_netplay_session_load_replay(const std::string &path, const RecompNet
     const std::filesystem::path storage = launch.disc / ".recomp-storage";
     if (!useSessionSaves(hostSaves, info.blob_size[0], storage)) return false;
     adoptSettings(info.flags, storage);
+    usePads(info.flags, std::vector<std::uint8_t>(joinerSaves, joinerSaves + info.blob_size[1]));
     rollback.mode = RollbackMode::Replay;
     rollback.player = info.player;
     rollback.delay = info.delay;
@@ -908,7 +1018,12 @@ bool recomp_netplay_session_room_launch(std::vector<std::string> &args)
         const unsigned peerPort = (socket.peer_port & 0xffu) << 8 | socket.peer_port >> 8;
         char endpoint[32];
         std::snprintf(endpoint, sizeof endpoint, "%u.%u.%u.%u:%u", peer[0], peer[1], peer[2], peer[3], peerPort);
-        args.insert(args.end(), {"--netplay-join", endpoint});
+        // The joiner's own controller settings, which the session's guest loads from the host's save (usePads).
+        std::uint8_t pad[RECOMP_PROGRAM_PAD_BYTES];
+        recomp_program_read_pad(0u, pad);
+        char hex[2u * RECOMP_PROGRAM_PAD_BYTES + 1u];
+        for (std::size_t i = 0u; i < sizeof pad; ++i) std::snprintf(hex + 2u * i, 3u, "%02x", pad[i]);
+        args.insert(args.end(), {"--netplay-join", endpoint, "--netplay-pad", hex});
     }
     // The new runner takes the port; the router forward goes with this one.
     recomp_netplay_close(&socket);

@@ -1,5 +1,6 @@
 #include "netplay_internal.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void put_pad(uint8_t *out, const RecompInputGamepad *pad)
@@ -279,7 +280,9 @@ static void wait_readable(const RecompNetplay *net, unsigned milliseconds)
 typedef struct Transfer {
     RecompNetplayProfiles *profiles;
     uint32_t chunks, missing, asked; /* of the peer's profile */
-    uint64_t next_ask;
+    uint64_t next_ask, next_serve;
+    uint64_t served; /* bytes of this side's profile sent */
+    uint32_t served_end; /* past the last chunk sent */
     bool known, peer_done;
     bool have[MAX_CHUNKS];
 } Transfer;
@@ -298,12 +301,27 @@ static void transfer_packet(RecompNetplay *net, Transfer *t, const uint8_t *pack
     uint32_t index;
     if (decode_part(packet, size, LOBBY_REQUEST, &index)) {
         const uint32_t mine = chunk_count(p->mine_size);
-        if (index >= mine) t->peer_done = true;
+        if (index >= mine) {
+            t->peer_done = true;
+            return;
+        }
+        /* A 10-byte request draws up to 16 KB. The next window goes out at
+           once, as an honest peer moves on; an earlier one, a retransmit or
+           a replay, waits 50 ms, and eight copies end it, far more than a
+           lossy link needs. */
+        const uint64_t now = now_ms();
+        const uint64_t limit = 8ull * p->mine_size;
+        if (t->served >= limit || (index < t->served_end && now < t->next_serve)) return;
+        t->next_serve = now + 50u;
+        const uint32_t end = index + CHUNKS_PER_REQUEST < mine ? index + CHUNKS_PER_REQUEST : mine;
+        if (end > t->served_end) t->served_end = end; /* only forward, so a replayed window stays a replay */
         uint8_t chunk[PART_HEADER + CHUNK_BYTES];
         for (uint32_t i = index; i < mine && i < index + CHUNKS_PER_REQUEST; ++i) {
             const uint32_t bytes = chunk_size(p->mine_size, i);
+            if (bytes > limit - t->served) break;
             memcpy(chunk + encode_part(LOBBY_CHUNK, i, chunk), p->mine + i * CHUNK_BYTES, bytes);
             netplay_send_to(net, net->peer_address, net->peer_port, chunk, PART_HEADER + bytes);
+            t->served += bytes;
         }
     } else if (t->known && decode_part(packet, size, LOBBY_CHUNK, &index) && index < t->chunks &&
         size == PART_HEADER + chunk_size(p->theirs_size, index)) {
@@ -347,6 +365,7 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
     t.profiles = profiles;
     uint8_t packet[RECOMP_NETPLAY_MAX_PACKET + 1u], welcome[LOBBY_BYTES];
     const size_t welcome_size = encode_lobby(LOBBY_WELCOME, lobby, profiles->mine_size, welcome);
+    bool refused = false; /* logged once, so a flood of hellos cannot stall on stderr */
     for (;;) {
         struct sockaddr_in from;
         int size;
@@ -366,8 +385,13 @@ RecompNetplayLobbyResult recomp_netplay_host(RecompNetplay *net, const RecompNet
                 }
                 if (theirs > RECOMP_NETPLAY_MAX_PROFILE) continue;
                 netplay_send_to(net, from.sin_addr.s_addr, from.sin_port, welcome, welcome_size);
-                if (memcmp(hello.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0)
-                    return RECOMP_NETPLAY_LOBBY_MISMATCH;
+                // Keep waiting, so a stray hello cannot end the lobby; the welcome tells that joiner.
+                if (memcmp(hello.digest, lobby->digest, RECOMP_NETPLAY_DIGEST_BYTES) != 0) {
+                    if (!refused)
+                        fprintf(stderr, "recomp netplay: refused a player who runs a different build; still waiting\n");
+                    refused = true;
+                    continue;
+                }
                 net->peer_address = from.sin_addr.s_addr;
                 net->peer_port = from.sin_port;
                 transfer_start(&t, theirs);

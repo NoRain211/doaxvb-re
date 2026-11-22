@@ -44,35 +44,7 @@ if(WIN32)
             copy_if_different "${RECOMP_SHADERC_DLL}" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
 else()
-    # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
-    # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
-    # 24.04 has no package). Hosts with neither only configure, which the
-    # tools tests do without it.
-    option(RECOMP_FETCH_SDL3 "Build SDL3 when the system has none" OFF)
-    find_package(SDL3 QUIET)
-    if(APPLE AND NOT SDL3_FOUND)
-        message(FATAL_ERROR "SDL3 is required: brew install sdl3")
-    endif()
-    if(NOT SDL3_FOUND AND RECOMP_FETCH_SDL3)
-        if(POLICY CMP0135)
-            cmake_policy(SET CMP0135 NEW)
-        endif()
-        include(FetchContent)
-        # The release the Steam Deck build was tested with, pinned like the Windows zip.
-        FetchContent_Declare(SDL3
-            URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-3.4.12.tar.gz
-            URL_HASH SHA256=f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7)
-        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-        set(SDL_SHARED ON CACHE BOOL "" FORCE)
-        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
-        FetchContent_MakeAvailable(SDL3)
-        set(SDL3_FOUND TRUE)
-    endif()
-    function(recomp_use_sdl3 target)
-        if(SDL3_FOUND)
-            target_link_libraries(${target} PRIVATE SDL3::SDL3)
-        endif()
-    endfunction()
+    include(cmake/RecompSDL3.cmake)
 endif()
 
 # Dear ImGui draws the runtime's overlay text over the game, through the SDL
@@ -712,9 +684,24 @@ if(RECOMP_PROGRAM_DIR)
         string(JSON _netplay_version ERROR_VARIABLE _netplay_package_error GET "${_netplay_package}" source_base)
     endif()
     if(NOT _netplay_version)
-        # shortcut: read at configure time; build_game.py configures every build, a bare cmake --build may lag a commit.
         execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             OUTPUT_VARIABLE _netplay_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        # Configure again when HEAD moves: a checkout rewrites HEAD, a commit its branch's ref and HEAD's log.
+        execute_process(COMMAND git symbolic-ref -q HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _git_branch OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT _git_branch)
+            set(_git_branch HEAD)
+        endif()
+        execute_process(COMMAND git rev-parse --git-path HEAD --git-path logs/HEAD --git-path "${_git_branch}" --git-path packed-refs
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _git_head_files OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        string(REPLACE "\n" ";" _git_head_files "${_git_head_files}")
+        foreach(_git_head_file IN LISTS _git_head_files)
+            get_filename_component(_git_head_file "${_git_head_file}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+            if(EXISTS "${_git_head_file}")
+                set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_git_head_file}")
+            endif()
+        endforeach()
     endif()
     if(NOT _netplay_version)
         message(FATAL_ERROR "Netplay needs a release package.json, a Git checkout or RECOMP_NETPLAY_VERSION")
@@ -911,13 +898,6 @@ if(RECOMP_PROGRAM_DIR)
             target_sources(${_runner} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/app_icon.rc")
         endif()
     endforeach()
-
-    # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
-    # beside the runner rather than on first use like the macOS launcher.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        add_executable(recomp_launcher ../tools/launcher_sdl.cpp)
-        recomp_use_sdl3(recomp_launcher)
-    endif()
 endif()
 
 option(RECOMP_BUILD_DXR_SMOKE_TEST "Build the hardware DXR 1.1 smoke test" OFF)
@@ -1274,13 +1254,18 @@ if(MSVC)
     set(_stop_report_check
         "${CMAKE_CURRENT_BINARY_DIR}/check-stop-report-$<CONFIG>.cmake")
     file(GENERATE OUTPUT "${_stop_report_check}" CONTENT [=[
-foreach(mode IN ITEMS normal mismatch expected-error error boundary handled crash)
+set(crash_kind_crash unhandled-exception)
+set(crash_kind_overflow stack-overflow)
+set(crash_kind_abort abort)
+set(crash_kind_invalid-parameter invalid-crt-parameter)
+foreach(mode IN ITEMS normal mismatch expected-error error boundary handled
+        crash overflow abort invalid-parameter)
     set(log "${CMAKE_CURRENT_LIST_DIR}/stop-report-${mode}.log")
     file(REMOVE "${log}")
     execute_process(COMMAND "$<TARGET_FILE:recomp_stop_report_test>" "${mode}" "${log}"
         RESULT_VARIABLE result ERROR_VARIABLE error TIMEOUT 10)
-    if(mode STREQUAL "crash")
-        if(result STREQUAL "0" OR NOT error MATCHES "event=host-crash kind=unhandled-exception"
+    if(DEFINED crash_kind_${mode})
+        if(result STREQUAL "0" OR NOT error MATCHES "event=host-crash kind=${crash_kind_${mode}}"
                 OR error MATCHES "event=runtime-stop" OR EXISTS "${log}")
             message(FATAL_ERROR "${mode}: exit=${result}, diagnostic=${error}")
         endif()

@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.7.0 Beta — 2026-11-20
+
+0.7.0 adds experimental online Exhibition with rollback netcode, a Vulkan
+renderer on Windows, ray-traced GI in player builds, fog on macOS and Linux,
+and one launcher with a Build page on macOS and Linux that opens on a stock
+Steam Deck. The game program and its generation recipe changed (#186, #208),
+so extract the ZIP into a new folder and build again; saves are unchanged, so
+copy your `private` saves over. Both players in an online match need the same
+build.
+
+### Added
+
+- **Online Exhibition with rollback netcode** (#186–#191), experimental. Press
+  A on EXHIBITION to open the online menu: host or join a room, use FIND
+  MATCH, or play locally; `--netplay-host` and `--netplay-join` do the same
+  from the command line. Each side predicts the other's pad and rewinds when
+  a prediction was wrong, and sessions save `.dxbr` replays. A session plays
+  from a copy of the host's profile, so neither player's saves change. It has
+  been tested only with two runners on one Windows machine; a full match with
+  real input, two separate machines, and macOS and Linux builds are untested.
+  See `docs/rollback-netcode.md`.
+- **A Vulkan renderer on Windows** (#192). Choose **Renderer: Vulkan** on the
+  launcher's Graphics page. Direct3D 11 stays the default; with Vulkan, the
+  Direct3D 11-only options (SMAA, VRR, sun shadows, per-pixel lighting,
+  smooth normals, ray-traced GI and texture packs) are turned off.
+- **One launcher for macOS and Linux** (#213). It has the Windows launcher's
+  sections, look and controls, and a Build page that finds your ISO and
+  builds the game. It replaces the macOS Swift launcher and the Linux
+  settings screen, and it offers fog.
+- **A prebuilt launcher in the Linux ZIP** (#215), so `./launcher.sh` opens on
+  a stock Steam Deck without a container, Python or a compiler. Building the
+  game on SteamOS still needs an Ubuntu distrobox.
+- **A `DOAXBV` entry in the macOS ZIP** (#210), so launchers that look for an
+  executable, such as Quiver, can start the game (#174).
+
+### Fixed
+
+- **Voice and Message language went back to English at every start** (#207,
+  #208). The game never saves them; the runner now remembers your choice in
+  `.recomp-storage/language-v1`. `RECOMP_LANGUAGE=en` or `ja` forces both.
+- **The launcher's Ray-traced GI option had no effect in player builds**
+  (#181). Release builds compile with llvm-mingw, which RTGI did not support.
+  It now builds there, and Windows setup downloads the DXC shader compiler
+  (32 MB).
+- **Ray-traced GI bled across silhouettes and left trails behind moving
+  objects** (#182).
+- **Linux setup could build a game with no sound** (#212). Without the ALSA,
+  PulseAudio or PipeWire development headers, the SDL3 that setup builds has
+  no audio driver, and the game ran silently. Setup now stops before the long
+  compile and names the packages to install, and `docs/building.md` adds the
+  Fedora packages and PipeWire headers.
+- **Some crashes left no crash line in the log** (#209). Stack overflows,
+  aborts and invalid C runtime arguments now print a `host-crash` line.
+
+### Changed
+
+- **Fog on macOS and Linux** (#192). The SDL GPU renderer now applies the
+  same fog as Direct3D 11, which changes the picture on macOS and Linux.
+- **Floating point math gives the same results on every host** (#186). The
+  game's x87 sine, cosine, tangent, arctangent, logarithm and power
+  instructions now use musl's implementations, so Windows, macOS and Linux
+  compute the same bits. This is the new lifter pin and changes 125
+  generated functions.
+- **A built game folder can move** (#211). Build receipts name the runner and
+  the extracted disc relative to the game folder, so the folder can be moved
+  or copied without a rebuild. Builds made before 0.7.0 keep absolute paths.
+
 ## 0.6.2 Beta — 2026-11-02
 
 0.6.2 makes macOS and Linux setup install its own tools, builds Linux with

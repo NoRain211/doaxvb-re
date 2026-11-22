@@ -24,9 +24,70 @@ void bufferStderr()
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <csignal>
+#include <cstdlib>
+
 namespace {
+/* Straight to the handle, with no CRT formatting or stdio lock: safe on an
+   overflowed stack, and while the flusher thread holds stderr's lock. */
+void writeStderr(const char *text, size_t size)
+{
+    DWORD written;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, static_cast<DWORD>(size),
+        &written, nullptr);
+}
+
+template <size_t N>
+void writeStderr(const char (&text)[N])
+{
+    writeStderr(text, N - 1u);
+}
+
+/* The unhandled-exception filter's stdio needs more stack than an overflow
+   leaves, so it died without a line. This drains stderr's buffer first, so
+   the crash line stays last, then writes the line with the address in hex
+   by hand. */
+LONG CALLBACK reportStackOverflow(EXCEPTION_POINTERS *info)
+{
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    char address[2u * sizeof(void *)];
+    uintptr_t value =
+        reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+    for (size_t i = sizeof address; i-- > 0u; value >>= 4u) {
+        address[i] = "0123456789ABCDEF"[value & 15u];
+    }
+    std::fflush(stderr);
+    writeStderr("recomp host: event=host-crash kind=stack-overflow"
+        " exception_code=0xc00000fd address=");
+    writeStderr(address, sizeof address);
+    writeStderr(" expectation_applied=false\n");
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* abort(), std::terminate and pure virtual calls end in a fail-fast that
+   skips the unhandled-exception filter; SIGABRT is raised before it. */
+void reportAbort(int)
+{
+    writeStderr("recomp host: event=host-crash kind=abort expectation_applied=false\n");
+}
+
+/* A bad CRT argument would also fail fast silently. Ending the process here
+   keeps it terminal instead of letting the call return an error. */
+void reportInvalidParameter(const wchar_t *, const wchar_t *, const wchar_t *,
+    unsigned, uintptr_t)
+{
+    writeStderr("recomp host: event=host-crash kind=invalid-crt-parameter"
+        " expectation_applied=false\n");
+    TerminateProcess(GetCurrentProcess(), 0xC0000417u); // STATUS_INVALID_CRUNTIME_PARAMETER
+}
+
 LONG CALLBACK reportUnhandledException(EXCEPTION_POINTERS *info)
 {
+    if (info->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        return EXCEPTION_EXECUTE_HANDLER; // reportStackOverflow wrote it
+    }
     std::fprintf(stderr,
         "recomp host: event=host-crash kind=unhandled-exception"
         " exception_code=0x%08lx address=%p expectation_applied=false\n",
@@ -34,6 +95,14 @@ LONG CALLBACK reportUnhandledException(EXCEPTION_POINTERS *info)
         info->ExceptionRecord->ExceptionAddress);
     std::fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void installCrashReporters()
+{
+    SetUnhandledExceptionFilter(reportUnhandledException);
+    AddVectoredExceptionHandler(1u, reportStackOverflow);
+    std::signal(SIGABRT, reportAbort);
+    _set_invalid_parameter_handler(reportInvalidParameter);
 }
 }
 #endif
@@ -113,8 +182,9 @@ LONG CALLBACK reportObservedException(EXCEPTION_POINTERS *info)
 {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
 
+    /* Not a stack overflow: symbol lookup needs more stack than is left, so
+       reportStackOverflow reports it instead. */
     if (code != EXCEPTION_ACCESS_VIOLATION &&
-        code != EXCEPTION_STACK_OVERFLOW &&
         code != EXCEPTION_ILLEGAL_INSTRUCTION &&
         code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
         code != EXCEPTION_PRIV_INSTRUCTION) {
@@ -193,7 +263,7 @@ void recomp_install_host_diagnostics(void)
 {
     bufferStderr();
 #ifdef _WIN32
-    SetUnhandledExceptionFilter(reportUnhandledException);
+    installCrashReporters();
 #endif
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), nullptr, TRUE);
@@ -214,7 +284,7 @@ void recomp_install_host_diagnostics(void)
 {
     bufferStderr();
 #ifdef _WIN32
-    SetUnhandledExceptionFilter(reportUnhandledException);
+    installCrashReporters();
 #endif
 }
 

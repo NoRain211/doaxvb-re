@@ -9,13 +9,16 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 namespace netplay_menu {
 
-// The router forward, asked on its own thread.
-enum class Upnp { Idle, Asking, Forwarded, NotForwarded };
+// The router forward, asked on its own thread; Abandoned while asking for a room already left.
+enum class Upnp { Idle, Asking, Forwarded, NotForwarded, Abandoned };
 static std::atomic<Upnp> upnpState{Upnp::Idle};
+static std::mutex upnpLock; // orders the asking thread's result against a new room's port
+static std::uint16_t upnpPort;
 static char upnpAddress[80];
 static std::string lanAddress;
 
@@ -28,13 +31,29 @@ static void openRouterPort(std::uint16_t port)
     }
     char lan[64];
     lanAddress = recomp_netplay_route_address(lan, sizeof lan) ? lan : "";
-    Upnp idle = Upnp::Idle;
+    std::lock_guard<std::mutex> hold(upnpLock);
+    upnpPort = port;
+    Upnp idle = Upnp::Idle, abandoned = Upnp::Abandoned;
+    // A left room's request is still running; it asks again for this room when it ends.
+    if (upnpState.compare_exchange_strong(abandoned, Upnp::Asking)) return;
     if (!upnpState.compare_exchange_strong(idle, Upnp::Asking)) return; // a forward is open or still being asked for
-    std::thread([port] {
-        char address[sizeof upnpAddress];
-        const bool forwarded = recomp_netplay_open_router_port(port, address, sizeof address);
-        std::memcpy(upnpAddress, address, sizeof address);
-        upnpState.store(forwarded ? Upnp::Forwarded : Upnp::NotForwarded);
+    std::thread([port]() mutable {
+        for (;;) {
+            char address[sizeof upnpAddress];
+            const bool forwarded = recomp_netplay_open_router_port(port, address, sizeof address);
+            std::memcpy(upnpAddress, address, sizeof address);
+            std::unique_lock<std::mutex> hold(upnpLock);
+            Upnp asking = Upnp::Asking;
+            if (port == upnpPort &&
+                upnpState.compare_exchange_strong(asking, forwarded ? Upnp::Forwarded : Upnp::NotForwarded)) return;
+            hold.unlock();
+            // The room closed or moved to another port meanwhile, so the forward closes with it.
+            if (forwarded) recomp_netplay_close_router_port();
+            hold.lock();
+            Upnp abandoned = Upnp::Abandoned;
+            if (upnpState.compare_exchange_strong(abandoned, Upnp::Idle)) return;
+            port = upnpPort; // a new room took the request over
+        }
     }).detach();
 }
 
@@ -124,9 +143,10 @@ static void leaveRoom()
     if (menu.lobby.hosting) recomp_netplay_match_leave(&menu.net);
     recomp_netplay_close(&menu.net);
     menu.lookup.reset();
-    Upnp forwarded = Upnp::Forwarded;
+    Upnp forwarded = Upnp::Forwarded, asking = Upnp::Asking;
     if (menu.lobby.hosting && upnpState.compare_exchange_strong(forwarded, Upnp::Idle)) recomp_netplay_close_router_port();
-    else if (upnpState.load() == Upnp::NotForwarded) upnpState.store(Upnp::Idle);
+    else if (menu.lobby.hosting) upnpState.compare_exchange_strong(asking, Upnp::Abandoned); // the asking thread closes it
+    if (upnpState.load() == Upnp::NotForwarded) upnpState.store(Upnp::Idle);
     menu.lobby.muting = false;
     menu.screen = Screen::Online;
     menu.cursor = menu.lobby.hosting ? OnlineHost : menu.lobby.found ? OnlineFind : OnlineJoin;
@@ -140,11 +160,17 @@ static void leaveBlockedHost(const std::string &message)
     menu.message = message;
 }
 
+// A peer's name as the screens show it: one the filter refuses never appears.
+static std::string shownName(const char *name)
+{
+    return recomp_netplay_name_banned(name) ? "HIDDEN NAME" : name;
+}
+
 // Keeps the other player's ID and name; then a host drops them and keeps hosting, and a joiner leaves.
 static void blockPeer()
 {
     RecompNetplayRoom &room = menu.lobby.room;
-    const std::string name = room.name;
+    const std::string name = shownName(room.name);
     menu.lobby.blockAsked = Clock::time_point{};
     if (!blockedId(room.peer_id)) {
         menu.blocked.emplace_back(room.peer_id, name);
@@ -202,7 +228,7 @@ static void say()
     }
 }
 
-// Enter opens a line and sends it, Esc drops it; printable ASCII only.
+// Enter or Tab opens a line, Enter sends it, Esc drops it; printable ASCII only.
 static void typeChat(bool peerAllowed)
 {
     if (menu.lobby.typing) recomp_input_text_focus(); // Enter, which opens the line, comes without text input
@@ -211,7 +237,7 @@ static void typeChat(bool peerAllowed)
     for (std::size_t i = 0u; i < count; ++i) {
         const char c = typed[i];
         if (!menu.lobby.typing) {
-            if (c == '\r' && peerAllowed) {
+            if ((c == '\r' || c == '\t') && peerAllowed) {
                 menu.lobby.typing = true;
                 menu.lobby.draft.clear();
             }
@@ -288,7 +314,7 @@ bool updateRoom(std::uint16_t keys)
             return false;
         }
         menu.lobby.blockAsked = now;
-        menu.message = "PRESS X AGAIN TO BLOCK " + std::string(room.name) + ".";
+        menu.message = "PRESS X AGAIN TO BLOCK " + shownName(room.name) + ".";
     } else if ((keys & X) && menu.lobby.hosting) {
         copyText(shownAddress());
         menu.message = "ADDRESS COPIED.";
@@ -329,7 +355,7 @@ void drawRoom()
     title("ONLINE LOBBY ROOM");
     const std::string ping = room.pinged ? std::to_string(room.ping_ms) + " MS" + (menu.net.match.relay ? "  RELAY" : "") : "";
     const bool peer = room.joined;
-    const std::string peerName = room.mismatch ? "OTHER BUILD" : room.name;
+    const std::string peerName = room.mismatch ? "OTHER BUILD" : shownName(room.name);
     if (menu.lobby.hosting) {
         plate(40.0f, "P1  HOST", menu.name, true, "YOU", menu.lobby.ready);
         plate(350.0f, "P2", peerName, peer, ping, room.ready);

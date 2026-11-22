@@ -21,6 +21,10 @@ bool recomp_netplay_game_rally_live(void);
 bool recomp_netplay_game_walk(uint32_t frame, RecompInputGamepad *pad);
 /* Exhibition character select shows. */
 bool recomp_netplay_game_character_select(void);
+/* The main menu shows, from its first frame: a quick B can leave it before
+   it runs. Entering the menus (0x0F3260) opens it unless 0x4D56C8 is set,
+   which opens character select instead. */
+bool recomp_netplay_game_main_menu(void);
 /* The main menu runs with its cursor on EXHIBITION, where the runner's
    online menu opens on A. */
 bool recomp_netplay_game_exhibition_chosen(void);

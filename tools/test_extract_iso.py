@@ -20,6 +20,12 @@ def listing(entries, count=1):
 
 
 class ExtractionTests(unittest.TestCase):
+    def setUp(self):
+        # The launcher's Vulkan choice exports RECOMP_RENDERER=vulkan; a shell
+        # that inherited it must not change which runner build_inputs() picks.
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("RECOMP_RENDERER", None)
+
     def test_live_log_and_failed_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -46,9 +52,34 @@ class ExtractionTests(unittest.TestCase):
             self.assertIn("compiler error", console.getvalue())
             self.assertIn(b"compiler error", log.read_bytes())
 
+    def test_relative_receipt_survives_moving_the_game_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder).resolve() / "first"
+            work = first / "private/setup-synthetic"
+            disc = work / "disc"
+            disc.mkdir(parents=True)
+            (disc / "synthetic.xbe").write_bytes(b"synthetic game input")
+            (work / "runner").write_bytes(b"synthetic runner")
+            (work / "build-receipt.json").write_text(json.dumps({
+                "status": "built-unverified", "disc": "private/setup-synthetic/disc",
+                "runner": "private/setup-synthetic/runner", "runner_sha256": sha256(work / "runner"),
+                "xbe_sha256": sha256(disc / "synthetic.xbe")}))
+            (first / "private/active-build.json").write_text(
+                json.dumps({"receipt": "private/setup-synthetic/build-receipt.json"}))
+            moved = first.rename(Path(folder).resolve() / "moved")
+            work = moved / "private/setup-synthetic"
+            self.assertEqual(build_inputs(moved),
+                             (work / "runner", work / "disc/synthetic.xbe", work / "build-receipt.json"))
+
+    def test_fog_setting_defaults_on(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            for saved, expected in (({}, "1"), ({"fog": True}, "1"), ({"fog": False}, "0")):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                self.assertEqual(saved_launcher_settings(root)["RECOMP_D3D_FOG"], expected)
+
     def test_built_runner_receipt_selection_and_identity(self):
-        self.enterContext(patch.dict(os.environ))
-        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
             work = root / "private/setup-synthetic"
@@ -144,8 +175,6 @@ class ExtractionTests(unittest.TestCase):
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_FREE_CAMERA"), expected)
 
     def test_launch_prerequisites_and_command(self):
-        self.enterContext(patch.dict(os.environ))
-        os.environ.pop("RECOMP_RENDERER", None)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with self.assertRaisesRegex(ValueError, "No playable runner"):
