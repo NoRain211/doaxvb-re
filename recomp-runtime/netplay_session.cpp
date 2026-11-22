@@ -602,11 +602,12 @@ static void onFrame()
             rollback.paced = s.frame;
         }
         const auto entered = std::chrono::steady_clock::now();
-        if (rollback.rerunFrom != std::chrono::steady_clock::time_point{})
+        if (rollback.rerunFrom != std::chrono::steady_clock::time_point{}) {
             rollback.rerunTotalMs += std::chrono::duration<double, std::milli>(entered - rollback.rerunFrom).count();
+            rollback.rerunFrom = {}; // once per rollback, or every later frame adds its time again
+        }
         const std::uint32_t target = awaitFrontier(s.frame == rollback.stop);
         if (rollback.mode == RollbackMode::Udp) measureHitch(entered);
-        else rollback.rerunFrom = {};
         if (target != RECOMP_ROLLBACK_NONE) {
             rollback.rerunFrom = std::chrono::steady_clock::now();
             if (!recomp_rollback_ring_load(target)) endSession("rollback:unrestorable");
