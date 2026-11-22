@@ -3116,7 +3116,7 @@ static bool testPacingPolicies()
         UINT latency = 0u;
         DXGI_SWAP_CHAIN_DESC desc{};
         passed = createWindow(&presenter) &&
-            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP)) &&
+            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP, nullptr)) &&
             SUCCEEDED(presenter.swap_chain->GetDesc(&desc)) &&
             desc.BufferCount == (immediate ? 1u : split_presentation ? 3u : 2u) &&
             desc.SwapEffect == (immediate ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD) &&

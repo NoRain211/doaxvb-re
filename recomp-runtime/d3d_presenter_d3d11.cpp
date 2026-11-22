@@ -18,6 +18,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_5.h>
+#include <dxgi1_6.h>
 #include <d3dcompiler.h>
 
 #include <cmath>
@@ -1036,7 +1037,8 @@ bool createWindow(RecompD3dPresenter *presenter)
 
 HRESULT createDeviceWithDriver(
     RecompD3dPresenter *presenter,
-    D3D_DRIVER_TYPE driver_type)
+    D3D_DRIVER_TYPE driver_type,
+    IDXGIAdapter *adapter)
 {
     const bool immediate = immediatePresent(presenter);
     DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
@@ -1067,8 +1069,8 @@ HRESULT createDeviceWithDriver(
     if (presenter->vrr) swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
     HRESULT result = D3D11CreateDeviceAndSwapChain(
-        nullptr,
-        driver_type,
+        adapter,
+        adapter != nullptr ? D3D_DRIVER_TYPE_UNKNOWN : driver_type,
         nullptr,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         feature_levels,
@@ -1138,10 +1140,38 @@ HRESULT createMainDepth(RecompD3dPresenter *presenter)
     return result;
 }
 
+/* Hybrid laptops list the integrated GPU first, and the runner is a child of
+   DOAXBV.exe, so a per-app GPU setting on the launcher never reaches it. Ask
+   DXGI for the fastest GPU (needs Windows 10 1803); null falls back to the default. */
+IDXGIAdapter1 *highPerformanceAdapter()
+{
+    IDXGIFactory6 *factory = nullptr;
+    IDXGIAdapter1 *adapter = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+        factory->EnumAdapterByGpuPreference(
+            0u, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
+        releaseCom(factory);
+    }
+    if (adapter != nullptr) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) releaseCom(adapter);
+        else std::fprintf(stderr, "recomp d3d presenter: gpu %ls\n", desc.Description);
+    }
+    return adapter;
+}
+
 HRESULT createGraphics(RecompD3dPresenter *presenter)
 {
+    IDXGIAdapter1 *adapter = highPerformanceAdapter();
     HRESULT hardware_result = createDeviceWithDriver(
-        presenter, D3D_DRIVER_TYPE_HARDWARE);
+        presenter, D3D_DRIVER_TYPE_HARDWARE, adapter);
+    releaseCom(adapter);
+    if (FAILED(hardware_result)) {
+        releaseGraphics(presenter);
+        hardware_result = createDeviceWithDriver(
+            presenter, D3D_DRIVER_TYPE_HARDWARE, nullptr);
+    }
 
     if (SUCCEEDED(hardware_result)) {
         presenter->driver_name = "hardware";
@@ -1154,7 +1184,7 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
             static_cast<unsigned long>(hardware_result));
         releaseGraphics(presenter);
         const HRESULT warp_result = createDeviceWithDriver(
-            presenter, D3D_DRIVER_TYPE_WARP);
+            presenter, D3D_DRIVER_TYPE_WARP, nullptr);
         if (FAILED(warp_result)) {
             std::fprintf(
                 stderr,
