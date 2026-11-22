@@ -521,11 +521,18 @@ if ($padReady) {
 if ($PlaySaved -and -not (Test-Built)) { Select-Section 1 }
 # Update check: release ZIPs carry package.json, so a source checkout never asks.
 # GitHub redirects releases/latest to releases/tag/vX.Y.Z; the final URL names the version.
+# The version a redirect to github.com/NoRain211/<repo>/releases/tag/vX.Y.Z names, when newer
+# than $current; a pre-release suffix such as 0.8.0-rc1 counts as 0.8.0, as in launcher_sdl.cpp.
+function Get-NewerRelease($url, $current) {
+    if ("$current" -notmatch '^\d+\.\d+\.\d+') { return }
+    $installed = [version]$Matches[0]
+    if ($url -match '^https://github\.com/NoRain211/[^/]+/releases/tag/v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -gt $installed) { $Matches[1] }
+}
 $update = @{ url = $null }
 $packagePath = Join-Path $root 'package.json'
 if (-not ($PlaySaved -and (Test-Built)) -and (Test-Path $packagePath)) {
     try {
-        $current = [version](Get-Content $packagePath -Raw -Encoding UTF8 | ConvertFrom-Json).version
+        $current = (Get-Content $packagePath -Raw -Encoding UTF8 | ConvertFrom-Json).version
         Add-Type -AssemblyName System.Net.Http
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 'Tls12'
         $client = New-Object Net.Http.HttpClient
@@ -538,10 +545,11 @@ if (-not ($PlaySaved -and (Test-Built)) -and (Test-Path $packagePath)) {
             $updateTimer.Stop()
             # Offline or a GitHub failure: say nothing.
             if ($update.task.Status -ne 'RanToCompletion' -or -not $update.task.Result.IsSuccessStatusCode) { return }
-            $final = $update.task.Result.RequestMessage.RequestUri.AbsoluteUri
-            if ($final -match '/releases/tag/v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -gt $current) {
-                $update.url = $final
-                $updateNote.Text = "Version $($Matches[1]) is out. Extract it into a new folder and build again."
+            $latest = Get-NewerRelease $update.task.Result.RequestMessage.RequestUri.AbsoluteUri $current
+            if ($latest) {
+                # Built here, so the button only ever opens this GitHub page.
+                $update.url = "https://github.com/NoRain211/doaxbv-re/releases/tag/v$latest"
+                $updateNote.Text = "Version $latest is out. Extract it into a new folder and build again."
                 $updateNote.ForeColor = C '#ffd27a'
                 $getUpdate.Visible = $true
             }

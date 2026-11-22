@@ -670,15 +670,17 @@ struct Launcher {
         if (updatePid <= 0 || waitpid(updatePid, &status, WNOHANG) != updatePid) return;
         updatePid = -1;
         if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return;
+        // Only github.com/NoRain211/<repo>/releases/tag/vX.Y.Z, whatever the repository is called now.
         const std::string url = readFile(path("private/launcher-update.txt"));
-        const std::string tag = "/releases/tag/v";
+        const std::string owner = "https://github.com/NoRain211/", tag = "/releases/tag/v";
         const size_t at = url.rfind(tag);
-        if (at == std::string::npos) return;
+        if (url.rfind(owner, 0) != 0 || at == std::string::npos || url.find('/', owner.size()) != at) return;
         const std::string version = url.substr(at + tag.size());
-        if (newerVersion(version, current)) {
-            latest = version;
-            releaseUrl = url;
-        }
+        if (version.empty() || version.find_first_not_of("0123456789.") != std::string::npos ||
+            !newerVersion(version, current)) return;
+        latest = version;
+        // Built here, so the button only ever opens this GitHub page.
+        releaseUrl = "https://github.com/NoRain211/doaxbv-re/releases/tag/v" + version;
     }
 
     // --- Drawing ------------------------------------------------------------
