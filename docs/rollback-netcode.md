@@ -45,8 +45,9 @@ replay tag (`DXBR`, `.dxbr`) renamed: `rollback.c`, `replay.c`,
 The matchmaker's packets keep doa2u-re's `D2MM` tag; rooms pair only
 runners whose build digest matches, and the digest includes the XBE hash.
 `netplay.c`, `netplay_room.c` and `netplay_wire.h` follow doa2u-re's room
-protocol at `fc1de4f` (the same files as `0cf84f4` before its IPv6 path),
-with this repo's own lobby checks on top: a joiner's goodbye ends a room
+protocol at `0cf84f4`, which includes its IPv6 path (`785db3c`) and the
+relay fallback that overrides it (`442537b`), with this repo's own lobby
+checks on top: a joiner's goodbye ends a room
 host's lobby before its hello, a delay past the rollback window is a
 mismatch, a refused build is logged once, profile serving stops at exactly
 eight copies, and dropping a room forgets the other build.
@@ -365,8 +366,21 @@ A room admits players as doa2u-re's does:
 doa2u-re replaced its rooms with Xbox Live and now drops every room packet,
 so this repo keeps the server: `tools/matchmaker.py` and
 `tools/test_matchmaker.py` are doa2u-re's at `0cf84f4`, with the default
-port changed to 47702. `0cf84f4` also has the IPv6 path; a client without
-it never asks for one, and the server pairs it over IPv4 as before.
+port changed to 47702.
+
+Players can also meet over IPv6, as in `0cf84f4`. IPv4 stays primary: each
+room socket opens an IPv6 sibling on the same port and, when the
+matchmaker's name has an AAAA record, tells the server its IPv6 endpoint
+(ADDR6, proven by its own cookie). When both players have one, PEER carries
+the other's, and a room punches both paths. A peer that answers over IPv6
+is sent to there and keeps its IPv4 identity, so nothing above the
+transport changes; a relay fallback still wins over it. A client or server
+without IPv6 pairs over IPv4 as before.
+
+The session runs in a new runner, so `--netplay-room-socket` carries the
+peer's IPv6 endpoint when the room reached it there. The new runner binds
+IPv6 on the same port and sends there from its first packet; without that,
+a pair that met only over IPv6 could not start its match.
 
 The runner's default matchmaker is UDP 47702 on the same host as before.
 Version 1 runners (0.7.0 and older) still use 47700 and the version 1
@@ -379,6 +393,11 @@ server there, so the two run side by side. To run the version 2 server:
 2. Accept UDP 47702 in the host's firewall and in the cloud provider's
    security list.
 3. `python tools/matchmaker.py --probe <server>:47702` must answer.
+4. For the IPv6 path, give the host an IPv6 address and the matchmaker's
+   name an AAAA record, accept UDP 47702 over IPv6 too, and check
+   `python tools/matchmaker.py --probe <server>:47702 --ipv6`. The default
+   name has only an A record today, so every match stays on IPv4 until
+   then.
 
 Until the server answers on 47702, a runner with this client cannot list
 or find rooms; JOIN ONLINE by address still works.
