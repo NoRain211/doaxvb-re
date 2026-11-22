@@ -3056,6 +3056,32 @@ static bool testHeldFrameTargets()
     return passed;
 }
 
+// The device is made on an adapter it is handed, as for the high-performance GPU, and that
+// choice never hands over a software adapter.
+static bool testAdapterChoice()
+{
+    bool passed = true;
+    IDXGIAdapter1 *chosen = highPerformanceAdapter();
+    if (chosen != nullptr) {
+        DXGI_ADAPTER_DESC1 desc{};
+        passed = SUCCEEDED(chosen->GetDesc1(&desc)) && (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0u;
+        releaseCom(chosen);
+    }
+    IDXGIFactory4 *factory = nullptr;
+    IDXGIAdapter *warp = nullptr;
+    RecompD3dPresenter presenter{};
+    presenter.config = {320u, 240u, RECOMP_D3D_PRESENTER_COLOR_FORMAT_BGRA8_UNORM,
+        RECOMP_D3D_PRESENTER_DEPTH_FORMAT_D24S8};
+    passed = passed && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+        SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) && createWindow(&presenter) &&
+        SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_HARDWARE, warp)) &&
+        presenter.swap_chain != nullptr;
+    releasePresenter(&presenter);
+    releaseCom(warp);
+    releaseCom(factory);
+    return passed;
+}
+
 static bool testPacingPolicies()
 {
     const UINT rates[][2] = {{60,1}, {119,1}, {120,2}, {121,2}, {144,1},
@@ -3116,7 +3142,7 @@ static bool testPacingPolicies()
         UINT latency = 0u;
         DXGI_SWAP_CHAIN_DESC desc{};
         passed = createWindow(&presenter) &&
-            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP)) &&
+            SUCCEEDED(createDeviceWithDriver(&presenter, D3D_DRIVER_TYPE_WARP, nullptr)) &&
             SUCCEEDED(presenter.swap_chain->GetDesc(&desc)) &&
             desc.BufferCount == (immediate ? 1u : split_presentation ? 3u : 2u) &&
             desc.SwapEffect == (immediate ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD) &&
@@ -4183,6 +4209,10 @@ int main()
     if (!testReplacementFormats()) return 1;
     if (!testTextureAntialiasing()) return 82;
     if (!testHeldFrameTargets()) return 1;
+    if (!testAdapterChoice()) {
+        std::fprintf(stderr, "FAIL device on a handed adapter, or a software adapter chosen as the fast GPU\n");
+        return 1;
+    }
     if (!testPacingPolicies()) {
         std::fprintf(stderr, "FAIL refresh intervals, statistics epochs, timer handles or frame latency\n");
         return 1;
