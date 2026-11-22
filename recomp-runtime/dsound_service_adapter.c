@@ -104,6 +104,8 @@ static void retire_buffer(BufferClock *clock)
     *clock = (BufferClock){0};
 }
 
+static void output_span(BufferClock *clock, uint32_t offset, uint32_t bytes);
+
 /* Copies the ring from the last output position up to `now` into host output.
    Guest-facing calls pass `force`: everything up to the cursor the guest is
    about to observe must be copied first, because the guest's streaming
@@ -116,14 +118,24 @@ static void pump_buffer(BufferClock *clock, uint64_t now, int force)
         (!force && now - output->last_ms < 10u)) {
         return;
     }
+    uint32_t offset = 0u;
+    uint32_t bytes = recomp_dsound_buffer_consume(output, now, &offset);
+    if (bytes != 0u) output_span(clock, offset, bytes);
+}
+
+/* Apart from pump_buffer, so a call with nothing to play skips probing this
+   80 KB stack frame. */
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__)
+__attribute__((noinline))
+#endif
+static void output_span(BufferClock *clock, uint32_t offset, uint32_t bytes)
+{
+    RecompDsoundBufferModel *output = &clock->output_model;
     uint32_t channels = (clock->format >> 16u) & 0xffu;
     uint32_t bits = clock->format >> 24u;
     int adpcm = (clock->format & 0xffffu) == 0x69u;
-    uint32_t offset = 0u;
-    uint32_t bytes = recomp_dsound_buffer_consume(output, now, &offset);
-    if (bytes == 0u) {
-        return;
-    }
     /* Host output owns its copy; the decoder may refill the guest ring immediately. */
     uint8_t pcm[80000];
     if (bytes > sizeof pcm) {

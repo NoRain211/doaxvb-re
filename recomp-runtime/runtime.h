@@ -124,6 +124,21 @@ static inline uint32_t *recomp_memory_u32(uint32_t guest_address)
     }
     return recomp_memory_u32_checked(guest_address);
 }
+/* Guest RAM byte span while a wide transfer needs no watch, access log or
+   device write; NULL otherwise, including at the RAM end boundary. */
+static inline uint8_t *recomp_memory_bytes(uint32_t guest_address, size_t size)
+{
+    const uint32_t window = guest_address & ~(RECOMP_XBOX_RAM_SIZE - 1u);
+    const uint32_t offset = guest_address & (RECOMP_XBOX_RAM_SIZE - 1u);
+
+    if (recomp_fast_ram != NULL && size <= RECOMP_XBOX_RAM_SIZE &&
+        offset <= RECOMP_XBOX_RAM_SIZE - size &&
+        (window == 0u || window == RECOMP_XBOX_CACHED_ALIAS ||
+         window == RECOMP_XBOX_PHYSICAL_ALIAS)) {
+        return recomp_fast_ram + offset;
+    }
+    return NULL;
+}
 uint64_t *recomp_memory_u64(uint32_t guest_address);
 uint16_t *recomp_memory_u16(uint32_t guest_address);
 int8_t *recomp_memory_i8(uint32_t guest_address);
