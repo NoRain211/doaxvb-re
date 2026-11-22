@@ -454,7 +454,10 @@ runners up to 0.7.0 still speak version 1 to the same default address, UDP
 
   A packet to 47700 that starts with `D2MM` and version 1 goes to the
   DOAXBV server; conntrack sends its answers, PEER and RELAY from 47700.
-  Version 2 packets still reach doa2u-re's server.
+  Version 2 packets still reach doa2u-re's server. A nat chain sees only
+  each flow's first packet, so the match holds for a client socket's
+  whole flow: one socket speaks one version, so that is the same thing,
+  except for flows that already exist when the table loads or goes away.
 - An iptables INPUT rule accepts UDP 47701, saved with
   `netfilter-persistent save`, because Oracle's Ubuntu images end INPUT
   with a REJECT. Leave `nftables.service` disabled: its
@@ -466,6 +469,11 @@ answered in 7 ms, a HOST, LIST, JOIN and RELAY round between two sockets
 worked through 47700, and a version 2 LOGON still got doa2u-re's COOKIE.
 To undo it, `sudo systemctl disable --now doaxbv-matchmaker-redirect
 doaxbv-matchmaker`.
+
+After loading the table, and after undoing it, run
+`sudo conntrack -D -p udp --orig-port-dst 47700`. A runner that keeps
+polling never lets its flow expire, so without this it stays on the
+server its first packet reached until it goes quiet for about 30 s.
 
 A runner that speaks version 2 cannot use 47700, since doa2u-re's server
 takes those packets. This client's version 2 server runs on its own port,
