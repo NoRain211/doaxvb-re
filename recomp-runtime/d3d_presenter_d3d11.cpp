@@ -1166,8 +1166,14 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     IDXGIAdapter1 *adapter = highPerformanceAdapter();
     HRESULT hardware_result = createDeviceWithDriver(
         presenter, D3D_DRIVER_TYPE_HARDWARE, adapter);
+    const bool preferred = adapter != nullptr;
     releaseCom(adapter);
-    if (FAILED(hardware_result)) {
+    if (preferred && FAILED(hardware_result)) {
+        std::fprintf(
+            stderr,
+            "recomp d3d presenter: preferred gpu create failed hr=0x%08lX; "
+            "trying the default adapter\n",
+            static_cast<unsigned long>(hardware_result));
         releaseGraphics(presenter);
         hardware_result = createDeviceWithDriver(
             presenter, D3D_DRIVER_TYPE_HARDWARE, nullptr);
