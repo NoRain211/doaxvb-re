@@ -473,7 +473,9 @@ doaxbv-matchmaker`.
 After loading the table, and after undoing it, run
 `sudo conntrack -D -p udp --orig-port-dst 47700`. A runner that keeps
 polling never lets its flow expire, so without this it stays on the
-server its first packet reached until it goes quiet for about 30 s.
+server its first packet reached until it goes quiet for the UDP stream
+timeout, `nf_conntrack_udp_timeout_stream` (120 s on current kernels).
+The `conntrack` command comes from Ubuntu's `conntrack` package.
 
 A runner that speaks version 2 cannot use 47700, since doa2u-re's server
 takes those packets. This client's version 2 server runs on its own port,
