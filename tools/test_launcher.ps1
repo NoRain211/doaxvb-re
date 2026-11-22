@@ -91,6 +91,20 @@ try {
         $got = [DOAXBV.Pad]::Step($step[0], $step[1])
         Assert ($got -ceq $step[2]) "Pad step at $($step[1]) ms: got '$got', expected '$($step[2])'"
     }
+    # Update check: only a newer tag on the owner's GitHub releases shows the notice.
+    $newer = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-NewerRelease' }, $true)
+    Invoke-Expression $newer.Extent.Text
+    $tag = 'https://github.com/NoRain211/doaxvb-re/releases/tag/v'
+    $cases = ("${tag}0.8.0", '0.7.0', '0.8.0'), ("${tag}0.10.0", '0.9.9', '0.10.0'), ("${tag}0.8.0", '0.8.0-rc1', $null),
+        ("${tag}0.8.0", '0.7.0-rc1', '0.8.0'), ("${tag}0.7.0", '0.7.0', $null), ("${tag}0.6.2", '0.7.0', $null),
+        ("${tag}0.8.0-rc1", '0.7.0', $null), ('https://github.com/NoRain211/doaxvb-re/releases', '0.7.0', $null),
+        ('https://evil.example/NoRain211/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null),
+        ('http://github.com/NoRain211/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null),
+        ('https://github.com/someone/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null), ("${tag}0.8.0", 'garbage', $null)
+    foreach ($case in $cases) {
+        $got = Get-NewerRelease $case[0] $case[1]
+        Assert ($got -ceq $case[2]) "Update check for $($case[0]) from $($case[1]): got '$got', expected '$($case[2])'"
+    }
     Write-Output "Launcher settings checks passed (PowerShell $($PSVersionTable.PSVersion))."
 } finally {
     [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
