@@ -10,6 +10,10 @@ one.)
 The setting also adds MODEL VIEWER to the main menu, which sets up a scene
 with one girl for the free camera; see [`model-viewer.md`](model-viewer.md).
 
+Online sessions, replays and SyncTest runs turn it off, the scene freeze and
+the model viewer with it: moving one game's camera or freezing its scene
+would desync the two games. It comes back in the room.
+
 While it flies, the game reads a neutral controller on the first port, so
 the game ignores what moves the camera. The game itself keeps running until
 you freeze it.

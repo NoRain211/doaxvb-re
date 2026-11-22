@@ -178,6 +178,16 @@ int recomp_netplay_launch_configure(const std::string &digest, const std::filesy
         std::cerr << "recomp runner: RECOMP_SYNCTEST cannot run with a netplay session or replay\n";
         return 2;
     }
+    /* The free camera writes one game's camera and the scene freeze stops one
+       game's tasks. Lobby sessions and replays turn it off in adoptSettings;
+       test sessions and SyncTest turn it off here, before anything reads it. */
+    if (testSession != nullptr || recomp_synctest_enabled()) {
+#ifdef _WIN32
+        _putenv_s("RECOMP_FREE_CAMERA", "0");
+#else
+        setenv("RECOMP_FREE_CAMERA", "0", 1);
+#endif
+    }
     if (lobby && !recomp_netplay_session_connect(launch)) {
         // A room's runner goes back to the menu; one from the command line stops.
         if (!launch.roomSocket.empty())
