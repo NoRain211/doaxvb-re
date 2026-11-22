@@ -14,6 +14,7 @@
 #include "xapi_time_adapter.h"
 extern "C" {
 #include "game_scheduler.h"
+#include "program_manual.h"
 }
 
 #include <algorithm>
@@ -35,7 +36,7 @@ namespace {
 
 // Each takes a value, and a runner started again goes without them.
 const char *const netplayFlags[] = {"--netplay-host", "--netplay-join", "--netplay-delay", "--netplay-room-socket",
-    "--netplay-room", "--netplay-return", "--replay"};
+    "--netplay-room", "--netplay-pad", "--netplay-return", "--replay"};
 
 RecompNetplayLaunch launch;
 std::string replayPath;
@@ -152,6 +153,13 @@ bool recomp_netplay_launch_parse(int &argc, char **argv)
             launch.roomSocket = value; // from a room's runner (recomp_netplay_session_room_launch)
         } else if (arg == "--netplay-room") {
             launch.room = value;
+        } else if (arg == "--netplay-pad") {
+            const std::string pad = value; // from a room's runner (recomp_netplay_session_room_launch)
+            if (pad.size() != 2u * RECOMP_PROGRAM_PAD_BYTES || pad.find_first_not_of("0123456789abcdef") != std::string::npos) {
+                std::cerr << "recomp runner: --netplay-pad needs " << 2u * RECOMP_PROGRAM_PAD_BYTES << " hex digits\n";
+                return false;
+            }
+            launch.pad = value;
         } else if (arg == "--netplay-return") {
             returnReason = value;
         } else {

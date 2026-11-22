@@ -17,4 +17,14 @@ int recomp_music_shuffle_pick(const uint16_t *masks, int count, int playing,
 int recomp_sun_caster_near(const float sphere[4], const float world[16],
                            const float view[16]);
 
+/* Netplay: a port's controller settings as the game loads them from the
+   save (0x0001B340): Vibration, Digital or Analog, a word and the Digital
+   and Analog button maps. */
+enum { RECOMP_PROGRAM_PAD_BYTES = 14 };
+void recomp_program_read_pad(uint32_t port, uint8_t record[RECOMP_PROGRAM_PAD_BYTES]);
+/* Netplay: from now on, loading the save's controller settings gives every
+   port the host's Digital or Analog choice, and port 1 the joiner's record
+   when joiner is not null, in place of this player's own preference. */
+void recomp_program_set_session_pads(bool analog, const uint8_t *joiner);
+
 #endif
