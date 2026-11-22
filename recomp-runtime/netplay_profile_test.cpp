@@ -149,7 +149,7 @@ int main()
     // Paths that must never be written: outside UDATA and TDATA, not plain names, or Windows devices.
     const char *const unsafe[] = {"../escape", "UDATA/../../escape", "UDATA/./a", "UDATA//a", "/escape",
         "C:/escape", "UDATA\\..\\escape", "SYSTEM/a", "udata/a", "UDATA/a b", "UDATA/con", "UDATA/CON.txt",
-        "UDATA/com1", "UDATA/LPT9.dat", "UDATA/a/", "", "UDATA/a:b"};
+        "UDATA/com1", "UDATA/LPT9.dat", "UDATA/a/", "", "UDATA/a:b", "UDATA/a.", "UDATA/.../a"};
     for (const char *path : unsafe) {
         const std::string name = std::string("unsafe \"") + path + '"';
         check(name.c_str(), !unpacks(blobOf({{1u, path, data}}), theirs / "unsafe" / "x"));
