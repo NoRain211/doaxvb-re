@@ -73,6 +73,13 @@ and press **Build game**. The launcher runs `BuildGame.cmd` without a console
 window, shows its output, saves it to `private/launcher-build.log`, and enables
 **Play** once the build completes.
 
+When GitHub has a newer release, the launcher's Main Menu says so and
+**Open release page** opens it in the browser. Only release ZIPs check,
+because their `package.json` names the version. The launcher downloads and
+changes nothing; extract the new ZIP into a new folder and build again. On
+macOS and Linux the check uses `curl`; without it, or offline, the launcher
+says nothing.
+
 To use the Windows wrapper directly, drop one supported ISO on `BuildGame.cmd` or run:
 
 ```powershell

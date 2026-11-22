@@ -262,6 +262,12 @@ $summaryKeys = New-Note $pages[0] "Display`nRendering`nExtras" 44 80
 $summaryKeys.Width = 110
 $summary = New-Object Windows.Forms.Label -Property @{ Left = 120; Top = 44; Width = 326; Height = 80; ForeColor = $ink; BackColor = [Drawing.Color]::Transparent }
 $pages[0].Controls.AddRange(@($ready, $summary))
+# Shown when GitHub has a newer release than this ZIP's package.json.
+$updateNote = New-Note $pages[0] '' 140 36
+$getUpdate = New-Button 'Open release page' 160
+$getUpdate.Top = 180; $getUpdate.Visible = $false
+$getUpdate.Add_Click({ try { Start-Process $update.url } catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null } })
+$pages[0].Controls.Add($getUpdate)
 
 # Build: run BuildGame.cmd hidden and tail its output into the log box.
 $iso = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 2; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink }
@@ -513,6 +519,36 @@ if ($padReady) {
 }
 # Without a build, -PlaySaved opens the window on the Build page instead.
 if ($PlaySaved -and -not (Test-Built)) { Select-Section 1 }
+# Update check: release ZIPs carry package.json, so a source checkout never asks.
+# GitHub redirects releases/latest to releases/tag/vX.Y.Z; the final URL names the version.
+$update = @{ url = $null }
+$packagePath = Join-Path $root 'package.json'
+if (-not ($PlaySaved -and (Test-Built)) -and (Test-Path $packagePath)) {
+    try {
+        $current = [version](Get-Content $packagePath -Raw -Encoding UTF8 | ConvertFrom-Json).version
+        Add-Type -AssemblyName System.Net.Http
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 'Tls12'
+        $client = New-Object Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(10)
+        $request = New-Object Net.Http.HttpRequestMessage ([Net.Http.HttpMethod]::Head), 'https://github.com/NoRain211/doaxbv-re/releases/latest'
+        $update.task = $client.SendAsync($request)
+        $updateTimer = New-Object Windows.Forms.Timer -Property @{ Interval = 500 }
+        $updateTimer.Add_Tick({
+            if (-not $update.task.IsCompleted) { return }
+            $updateTimer.Stop()
+            # Offline or a GitHub failure: say nothing.
+            if ($update.task.Status -ne 'RanToCompletion' -or -not $update.task.Result.IsSuccessStatusCode) { return }
+            $final = $update.task.Result.RequestMessage.RequestUri.AbsoluteUri
+            if ($final -match '/releases/tag/v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -gt $current) {
+                $update.url = $final
+                $updateNote.Text = "Version $($Matches[1]) is out. Extract it into a new folder and build again."
+                $updateNote.ForeColor = C '#ffd27a'
+                $getUpdate.Visible = $true
+            }
+        })
+        $updateTimer.Start()
+    } catch {}
+}
 if (-not ($PlaySaved -and (Test-Built)) -and $form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]

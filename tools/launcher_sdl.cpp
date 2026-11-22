@@ -277,6 +277,16 @@ std::vector<std::string> findIsos()
     return found;
 }
 
+// True when dotted version a, such as "0.8.0", is later than b. A part that
+// is not a number, as in "0.8.0-rc1", ends that version there.
+bool newerVersion(const std::string &a, const std::string &b)
+{
+    int x[3] = {}, y[3] = {};
+    std::sscanf(a.c_str(), "%d.%d.%d", &x[0], &x[1], &x[2]);
+    std::sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]);
+    return std::lexicographical_compare(y, y + 3, x, x + 3);
+}
+
 // --- Art -------------------------------------------------------------------
 SDL_Texture *loadArt(SDL_Renderer *renderer, const fs::path &path)
 {
@@ -292,7 +302,7 @@ SDL_Texture *loadArt(SDL_Renderer *renderer, const fs::path &path)
 }
 
 // --- Pages and their controls ----------------------------------------------
-enum Id { RESOLUTION, MSAA, FOG, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, ISO, BROWSE, START_BUILD, PLAY };
+enum Id { RESOLUTION, MSAA, FOG, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, ISO, BROWSE, START_BUILD, PLAY, UPDATE };
 enum class Kind { Choice, Toggle, Button };
 
 struct Control {
@@ -332,6 +342,11 @@ struct Launcher {
     std::deque<std::string> logLines;
     std::string logPartial;
     std::streamoff logRead = 0;
+
+    pid_t updatePid = -1;
+    std::string current;      // this ZIP's version, from package.json
+    std::string latest;       // set when GitHub has a newer release
+    std::string releaseUrl;
 
     std::string path(const char *relative) const { return root + "/" + relative; }
     bool building() const { return buildPid > 0; }
@@ -459,6 +474,9 @@ struct Launcher {
             break;
         }
         add(PLAY, Kind::Button, "PLAY", kPlayRect);
+        // After PLAY, so A on the Main Menu still plays by default.
+        if (page == MAIN && !latest.empty())
+            add(UPDATE, Kind::Button, "Open release page", {kContentX, 274, 150, 22});
         return list;
     }
 
@@ -507,6 +525,7 @@ struct Launcher {
             return 0;
         case BROWSE: browse(); return -1;
         case START_BUILD: startBuild(); return -1;
+        case UPDATE: SDL_OpenURL(releaseUrl.c_str()); return -1;
         default: change(control.id, step); return -1;
         }
     }
@@ -617,6 +636,48 @@ struct Launcher {
         } else {
             buildState = "Build failed. Log: private/launcher-build.log";
             buildStateColor = kWarn;
+        }
+    }
+
+    // --- Update check -------------------------------------------------------
+    // Release ZIPs carry package.json, so a source checkout never asks. GitHub
+    // redirects releases/latest to releases/tag/vX.Y.Z; curl prints that final URL.
+    void startUpdateCheck()
+    {
+        Json package;
+        package.parse(readFile(path("package.json")));
+        current = package.text("version");
+        if (current.empty()) return;
+        std::error_code error;
+        fs::create_directories(path("private"), error);
+        const std::string out = path("private/launcher-update.txt");
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+        posix_spawn_file_actions_addopen(&actions, 1, out.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+        const char *argv[] = {"curl", "-fsIL", "--max-time", "10", "-o", "/dev/null", "-w", "%{url_effective}",
+            "https://github.com/NoRain211/doaxbv-re/releases/latest", nullptr};
+        // Without curl or a network, the launcher says nothing.
+        if (posix_spawnp(&updatePid, argv[0], &actions, nullptr, const_cast<char **>(argv), environ) != 0)
+            updatePid = -1;
+        posix_spawn_file_actions_destroy(&actions);
+    }
+
+    void pollUpdateCheck()
+    {
+        int status = 0;
+        if (updatePid <= 0 || waitpid(updatePid, &status, WNOHANG) != updatePid) return;
+        updatePid = -1;
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return;
+        const std::string url = readFile(path("private/launcher-update.txt"));
+        const std::string tag = "/releases/tag/v";
+        const size_t at = url.rfind(tag);
+        if (at == std::string::npos) return;
+        const std::string version = url.substr(at + tag.size());
+        if (newerVersion(version, current)) {
+            latest = version;
+            releaseUrl = url;
         }
     }
 
@@ -754,6 +815,10 @@ struct Launcher {
                 text(kContentX + 88, 150 + i * 16, tail(values[i], 31), kInk);
             }
             if (!ready && !building()) note(214, "Open Build to make the game from your ISO.");
+            if (!latest.empty()) {
+                note(242, "Version " + latest + " is out. Extract it into a", kWarn);
+                note(254, "new folder and build again.", kWarn);
+            }
             break;
         }
         case BUILD: {
@@ -961,6 +1026,7 @@ int main(int argc, char **argv)
     }
     // Without a build, open on the Build page, as DOAXBV.exe does on Windows.
     if (!launcher.built()) launcher.select(BUILD);
+    launcher.startUpdateCheck();
 
     int result = -1;
     int held_dx = 0, held_dy = 0;
@@ -984,7 +1050,10 @@ int main(int argc, char **argv)
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                 switch (event.gbutton.button) {
                 case SDL_GAMEPAD_BUTTON_SOUTH: result = launcher.activate(focused); break;
-                case SDL_GAMEPAD_BUTTON_START: result = launcher.activate(list.back()); break;
+                case SDL_GAMEPAD_BUTTON_START:
+                    result = launcher.activate(*std::find_if(list.begin(), list.end(),
+                        [](const Control &control) { return control.id == PLAY; }));
+                    break;
                 case SDL_GAMEPAD_BUTTON_EAST: result = launcher.quit(); break;
                 case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: launcher.select(launcher.section - 1); break;
                 case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: launcher.select(launcher.section + 1); break;
@@ -1032,6 +1101,7 @@ int main(int argc, char **argv)
             }
         }
         launcher.poll();
+        launcher.pollUpdateCheck();
 
         // D-pad and stick: one step on press, then repeat while held.
         int dx, dy;
