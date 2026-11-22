@@ -169,6 +169,18 @@ its frame, until the other player's pads through that frame have arrived
 the session before the write. SyncTest and the snapshot ring refuse to
 rewind past a save (`save_storage` in `synctest_modules.c`).
 
+Each local pad is stored and sent with the values the game reads as zero
+set to zero (`recomp_netplay_game_canonical_pad`, `netplay_game_pad.c`),
+so stick and trigger noise at rest is no misprediction. As in doa2u-re's
+`ae35d38`, but with this game's thresholds:
+- Only the pad update (`0x0B5870`) reads the raw XInput state. It zeroes
+  sticks within ±`0x1FFF` and the A, B, X, Y, Black and White bytes under
+  `0x20` before anything else reads them.
+- The L trigger counts only as its digital bit, at `0x80`.
+- The R trigger's value is read from `0x32` up (`0x020BD0`, `0x020260`), so
+  only values under `0x32` are zeroed. doa2u-re zeroes both triggers under
+  `0x80`, which here would erase R presses the game reads.
+
 A UDP session that starts at boot walks the menus for both sides with
 port 0's pad, computed from guest state, so both runners press the same
 button on the same frame: START through the movies and the title,

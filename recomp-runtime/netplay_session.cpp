@@ -327,7 +327,7 @@ static std::uint32_t awaitFrontier(bool last)
         }
         if (started) {
             while (s.local_count <= s.frame + rollback.delay) {
-                const RecompInputGamepad pad = localPad(s.local_count);
+                const RecompInputGamepad pad = recomp_netplay_game_canonical_pad(localPad(s.local_count));
                 recomp_rollback_add_local(&s, &pad);
             }
         }
