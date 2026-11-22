@@ -99,6 +99,9 @@ struct RollbackRun {
     double peerWaitMs = 0.0, longestWaitMs = 0.0, slowestFrameMs = 0.0;
     // The last frontier wait: how late this side first saw its frame due, and how long it then lacked pads.
     double lateMs = 0.0, blockedMs = 0.0;
+    // The session's totals for the summary (finishRollback), and when the frames run again began.
+    double rerunTotalMs = 0.0, saveMs = 0.0, loadMs = 0.0;
+    std::chrono::steady_clock::time_point rerunFrom{};
 };
 static RollbackRun rollback;
 static RecompNetplaySessionHost host;
@@ -296,6 +299,17 @@ static void closeReplay()
         rollback.replayFrames);
 }
 
+/* Repeats this side's pads while a wait goes on: every 4 ms, or every 16 ms
+   through the matchmaker's relay. Each repeat costs the relay bandwidth, and
+   it drops a pair's packets past 250 a second. */
+static void repeatPads(std::chrono::steady_clock::time_point &sent)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now - sent < std::chrono::milliseconds(rollback.net.match.relay ? 16 : 4)) return;
+    recomp_netplay_send(&rollback.net, &rollback.session, rollback.advantage);
+    sent = now;
+}
+
 /* At the newest frame: gathers pads until the frame may run or a rewind is
    due, and returns the frame to load or RECOMP_ROLLBACK_NONE. */
 static std::uint32_t awaitFrontier(bool last)
@@ -341,11 +355,8 @@ static std::uint32_t awaitFrontier(bool last)
         }
         if (started && blocked == Clock::time_point{}) blocked = checked;
         if (!udp) recomp_stop(4, "rollback:stalled");
+        repeatPads(sent);
         const Clock::time_point now = Clock::now();
-        if (now - sent >= std::chrono::milliseconds(rollback.net.match.relay ? 16 : 4)) {
-            recomp_netplay_send(&rollback.net, &s, rollback.advantage);
-            sent = now;
-        }
         stalled(began);
         Clock::time_point until = now + std::chrono::milliseconds(2);
         if (rollback.next_frame > now && rollback.next_frame < until) until = rollback.next_frame;
@@ -368,9 +379,10 @@ static void finishRollback()
 {
     const double seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - rollback.started).count();
-    std::fprintf(stderr, "recomp rollback: frame %u reached after %u rollbacks "
-        "(%u frames run again, %u waited, %u saves) in %.1f s\n",
-        rollback.session.frame, rollback.rollbacks, rollback.replayed, rollback.waited, rollback.saves, seconds);
+    std::fprintf(stderr, "recomp rollback: frame %u reached after %u rollbacks loading %.0f ms "
+        "(%u frames run again in %.0f ms, %u waited, %u saves in %.0f ms) in %.1f s\n",
+        rollback.session.frame, rollback.rollbacks, rollback.loadMs, rollback.replayed, rollback.rerunTotalMs,
+        rollback.waited, rollback.saves, rollback.saveMs, seconds);
     writeDump();
     closeReplay();
     if (rollback.mode == RollbackMode::Udp) {
@@ -461,7 +473,10 @@ static bool saveFrame()
     const RecompRollbackSession &s = rollback.session;
     if (s.frame < s.remote_count && !isCheckFrame(s.frame)) return true;
     ++rollback.saves;
-    return recomp_rollback_ring_save(s.frame);
+    const auto began = std::chrono::steady_clock::now();
+    const bool saved = recomp_rollback_ring_save(s.frame);
+    rollback.saveMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    return saved;
 }
 
 static void confirmCheck()
@@ -521,9 +536,10 @@ static void confirmSaveFrame()
     if (s.remote_count <= running)
         std::fprintf(stderr, "recomp netplay: save in frame %u waits for the other player's input\n", running);
     const auto began = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point sent{};
     while (s.remote_count <= running) {
         recomp_netplay_receive(&rollback.net, &s);
-        recomp_netplay_send(&rollback.net, &s, rollback.advantage);
+        repeatPads(sent);
         stalled(began, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -586,10 +602,17 @@ static void onFrame()
             rollback.paced = s.frame;
         }
         const auto entered = std::chrono::steady_clock::now();
+        if (rollback.rerunFrom != std::chrono::steady_clock::time_point{}) {
+            rollback.rerunTotalMs += std::chrono::duration<double, std::milli>(entered - rollback.rerunFrom).count();
+            rollback.rerunFrom = {}; // once per rollback, or every later frame adds its time again
+        }
         const std::uint32_t target = awaitFrontier(s.frame == rollback.stop);
         if (rollback.mode == RollbackMode::Udp) measureHitch(entered);
         if (target != RECOMP_ROLLBACK_NONE) {
+            rollback.rerunFrom = std::chrono::steady_clock::now();
             if (!recomp_rollback_ring_load(target)) endSession("rollback:unrestorable");
+            rollback.loadMs += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - rollback.rerunFrom).count();
             ++rollback.rollbacks;
             rollback.replayed += rollback.frontier - target;
             const auto now = std::chrono::steady_clock::now();

@@ -982,6 +982,81 @@ int recomp_kernel_file_save_test(void)
         }
     }
 
+    {
+        /* A session reports the same attributes to both sides: Windows archive,
+           hidden and system bits, and a POSIX directory's size on disk, never
+           reach the game (docs/rollback-netcode.md). */
+        char session_file[MAX_PATH], session_dir[MAX_PATH];
+        int listed_file = 0, listed_dir = 0;
+        recomp_save_set_session("netplay");
+        snprintf(session_file, sizeof session_file,
+            "%s\\.recomp-storage\\netplay\\partition1\\UDATA\\session.dat", root);
+        snprintf(session_dir, sizeof session_dir,
+            "%s\\.recomp-storage\\netplay\\partition1\\UDATA\\session-dir", root);
+        handle = create_file("\\Device\\Harddisk0\\partition1\\UDATA\\session.dat",
+            GENERIC_READ | GENERIC_WRITE, 3u, &status, &passed);
+        passed &= expect("create session file", status == 0u && handle != 0u);
+        if (status == 0u) passed &= close_file(handle, &passed);
+        passed &= expect("create session directory", CreateDirectoryA(session_dir, NULL) != 0);
+        passed &= expect("mark session file's host bits",
+            SetFileAttributesA(session_file,
+                FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0);
+        uint32_t listing = open_existing("\\Device\\Harddisk0\\partition1\\UDATA",
+            GENERIC_READ, 3u, 0u, 1u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open session directory", listing == 0u && handle != 0u);
+        for (unsigned i = 0u; listing == 0u && i < 8u; ++i) {
+            uint32_t args[] = {handle, 0u, 0u, 0u, TEST_IOSB, TEST_BUFFER,
+                0x100u, 1u, 0u, i == 0u ? 1u : 0u};
+            uint64_t size;
+            status = invoke(207u, args, 10u, &passed);
+            if (status != 0u) break;
+            size = (uint64_t)*recomp_memory_u32(TEST_BUFFER + 0x28u) |
+                (uint64_t)*recomp_memory_u32(TEST_BUFFER + 0x2cu) << 32u;
+            if (strcmp((char *)recomp_memory_i8(TEST_BUFFER + 0x40u), "session.dat") == 0) {
+                listed_file = 1;
+                passed &= expect("session listing hides host attribute bits",
+                    *recomp_memory_u32(TEST_BUFFER + 0x38u) == FILE_ATTRIBUTE_NORMAL);
+            }
+            if (strcmp((char *)recomp_memory_i8(TEST_BUFFER + 0x40u), "session-dir") == 0) {
+                listed_dir = 1;
+                passed &= expect("session listing names the directory alone",
+                    *recomp_memory_u32(TEST_BUFFER + 0x38u) == FILE_ATTRIBUTE_DIRECTORY);
+                passed &= expect("session listing reports a directory as empty", size == 0u);
+            }
+        }
+        passed &= expect("session listing listed both entries", listed_file && listed_dir);
+        if (listing == 0u) passed &= close_file(handle, &passed);
+        status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\session.dat",
+            GENERIC_READ | FILE_WRITE_ATTRIBUTES, 3u, 0u, 0u, &passed);
+        handle = *recomp_memory_u32(TEST_HANDLE);
+        passed &= expect("open session file for attributes", status == 0u && handle != 0u);
+        passed &= expect("session query hides host attribute bits",
+            query_information(handle, 0x22u, 0x38u, &passed) == 0u &&
+            *recomp_memory_u32(TEST_INFORMATION + 0x30u) == FILE_ATTRIBUTE_NORMAL);
+        passed &= expect("session file set read-only",
+            set_file_attributes(handle, FILE_ATTRIBUTE_READONLY, &passed) == 0u);
+        passed &= expect("session query keeps read-only alone",
+            query_information(handle, 0x22u, 0x38u, &passed) == 0u &&
+            *recomp_memory_u32(TEST_INFORMATION + 0x30u) == FILE_ATTRIBUTE_READONLY);
+        passed &= expect("session file set normal",
+            set_file_attributes(handle, FILE_ATTRIBUTE_NORMAL, &passed) == 0u);
+        if (status == 0u) passed &= close_file(handle, &passed);
+        recomp_save_set_session(NULL);
+        SetFileAttributesA(session_file, FILE_ATTRIBUTE_NORMAL);
+        DeleteFileA(session_file);
+        SetFileAttributesA(session_dir, FILE_ATTRIBUTE_NORMAL);
+        RemoveDirectoryA(session_dir);
+        snprintf(session_file, sizeof session_file,
+            "%s\\.recomp-storage\\netplay\\partition1\\UDATA", root);
+        RemoveDirectoryA(session_file);
+        snprintf(session_file, sizeof session_file,
+            "%s\\.recomp-storage\\netplay\\partition1", root);
+        RemoveDirectoryA(session_file);
+        snprintf(session_file, sizeof session_file, "%s\\.recomp-storage\\netplay", root);
+        RemoveDirectoryA(session_file);
+    }
+
 cleanup:
     /* Reinitialization releases the documented lifetime journal lock. A null
        root leaves the backend disabled after this fixture. */

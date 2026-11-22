@@ -196,6 +196,20 @@ static bool save_write_allowed(const FileHandleEntry *entry, uint32_t owner)
     return true;
 }
 
+/* A host file's attributes as the game sees them. In a session the saves live
+   in their own folder (recomp_save_set_session) and only the directory and
+   read-only bits, or normal, are reported: Windows adds archive, and index or
+   cloud bits by folder, that POSIX hosts never report, and both sides must see
+   the same bytes. Read-only is the game's own, kept in a POSIX file's mode, and
+   it refuses a delete, so the game sees it. */
+static uint32_t session_attributes(uint32_t host)
+{
+    uint32_t kept;
+    if (recomp_save_get_session() == NULL) return host;
+    kept = host & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY);
+    return kept != 0u ? kept : FILE_ATTRIBUTE_NORMAL;
+}
+
 static uint32_t register_file_handle(
     HANDLE host_handle,
     FileHandleKind kind,
@@ -275,9 +289,12 @@ static uint32_t register_file_handle(
                         entry.change_time = entry.last_write_time;
                         size = (uint64_t)data.nFileSizeLow |
                             (uint64_t)data.nFileSizeHigh << 32u;
+                        /* Windows reports a directory as empty; a POSIX host's
+                           size on disk would differ, so the game sees none. */
+                        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u) size = 0u;
                         entry.size = size;
                         entry.allocation_size = (size + 4095u) & ~4095ull;
-                        entry.attributes = data.dwFileAttributes;
+                        entry.attributes = session_attributes(data.dwFileAttributes);
                         if (!recomp_directory_add(
                                 &file_handles[i].directory, &entry)) {
                             break;
@@ -1462,7 +1479,7 @@ static void bridge_nt_query_information_file(void)
         file_size = (uint64_t)size.QuadPart;
         policy = profile_metadata ? "host-profile-file-information" : "host-file-information";
         const uint32_t attributes = profile_metadata
-            ? host.FileAttributes : FILE_ATTRIBUTE_NORMAL;
+            ? session_attributes(host.FileAttributes) : FILE_ATTRIBUTE_NORMAL;
         if (profile_metadata && file_information != 0u &&
             ((file_information_class == FILE_BASIC_INFORMATION && length >= 0x28u) ||
              (file_information_class == FILE_NETWORK_OPEN_INFORMATION && length >= 0x38u))) {
