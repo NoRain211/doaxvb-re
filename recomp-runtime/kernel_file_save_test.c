@@ -1001,11 +1001,11 @@ int recomp_kernel_file_save_test(void)
         passed &= expect("mark session file's host bits",
             SetFileAttributesA(session_file,
                 FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0);
-        status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA",
+        uint32_t listing = open_existing("\\Device\\Harddisk0\\partition1\\UDATA",
             GENERIC_READ, 3u, 0u, 1u, &passed);
         handle = *recomp_memory_u32(TEST_HANDLE);
-        passed &= expect("open session directory", status == 0u && handle != 0u);
-        for (unsigned i = 0u; status == 0u && i < 8u; ++i) {
+        passed &= expect("open session directory", listing == 0u && handle != 0u);
+        for (unsigned i = 0u; listing == 0u && i < 8u; ++i) {
             uint32_t args[] = {handle, 0u, 0u, 0u, TEST_IOSB, TEST_BUFFER,
                 0x100u, 1u, 0u, i == 0u ? 1u : 0u};
             uint64_t size;
@@ -1026,7 +1026,7 @@ int recomp_kernel_file_save_test(void)
             }
         }
         passed &= expect("session listing listed both entries", listed_file && listed_dir);
-        if (handle != 0u) passed &= close_file(handle, &passed);
+        if (listing == 0u) passed &= close_file(handle, &passed);
         status = open_existing("\\Device\\Harddisk0\\partition1\\UDATA\\session.dat",
             GENERIC_READ | FILE_WRITE_ATTRIBUTES, 3u, 0u, 0u, &passed);
         handle = *recomp_memory_u32(TEST_HANDLE);
