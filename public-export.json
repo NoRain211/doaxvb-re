@@ -21,6 +21,8 @@
     "RunGame.cmd",
     "Launcher.cmd",
     "build_game.sh",
+    "build_steamdeck.sh",
+    "install_deps.sh",
     "run_game.sh",
     "launcher.sh",
     "public-export.json",

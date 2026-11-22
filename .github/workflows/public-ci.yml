@@ -122,11 +122,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Keep in step with the Ubuntu command in docs/building.md.
-          sudo apt-get install -y cmake ninja-build clang git python3-venv \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
-            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
-            libasound2-dev libpulse-dev libvulkan-dev libshaderc1
+          ./install_deps.sh
           # The runner has no display or GPU: software Vulkan for the presenter test.
           sudo apt-get install -y mesa-vulkan-drivers
       - name: Build extract-xiso the way setup does
