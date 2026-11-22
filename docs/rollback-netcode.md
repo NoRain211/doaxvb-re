@@ -316,6 +316,15 @@ only logs. With one runner frozen for 3 s, the other kept presenting at
 10 fps, both went on to frame 3,000 and guest RAM matched; with one killed,
 the other presented at 10 fps until its 15 s grace ended the session.
 
+Shorter hitches in a live round are logged once per second when the second
+had one: the time this side waited for the other player's pads after its
+frame was due, its own slowest frame, and frames frame sync held back so the
+other side could catch up. Long waits point at the other machine; a slow
+frame here points at this one, and it includes any frames run again after a
+rewind, since the player sees them as one late frame. Both renderers log
+each draw shader built outside their boot precompile, with how long it
+took.
+
 ## Decisions
 
 - **Interpolation.** `game_rollback.c` undoes high frame rate display

@@ -1635,6 +1635,7 @@ RecompD3dPresenterError submitClear(
 /* Compiled draw shaders, keyed by entry point and source. Shared by the boot
    precompile thread and the render worker; blobs live until exit. */
 std::mutex compiled_shaders_lock;
+thread_local bool precompiling; // the boot precompile thread, whose compiles hold up no frame
 std::unordered_map<std::string, ID3DBlob *> compiled_shaders;
 
 bool compileDrawShader(
@@ -1655,6 +1656,7 @@ bool compileDrawShader(
     }
 
     ID3DBlob *errors = nullptr;
+    const auto compile_start = std::chrono::steady_clock::now();
     const HRESULT result = D3DCompile(
         source,
         std::strlen(source),
@@ -1667,7 +1669,13 @@ bool compileDrawShader(
         0u,
         blob,
         &errors);
-
+    // A compile on the render worker holds up the frame that needed it; the hash tells shaders apart.
+    if (!precompiling) {
+        std::fprintf(stderr, "recomp d3d presenter: %s draw shader %s %s %016llx in %.1f ms\n",
+            FAILED(result) ? "failed to compile" : "compiled", target, entry_point,
+            static_cast<unsigned long long>(std::hash<std::string>{}(key)),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start).count());
+    }
     if (FAILED(result)) {
         std::fprintf(
             stderr,
@@ -1855,6 +1863,7 @@ constexpr uint32_t kBootDrawFvfs[] = {
 void precompileDrawShaders(const std::atomic<bool> *stop, bool explicit_coverage, bool sun_shadow = false, bool gbuffer = false)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    precompiling = true;
     const ULONGLONG start = GetTickCount64();
     static const DrawPipeline no_program{};
     uint32_t compiled = 0u;
