@@ -418,7 +418,8 @@ it never asks for one, and the server pairs it over IPv4 as before.
 
 The runner's default matchmaker is UDP 47702 on the same host as before.
 Version 1 runners (0.7.0 and older) still use 47700 and the version 1
-server there, so the two run side by side. To run the version 2 server:
+server there ([The version 1 matchmaker
+server](#the-version-1-matchmaker-server)), so the two run side by side. To run the version 2 server:
 
 1. Copy `tools/matchmaker.py` to `/opt/doaxbv-matchmaker-v2/` and
    `tools/matchmaker.service` to
@@ -472,6 +473,62 @@ frame here points at this one, and it includes any frames run again after a
 rewind, since the player sees them as one late frame. Both renderers log
 each draw shader built outside their boot precompile, with how long it
 took.
+
+## The version 1 matchmaker server
+
+doa2u-re replaced its room protocol with Xbox Live in #245, and its server
+now speaks protocol version 2 and drops every version 1 packet. DOAXBV
+runners up to 0.7.0 still speak version 1 to the same default address, UDP
+47700. So the default server's VM runs a second server for them:
+
+- `doaxbv-matchmaker.service` runs doa2u-re's `tools/matchmaker.py` at
+  commit `ce4d2f5` from `/opt/doaxbv-matchmaker/` on UDP 47701. That is
+  the last version 1 server, with the host endpoints FIND MATCH pings
+  and the join and LAN address limits. The unit is doa2u-re's
+  `tools/matchmaker.service` with that path, `--port 47701` and its own
+  description.
+- `doaxbv-matchmaker-redirect.service`, a oneshot unit after
+  `netfilter-persistent.service`, loads `/etc/doaxbv-matchmaker.nft` and
+  deletes its table when it stops:
+
+      table ip doaxbv_matchmaker
+      flush table ip doaxbv_matchmaker
+      table ip doaxbv_matchmaker {
+          chain prerouting {
+              type nat hook prerouting priority dstnat; policy accept;
+              udp dport 47700 @ih,0,32 0x44324d4d @ih,32,8 1 redirect to :47701
+          }
+      }
+
+  A packet to 47700 that starts with `D2MM` and version 1 goes to the
+  DOAXBV server; conntrack sends its answers, PEER and RELAY from 47700.
+  Version 2 packets still reach doa2u-re's server. A nat chain sees only
+  each flow's first packet, so the match holds for a client socket's
+  whole flow: one socket speaks one version, so that is the same thing,
+  except for flows that already exist when the table loads or goes away.
+- An iptables INPUT rule accepts UDP 47701, saved with
+  `netfilter-persistent save`, because Oracle's Ubuntu images end INPUT
+  with a REJECT. Leave `nftables.service` disabled: its
+  `/etc/nftables.conf` flushes the whole ruleset, iptables rules included.
+
+`python tools/matchmaker.py --probe <server>:47700` from doa2u-re at
+`ce4d2f5` sends a version 1 LIST and must answer. On 2026-11-20 it
+answered in 7 ms, a HOST, LIST, JOIN and RELAY round between two sockets
+worked through 47700, and a version 2 LOGON still got doa2u-re's COOKIE.
+To undo it, `sudo systemctl disable --now doaxbv-matchmaker-redirect
+doaxbv-matchmaker`.
+
+After loading the table, and after undoing it, run
+`sudo conntrack -D -p udp --orig-port-dst 47700`. A runner that keeps
+polling never lets its flow expire, so without this it stays on the
+server its first packet reached until it goes quiet for the UDP stream
+timeout, `nf_conntrack_udp_timeout_stream` (120 s on current kernels).
+The `conntrack` command comes from Ubuntu's `conntrack` package.
+
+A runner that speaks version 2 cannot use 47700, since doa2u-re's server
+takes those packets. This client's version 2 server runs on its own port,
+47702 ([The version 2 matchmaker](#the-version-2-matchmaker)), beside
+this one while version 1 runners remain.
 
 ## Decisions
 
