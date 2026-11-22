@@ -9,7 +9,7 @@
 #include <windows.h>
 #endif
 
-enum { PAGE = RECOMP_SNAPSHOT_PAGE_SIZE, PAGES = 64, RAM_SIZE = PAGES * PAGE };
+enum { PAGE = RECOMP_SNAPSHOT_PAGE_SIZE, PAGES = 256, RAM_SIZE = PAGES * PAGE };
 
 static uint8_t initial[RAM_SIZE];
 static uint8_t first[RAM_SIZE];
@@ -110,6 +110,41 @@ static int run(uint8_t *ram, bool write_watch, const char *mode)
     if (!recomp_snapshots_load(&s, 2u) || memcmp(ram, first, RAM_SIZE) != 0) {
         return fail(mode, "load across the ring");
     }
+    /* A page in both undone records takes the older value, and unsaved writes go. */
+    memcpy(first, ram, RAM_SIZE);
+    fill(ram, 7, 0x11);
+    if (!recomp_snapshots_save(&s)) return fail(mode, "overlap save 1");
+    fill(ram, 7, 0x22);
+    fill(ram, 8, 0x22);
+    if (!recomp_snapshots_save(&s)) return fail(mode, "overlap save 2");
+    fill(ram, 7, 0x33);
+    fill(ram, 9, 0x33);
+    if (!recomp_snapshots_load(&s, 2u) || memcmp(ram, first, RAM_SIZE) != 0) {
+        return fail(mode, "load through a page saved twice");
+    }
+
+    /* A page written with the bytes it held is no change. */
+    ram[12 * PAGE] = first[12 * PAGE];
+    if (!recomp_snapshots_save(&s) || s.records[s.newest].count != 0u) {
+        return fail(mode, "an unchanged page was saved");
+    }
+    /* Tracking starts again once most of its pages have stopped changing, and
+       still sees every later write. */
+    for (size_t page = 100u; page < 250u; ++page) fill(ram, page, 0x44);
+    if (!recomp_snapshots_save(&s)) return fail(mode, "wide save");
+    memcpy(first, ram, RAM_SIZE);
+    ram[100 * PAGE] ^= 1u;
+    if (!recomp_snapshots_save(&s)) return fail(mode, "narrow save");
+    memcpy(second, ram, RAM_SIZE);
+    ram[101 * PAGE] ^= 1u;
+    ram[200 * PAGE] ^= 1u;
+    if (!recomp_snapshots_load(&s, 0u) || memcmp(ram, second, RAM_SIZE) != 0) {
+        return fail(mode, "a write after tracking started again");
+    }
+    ram[102 * PAGE] ^= 1u;
+    if (!recomp_snapshots_load(&s, 1u) || memcmp(ram, first, RAM_SIZE) != 0) {
+        return fail(mode, "load after tracking started again");
+    }
 
     /* The hash follows saves, loads and moved ranges as a fresh pass would. */
     const RecompRamRange ignored[] = {{3 * PAGE + 4, 3 * PAGE + 8}, {40 * PAGE, 42 * PAGE}};
@@ -135,6 +170,17 @@ static int run(uint8_t *ram, bool write_watch, const char *mode)
     }
     if (!recomp_snapshots_hash(&s, NULL, 0u, &again) || again == hash || again != fresh_hash(ram, NULL, 0u)) {
         return fail(mode, "hash after the ranges moved");
+    }
+    /* Pages changed by several saves and a load are hashed at the next call. */
+    ram[50 * PAGE] ^= 1u;
+    if (!recomp_snapshots_save(&s)) return fail(mode, "hash save 1");
+    ram[50 * PAGE] ^= 2u;
+    ram[51 * PAGE] ^= 1u;
+    if (!recomp_snapshots_save(&s) || !recomp_snapshots_load(&s, 1u)) return fail(mode, "hash save 2 and load");
+    ram[52 * PAGE] ^= 1u;
+    if (!recomp_snapshots_save(&s) || !recomp_snapshots_hash(&s, NULL, 0u, &hash) ||
+        hash == again || hash != fresh_hash(ram, NULL, 0u)) {
+        return fail(mode, "hash after saves and a load without one between");
     }
     recomp_snapshots_free(&s);
     return 0;
@@ -166,6 +212,22 @@ int main(void)
     recomp_snapshots_free(&untracked);
     if (result == 0) result = run(plain, false, "page compare");
     free(plain);
+    /* Nine pages: the stale bitmap's last byte has bits past the last page. */
+    static uint8_t odd[9 * PAGE];
+    RecompGuestSnapshots o = {0}, t = {0};
+    uint64_t hash = 0u, fresh = 1u;
+    if (result == 0 && (!recomp_snapshots_init(&o, odd, sizeof odd, false, 2u) ||
+        !recomp_snapshots_hash(&o, NULL, 0u, &hash))) result = fail("nine pages", "init");
+    if (result == 0) {
+        fill(odd, 8u, 7u);
+        if (!recomp_snapshots_save(&o) || !recomp_snapshots_hash(&o, NULL, 0u, &hash) ||
+            !recomp_snapshots_init(&t, odd, sizeof odd, false, 1u) ||
+            !recomp_snapshots_hash(&t, NULL, 0u, &fresh) || hash != fresh) {
+            result = fail("nine pages", "hash after a save of the last page");
+        }
+        recomp_snapshots_free(&t);
+    }
+    recomp_snapshots_free(&o);
     if (result == 0) printf("guest snapshot: write watch=%d ok\n", write_watch ? 1 : 0);
     return result;
 }

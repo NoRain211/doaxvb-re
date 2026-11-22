@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /* Save points of guest RAM for rollback. Each save stores only the pages
-   written since the previous one; a fight frame writes about 320 of the
+   changed since the previous one; a fight frame writes about 320 of the
    16,384. Callers must stop every host thread that writes guest RAM (guest
    threads, host read workers) around init, save and load. */
 enum { RECOMP_SNAPSHOT_PAGE_SIZE = 0x1000u };
@@ -35,14 +35,16 @@ typedef struct RecompGuestSnapshots {
     uint8_t *shadow;      /* RAM as of the newest save */
     uint32_t *dirty_pages;
     void **watch_addresses;
+    uint8_t *restored;    /* load: one bit per page already written */
     /* Each record holds the pages that step one save back to the one before. */
     RecompSnapshotRecord *records;
     size_t slot_count;
     size_t newest;
     size_t depth;
-    /* recomp_snapshots_hash: each page's hash, their sum and the ranges read
-       as zero. */
+    /* recomp_snapshots_hash: each page's hash, their sum, the ranges read as
+       zero, and one bit per page whose shadow changed since it was hashed. */
     uint64_t *page_hashes;
+    uint8_t *hash_stale;
     uint64_t hash;
     RecompRamRange hash_ignored[RECOMP_SNAPSHOT_HASH_RANGES];
     size_t hash_ignored_count;
@@ -66,9 +68,9 @@ bool recomp_snapshots_save(RecompGuestSnapshots *snapshots);
 bool recomp_snapshots_load(RecompGuestSnapshots *snapshots, size_t back);
 /* A hash of the RAM as of the newest save or load, reading the ignored
    ranges (at most RECOMP_SNAPSHOT_HASH_RANGES) as zero. The first call
-   hashes every page; from then on each save and load hashes the pages it
-   changes while they are in cache, and a call hashes only the pages of its
-   ranges and the last call's when those differ. False when out of memory. */
+   hashes every page; a later one hashes the pages that saves and loads have
+   changed since, each once, and the pages of its ranges and the last call's
+   when those differ. False when out of memory. */
 bool recomp_snapshots_hash(RecompGuestSnapshots *snapshots, const RecompRamRange *ignored,
     size_t count, uint64_t *hash);
 void recomp_snapshots_free(RecompGuestSnapshots *snapshots);

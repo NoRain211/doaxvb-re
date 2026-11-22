@@ -48,35 +48,42 @@ static bool reset_tracking(RecompGuestSnapshots *s)
 #endif
 }
 
-/* Fills dirty_pages with the pages written since the newest save and resets
-   tracking. Returns SIZE_MAX on failure. */
+/* Fills dirty_pages with the pages that differ from the shadow, which are
+   those changed since the newest save. Returns SIZE_MAX on failure. */
 static size_t collect_dirty(RecompGuestSnapshots *s)
 {
-    const size_t page_count = s->size / PAGE;
-#ifdef _WIN32
-    if (s->write_watch) {
-        ULONG_PTR count = page_count;
-        DWORD granularity = 0u;
-        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, s->ram, s->size, s->watch_addresses,
-                &count, &granularity) != 0u || granularity != PAGE) {
-            return SIZE_MAX;
-        }
-        for (size_t i = 0u; i < count; ++i) {
-            s->dirty_pages[i] = (uint32_t)(((uint8_t *)s->watch_addresses[i] - s->ram) / PAGE);
-        }
-        return count;
-    }
-#endif
     /* shortcut: without write watch every page is compared with the shadow,
        a few ms per 64 MB save; use userfaultfd write-protect on Linux when
        rollback runs there. */
-    size_t count = 0u;
-    for (size_t page = 0u; page < page_count; ++page) {
+    size_t written = s->size / PAGE, count = 0u;
+#ifdef _WIN32
+    if (s->write_watch) {
+        ULONG_PTR found = written;
+        DWORD granularity = 0u;
+        if (GetWriteWatch(0u, s->ram, s->size, s->watch_addresses, &found, &granularity) != 0u ||
+            granularity != PAGE) {
+            return SIZE_MAX;
+        }
+        written = found;
+    }
+#endif
+    for (size_t i = 0u; i < written; ++i) {
+        const size_t page = s->write_watch ? (size_t)((uint8_t *)s->watch_addresses[i] - s->ram) / PAGE : i;
         if (memcmp(s->ram + page * PAGE, s->shadow + page * PAGE, PAGE) != 0) {
             s->dirty_pages[count++] = (uint32_t)page;
         }
     }
+    /* Tracking starts again only once its list is mostly pages that no longer
+       change. After a reset the first write to each page faults, about 0.7 us:
+       0.22 ms for a fight frame's 320 pages, against 0.1 us to compare one. */
+    if (s->write_watch && written > 2u * count + 64u) reset_tracking(s);
     return count;
+}
+
+/* A page whose shadow changed is hashed again at the next recomp_snapshots_hash. */
+static void hash_stale(RecompGuestSnapshots *s, size_t page)
+{
+    if (s->hash_stale != NULL) s->hash_stale[page / 8u] |= (uint8_t)(1u << (page % 8u));
 }
 
 bool recomp_snapshots_init(RecompGuestSnapshots *s, uint8_t *ram, size_t size,
@@ -101,8 +108,9 @@ bool recomp_snapshots_init(RecompGuestSnapshots *s, uint8_t *ram, size_t size,
     s->shadow = malloc(size);
     s->dirty_pages = malloc(page_count * sizeof *s->dirty_pages);
     s->records = calloc(slot_count, sizeof *s->records);
+    s->restored = malloc((page_count + 7u) / 8u);
     if (write_watch) s->watch_addresses = malloc(page_count * sizeof *s->watch_addresses);
-    if (s->shadow == NULL || s->dirty_pages == NULL || s->records == NULL ||
+    if (s->shadow == NULL || s->dirty_pages == NULL || s->records == NULL || s->restored == NULL ||
         (write_watch && s->watch_addresses == NULL)) {
         recomp_snapshots_free(s);
         return false;
@@ -139,7 +147,7 @@ bool recomp_snapshots_save(RecompGuestSnapshots *s)
         s->depth = 0u;
         reset_tracking(s);
         memcpy(s->shadow, s->ram, s->size);
-        if (s->page_hashes != NULL) rehash_all(s);
+        if (s->hash_stale != NULL) memset(s->hash_stale, 0xff, (s->size / PAGE + 7u) / 8u);
         return false;
     }
     for (size_t i = 0u; i < count; ++i) {
@@ -147,7 +155,7 @@ bool recomp_snapshots_save(RecompGuestSnapshots *s)
         record->pages[i] = s->dirty_pages[i];
         memcpy(record->data + i * PAGE, s->shadow + offset, PAGE);
         memcpy(s->shadow + offset, s->ram + offset, PAGE);
-        if (s->page_hashes != NULL) rehash_page(s, s->dirty_pages[i]);
+        hash_stale(s, s->dirty_pages[i]);
     }
     record->count = count;
     s->newest = next;
@@ -160,24 +168,31 @@ bool recomp_snapshots_load(RecompGuestSnapshots *s, size_t back)
     if (back > s->depth) return false;
     const size_t count = collect_dirty(s);
     if (count == SIZE_MAX) return false;
-    for (size_t i = 0u; i < count; ++i) {
-        const size_t offset = (size_t)s->dirty_pages[i] * PAGE;
-        memcpy(s->ram + offset, s->shadow + offset, PAGE);
-    }
-    for (size_t step = 0u; step < back; ++step) {
-        RecompSnapshotRecord *record = &s->records[s->newest];
+    /* A page takes its value from the oldest undone record that holds it, else
+       from the shadow. Walking oldest first writes each page once; a fight
+       writes most of the same pages every frame. */
+    memset(s->restored, 0, (s->size / PAGE + 7u) / 8u);
+    for (size_t step = back; step-- > 0u;) {
+        RecompSnapshotRecord *record = &s->records[(s->newest + s->slot_count - step) % s->slot_count];
         for (size_t i = 0u; i < record->count; ++i) {
-            const size_t offset = (size_t)record->pages[i] * PAGE;
+            const uint32_t page = record->pages[i];
+            if ((s->restored[page / 8u] & (1u << (page % 8u))) != 0u) continue;
+            s->restored[page / 8u] |= (uint8_t)(1u << (page % 8u));
+            const size_t offset = (size_t)page * PAGE;
             memcpy(s->ram + offset, record->data + i * PAGE, PAGE);
             memcpy(s->shadow + offset, record->data + i * PAGE, PAGE);
-            if (s->page_hashes != NULL) rehash_page(s, record->pages[i]);
+            hash_stale(s, page);
         }
         record->count = 0u;
-        s->newest = (s->newest + s->slot_count - 1u) % s->slot_count;
-        --s->depth;
     }
-    /* The restore's own writes are not guest changes. */
-    reset_tracking(s);
+    for (size_t i = 0u; i < count; ++i) {
+        const uint32_t page = s->dirty_pages[i];
+        if ((s->restored[page / 8u] & (1u << (page % 8u))) != 0u) continue;
+        memcpy(s->ram + (size_t)page * PAGE, s->shadow + (size_t)page * PAGE, PAGE);
+    }
+    s->newest = (s->newest + s->slot_count - back) % s->slot_count;
+    s->depth -= back;
+    /* The restore's own writes leave RAM equal to the shadow, so the next save drops them. */
     return true;
 }
 
@@ -236,6 +251,18 @@ static void rehash_page(RecompGuestSnapshots *s, size_t page)
 static void rehash_all(RecompGuestSnapshots *s)
 {
     for (size_t page = 0u; page < s->size / PAGE; ++page) rehash_page(s, page);
+    memset(s->hash_stale, 0, (s->size / PAGE + 7u) / 8u);
+}
+
+static void rehash_stale(RecompGuestSnapshots *s)
+{
+    for (size_t byte = 0u; byte < (s->size / PAGE + 7u) / 8u; ++byte) {
+        /* The last byte's high bits are past the last page after a 0xff fill. */
+        for (unsigned bit = 0u; s->hash_stale[byte] != 0u && bit < 8u && byte * 8u + bit < s->size / PAGE; ++bit) {
+            if ((s->hash_stale[byte] & (1u << bit)) != 0u) rehash_page(s, byte * 8u + bit);
+        }
+        s->hash_stale[byte] = 0u;
+    }
 }
 
 static void rehash_ranges(RecompGuestSnapshots *s, const RecompRamRange *ranges, size_t count)
@@ -257,13 +284,23 @@ bool recomp_snapshots_hash(RecompGuestSnapshots *s, const RecompRamRange *ignore
     s->hash_ignored_count = count;
     if (s->page_hashes == NULL) {
         s->page_hashes = calloc(s->size / PAGE, sizeof *s->page_hashes);
-        if (s->page_hashes == NULL) return false;
+        s->hash_stale = malloc((s->size / PAGE + 7u) / 8u);
+        if (s->page_hashes == NULL || s->hash_stale == NULL) {
+            free(s->page_hashes);
+            free(s->hash_stale);
+            s->page_hashes = NULL;
+            s->hash_stale = NULL;
+            return false;
+        }
         s->hash = 0u;
         rehash_all(s);
-    } else if (moved) {
-        /* A range that moved changes the mask of pages no save touched. */
-        rehash_ranges(s, old, old_count);
-        rehash_ranges(s, ignored, count);
+    } else {
+        rehash_stale(s);
+        if (moved) {
+            /* A range that moved changes the mask of pages no save touched. */
+            rehash_ranges(s, old, old_count);
+            rehash_ranges(s, ignored, count);
+        }
     }
     *hash = s->hash;
     return true;
@@ -281,7 +318,9 @@ void recomp_snapshots_free(RecompGuestSnapshots *s)
     free(s->records);
     free(s->shadow);
     free(s->dirty_pages);
+    free(s->restored);
     free(s->watch_addresses);
     free(s->page_hashes);
+    free(s->hash_stale);
     memset(s, 0, sizeof *s);
 }
