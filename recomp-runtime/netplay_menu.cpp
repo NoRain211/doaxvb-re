@@ -132,7 +132,7 @@ bool nameAllowed()
 static std::string defaultMatchmaker()
 {
     static const unsigned char coded[] = {0x37, 0x37, 0x74, 0x34, 0x3f, 0x3c, 0x3c, 0x39, 0x35, 0x28, 0x3e,
-        0x74, 0x39, 0x35, 0x37, 0x60, 0x6e, 0x6d, 0x6d, 0x6a, 0x6a};
+        0x74, 0x39, 0x35, 0x37, 0x60, 0x6e, 0x6d, 0x6d, 0x6a, 0x68};
     std::string server;
     for (const unsigned char c : coded) server.push_back(static_cast<char>(c ^ 0x5au));
     return server;
@@ -635,6 +635,7 @@ void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const Recom
     menu.cursor = menu.lobby.hosting ? OnlineHost : menu.lobby.found ? OnlineFind : OnlineJoin;
     if (menu.lobby.hosting) {
         host(true, menu.lobby.listing);
+        if (menu.screen == Screen::Room) recomp_netplay_room_hold(&menu.net, &menu.lobby.room);
     } else if (menu.lobby.found) {
         if (nameAllowed()) enterRoom(false); // a matched joiner has no address to call
     } else {
