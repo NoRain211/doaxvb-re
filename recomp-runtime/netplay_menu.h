@@ -43,5 +43,8 @@ bool recomp_netplay_menu_take_launch(RecompNetplayRoomState &room, std::uint32_t
    is the session's stop reason, shown in the room. */
 void recomp_netplay_menu_return_to_room(const RecompNetplay &socket, const RecompNetplayRoomState &room,
     const std::string &reason);
+/* At exit, from an atexit hook the install adds: a player in a room says so, as B in the room does,
+   so the other player is not left calling and the matchmaker drops the listing at once. */
+void recomp_netplay_menu_exit();
 
 #endif

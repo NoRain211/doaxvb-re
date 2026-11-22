@@ -53,6 +53,9 @@ struct LobbyState : RecompNetplayRoomState {
     bool ready = false, starting = false;
     RecompNetplayRoom room{};
     Clock::time_point opened, startAt, saidAt, checkedIn;
+    Clock::time_point rejoinDue; // when a relayed joiner whose host stays silent asks the matchmaker for its room again
+    Clock::time_point goneSince; // the first GONE answering those asks since the room was last heard
+    bool saidOpen = false;       // the open state of this host's last HOST
     // Room chat: the last few lines as name and text, and the line being typed.
     std::vector<ChatLine> chat;
     bool typing = false;
@@ -69,8 +72,10 @@ struct FindState {
     bool listOk = false, quick = false;
     int choice = 0;
     std::uint32_t joining = 0u;
+    std::uint32_t chosen = 0u; // the highlighted room's id; a newer room moves the others down the list
     std::vector<std::uint32_t> blockedRooms; // listed rooms of hosts this player blocked, this run
-    Clock::time_point listedAt, joinStarted, askedAt;
+    // askingSince: when this socket first asked for a list.
+    Clock::time_point listedAt, joinStarted, askedAt, askingSince;
 };
 
 // The settings part is what netplay.txt keeps.
@@ -82,6 +87,8 @@ struct Menu : RecompNetplaySettings {
     std::mutex lock; // the game may sample pads on another guest thread than it presents from
     Screen screen = Screen::Closed;
     std::uint16_t held[RECOMP_INPUT_PORT_COUNT]{};
+    // Back in a room after a session: what a port holds at its first sample must be let go before it counts.
+    bool settling[RECOMP_INPUT_PORT_COUNT]{};
     std::uint16_t pressed = 0u;
     std::uint16_t aliased = 0u; // the pressed face buttons that came from the keyboard's Z, X, A, S and Backspace
     unsigned repeat = 0u, frame = 0u;
@@ -117,6 +124,7 @@ void plateName(float x, float y, const std::string &name, std::uint32_t color);
 
 // netplay_menu_room.cpp
 void enterRoom(bool hosting);
+void sayLeaving();
 void host(bool bound, bool listed);
 void join(bool bound = false);
 bool updateRoom(std::uint16_t keys);
