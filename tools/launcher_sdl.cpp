@@ -536,11 +536,12 @@ struct Launcher {
     // run_game.py passes this folder to the runner as RECOMP_USER_MUSIC.
     void openMusicFolder() const
     {
-        const std::string folder = path("private/UserMusic");
+        // Absolute, because root may be "." and file://./ names a host.
         std::error_code error;
+        const fs::path folder = fs::absolute(path("private/UserMusic"), error);
         fs::create_directories(folder, error);
         std::string url = "file://";
-        for (unsigned char c : folder) {
+        for (unsigned char c : folder.string()) {
             if (std::isalnum(c) || std::strchr("/-._~", c)) url += static_cast<char>(c);
             else { char hex[4]; std::snprintf(hex, sizeof hex, "%%%02X", c); url += hex; }
         }

@@ -88,7 +88,8 @@ void report(const char *what, const fs::path &path, Error error)
         what, path.c_str(), static_cast<unsigned long>(error));
 }
 
-std::unique_ptr<RecompMusicDecoder> open_file(const fs::path &path, Error &error)
+// Media Foundation reads the duration from headers, so it is always measured.
+std::unique_ptr<RecompMusicDecoder> open_file(const fs::path &path, Error &error, bool)
 {
     auto decoder = std::make_unique<RecompMusicDecoder>();
     error = MFCreateSourceReaderFromURL(path.c_str(), nullptr, &decoder->reader);
@@ -173,13 +174,15 @@ void report(const char *what, const fs::path &path, Error error)
     std::fprintf(stderr, "[custom-music] %s file=\"%s\" error=%ld\n", what, path.c_str(), error);
 }
 
-std::unique_ptr<RecompMusicDecoder> open_file(const fs::path &path, Error &error)
+// measure: an MP3's length means reading every frame, so only the catalog scan asks.
+std::unique_ptr<RecompMusicDecoder> open_file(const fs::path &path, Error &error, bool measure)
 {
     auto decoder = std::make_unique<RecompMusicDecoder>();
     const ma_decoder_config config = ma_decoder_config_init(ma_format_s16, 2, RECOMP_MUSIC_RATE);
     error = ma_decoder_init_file(path.c_str(), &config, &decoder->decoder);
     if (error != MA_SUCCESS) return nullptr;
     decoder->initialized = true;
+    if (!measure) return decoder;
     ma_uint64 frames = 0;
     error = ma_decoder_get_length_in_pcm_frames(&decoder->decoder, &frames);
     const uint64_t ms = frames * 1000 / RECOMP_MUSIC_RATE;
@@ -212,20 +215,21 @@ const Track *find(uint32_t id)
 
 // FNV-1a over the folded filename: stable across scans and insertions.
 // Collisions are rejected, never reassigned.
-uint32_t song_id(const std::wstring &key)
+uint32_t song_id(const std::u16string &key)
 {
     uint32_t hash = 2166136261u;
-    for (wchar_t c : key) {
+    for (char16_t c : key) {
         hash = (hash ^ (c & 0xffu)) * 16777619u;
-        hash = (hash ^ (static_cast<uint32_t>(c) >> 8u)) * 16777619u;
+        hash = (hash ^ (c >> 8u)) * 16777619u;
     }
     return hash;
 }
 
 // Supported files sorted by folded name; each entry fails on its own.
-std::vector<std::pair<std::wstring, fs::path>> list_folder(const fs::path &folder)
+// Keys are UTF-16 on every platform, so IDs and order match Windows.
+std::vector<std::pair<std::u16string, fs::path>> list_folder(const fs::path &folder)
 {
-    std::vector<std::pair<std::wstring, fs::path>> files;
+    std::vector<std::pair<std::u16string, fs::path>> files;
     std::error_code error;
     fs::create_directories(folder, error);
     fs::directory_iterator it(folder, error), end;
@@ -233,22 +237,21 @@ std::vector<std::pair<std::wstring, fs::path>> list_folder(const fs::path &folde
         std::error_code entry_error;
         const auto &path = it->path();
         if (!it->is_regular_file(entry_error)) continue;
-        std::wstring key;
         try {
-            key = folded(path.filename().wstring());
+            const fs::path key = folded(path.filename().wstring());
+            const auto ext = key.extension().wstring();
+            if (ext == L".mp3" || ext == L".wav" || ext == L".flac")
+                files.emplace_back(key.u16string(), path);
         } catch (const std::system_error &) {
-            continue;  // a POSIX name that is not valid UTF-8
+            // a POSIX name that is not valid UTF-8 is left out
         }
-        const auto ext = fs::path(key).extension().wstring();
-        if (ext == L".mp3" || ext == L".wav" || ext == L".flac")
-            files.emplace_back(std::move(key), path);
     }
     if (error) report("scan stopped", folder, from_system(error));
     std::sort(files.begin(), files.end());
     return files;
 }
 
-void add_track(const std::wstring &key, const fs::path &path)
+void add_track(const std::u16string &key, const fs::path &path)
 {
     Track track;
     track.info.id = song_id(key);
@@ -257,7 +260,7 @@ void add_track(const std::wstring &key, const fs::path &path)
         return;
     }
     Error error = kFailed;
-    auto decoder = open_file(path, error);
+    auto decoder = open_file(path, error, true);
     uint8_t probe[RECOMP_MUSIC_FRAME_BYTES];
     if (!decoder || recomp_music_read(decoder.get(), probe, sizeof probe) != sizeof probe ||
             !recomp_music_rewind(decoder.get())) {
@@ -327,7 +330,7 @@ extern "C" RecompMusicDecoder *recomp_music_open(uint32_t id)
     if (!path || !backend_ready) return nullptr;
     try {
         Error error = kFailed;
-        auto decoder = open_file(path, error);
+        auto decoder = open_file(path, error, false);
         if (!decoder) report("open failed", path, error);
         return decoder.release();
     } catch (const std::bad_alloc &) {
