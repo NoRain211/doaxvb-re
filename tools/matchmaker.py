@@ -337,7 +337,7 @@ def probe(host, port, timeout=3.0, family=socket.AF_INET):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--address", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=47702)
+    parser.add_argument("--port", type=int, default=47703)
     parser.add_argument("--relay-only", action="store_true", help="relay every pair, so no player learns another's address")
     parser.add_argument("--status", type=float, default=60.0, help="seconds between status lines, 0 for none")
     parser.add_argument("--address6", default="::", help="IPv6 address to bind, empty for IPv4 only")
@@ -346,7 +346,7 @@ def main():
     arguments = parser.parse_args()
     if arguments.probe:
         host, _, port = arguments.probe.rpartition(":") if arguments.ipv6 else arguments.probe.partition(":")
-        took = probe(host.strip("[]"), int(port or 47702), family=socket.AF_INET6 if arguments.ipv6 else socket.AF_INET)
+        took = probe(host.strip("[]"), int(port or 47703), family=socket.AF_INET6 if arguments.ipv6 else socket.AF_INET)
         print(f"{arguments.probe}: " + (f"answered in {took:.0f} ms" if took is not None else "no answer"))
         sys.exit(0 if took is not None else 1)
     asyncio.run(serve(arguments.address, arguments.port, arguments.relay_only, arguments.status, arguments.address6))

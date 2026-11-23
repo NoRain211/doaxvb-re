@@ -6,7 +6,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 /opt/doaxbv-matchmaker-v2/matchmaker.py --port 47702
+ExecStart=/usr/bin/python3 /opt/doaxbv-matchmaker-v2/matchmaker.py --port 47703
 Restart=always
 RestartSec=2
 DynamicUser=yes
