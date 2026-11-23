@@ -50,6 +50,8 @@ ghidra_projects/
 *.gzf
 third_party/**
 !third_party/README.md
+!third_party/fsr1/
+!third_party/fsr1/**
 
 # Build and runtime output
 out/
