@@ -25,5 +25,9 @@ void d3d_dlss_destroy(D3dDlss *dlss);
    once. Leaves the context state cleared. */
 void d3d_dlss_resolve(D3dDlss *dlss, ID3D11DeviceContext *context, DlssBridgeFrame frame,
     ID3D11ShaderResourceView *scene, ID3D11RenderTargetView *target);
+/* Draws scene over target scaled bilinearly, without DLSS. Leaves the context
+   state cleared. */
+void d3d_dlss_copy(D3dDlss *dlss, ID3D11DeviceContext *context,
+    ID3D11ShaderResourceView *scene, ID3D11RenderTargetView *target);
 
 #endif

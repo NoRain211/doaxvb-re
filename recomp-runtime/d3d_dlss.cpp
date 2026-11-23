@@ -150,6 +150,12 @@ void d3d_dlss_resolve(D3dDlss *dlss, ID3D11DeviceContext *context, DlssBridgeFra
         dlss->reported = true;
         std::fprintf(stderr, "recomp dlss: %s; scaling the scene bilinearly\n", dlss->error());
     }
+    d3d_dlss_copy(dlss, context, upscaled ? dlss->output_view : scene, target);
+}
+
+void d3d_dlss_copy(D3dDlss *dlss, ID3D11DeviceContext *context,
+    ID3D11ShaderResourceView *scene, ID3D11RenderTargetView *target)
+{
     context->ClearState();
     const D3D11_VIEWPORT viewport = {0.0f, 0.0f, static_cast<float>(dlss->output_width),
         static_cast<float>(dlss->output_height), 0.0f, 1.0f};
@@ -159,8 +165,7 @@ void d3d_dlss_resolve(D3dDlss *dlss, ID3D11DeviceContext *context, DlssBridgeFra
     context->VSSetShader(dlss->copy_vs, nullptr, 0u);
     context->PSSetShader(dlss->copy_ps, nullptr, 0u);
     context->PSSetSamplers(0u, 1u, &dlss->sampler);
-    ID3D11ShaderResourceView *source = upscaled ? dlss->output_view : scene;
-    context->PSSetShaderResources(0u, 1u, &source);
+    context->PSSetShaderResources(0u, 1u, &scene);
     context->Draw(3u, 0u);
     context->ClearState();
 }

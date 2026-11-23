@@ -34,16 +34,19 @@ before.
 3. At the first screen-space draw on the main target, or at present, the
    motion pass runs, DLSS evaluates into an output-sized RGBA8 texture, and
    the presenter switches to the full-size set, copies the result into its
-   colour, and clears its depth for the HUD.
+   colour, and clears its depth for the HUD. A frame with no 3D scene draw,
+   such as a menu or a movie, skips DLSS: the presenter scales up what the
+   scene set holds so far and draws the rest of the frame at full size.
 4. After present the scene set is bound again.
 
 MSAA, SMAA, RTGI and the G-buffer are off while DLSS is on. A failed
 evaluation scales the scene bilinearly instead and is logged once.
 
-Known limit: a frame with no 3D scene draw, such as a menu, never switches
-before present, so its screen-space draws render at the DLSS input size and
-pass through DLSS. Switching at the first screen-space draw instead would also
-switch frames that draw a screen-space background before their 3D scene.
+Observed 2026-11-23 with motion vectors on, from boot through title, save
+select, the intro movie, character select and the island map (9,000 frames):
+no frame drew a screen-space quad before its 3D scene, and no 3D draw came
+after it. A frame that did would draw its whole scene at full size without
+DLSS.
 
 ## Adapter
 

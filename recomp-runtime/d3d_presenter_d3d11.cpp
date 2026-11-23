@@ -1230,6 +1230,7 @@ void dlssUnavailable(RecompD3dPresenter *presenter)
     presenter->dlss_mode = -1;
     presenter->jitter_enabled = presenter->jitter_requested;
     presenter->motion_requested = presenter->motion_vectors_requested;
+    presenter->jitter_phases = 8u;  // createDlss may have raised it for its ratio
 }
 
 void createDlss(RecompD3dPresenter *presenter)
@@ -1295,8 +1296,17 @@ void createDlss(RecompD3dPresenter *presenter)
 void finishScene(RecompD3dPresenter *presenter)
 {
     runMotionPass(presenter);
-    if (!presenter->dlss_active || !presenter->scene_phase ||
-        d3d_motion_target(presenter->motion) == nullptr) return;
+    if (!presenter->dlss_active || !presenter->scene_phase) return;
+    if (!presenter->scene_pending || d3d_motion_target(presenter->motion) == nullptr) {
+        // No 3D scene (menus, movies): scale up what the scene set holds so far
+        // and draw the rest of the frame at full size, without DLSS.
+        swapMainTargets(presenter);
+        d3d_dlss_copy(presenter->dlss, presenter->context, presenter->scene_color,
+            presenter->render_target_view);
+        presenter->context->ClearDepthStencilView(presenter->depth_view,
+            D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0u);
+        return;
+    }
     ID3D11Resource *color = nullptr, *motion = nullptr;
     presenter->render_target_view->GetResource(&color);
     d3d_motion_target(presenter->motion)->GetResource(&motion);
@@ -5394,7 +5404,7 @@ RecompD3dPresenterError d3d11_backend_submit(
         RecompD3dVertexLayout layout{};
         const bool interface_draw = !draw.target.offscreen &&
             recomp_d3d_fvf_layout(draw.fvf, &layout) && layout.pretransformed;
-        if (interface_draw && presenter->scene_pending) finishScene(presenter);
+        if (interface_draw && (presenter->scene_pending || presenter->scene_phase)) finishScene(presenter);
 #ifdef RECOMP_RTGI
         if (presenter->rtgi_pending && interface_draw) {
             applyRtgi(presenter);
