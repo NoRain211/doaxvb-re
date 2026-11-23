@@ -4660,7 +4660,18 @@ RecompD3dPresenterError submitPresent(
     }
     // A failed resize holds the window's last picture, like a held frame, and
     // the next present retries; only the guest-visible frame is updated.
+    // resize_pending is only set in windowed and borderless modes, whose
+    // output is always the VRR-sized target, so no output pass needs the window.
     const bool window_ready = !presenter->resize_pending || resizeSwapChain(presenter);
+    if (!window_ready) {
+        // A lost device never recovers; stop instead of retrying forever.
+        const HRESULT removed = presenter->device->GetDeviceRemovedReason();
+        if (FAILED(removed)) {
+            std::fprintf(stderr, "recomp d3d presenter: device removed during resize reason=0x%08lX\n",
+                static_cast<unsigned long>(removed));
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+    }
 
     /* SyncInterval, not the flag, is what paces a present. Passing 0 here
        unconditionally meant the throttled path was never actually throttled:
