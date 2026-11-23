@@ -43,7 +43,8 @@ with p99 frame time <= 16.67 ms and no sustained missed presents; measure with
 frame dumping disabled. If the baseline already exceeds the budget, report the
 shortfall rather than claiming the target from isolated shader timing.
 
-For every stage use `private/shot.ps1` for paired dumps of the same scene frame:
+For every stage use the D3D11 presenter's frame dump (`RECOMP_D3D_FRAME_DUMP`
+with `_AT`, `_COUNT` or `_TRIGGER`) for paired dumps of the same scene frame:
 stage on, stage off with prior stages unchanged, and `origin/main`. Fix camera,
 pose, settings, random seed and temporal warm-up; matching present indices alone
 does not prove matching content. Confirm actual target dimensions. Cover beach,
