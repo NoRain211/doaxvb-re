@@ -30,3 +30,6 @@ textures without mips or with point mip filtering. HUD quads, render targets,
 palettized textures and reflections keep the game's filtering. Draws that use
 the game's four-tap filter, an alpha mask or a vertex/pixel program keep their
 point-mip clamp sampler, which those effects depend on.
+
+DLSS is offered separately, with its own motion vectors and jitter; see
+[DLSS](dlss.md).
