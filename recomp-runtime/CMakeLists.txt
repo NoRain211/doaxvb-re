@@ -125,6 +125,16 @@ if(MINGW)
     add_link_options(-static)
 endif()
 
+# miniaudio 0.11.22 decodes UserMusic songs where Media Foundation is absent.
+if(NOT WIN32)
+    set(_miniaudio_dir "${CMAKE_BINARY_DIR}/_deps/miniaudio")
+    file(DOWNLOAD
+        https://raw.githubusercontent.com/mackron/miniaudio/0.11.22/miniaudio.h
+        "${_miniaudio_dir}/miniaudio.h"
+        EXPECTED_HASH SHA256=9019743287e443c55e5737a7297f38e5e358561701d6db2d905afb114390c410)
+    set_source_files_properties(custom_music.cpp PROPERTIES INCLUDE_DIRECTORIES "${_miniaudio_dir}")
+endif()
+
 # Optional SMAA from the third_party/smaa submodule; without it RECOMP_D3D_SMAA
 # reports unavailable. The shader source is embedded as a byte list.
 set(_smaa_dir "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/smaa")

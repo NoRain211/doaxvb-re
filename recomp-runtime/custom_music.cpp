@@ -1,13 +1,5 @@
 #include "custom_music.h"
 
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#include <mfapi.h>
-#include <mfidl.h>
-#include <mfreadwrite.h>
-#include <wrl/client.h>
-
 #include <algorithm>
 #include <chrono>
 #include <climits>
@@ -21,9 +13,34 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <wrl/client.h>
+
 using Microsoft::WRL::ComPtr;
+using Error = HRESULT;
+#else
+// macOS and Linux have no Media Foundation; miniaudio decodes and resamples.
+#define MA_NO_DEVICE_IO
+#define MA_NO_THREADING
+#define MA_NO_ENCODING
+#define MA_NO_GENERATION
+#define MA_NO_RESOURCE_MANAGER
+#define MA_NO_NODE_GRAPH
+#define MA_NO_ENGINE
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
+
+using Error = long;
+#endif
+
 namespace fs = std::filesystem;
 
+#ifdef _WIN32
 constexpr LONGLONG kTicksPerMs = 10000;         // Media Foundation time is in 100 ns units
 constexpr uint32_t kMaxEmptySamples = 32;       // consecutive empty reads before giving up
 constexpr DWORD kMaxSampleBytes = 1024 * 1024;  // larger decoded samples are treated as corrupt
@@ -34,6 +51,17 @@ struct RecompMusicDecoder {
     uint32_t offset = 0, duration_ms = 0;
     bool eof = false, failed = false;
 };
+#else
+struct RecompMusicDecoder {
+    ma_decoder decoder{};  // miniaudio keeps pointers into it; never moved after init
+    bool initialized = false, failed = false;
+    uint32_t duration_ms = 0;
+    ~RecompMusicDecoder()
+    {
+        if (initialized) ma_decoder_uninit(&decoder);
+    }
+};
+#endif
 
 namespace {
 struct Track {
@@ -42,26 +70,28 @@ struct Track {
 };
 std::vector<Track> tracks;
 uint32_t total_ms;
-DWORD com_thread;
-bool com_initialized, mf_initialized;
+bool backend_ready;
 
-void report(const char *what, const wchar_t *path, HRESULT error)
+#ifdef _WIN32
+const Error kFailed = E_FAIL, kInvalid = E_INVALIDARG, kNoMemory = E_OUTOFMEMORY,
+    kDuplicate = HRESULT_FROM_WIN32(ERROR_DUP_NAME),
+    kTooMany = HRESULT_FROM_WIN32(ERROR_TOO_MANY_NAMES);
+DWORD com_thread;
+bool com_initialized;
+
+Error from_system(const std::error_code &error) { return HRESULT_FROM_WIN32(error.value()); }
+bool failed(Error error) { return FAILED(error); }
+
+void report(const char *what, const fs::path &path, Error error)
 {
     std::fprintf(stderr, "[custom-music] %s file=\"%ls\" error=0x%08lx\n",
-        what, path, static_cast<unsigned long>(error));
+        what, path.c_str(), static_cast<unsigned long>(error));
 }
 
-const Track *find(uint32_t id)
-{
-    for (const auto &track : tracks)
-        if (track.info.id == id) return &track;
-    return nullptr;
-}
-
-std::unique_ptr<RecompMusicDecoder> open_file(const wchar_t *path, HRESULT &error)
+std::unique_ptr<RecompMusicDecoder> open_file(const fs::path &path, Error &error)
 {
     auto decoder = std::make_unique<RecompMusicDecoder>();
-    error = MFCreateSourceReaderFromURL(path, nullptr, &decoder->reader);
+    error = MFCreateSourceReaderFromURL(path.c_str(), nullptr, &decoder->reader);
     if (FAILED(error)) return nullptr;
     auto *reader = decoder->reader.Get();
     error = reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
@@ -101,6 +131,85 @@ std::wstring folded(const std::wstring &name)
     return result;
 }
 
+// Delay-loaded so Windows N editions without Media Foundation still run.
+bool start_backend(const fs::path &folder)
+{
+    // Loaded once; delay-loaded imports keep them for the process anyway. Search
+    // System32 only: the working directory is the imported disc, so a missing
+    // system DLL must not fall back to a same-named file shipped on the disc.
+    static const DWORD load_error =
+        LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
+        LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            ? ERROR_SUCCESS : GetLastError();
+    if (load_error != ERROR_SUCCESS) {
+        report("disabled", folder, HRESULT_FROM_WIN32(load_error));
+        return false;
+    }
+    HRESULT error = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(error)) { report("disabled", folder, error); return false; }
+    com_initialized = true;
+    com_thread = GetCurrentThreadId();
+    error = MFStartup(MF_VERSION);
+    if (FAILED(error)) { report("disabled", folder, error); return false; }
+    return true;
+}
+
+void stop_backend()
+{
+    if (backend_ready) MFShutdown();
+    // COM initialization is per thread; only the initializing thread may undo it.
+    if (com_initialized && com_thread == GetCurrentThreadId()) CoUninitialize();
+    com_initialized = false;
+}
+#else
+const Error kFailed = MA_ERROR, kInvalid = MA_INVALID_ARGS, kNoMemory = MA_OUT_OF_MEMORY,
+    kDuplicate = MA_ALREADY_EXISTS, kTooMany = MA_TOO_BIG;
+
+Error from_system(const std::error_code &error) { return error.value(); }
+bool failed(Error error) { return error != MA_SUCCESS; }
+
+void report(const char *what, const fs::path &path, Error error)
+{
+    std::fprintf(stderr, "[custom-music] %s file=\"%s\" error=%ld\n", what, path.c_str(), error);
+}
+
+std::unique_ptr<RecompMusicDecoder> open_file(const fs::path &path, Error &error)
+{
+    auto decoder = std::make_unique<RecompMusicDecoder>();
+    const ma_decoder_config config = ma_decoder_config_init(ma_format_s16, 2, RECOMP_MUSIC_RATE);
+    error = ma_decoder_init_file(path.c_str(), &config, &decoder->decoder);
+    if (error != MA_SUCCESS) return nullptr;
+    decoder->initialized = true;
+    ma_uint64 frames = 0;
+    error = ma_decoder_get_length_in_pcm_frames(&decoder->decoder, &frames);
+    const uint64_t ms = frames * 1000 / RECOMP_MUSIC_RATE;
+    if (error == MA_SUCCESS && (ms == 0 || ms > UINT32_MAX)) error = MA_INVALID_DATA;
+    if (error != MA_SUCCESS) return nullptr;
+    decoder->duration_ms = static_cast<uint32_t>(ms);
+    return decoder;
+}
+
+// shortcut: folds ASCII only, so "Ä.mp3" and "ä.mp3" stay distinct; use a
+// Unicode case map if players report case-only duplicates.
+std::wstring folded(const std::wstring &name)
+{
+    std::wstring result = name;
+    for (auto &c : result)
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+    return result;
+}
+
+bool start_backend(const fs::path &) { return true; }
+void stop_backend() {}
+#endif
+
+const Track *find(uint32_t id)
+{
+    for (const auto &track : tracks)
+        if (track.info.id == id) return &track;
+    return nullptr;
+}
+
 // FNV-1a over the folded filename: stable across scans and insertions.
 // Collisions are rejected, never reassigned.
 uint32_t song_id(const std::wstring &key)
@@ -108,7 +217,7 @@ uint32_t song_id(const std::wstring &key)
     uint32_t hash = 2166136261u;
     for (wchar_t c : key) {
         hash = (hash ^ (c & 0xffu)) * 16777619u;
-        hash = (hash ^ (c >> 8u)) * 16777619u;
+        hash = (hash ^ (static_cast<uint32_t>(c) >> 8u)) * 16777619u;
     }
     return hash;
 }
@@ -124,12 +233,17 @@ std::vector<std::pair<std::wstring, fs::path>> list_folder(const fs::path &folde
         std::error_code entry_error;
         const auto &path = it->path();
         if (!it->is_regular_file(entry_error)) continue;
-        auto key = folded(path.filename().wstring());
+        std::wstring key;
+        try {
+            key = folded(path.filename().wstring());
+        } catch (const std::system_error &) {
+            continue;  // a POSIX name that is not valid UTF-8
+        }
         const auto ext = fs::path(key).extension().wstring();
         if (ext == L".mp3" || ext == L".wav" || ext == L".flac")
             files.emplace_back(std::move(key), path);
     }
-    if (error) report("scan stopped", folder.c_str(), HRESULT_FROM_WIN32(error.value()));
+    if (error) report("scan stopped", folder, from_system(error));
     std::sort(files.begin(), files.end());
     return files;
 }
@@ -139,19 +253,19 @@ void add_track(const std::wstring &key, const fs::path &path)
     Track track;
     track.info.id = song_id(key);
     if (track.info.id == 0 || track.info.id == UINT32_MAX || find(track.info.id)) {
-        report("skipped", path.c_str(), HRESULT_FROM_WIN32(ERROR_DUP_NAME));
+        report("skipped", path, kDuplicate);
         return;
     }
-    HRESULT error;
-    auto decoder = open_file(path.c_str(), error);
+    Error error = kFailed;
+    auto decoder = open_file(path, error);
     uint8_t probe[RECOMP_MUSIC_FRAME_BYTES];
     if (!decoder || recomp_music_read(decoder.get(), probe, sizeof probe) != sizeof probe ||
             !recomp_music_rewind(decoder.get())) {
-        report("skipped", path.c_str(), FAILED(error) ? error : E_FAIL);
+        report("skipped", path, failed(error) ? error : kFailed);
         return;
     }
     track.info.duration_ms = decoder->duration_ms;
-    const auto name = path.stem().wstring();
+    const auto name = path.stem().u16string();
     size_t length = std::min<size_t>(name.size(), RECOMP_MUSIC_NAME_UNITS - 1);
     if (length && name[length - 1] >= 0xd800 && name[length - 1] <= 0xdbff) --length;
     std::copy_n(name.begin(), length, track.info.name);
@@ -168,36 +282,19 @@ extern "C" void recomp_music_initialize(const char *folder_path)
     if (!folder_path) return;
     const auto started = std::chrono::steady_clock::now();
     const fs::path folder(folder_path);
-    // Delay-loaded so Windows N editions without Media Foundation still run.
-    // Loaded once; delay-loaded imports keep them for the process anyway. Search
-    // System32 only: the working directory is the imported disc, so a missing
-    // system DLL must not fall back to a same-named file shipped on the disc.
-    static const DWORD load_error =
-        LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) &&
-        LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)
-            ? ERROR_SUCCESS : GetLastError();
-    if (load_error != ERROR_SUCCESS) {
-        report("disabled", folder.c_str(), HRESULT_FROM_WIN32(load_error));
-        return;
-    }
-    HRESULT error = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(error)) { report("disabled", folder.c_str(), error); return; }
-    com_initialized = true;
-    com_thread = GetCurrentThreadId();
-    error = MFStartup(MF_VERSION);
-    if (FAILED(error)) { report("disabled", folder.c_str(), error); return; }
-    mf_initialized = true;
+    if (!start_backend(folder)) return;
+    backend_ready = true;
     try {
         for (const auto &[key, path] : list_folder(folder)) {
-            if (key.empty()) { report("skipped", path.c_str(), E_INVALIDARG); continue; }
+            if (key.empty()) { report("skipped", path, kInvalid); continue; }
             if (tracks.size() == RECOMP_MUSIC_MAX_TRACKS) {
-                report("scan stopped", path.c_str(), HRESULT_FROM_WIN32(ERROR_TOO_MANY_NAMES));
+                report("scan stopped", path, kTooMany);
                 break;
             }
             add_track(key, path);
         }
     } catch (const std::bad_alloc &) {
-        report("scan stopped", folder.c_str(), E_OUTOFMEMORY);
+        report("scan stopped", folder, kNoMemory);
     }
     const auto scan_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
@@ -209,10 +306,8 @@ extern "C" void recomp_music_shutdown(void)
 {
     tracks.clear();
     total_ms = 0;
-    if (mf_initialized) MFShutdown();
-    // COM initialization is per thread; only the initializing thread may undo it.
-    if (com_initialized && com_thread == GetCurrentThreadId()) CoUninitialize();
-    mf_initialized = com_initialized = false;
+    stop_backend();
+    backend_ready = false;
 }
 
 extern "C" uint32_t recomp_music_count(void) { return static_cast<uint32_t>(tracks.size()); }
@@ -229,19 +324,20 @@ extern "C" const wchar_t *recomp_music_path(uint32_t id)
 extern "C" RecompMusicDecoder *recomp_music_open(uint32_t id)
 {
     const wchar_t *path = recomp_music_path(id);
-    if (!path || !mf_initialized) return nullptr;
+    if (!path || !backend_ready) return nullptr;
     try {
-        HRESULT error;
+        Error error = kFailed;
         auto decoder = open_file(path, error);
         if (!decoder) report("open failed", path, error);
         return decoder.release();
     } catch (const std::bad_alloc &) {
-        report("open failed", path, E_OUTOFMEMORY);
+        report("open failed", path, kNoMemory);
         return nullptr;
     }
 }
 extern "C" void recomp_music_close(RecompMusicDecoder *decoder) { delete decoder; }
 
+#ifdef _WIN32
 extern "C" int recomp_music_read(RecompMusicDecoder *decoder, void *pcm, uint32_t bytes)
 {
     if (!decoder || !pcm || bytes == 0 || bytes > RECOMP_MUSIC_MAX_READ ||
@@ -298,15 +394,25 @@ extern "C" int recomp_music_rewind(RecompMusicDecoder *decoder)
     return 1;
 }
 #else
-// Non-Windows stub: custom music catalog remains empty
-void recomp_music_initialize(const char *folder) { (void)folder; }
-void recomp_music_shutdown(void) {}
-uint32_t recomp_music_count(void) { return 0; }
-uint32_t recomp_music_duration(void) { return 0; }
-const RecompMusicTrack *recomp_music_track(uint32_t index) { (void)index; return nullptr; }
-const wchar_t *recomp_music_path(uint32_t id) { (void)id; return nullptr; }
-RecompMusicDecoder *recomp_music_open(uint32_t id) { (void)id; return nullptr; }
-void recomp_music_close(RecompMusicDecoder *decoder) { (void)decoder; }
-int recomp_music_read(RecompMusicDecoder *decoder, void *pcm, uint32_t bytes) { (void)decoder; (void)pcm; (void)bytes; return -1; }
-int recomp_music_rewind(RecompMusicDecoder *decoder) { (void)decoder; return 0; }
+extern "C" int recomp_music_read(RecompMusicDecoder *decoder, void *pcm, uint32_t bytes)
+{
+    if (!decoder || !pcm || bytes == 0 || bytes > RECOMP_MUSIC_MAX_READ ||
+        bytes % RECOMP_MUSIC_FRAME_BYTES || decoder->failed) return -1;
+    // miniaudio reads until the request is full or the song ends.
+    ma_uint64 frames = 0;
+    const ma_result result = ma_decoder_read_pcm_frames(&decoder->decoder, pcm,
+        bytes / RECOMP_MUSIC_FRAME_BYTES, &frames);
+    if (result != MA_SUCCESS && result != MA_AT_END) {
+        decoder->failed = true;
+        return -1;
+    }
+    return static_cast<int>(frames * RECOMP_MUSIC_FRAME_BYTES);
+}
+
+extern "C" int recomp_music_rewind(RecompMusicDecoder *decoder)
+{
+    if (!decoder || ma_decoder_seek_to_pcm_frame(&decoder->decoder, 0) != MA_SUCCESS) return 0;
+    decoder->failed = false;
+    return 1;
+}
 #endif

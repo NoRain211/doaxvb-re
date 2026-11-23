@@ -73,7 +73,7 @@ sequenceDiagram
 
 | File | Role |
 |------|------|
-| `recomp-runtime/custom_music.cpp` | Scans `UserMusic`, builds the catalog, owns Media Foundation readers. No guest knowledge. |
+| `recomp-runtime/custom_music.cpp` | Scans `UserMusic`, builds the catalog, owns the decoders: Media Foundation readers on Windows, miniaudio decoders on macOS and Linux. No guest knowledge. |
 | `recomp-runtime/soundtrack_adapter.c` | Guest-facing XAPI and XMO replacements; maps guest calls onto the catalog. |
 | `recomp-runtime/kernel_file.c` | `recomp_kernel_open_readonly`: song files as ordinary guest handles, with an optional read filter. |
 | `recomp-runtime/crt_format_model.c` | General `vsprintf` used by the song screens and path building. |
@@ -252,8 +252,8 @@ WMASJD layout are specific to this game; the steps are general.
    from a callback the title already services. Save and restore guest
    registers and FPU state around any guest call you add.
 6. **Decode on the host.** Media Foundation's Source Reader converts MP3,
-   FLAC, and WAV to PCM on Windows. Elsewhere, a small decoder library works
-   the same way. Decode incrementally, support rewinding for flush, treat a
+   FLAC, and WAV to PCM on Windows. On macOS and Linux this port uses
+   miniaudio's `ma_decoder`, which also resamples and mixes to stereo. Decode incrementally, support rewinding for flush, treat a
    short packet as end of song, and turn decode errors into a normal song end.
 7. **Expect side effects.** New screens can reach runtime paths that were never
    exercised before. In this port, that was a formatting routine. Make
@@ -267,7 +267,8 @@ WMASJD layout are specific to this game; the steps are general.
 
 `recomp-runtime-custom-music` writes one-second PCM WAV and float WAV
 fixtures to a temporary directory, and encodes FLAC and MP3 fixtures with the
-Windows encoders; a missing encoder skips that format with a message. It
+Windows encoders; a missing encoder skips that format with a message, so
+macOS and Linux check the WAV fixtures through miniaudio only. It
 checks catalog order, stable IDs, song names, guest error codes (2, 6, 8, 18,
 87), the shared enumerator token, and fall-through to the generated originals.
 Lossless songs must decode to exactly 1000 ms and 176,400 bytes, and FLAC must
