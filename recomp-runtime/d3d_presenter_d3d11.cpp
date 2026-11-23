@@ -40,6 +40,7 @@
 
 #include "d3d_sun_shadow.h"
 #include "d3d_gbuffer.h"
+#include "d3d_fsr.h"
 
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
@@ -53,6 +54,9 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"DOAXBVRecompPresenterWindow";
 constexpr wchar_t kWindowTitle[] = L"DOAXBV Recomp";
+
+// Legacy keeps the original fixed 1x window or screen-sized borderless popup.
+enum class WindowMode { Legacy, Windowed, Borderless };
 
 struct FrameRateCounter {
     ULONGLONG start_ms = 0;
@@ -595,6 +599,20 @@ struct RecompD3dPresenter {
     ID3D11VertexShader *vrr_vs = nullptr;
     ID3D11PixelShader *vrr_ps = nullptr;
     ID3D11SamplerState *vrr_sampler = nullptr;
+    /* RECOMP_D3D_WINDOW_MODE=windowed|borderless: the swap chain matches the
+       window and the main-sized output is scaled into it, letterboxed to the
+       game's aspect (the VRR resources above). Alt+Enter switches modes. */
+    WindowMode window_mode = WindowMode::Legacy;
+    uint32_t window_height_request = 0u; // RECOMP_D3D_WINDOW_HEIGHT: windowed client height
+    WINDOWPLACEMENT windowed_placement{}; // restored when leaving borderless
+    bool resize_pending = false;
+    bool resize_failed = false;  // logged once until a resize succeeds
+    UINT swap_flags = 0u;
+    // RECOMP_D3D_UPSCALE=fsr: FSR 1.0 EASU upscale and RCAS sharpen into the window.
+    bool fsr_requested = false;
+    float fsr_sharpness = 0.2f;  // RECOMP_D3D_SHARPNESS 0..1, mapped to RCAS stops
+    D3dFsr *fsr = nullptr;
+    uint32_t anisotropy = 0u;    // RECOMP_D3D_ANISOTROPY: force anisotropic filtering, 2..16
     ID3D11VertexShader *gamma_vertex_shader = nullptr;
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
@@ -645,7 +663,8 @@ struct RecompD3dPresenter {
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[2][4][4]{};
+    // [filter][U][V]: game filtering, RECOMP_D3D_ANISOTROPY's forced level, 16x anisotropic.
+    ID3D11SamplerState *address_samplers[3][4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -755,6 +774,48 @@ bool vrrScaled(const RecompD3dPresenter *presenter)
          mainHeight(presenter) != windowHeight(presenter));
 }
 
+// The swap chain is window-sized and the presenter scales the frame into it.
+bool outputScaled(const RecompD3dPresenter *presenter)
+{
+    return presenter->window_mode != WindowMode::Legacy || vrrScaled(presenter);
+}
+
+constexpr DWORD kWindowedStyle = WS_OVERLAPPEDWINDOW;
+
+/* Fills the window's monitor without a frame, or restores the framed window.
+   Flip-model swap chains on a borderless window still get direct flip. */
+void setBorderless(RecompD3dPresenter *presenter, bool borderless)
+{
+    HWND window = presenter->window;
+    const LONG_PTR visible = GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE;
+    if (borderless) {
+        presenter->windowed_placement.length = sizeof presenter->windowed_placement;
+        if (presenter->window_mode == WindowMode::Windowed) {
+            GetWindowPlacement(window, &presenter->windowed_placement);
+        }
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof monitor;
+        GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+        SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP | visible);
+        SetWindowPos(window, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
+            monitor.rcMonitor.right - monitor.rcMonitor.left,
+            monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | (visible ? SWP_SHOWWINDOW : 0u));
+        presenter->window_mode = WindowMode::Borderless;
+    } else {
+        SetWindowLongPtrW(window, GWL_STYLE, kWindowedStyle | visible);
+        if (presenter->windowed_placement.length != 0u) {
+            WINDOWPLACEMENT placement = presenter->windowed_placement;
+            if (!visible) placement.showCmd = SW_HIDE;
+            SetWindowPlacement(window, &placement);
+        }
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        presenter->window_mode = WindowMode::Windowed;
+    }
+    presenter->resize_pending = true;
+}
+
 LRESULT CALLBACK presenterWindowProc(
     HWND window,
     UINT message,
@@ -767,6 +828,37 @@ LRESULT CALLBACK presenterWindowProc(
             reinterpret_cast<LONG_PTR>(creation->lpCreateParams));
     }
     if (message == WM_CHAR) recomp_input_text_char(static_cast<uint32_t>(wparam));
+    auto *scaled = reinterpret_cast<RecompD3dPresenter *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (scaled != nullptr && scaled->window_mode != WindowMode::Legacy) {
+        switch (message) {
+        case WM_SIZE:
+            if (wparam != SIZE_MINIMIZED) scaled->resize_pending = true;
+            break;
+        case WM_GETMINMAXINFO:
+            reinterpret_cast<MINMAXINFO *>(lparam)->ptMinTrackSize = {320, 240};
+            return 0;
+        case WM_SYSKEYDOWN:
+            // Alt+Enter: the presenter's own borderless switch; DXGI's is disabled.
+            if (wparam == VK_RETURN && (lparam & (1 << 29)) && !(lparam & (1 << 30))) {
+                setBorderless(scaled, scaled->window_mode != WindowMode::Borderless);
+                return 0;
+            }
+            break;
+        case WM_SYSCHAR:
+            if (wparam == VK_RETURN) return 0;  // no beep for Alt+Enter
+            break;
+        case WM_MENUCHAR:
+            return MAKELRESULT(0, MNC_CLOSE);
+        case WM_SETCURSOR:
+            if (scaled->window_mode == WindowMode::Borderless && LOWORD(lparam) == HTCLIENT) {
+                SetCursor(nullptr);
+                return TRUE;
+            }
+            break;
+        default:
+            break;
+        }
+    }
     // Shift+F12 is the screenshot key (screenshot.h).
     if (message == WM_KEYDOWN && wparam == VK_F12 && !(lparam & (1u << 30)) &&
         (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
@@ -831,6 +923,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->vrr_vs);
     releaseCom(presenter->vrr_ps);
     releaseCom(presenter->vrr_sampler);
+    d3d_fsr_destroy(presenter->fsr);
+    presenter->fsr = nullptr;
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -972,12 +1066,68 @@ void releasePresenter(RecompD3dPresenter *presenter)
     }
 }
 
+bool registerWindowClass(RecompD3dPresenter *presenter);
+
+/* Windowed and borderless modes start from a framed window centred on the
+   primary work area; the client keeps the game's aspect at the requested
+   height, or 85% of the work area by default. */
+bool createScaledWindow(RecompD3dPresenter *presenter)
+{
+    SetProcessDPIAware();
+    if (!registerWindowClass(presenter)) return false;
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0u, &work, 0u);
+    const LONG work_width = work.right - work.left, work_height = work.bottom - work.top;
+    uint32_t height = presenter->window_height_request != 0u
+        ? presenter->window_height_request : static_cast<uint32_t>(work_height * 0.85);
+    height = (std::max)(240u, (std::min)(height, static_cast<uint32_t>(work_height)));
+    uint32_t width = presentClientWidth(presenter, height);
+    if (width > static_cast<uint32_t>(work_width)) {
+        width = static_cast<uint32_t>(work_width);
+        height = presenter->widescreen ? width * 9u / 16u : width * 3u / 4u;
+    }
+    RECT rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    AdjustWindowRectEx(&rect, kWindowedStyle, FALSE, 0u);
+    const LONG outer_width = rect.right - rect.left, outer_height = rect.bottom - rect.top;
+    presenter->window = CreateWindowExW(0u, kWindowClassName, kWindowTitle, kWindowedStyle,
+        work.left + (std::max)(0L, (work_width - outer_width) / 2),
+        work.top + (std::max)(0L, (work_height - outer_height) / 2),
+        outer_width, outer_height, nullptr, nullptr, presenter->instance, presenter);
+    if (presenter->window == nullptr) return false;
+    if (presenter->window_mode == WindowMode::Borderless) {
+        presenter->window_mode = WindowMode::Windowed;  // remembers this placement
+        setBorderless(presenter, true);
+    }
+    presenter->resize_pending = false;  // the swap chain is created at this size
+    return true;
+}
+
+bool registerWindowClass(RecompD3dPresenter *presenter)
+{
+    WNDCLASSEXW window_class{};
+    presenter->instance = GetModuleHandleW(nullptr);
+    window_class.cbSize = sizeof window_class;
+    window_class.lpfnWndProc = presenterWindowProc;
+    window_class.hInstance = presenter->instance;
+    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    window_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
+    window_class.hIcon = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
+        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
+    window_class.hIconSm = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+    window_class.lpszClassName = kWindowClassName;
+    if (RegisterClassExW(&window_class) == 0u) return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    presenter->owns_window_class = true;
+    return true;
+}
+
 bool createWindow(RecompD3dPresenter *presenter)
 {
+    if (presenter->window_mode != WindowMode::Legacy) return createScaledWindow(presenter);
     /* Screen metrics and the borderless window must be physical pixels; a
        DPI-virtualized window is downsampled and then stretched by DWM. */
     if (presenter->scale > 1.0f) SetProcessDPIAware();
-    WNDCLASSEXW window_class{};
     const uint32_t client_width = presentClientWidth(presenter, windowHeight(presenter));
     RECT window_rect = {
         0,
@@ -991,26 +1141,7 @@ bool createWindow(RecompD3dPresenter *presenter)
     const DWORD style = borderless
         ? WS_POPUP : WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
 
-    presenter->instance = GetModuleHandleW(nullptr);
-    window_class.cbSize = sizeof window_class;
-    window_class.lpfnWndProc = presenterWindowProc;
-    window_class.hInstance = presenter->instance;
-    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    // Resource 1 is the optional RECOMP_APP_ICON; without it Windows uses its default.
-    window_class.hIcon = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
-        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
-    window_class.hIconSm = static_cast<HICON>(LoadImageW(presenter->instance, MAKEINTRESOURCEW(1),
-        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
-    window_class.lpszClassName = kWindowClassName;
-
-    const ATOM window_class_atom = RegisterClassExW(&window_class);
-    if (window_class_atom == 0u) {
-        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-            return false;
-        }
-    } else {
-        presenter->owns_window_class = true;
-    }
+    if (!registerWindowClass(presenter)) return false;
     if (!AdjustWindowRectEx(&window_rect, style, FALSE, 0u)) {
         return false;
     }
@@ -1060,10 +1191,16 @@ HRESULT createDeviceWithDriver(
     };
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
-        ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
-    swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
-        ? windowHeight(presenter) : mainHeight(presenter);
+    RECT client{};
+    if (presenter->window_mode != WindowMode::Legacy && GetClientRect(presenter->window, &client)) {
+        swap_chain_desc.BufferDesc.Width = static_cast<UINT>((std::max)(1L, client.right - client.left));
+        swap_chain_desc.BufferDesc.Height = static_cast<UINT>((std::max)(1L, client.bottom - client.top));
+    } else {
+        swap_chain_desc.BufferDesc.Width = vrrScaled(presenter)
+            ? presentClientWidth(presenter, windowHeight(presenter)) : mainWidth(presenter);
+        swap_chain_desc.BufferDesc.Height = vrrScaled(presenter)
+            ? windowHeight(presenter) : mainHeight(presenter);
+    }
     swap_chain_desc.BufferDesc.RefreshRate.Numerator = 0u;
     swap_chain_desc.BufferDesc.RefreshRate.Denominator = 1u;
     swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1078,6 +1215,7 @@ HRESULT createDeviceWithDriver(
         ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swap_chain_desc.Flags = immediate ? 0u : DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     if (presenter->vrr) swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    presenter->swap_flags = swap_chain_desc.Flags;  // ResizeBuffers must repeat them
 
     HRESULT result = D3D11CreateDeviceAndSwapChain(
         adapter,
@@ -1098,6 +1236,14 @@ HRESULT createDeviceWithDriver(
         result = presenter->swap_chain->QueryInterface(IID_PPV_ARGS(&chain));
         if (SUCCEEDED(result)) result = chain->SetMaximumFrameLatency(1u);
         releaseCom(chain);
+    }
+    // DXGI's Alt+Enter would enter exclusive fullscreen; the window proc owns it.
+    if (SUCCEEDED(result) && presenter->window_mode != WindowMode::Legacy) {
+        IDXGIFactory *factory = nullptr;
+        if (SUCCEEDED(presenter->swap_chain->GetParent(IID_PPV_ARGS(&factory)))) {
+            factory->MakeWindowAssociation(presenter->window, DXGI_MWA_NO_ALT_ENTER);
+            factory->Release();
+        }
     }
     return result;
 }
@@ -1150,6 +1296,89 @@ HRESULT createMainDepth(RecompD3dPresenter *presenter)
     }
     return result;
 }
+
+/* After a window resize: the back buffer view is the only swap chain
+   reference held between frames. A minimized window keeps its old buffers. */
+bool resizeSwapChain(RecompD3dPresenter *presenter)
+{
+    RECT client{};
+    if (!GetClientRect(presenter->window, &client) ||
+        client.right - client.left <= 0 || client.bottom - client.top <= 0) {
+        return true;
+    }
+    const UINT width = static_cast<UINT>(client.right - client.left);
+    const UINT height = static_cast<UINT>(client.bottom - client.top);
+    DXGI_SWAP_CHAIN_DESC current{};
+    presenter->swap_chain->GetDesc(&current);
+    // A failed GetBuffer or view leaves the right size but no view: rebuild it.
+    if (current.BufferDesc.Width == width && current.BufferDesc.Height == height &&
+        presenter->present_target_view != nullptr) {
+        presenter->resize_pending = false;
+        return true;
+    }
+    presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
+    presenter->context->ClearState();
+    releaseCom(presenter->present_target_view);
+    presenter->context->Flush();
+    HRESULT result = presenter->swap_chain->ResizeBuffers(
+        0u, width, height, DXGI_FORMAT_UNKNOWN, presenter->swap_flags);
+    ID3D11Texture2D *back_buffer = nullptr;
+    if (SUCCEEDED(result)) result = presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+    if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(
+        back_buffer, nullptr, &presenter->present_target_view);
+    releaseCom(back_buffer);
+    if (FAILED(result)) {
+        if (!presenter->resize_failed) {
+            std::fprintf(stderr, "recomp d3d presenter: resize to %ux%u failed hr=0x%08lX; retrying\n",
+                width, height, static_cast<unsigned long>(result));
+        }
+        presenter->resize_failed = true;
+        return false;  // resize_pending stays set, so the next present retries
+    }
+    presenter->resize_pending = presenter->resize_failed = false;
+    return true;
+}
+
+/* Draws the main-sized output into the window's back buffer at the largest
+   rectangle with the game's aspect, black outside it. FSR runs EASU into a
+   letterbox-sized texture, then RCAS into the window; it only upscales. */
+void scaleOutput(RecompD3dPresenter *presenter)
+{
+    auto *context = presenter->context;
+    ID3D11Texture2D *back_buffer = nullptr;
+    presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
+    if (back_buffer == nullptr) return;
+    D3D11_TEXTURE2D_DESC window{};
+    back_buffer->GetDesc(&window);
+    releaseCom(back_buffer);
+    const double aspect = presenter->widescreen ? 16.0 / 9.0 : 4.0 / 3.0;
+    uint32_t width = window.Width, height = window.Height;
+    if (width > height * aspect) width = static_cast<uint32_t>(height * aspect + 0.5);
+    else height = static_cast<uint32_t>(width / aspect + 0.5);
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+    const int32_t left = static_cast<int32_t>((window.Width - width) / 2u);
+    const int32_t top = static_cast<int32_t>((window.Height - height) / 2u);
+    const D3D11_VIEWPORT viewport = {static_cast<float>(left), static_cast<float>(top),
+        static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+    context->ClearState();
+    if (width != window.Width || height != window.Height) {
+        const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        context->ClearRenderTargetView(presenter->present_target_view, black);
+    }
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
+    if (d3d_fsr_scale(presenter->fsr, context, presenter->vrr_source, presenter->present_target_view, viewport))
+        return;
+    context->RSSetViewports(1u, &viewport);
+    context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
+    context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
+    context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
+    context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
+    context->Draw(3u, 0u);
+    context->ClearState();
+}
+
 
 /* Hybrid laptops list the integrated GPU first, and the runner is a child of
    DOAXBV.exe, so a per-app GPU setting on the launcher never reaches it. Ask
@@ -1257,7 +1486,7 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         }
         releaseCom(guest_buffer);
     }
-    if (SUCCEEDED(result) && vrrScaled(presenter)) {
+    if (SUCCEEDED(result) && outputScaled(presenter)) {
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = mainWidth(presenter);
         desc.Height = mainHeight(presenter);
@@ -1297,6 +1526,9 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
         sampler.MaxLOD = D3D11_FLOAT32_MAX;
         if (SUCCEEDED(result)) result = presenter->device->CreateSamplerState(
             &sampler, &presenter->vrr_sampler);
+        // FSR is optional: a failure here leaves the bilinear scale.
+        if (SUCCEEDED(result) && presenter->fsr_requested)
+            presenter->fsr = d3d_fsr_create(presenter->device, presenter->fsr_sharpness);
     }
     releaseCom(back_buffer);
     if (FAILED(result)) {
@@ -2683,25 +2915,28 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
+enum DrawSamplerFilter : uint32_t { kGameFilter, kForcedAnisotropy, kAnisotropic16 };
+
 ID3D11SamplerState *lookupDrawSampler(
     RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
-    bool anisotropic = false)
+    DrawSamplerFilter filter = kGameFilter)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
             ? static_cast<D3D11_TEXTURE_ADDRESS_MODE>(mode) : D3D11_TEXTURE_ADDRESS_WRAP;
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
+    if (filter == kForcedAnisotropy && presenter->anisotropy == 0u) filter = kGameFilter;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
+    ID3D11SamplerState *&sampler = presenter->address_samplers[filter][u - 1][v - 1];
     if (sampler == nullptr) {
         D3D11_SAMPLER_DESC desc{};
         presenter->draw_sampler->GetDesc(&desc);
         desc.AddressU = u;
         desc.AddressV = v;
-        if (anisotropic) {
+        if (filter != kGameFilter) {
             desc.Filter = D3D11_FILTER_ANISOTROPIC;
-            desc.MaxAnisotropy = 16u;
+            desc.MaxAnisotropy = filter == kForcedAnisotropy ? presenter->anisotropy : 16u;
         }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
@@ -3473,19 +3708,22 @@ RecompD3dPresenterError submitDraw(
     presenter->context->PSSetShader(pipeline->pixel_shader, nullptr, 0u);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
-    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
-        draw.texture.mip_levels > 1u &&
+    const bool filterable = draw.has_texture &&
         !layout.pretransformed && !draw.texture.linear &&
         !draw.texture.render_target && !draw.texture_is_backbuffer &&
         draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
         !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
+    // Mip-filtered draws keep 16x; RECOMP_D3D_ANISOTROPY upgrades the other filterable ones.
+    const DrawSamplerFilter filter = !filterable ? kGameFilter
+        : draw.linear_mip_filter && draw.texture.mip_levels > 1u ? kAnisotropic16 : kForcedAnisotropy;
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, filter),
         draw.program_alpha_mask ? presenter->program_mask_sampler
             : draw.has_combiner
-            ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v, false)
+            ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v,
+                filterable ? kForcedAnisotropy : kGameFilter)
             : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     if (draw.has_combiner && (draw.combiner_lod_bias != 0.0f || draw.combiner_mip_point) &&
@@ -4408,6 +4646,20 @@ RecompD3dPresenterError submitPresent(
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
     }
+    // A failed resize holds the window's last picture, like a held frame, and
+    // the next present retries; only the guest-visible frame is updated.
+    // resize_pending is only set in windowed and borderless modes, whose
+    // output is always the VRR-sized target, so no output pass needs the window.
+    const bool window_ready = !presenter->resize_pending || resizeSwapChain(presenter);
+    if (!window_ready) {
+        // A lost device never recovers; stop instead of retrying forever.
+        const HRESULT removed = presenter->device->GetDeviceRemovedReason();
+        if (FAILED(removed)) {
+            std::fprintf(stderr, "recomp d3d presenter: device removed during resize reason=0x%08lX\n",
+                static_cast<unsigned long>(removed));
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+    }
 
     /* SyncInterval, not the flag, is what paces a present. Passing 0 here
        unconditionally meant the throttled path was never actually throttled:
@@ -4432,30 +4684,10 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     copyFrontBuffer(presenter);
-    if (presenter->vrr_target_view != nullptr) {
-        auto *context = presenter->context;
-        D3D11_TEXTURE2D_DESC window{};
-        ID3D11Texture2D *back_buffer = nullptr;
-        presenter->swap_chain->GetBuffer(0u, IID_PPV_ARGS(&back_buffer));
-        if (back_buffer == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
-        back_buffer->GetDesc(&window);
-        releaseCom(back_buffer);
-        const D3D11_VIEWPORT viewport = {0.0f, 0.0f,
-            static_cast<float>(window.Width), static_cast<float>(window.Height), 0.0f, 1.0f};
-        context->ClearState();
-        context->RSSetViewports(1u, &viewport);
-        context->OMSetRenderTargets(1u, &presenter->present_target_view, nullptr);
-        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->VSSetShader(presenter->vrr_vs, nullptr, 0u);
-        context->PSSetShader(presenter->vrr_ps, nullptr, 0u);
-        context->PSSetSamplers(0u, 1u, &presenter->vrr_sampler);
-        context->PSSetShaderResources(0u, 1u, &presenter->vrr_source);
-        context->Draw(3u, 0u);
-        context->ClearState();
-    }
+    if (presenter->vrr_target_view != nullptr && window_ready) scaleOutput(presenter);
     // A held frame updates the front buffer the game reads back, but the
     // window keeps the last picture presented.
-    if (present.hold) return RECOMP_D3D_PRESENTER_OK;
+    if (present.hold || !window_ready) return RECOMP_D3D_PRESENTER_OK;
     {
         if (recomp_screenshot_take_request()) saveScreenshot(presenter);
         // The runtime's overlay text goes on the window's back buffer, after
@@ -4689,6 +4921,24 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     if (const char *msaa = std::getenv("RECOMP_D3D_MSAA")) {
         created->msaa = std::clamp(std::atoi(msaa), 1, 32);
+    }
+    if (const char *mode = std::getenv("RECOMP_D3D_WINDOW_MODE")) {
+        if (std::strcmp(mode, "windowed") == 0) created->window_mode = WindowMode::Windowed;
+        if (std::strcmp(mode, "borderless") == 0) created->window_mode = WindowMode::Borderless;
+    }
+    if (const char *height = std::getenv("RECOMP_D3D_WINDOW_HEIGHT")) {
+        created->window_height_request = static_cast<uint32_t>(std::clamp(std::atoi(height), 0, 8640));
+    }
+    if (const char *upscale = std::getenv("RECOMP_D3D_UPSCALE")) {
+        created->fsr_requested = std::strcmp(upscale, "fsr") == 0;
+    }
+    if (const char *sharpness = std::getenv("RECOMP_D3D_SHARPNESS")) {
+        const float value = static_cast<float>(std::atof(sharpness));
+        if (std::isfinite(value)) created->fsr_sharpness = std::clamp(value, 0.0f, 1.0f);
+    }
+    if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY")) {
+        const int value = std::atoi(anisotropy);
+        created->anisotropy = value >= 2 ? static_cast<uint32_t>((std::min)(value, 16)) : 0u;
     }
     created->sun.enabled = sunShadowRequested();
     created->gbuffer.enabled = gbufferRequested();
