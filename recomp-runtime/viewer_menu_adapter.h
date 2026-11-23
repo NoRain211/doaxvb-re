@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* The main menu's MODEL VIEWER item; see viewer_menu_adapter.c. */
+/* The main menu's MODEL VIEWER and QUIT items; see viewer_menu_adapter.c. */
 RecompFunction recomp_viewer_menu_lookup_manual(uint32_t guest_address);
 /* True from choosing MODEL VIEWER until the viewer is done with it. */
 bool recomp_viewer_menu_requested(void);

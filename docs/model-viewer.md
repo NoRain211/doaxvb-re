@@ -113,6 +113,14 @@ the title, which the viewer moves on to the main menu the way START would,
 as CPU Exhibition does: once the title step has run 60 frames (`0x4D994C`)
 it sets the step's leaving count at `0x4D994A`.
 
+## Quit
+
+The main menu always ends with a **QUIT** item, added the same way as
+MODEL VIEWER. The game's update does nothing for it; the runner then exits
+with code 0, the way closing the window does. With MODEL VIEWER shown the
+list has four rows, so it starts one 40-pixel row higher (y 280, not 320).
+QUIT has not been play-tested yet.
+
 ## Verification
 
 Scripted runs on an M-series Mac showed MODEL VIEWER in the main menu in the
