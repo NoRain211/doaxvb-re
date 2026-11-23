@@ -90,10 +90,9 @@ $frameRateNames = [string[]]('60 FPS (original)', '120 FPS', 'Match display refr
 $idleNames = [string[]]('Default', 'No cutscene', 'CPU Exhibition')
 $settings = [pscustomobject]@{
     height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; volume = 100; shuffle = $false
-    sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
+    sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false; frameRate = '60'
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true; renderer = 'd3d11'
-    frameRate = '60'
 }
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
@@ -416,8 +415,8 @@ New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12  
 
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" })
-    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" }) + $(if ($frameRate.Enabled -and $frameRate.SelectedIndex) { "$dot$(@('', '120 FPS', 'Display Hz', 'Unlocked FPS')[$frameRate.SelectedIndex])" })
-    $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Enabled -and $textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
+    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" })
+    $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Enabled -and $textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' }), $(if ($frameRate.Enabled -and $frameRate.SelectedIndex) { @('', '120 FPS', 'Display Hz', 'Unlocked FPS')[$frameRate.SelectedIndex] })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
 
@@ -570,10 +569,10 @@ $count = $samples[$msaa.SelectedIndex]
 $percent = $volumes[$volume.SelectedIndex]
 [pscustomobject]@{
     height = $height; msaa = $count; smaa = $smaa.Checked; volume = $percent; shuffle = $shuffle.Checked
-    sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
+    sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked; frameRate = $frameRateValues[$frameRate.SelectedIndex]
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
-    renderer = $renderers[$renderer.SelectedIndex]; frameRate = $frameRateValues[$frameRate.SelectedIndex]
+    renderer = $renderers[$renderer.SelectedIndex]
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 $env:RECOMP_SPLIT_RATE = if ($frameRate.Enabled -and $frameRate.SelectedIndex) { $frameRateValues[$frameRate.SelectedIndex] } else { $null }
 # The runner parses the scale with atof, so always write a '.' decimal point.
