@@ -40,6 +40,11 @@ before.
 MSAA, SMAA, RTGI and the G-buffer are off while DLSS is on. A failed
 evaluation scales the scene bilinearly instead and is logged once.
 
+Known limit: a frame with no 3D scene draw, such as a menu, never switches
+before present, so its screen-space draws render at the DLSS input size and
+pass through DLSS. Switching at the first screen-space draw instead would also
+switch frames that draw a screen-space background before their 3D scene.
+
 ## Adapter
 
 The presenter asks DXGI for the high-performance adapter, so hybrid laptops

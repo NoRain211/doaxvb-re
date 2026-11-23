@@ -306,6 +306,8 @@ struct RecompD3dPresenter {
     bool motion_requested = false; // RECOMP_D3D_MOTION_VECTORS=1, or the debug view
     bool motion_debug = false;     // RECOMP_D3D_MOTION_DEBUG=1: show vectors as colour
     bool jitter_enabled = false;   // RECOMP_D3D_JITTER=1: sub-pixel offset per frame
+    // What was asked for without DLSS, restored when DLSS fails to start.
+    bool jitter_requested = false, motion_vectors_requested = false;
     uint32_t jitter_phases = 8u;
     uint32_t jitter_index = 0u;
     float jitter[2]{};             // this frame's offset, clip units
@@ -666,6 +668,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->fsr = nullptr;
     d3d_motion_destroy(presenter->motion);
     presenter->motion = nullptr;
+    object_motion_shaders = false;  // createMotion sets it again with an object target
     releaseCom(presenter->gamma_vertex_shader);
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
@@ -1211,6 +1214,14 @@ void releaseDlss(RecompD3dPresenter *presenter)
    for the chosen mode. Any failure leaves DLSS off and the frame renders at
    full size, with the effects DLSS replaced (MSAA, SMAA, RTGI, the G-buffer)
    still off. Called after the full-size main set exists. */
+// DLSS stays off: jitter without it shimmers, so keep only what was asked for alone.
+void dlssUnavailable(RecompD3dPresenter *presenter)
+{
+    presenter->dlss_mode = -1;
+    presenter->jitter_enabled = presenter->jitter_requested;
+    presenter->motion_requested = presenter->motion_vectors_requested;
+}
+
 void createDlss(RecompD3dPresenter *presenter)
 {
     if (presenter->dlss_mode < 0) return;
@@ -1220,7 +1231,7 @@ void createDlss(RecompD3dPresenter *presenter)
     presenter->dlss = d3d_dlss_create(device, presenter->context, presenter->dlss_mode,
         output_width, output_height, &render_width, &render_height);
     if (presenter->dlss == nullptr) {
-        presenter->dlss_mode = -1;
+        dlssUnavailable(presenter);
         return;
     }
     auto &other = presenter->other;
@@ -1251,7 +1262,7 @@ void createDlss(RecompD3dPresenter *presenter)
     if (FAILED(result)) {
         std::fprintf(stderr, "recomp dlss: could not create its targets; off\n");
         releaseDlss(presenter);
-        presenter->dlss_mode = -1;
+        dlssUnavailable(presenter);
         return;
     }
 
@@ -1274,7 +1285,8 @@ void createDlss(RecompD3dPresenter *presenter)
 void finishScene(RecompD3dPresenter *presenter)
 {
     runMotionPass(presenter);
-    if (!presenter->dlss_active || !presenter->scene_phase) return;
+    if (!presenter->dlss_active || !presenter->scene_phase ||
+        d3d_motion_target(presenter->motion) == nullptr) return;
     ID3D11Resource *color = nullptr, *motion = nullptr;
     presenter->render_target_view->GetResource(&color);
     d3d_motion_target(presenter->motion)->GetResource(&motion);
@@ -4914,9 +4926,11 @@ RecompD3dPresenterError d3d11_backend_create(
         static const char *modes[] = {"dlaa", "quality", "balanced", "performance", "ultra"};
         for (int i = 0; i < 5; ++i) if (std::strcmp(dlss, modes[i]) == 0) created->dlss_mode = i;
     }
-    created->jitter_enabled = created->jitter_enabled || created->dlss_mode >= 0;
-    created->motion_requested = flag("RECOMP_D3D_MOTION_VECTORS") ||
-        created->motion_debug || created->jitter_enabled;
+    created->jitter_requested = created->jitter_enabled;
+    created->motion_vectors_requested = flag("RECOMP_D3D_MOTION_VECTORS") ||
+        created->motion_debug || created->jitter_requested;
+    created->jitter_enabled = created->jitter_requested || created->dlss_mode >= 0;
+    created->motion_requested = created->motion_vectors_requested || created->dlss_mode >= 0;
     if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY")) {
         const int value = std::atoi(anisotropy);
         created->anisotropy = value >= 2 ? static_cast<uint32_t>((std::min)(value, 16)) : 0u;

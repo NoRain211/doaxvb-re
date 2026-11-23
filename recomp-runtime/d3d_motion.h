@@ -25,7 +25,7 @@ D3dMotion *d3d_motion_create(ID3D11Device *device, ID3D11DeviceContext *context,
     uint32_t width, uint32_t height, bool multisampled, bool objects);
 void d3d_motion_destroy(D3dMotion *motion);
 
-// The R16G16_FLOAT vector target a temporal upscaler reads.
+// The R16G16_FLOAT vector target a temporal upscaler reads, or null for a null motion.
 ID3D11RenderTargetView *d3d_motion_target(D3dMotion *motion);
 // SV_Target1 for scene draws, or null without object vectors or a null motion.
 ID3D11RenderTargetView *d3d_motion_object_target(D3dMotion *motion);

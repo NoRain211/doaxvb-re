@@ -192,7 +192,7 @@ D3dMotion *d3d_motion_create(ID3D11Device *device, ID3D11DeviceContext *context,
 
 ID3D11RenderTargetView *d3d_motion_target(D3dMotion *motion)
 {
-    return motion->target;
+    return motion != nullptr ? motion->target : nullptr;
 }
 
 ID3D11RenderTargetView *d3d_motion_object_target(D3dMotion *motion)
