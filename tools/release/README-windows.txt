@@ -60,10 +60,10 @@ smooth normals, title screen idle modes (no cutscenes, or endless CPU
 Exhibition matches), shorter demo cuts, every swimsuit in Exhibition, a free
 camera with a model viewer and screenshots, texture replacement and VRR.
 
-High refresh (opt-in, set as a Windows environment variable before starting
-the game): RECOMP_SPLIT_RATE=auto shows extra frames on displays above 60 Hz
-with gameplay timing unchanged. RECOMP_GAME_HZ=120 is an experimental
-whole-game version that still shows slight streaking. Leave both unset on
+High refresh (opt-in): Frame rate on the launcher's Game page shows extra
+frames above 60 Hz with gameplay timing unchanged; it sets RECOMP_SPLIT_RATE,
+replacing any value set in Windows. RECOMP_GAME_HZ=120 is an experimental
+whole-game version that still shows slight streaking; leave it unset on
 60 Hz displays.
 
 macOS and Linux (including Steam Deck): download the separate ZIPs.

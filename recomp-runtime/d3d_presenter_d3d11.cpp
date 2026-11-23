@@ -719,6 +719,7 @@ RecompD3dPresenter *active_presenter;
 
 static bool immediate_present;
 static bool split_presentation;
+static bool unlocked_present;
 
 /* kernel_config.c reports the Xbox widescreen video flag unless
    RECOMP_D3D_WIDESCREEN=0, so the game renders anamorphic 16:9 (or 4:3) into
@@ -4718,7 +4719,9 @@ RecompD3dPresenterError submitPresent(
     };
     const double present_start_ms = presenter->performance_counter ? clock_ms() : 0.0;
     const bool immediate = immediatePresent(presenter);
-    const UINT sync_interval = immediate || presenter->vrr ? 0u : syncInterval(presenter);
+    // Unlocked never waits for vblank. Without tearing support the flip model
+    // still shows the newest finished frame at each refresh instead of tearing.
+    const UINT sync_interval = immediate || presenter->vrr || unlocked_present ? 0u : syncInterval(presenter);
     const UINT present_flags = immediate ? DXGI_PRESENT_DO_NOT_WAIT
         : presenter->vrr ? DXGI_PRESENT_ALLOW_TEARING : 0u;
     if (presenter->vrr && !split_presentation) {
@@ -4952,7 +4955,8 @@ RecompD3dPresenterError d3d11_backend_create(
     /* VRR shows each frame when it is presented, so any VRR display paces 60 Hz
        evenly. DXGI cannot tell whether VRR is active; without it this tears. */
     const char *vrr = std::getenv("RECOMP_D3D_VRR");
-    if (vrr != nullptr && std::strcmp(vrr, "1") == 0) {
+    // An unlocked frame rate presents through the same tearing path.
+    if (unlocked_present || (vrr != nullptr && std::strcmp(vrr, "1") == 0)) {
         IDXGIFactory5 *factory = nullptr;
         BOOL tearing = FALSE;
         if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
@@ -4960,7 +4964,9 @@ RecompD3dPresenterError d3d11_backend_create(
             factory->Release();
         }
         created->vrr = tearing != FALSE;
-        std::fprintf(stderr, "recomp d3d presenter: vrr %s\n", created->vrr ? "on" : "unsupported");
+        std::fprintf(stderr, "recomp d3d presenter: vrr %s%s\n", created->vrr ? "on" : "unsupported",
+            !unlocked_present ? "" : created->vrr ? " (unlocked frame rate)"
+                : " (unlocked frame rate without tearing: newest frame at each refresh)");
     }
     if (const char *log = std::getenv("RECOMP_D3D_PRESENT_LOG")) {
         created->present_log = std::fopen(log, "w");
@@ -5266,6 +5272,12 @@ bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
         sun.triangles = sun.casters = 0;
         return sunCreate(sun, presenter->device);
     }
+    if (sun.map_current) {
+        sun.casting = false;
+        sun.valid = sun.triangles != 0;
+        sun.casters = sun.map_casters;
+        return false;
+    }
     sun.valid = sun.triangles && sunFit(sun);
     if (!sun.valid) { sun.casting = false; return false; }
     sun.compact.clear();
@@ -5273,6 +5285,11 @@ bool d3d11_backend_shadow_begin(RecompD3dPresenter *presenter, bool casting)
     presenter->context->PSSetShaderResources(2, 1, &empty);
     presenter->context->ClearDepthStencilView(sun.depth, D3D11_CLEAR_DEPTH, 1, 0);
     return true;
+}
+
+void d3d11_backend_shadow_tick(RecompD3dPresenter *presenter)
+{
+    presenter->sun.map_current = false;
 }
 
 void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
@@ -5326,6 +5343,10 @@ void d3d11_backend_shadow_command(RecompD3dPresenter *presenter,
 void d3d11_backend_shadow_end(RecompD3dPresenter *presenter)
 {
     auto &sun = presenter->sun;
+    if (sun.casting) {
+        sun.map_current = sun.casters != 0;
+        sun.map_casters = sun.casters;
+    }
     sun.casting = false;
     sun.caster_bound = false;
     sun.epoch = 0;
@@ -5491,6 +5512,11 @@ void d3d11_backend_set_immediate_present(bool enabled)
 void d3d11_backend_set_split_presentation(bool enabled)
 {
     split_presentation = enabled;
+}
+
+void d3d11_backend_set_unlocked_present(bool enabled)
+{
+    unlocked_present = enabled;
 }
 
 void d3d11_backend_verify_replay(RecompD3dPresenter *presenter, uint32_t frame, bool replay)

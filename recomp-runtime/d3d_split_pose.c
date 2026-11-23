@@ -18,25 +18,32 @@ double recomp_split_rate(const char *text)
     return rate;
 }
 
-static bool split_auto(const char *text)
+static bool split_word(const char *text, const char *word)
 {
     if (!text) return false;
     while (isspace((unsigned char)*text)) ++text;
-    if (strncmp(text, "auto", 4) != 0) return false;
-    text += 4;
+    const size_t length = strlen(word);
+    if (strncmp(text, word, length) != 0) return false;
+    text += length;
     while (isspace((unsigned char)*text)) ++text;
     return !*text;
 }
 
+static bool split_auto(const char *text) { return split_word(text, "auto"); }
+
+bool recomp_split_unlocked(const char *text) { return split_word(text, "unlocked"); }
+
 bool recomp_split_requested(const char *text)
 {
-    return split_auto(text) || recomp_split_rate(text) != 0;
+    return split_auto(text) || recomp_split_unlocked(text) || recomp_split_rate(text) != 0;
 }
 
 double recomp_split_display_rate(const char *text, double display_hz, bool vsync,
     const char **note)
 {
     *note = NULL;
+    // Presents as fast as the GPU allows, without waiting for vblank.
+    if (recomp_split_unlocked(text)) return 1000;
     const bool known = isfinite(display_hz) && display_hz > 0 && display_hz <= 1000;
     if (split_auto(text)) {
         if (known && display_hz >= 60) return display_hz;
