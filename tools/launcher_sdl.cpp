@@ -278,13 +278,14 @@ std::vector<std::string> findIsos()
     return found;
 }
 
-// True when dotted version a, such as "0.8.0", is later than b. A part that
-// is not a number, as in "0.8.0-rc1", ends that version there.
+// True when release a, exactly X.Y.Z, is later than installed b. b needs three
+// numeric parts, and a suffix such as "0.8.0-rc1" counts as 0.8.0, as in
+// Get-NewerRelease in launcher.ps1.
 bool newerVersion(const std::string &a, const std::string &b)
 {
-    int x[3] = {}, y[3] = {};
-    std::sscanf(a.c_str(), "%d.%d.%d", &x[0], &x[1], &x[2]);
-    std::sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]);
+    int x[3] = {}, y[3] = {}, end = 0;
+    if (std::sscanf(a.c_str(), "%d.%d.%d%n", &x[0], &x[1], &x[2], &end) != 3 || static_cast<size_t>(end) != a.size() ||
+        std::sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]) != 3) return false;
     return std::lexicographical_compare(y, y + 3, x, x + 3);
 }
 
@@ -695,8 +696,7 @@ struct Launcher {
         const size_t at = url.rfind(tag);
         if (url.rfind(owner, 0) != 0 || at == std::string::npos || url.find('/', owner.size()) != at) return;
         const std::string version = url.substr(at + tag.size());
-        if (version.empty() || version.find_first_not_of("0123456789.") != std::string::npos ||
-            !newerVersion(version, current)) return;
+        if (version.find_first_not_of("0123456789.") != std::string::npos || !newerVersion(version, current)) return;
         latest = version;
         // Built here, so the button only ever opens this GitHub page.
         releaseUrl = "https://github.com/NoRain211/doaxbv-re/releases/tag/v" + version;
