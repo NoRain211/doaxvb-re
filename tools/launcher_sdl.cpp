@@ -539,6 +539,7 @@ struct Launcher {
         // Absolute, because root may be "." and file://./ names a host.
         std::error_code error;
         const fs::path folder = fs::absolute(path("private/UserMusic"), error);
+        if (folder.empty()) return;  // a bare file:// would open the filesystem root
         fs::create_directories(folder, error);
         std::string url = "file://";
         for (unsigned char c : folder.string()) {
