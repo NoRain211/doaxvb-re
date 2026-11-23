@@ -662,7 +662,8 @@ struct RecompD3dPresenter {
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[2][4][4]{};
+    // [filter][U][V]: game filtering, RECOMP_D3D_ANISOTROPY's forced level, 16x anisotropic.
+    ID3D11SamplerState *address_samplers[3][4][4]{};
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -1304,12 +1305,14 @@ bool resizeSwapChain(RecompD3dPresenter *presenter)
         client.right - client.left <= 0 || client.bottom - client.top <= 0) {
         return true;
     }
-    presenter->resize_pending = false;
     const UINT width = static_cast<UINT>(client.right - client.left);
     const UINT height = static_cast<UINT>(client.bottom - client.top);
     DXGI_SWAP_CHAIN_DESC current{};
     presenter->swap_chain->GetDesc(&current);
-    if (current.BufferDesc.Width == width && current.BufferDesc.Height == height) return true;
+    if (current.BufferDesc.Width == width && current.BufferDesc.Height == height) {
+        presenter->resize_pending = false;
+        return true;
+    }
     presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
     presenter->context->ClearState();
     releaseCom(presenter->present_target_view);
@@ -1324,8 +1327,9 @@ bool resizeSwapChain(RecompD3dPresenter *presenter)
     if (FAILED(result)) {
         std::fprintf(stderr, "recomp d3d presenter: resize to %ux%u failed hr=0x%08lX\n",
             width, height, static_cast<unsigned long>(result));
-        return false;
+        return false;  // resize_pending stays set, so the next present retries
     }
+    presenter->resize_pending = false;
     return true;
 }
 
@@ -2905,27 +2909,28 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
+enum DrawSamplerFilter : uint32_t { kGameFilter, kForcedAnisotropy, kAnisotropic16 };
+
 ID3D11SamplerState *lookupDrawSampler(
     RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
-    bool anisotropic = false)
+    DrawSamplerFilter filter = kGameFilter)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
             ? static_cast<D3D11_TEXTURE_ADDRESS_MODE>(mode) : D3D11_TEXTURE_ADDRESS_WRAP;
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
-    // The forced setting upgrades the shared linear sampler; point-filtered draws build their own.
-    anisotropic = anisotropic || presenter->anisotropy != 0u;
+    if (filter == kForcedAnisotropy && presenter->anisotropy == 0u) filter = kGameFilter;
     const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[anisotropic][u - 1][v - 1];
+    ID3D11SamplerState *&sampler = presenter->address_samplers[filter][u - 1][v - 1];
     if (sampler == nullptr) {
         D3D11_SAMPLER_DESC desc{};
         presenter->draw_sampler->GetDesc(&desc);
         desc.AddressU = u;
         desc.AddressV = v;
-        if (anisotropic) {
+        if (filter != kGameFilter) {
             desc.Filter = D3D11_FILTER_ANISOTROPIC;
-            desc.MaxAnisotropy = presenter->anisotropy != 0u ? presenter->anisotropy : 16u;
+            desc.MaxAnisotropy = filter == kForcedAnisotropy ? presenter->anisotropy : 16u;
         }
         if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
             return presenter->draw_sampler;
@@ -3697,19 +3702,22 @@ RecompD3dPresenterError submitDraw(
     presenter->context->PSSetShader(pipeline->pixel_shader, nullptr, 0u);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
-    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
-        draw.texture.mip_levels > 1u &&
+    const bool filterable = draw.has_texture &&
         !layout.pretransformed && !draw.texture.linear &&
         !draw.texture.render_target && !draw.texture_is_backbuffer &&
         draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
         !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
+    // Mip-filtered draws keep 16x; RECOMP_D3D_ANISOTROPY upgrades the other filterable ones.
+    const DrawSamplerFilter filter = !filterable ? kGameFilter
+        : draw.linear_mip_filter && draw.texture.mip_levels > 1u ? kAnisotropic16 : kForcedAnisotropy;
     ID3D11SamplerState *samplers[] = {
         draw.four_tap_filter || draw.has_alpha_mask || draw.program_count
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic),
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, filter),
         draw.program_alpha_mask ? presenter->program_mask_sampler
             : draw.has_combiner
-            ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v, false)
+            ? lookupDrawSampler(presenter, draw.combiner_address_u, draw.combiner_address_v,
+                filterable ? kForcedAnisotropy : kGameFilter)
             : presenter->filter_sampler};
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     if (draw.has_combiner && (draw.combiner_lod_bias != 0.0f || draw.combiner_mip_point) &&
