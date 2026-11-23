@@ -338,11 +338,24 @@ HANDLE CreateFileW(
     DWORD dwFlagsAndAttributes,
     HANDLE hTemplateFile)
 {
+    // Encode UTF-32 as UTF-8 directly: wcstombs follows the C locale, which
+    // rejects non-ASCII names such as UserMusic songs.
     char utf8[512];
-    size_t len = wcstombs(utf8, lpFileName, sizeof(utf8) - 1);
-    if (len == (size_t)-1) {
-        last_error = ERROR_FILE_NOT_FOUND;
-        return INVALID_HANDLE_VALUE;
+    size_t len = 0;
+    for (const wchar_t *p = lpFileName; *p; ++p) {
+        uint32_t c = (uint32_t)*p;
+        size_t n = c < 0x80u ? 1u : c < 0x800u ? 2u : c < 0x10000u ? 3u : 4u;
+        if (c > 0x10ffffu || (c >= 0xd800u && c <= 0xdfffu) || len + n >= sizeof(utf8)) {
+            last_error = ERROR_FILE_NOT_FOUND;
+            return INVALID_HANDLE_VALUE;
+        }
+        if (n == 1u) {
+            utf8[len++] = (char)c;
+            continue;
+        }
+        utf8[len++] = (char)((n == 2u ? 0xc0u : n == 3u ? 0xe0u : 0xf0u) | (c >> (6u * (n - 1u))));
+        for (size_t i = n - 1u; i-- > 0u;)
+            utf8[len++] = (char)(0x80u | ((c >> (6u * i)) & 0x3fu));
     }
     utf8[len] = '\0';
     return CreateFileA(utf8, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
