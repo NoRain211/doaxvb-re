@@ -31,6 +31,8 @@
     "docs/agents/triage-labels.md",
     "docs/building.md",
     "docs/display-modes.md",
+    "docs/dlss.md",
+    "docs/motion-vectors.md",
     "docs/texture-replacement.md",
     "docs/fog.md",
     "docs/lighting-and-lines.md",

@@ -91,7 +91,7 @@ $settings = [pscustomobject]@{
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true; renderer = 'd3d11'
     # Classic window and game filtering: older settings files keep the original picture.
-    windowMode = 'legacy'; windowHeight = 0; upscale = 'fsr'; sharpness = 50; anisotropy = 0
+    windowMode = 'legacy'; windowHeight = 0; upscale = 'fsr'; sharpness = 50; anisotropy = 0; dlss = 'off'
 }
 # Display page; see docs/display-modes.md. 'legacy' is the original fixed window.
 $windowModeValues = 'borderless', 'windowed', 'legacy'
@@ -102,6 +102,9 @@ $upscaleValues = 'fsr', 'bilinear'
 $upscaleNames = [string[]]('AMD FSR 1.0', 'Bilinear')
 $anisotropyValues = 0, 2, 4, 8, 16
 $anisotropyNames = [string[]]($anisotropyValues | ForEach-Object { if ($_ -eq 0) { 'Game default' } else { "$($_)x" } })
+# NVIDIA DLSS (docs/dlss.md): needs dlss_bridge.dll beside the runner and an RTX GPU.
+$dlssValues = 'off', 'dlaa', 'quality', 'balanced', 'performance', 'ultra'
+$dlssNames = [string[]]('Off', 'DLAA (native, anti-aliasing only)', 'Quality', 'Balanced', 'Performance', 'Ultra Performance')
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
     # Older settings files omit new options; keep their defaults.
@@ -370,7 +373,7 @@ function Update-Renderer {
     $d3d11 = $renderer.SelectedIndex -eq 0
     foreach ($box in $smaa, $vrr, $sun, $pixelLighting, $smoothNormals, $rtgi, $textures, $browse, $textureDump) { $box.Enabled = $d3d11 }
     $strength.Enabled = $d3d11 -and $rtgi.Checked; $hitColor.Enabled = $strength.Enabled
-    foreach ($box in $windowMode, $anisotropy) { $box.Enabled = $d3d11 }
+    foreach ($box in $windowMode, $anisotropy, $dlss) { $box.Enabled = $d3d11 }
     Update-DisplayControls
 }
 New-Note $pages[2] 'RTGI needs DXR and can slow matches.' 224 20 | Out-Null
@@ -381,7 +384,8 @@ $windowSize = Add-Row $pages[3] 'Window size' 32 (New-Choice $windowHeightNames 
 $upscale = Add-Row $pages[3] 'Upscaling' 64 (New-Choice $upscaleNames ([Array]::IndexOf($upscaleValues, [string]$settings.upscale)))
 $sharpness = Add-Row $pages[3] 'FSR sharpness (%)' 96 (New-Object Windows.Forms.NumericUpDown -Property @{ Minimum = 0; Maximum = 100; Increment = 10; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Value = [Math]::Max([decimal]0, [Math]::Min([decimal]100, [decimal]$settings.sharpness)) })
 $anisotropy = Add-Row $pages[3] 'Anisotropic filtering' 128 (New-Choice $anisotropyNames ([Array]::IndexOf($anisotropyValues, [int]$settings.anisotropy)))
-New-Note $pages[3] 'Alt+Enter switches between the window and fullscreen.' 164 20 | Out-Null
+$dlss = Add-Row $pages[3] 'NVIDIA DLSS' 160 (New-Choice $dlssNames ([Array]::IndexOf($dlssValues, [string]$settings.dlss)))
+New-Note $pages[3] "DLSS replaces MSAA and RTGI.`nAlt+Enter switches between the window and fullscreen." 196 40 | Out-Null
 function Update-DisplayControls {
     $scaled = $windowMode.Enabled -and $windowMode.SelectedIndex -ne 2
     $windowSize.Enabled = $scaled; $upscale.Enabled = $scaled
@@ -438,7 +442,7 @@ New-Note $pages[6] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 
 New-Note $pages[7] "Display`n    Alt+Enter    Window / fullscreen`n`nFree camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
 
 function Update-Summary {
-    $antiAliasing = $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" })
+    $antiAliasing = if ($dlss.Enabled -and $dlss.SelectedIndex) { "DLSS $(($dlssNames[$dlss.SelectedIndex] -split ' ')[0])" } else { $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" }) }
     $display = $(if ($windowMode.Enabled) { "$($windowMode.SelectedItem)$dot" }) + "$($resolution.SelectedItem)" + $(if ($upscale.Enabled -and $upscale.SelectedIndex -eq 0) { ' FSR' }) + $dot + $antiAliasing
     $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" })
     $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Enabled -and $textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
@@ -600,6 +604,7 @@ $percent = $volumes[$volume.SelectedIndex]
     renderer = $renderers[$renderer.SelectedIndex]
     windowMode = $windowModeValues[$windowMode.SelectedIndex]; windowHeight = $windowHeights[$windowSize.SelectedIndex]
     upscale = $upscaleValues[$upscale.SelectedIndex]; sharpness = $sharpness.Value; anisotropy = $anisotropyValues[$anisotropy.SelectedIndex]
+    dlss = $dlssValues[$dlss.SelectedIndex]
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 $env:RECOMP_D3D_WINDOW_MODE = $windowModeValues[$windowMode.SelectedIndex]
 $env:RECOMP_D3D_WINDOW_HEIGHT = "$($windowHeights[$windowSize.SelectedIndex])"
@@ -607,6 +612,7 @@ $env:RECOMP_D3D_WINDOW_HEIGHT = "$($windowHeights[$windowSize.SelectedIndex])"
 $env:RECOMP_D3D_UPSCALE = if ($upscale.Enabled) { $upscaleValues[$upscale.SelectedIndex] } else { 'bilinear' }
 $env:RECOMP_D3D_SHARPNESS = ($sharpness.Value / 100).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_ANISOTROPY = "$($anisotropyValues[$anisotropy.SelectedIndex])"
+$env:RECOMP_D3D_DLSS = if ($dlss.SelectedIndex) { $dlssValues[$dlss.SelectedIndex] } else { $null }
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_MSAA = "$count"

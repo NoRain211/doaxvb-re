@@ -28,3 +28,6 @@ Forced anisotropic filtering upgrades the samplers of ordinary textured draws
 and their combiner stage. Draws that use the game's four-tap filter, an alpha
 mask or a vertex/pixel program keep their point-mip clamp sampler, which
 those effects depend on, so they are not filtered anisotropically.
+
+DLSS is offered separately, with its own motion vectors and jitter; see
+[DLSS](dlss.md).

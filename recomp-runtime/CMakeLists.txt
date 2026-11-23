@@ -898,7 +898,8 @@ if(RECOMP_PROGRAM_DIR)
     # which draws through SDL GPU as the macOS and Linux builds do.
     if(WIN32)
         add_executable(recomp_program_runner
-            d3d_presenter_d3d11.cpp d3d_fsr.cpp texture_replacement.cpp d3d_presenter_thread.cpp)
+            d3d_presenter_d3d11.cpp d3d_draw_shader.cpp d3d_fsr.cpp d3d_motion.cpp d3d_dlss.cpp
+            texture_replacement.cpp d3d_presenter_thread.cpp)
         add_executable(recomp_program_runner_vulkan d3d_presenter_sdl_gpu.cpp)
         recomp_use_overlay(recomp_program_runner_vulkan SDL_GPU)
         recomp_use_shaderc(recomp_program_runner_vulkan)
@@ -953,7 +954,10 @@ if(WIN32)
     add_test(NAME recomp-runtime-texture-replacement COMMAND recomp_texture_replacement_test)
     add_executable(recomp_d3d_presenter_d3d11_test
         d3d_presenter_d3d11_test.cpp
+        d3d_draw_shader.cpp
         d3d_fsr.cpp
+        d3d_motion.cpp
+        d3d_dlss.cpp
         texture_replacement.cpp
         ../xbe/sha.cpp
         d3d_vblank.cpp
@@ -980,7 +984,10 @@ if(WIN32)
         animation_seam.c
         d3d_presenter_capture.cpp
         d3d_presenter_d3d11.cpp
+        d3d_draw_shader.cpp
         d3d_fsr.cpp
+        d3d_motion.cpp
+        d3d_dlss.cpp
         texture_replacement.cpp
         d3d_vblank.cpp
         d3d_vertex_program.cpp
