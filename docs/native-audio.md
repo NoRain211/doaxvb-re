@@ -34,37 +34,39 @@ buffer lifetime/error handling, and adapter playback controls respectively.
 
 ## Custom soundtracks
 
-Players drop MP3, WAV, or FLAC files into `private\UserMusic` in the release
-folder, which the launcher's **Music folder** button opens, and pick them in
-the game's own custom soundtrack screen, such as the Radio Station playlist.
-`RunGame.cmd` passes that folder to the runner as `RECOMP_USER_MUSIC`; a
-runner started without it uses UserMusic beside the imported XBE. The runner
+Players drop MP3, WAV, or FLAC files into `private/UserMusic` in the release
+folder, which the launcher's **Open music folder** button opens, and pick them
+in the game's own custom soundtrack screen, such as the Radio Station playlist.
+`RunGame.cmd` and `run_game.sh` pass that folder to the runner as
+`RECOMP_USER_MUSIC`; a runner started without it uses UserMusic beside the
+imported XBE. The runner
 creates the folder at startup if it is missing and scans it once, so added or
 removed files appear after a restart.
-
-Decoding uses Windows Media Foundation, so macOS and Linux builds have an empty
-catalog; a portable decoder is open work.
 
 The game stays in control: it enumerates the soundtrack, chooses the song,
 starts and stops it, and mixes it through CRI and DirectSound. The runtime
 replaces only the Xbox services underneath, the XAPI soundtrack catalog and
-the WMA decoder object, and decodes with Windows Media Foundation.
+the WMA decoder object. Windows decodes with Media Foundation; macOS and
+Linux decode with [miniaudio](https://github.com/mackron/miniaudio) 0.11.22,
+which the build downloads at a pinned hash.
 [Custom soundtracks](custom-soundtracks.md) describes the design, the guest
 contract, and the checks.
 
 - **Catalog.** One soundtrack named UserMusic holds up to 500 songs, sorted
-  case-insensitively. Names are the filename stem, cut to 31 UTF-16 units. A
+  case-insensitively (on macOS and Linux, only ASCII letters fold). Names are the filename stem, cut to 31 UTF-16 units. A
   song's ID is a hash of its filename, so adding files keeps existing IDs and
   renaming a file changes its ID. Files that fail a trial decode are skipped
   with a [custom-music] skipped line, and the startup line
   [custom-music] catalog tracks=N scan_ms=M reports the result.
 - **Formats.** PCM WAV, float WAV, FLAC, and MP3 pass the automated decoder
-  checks. Other WAV encodings depend on the codecs installed in Windows.
+  checks on Windows; macOS and Linux run the WAV checks in CI, and their
+  MP3 and FLAC decoding was checked by hand on Linux. Other WAV encodings
+  depend on the codecs installed in Windows, or on what miniaudio reads.
   Output is 44.1 kHz 16-bit stereo, so high-resolution sources are resampled.
   Originals are opened read-only and no audio cache is written.
 - **Requirements.** The feature needs a program generated from the current
   recipe, because the recipe routes the game's direct soundtrack calls through
-  manual dispatch. Media Foundation is delay-loaded: on Windows N editions
+  manual dispatch. On Windows, Media Foundation is delay-loaded: on Windows N editions
   without the Media Feature Pack, the runner starts with custom music disabled
   and logs [custom-music] disabled.
 

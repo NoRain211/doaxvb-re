@@ -35,6 +35,7 @@
     "docs/motion-vectors.md",
     "docs/texture-replacement.md",
     "docs/fog.md",
+    "docs/frame-rate.md",
     "docs/lighting-and-lines.md",
     "docs/sun-shadow.md",
     "docs/gbuffer.md",

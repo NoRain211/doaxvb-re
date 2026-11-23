@@ -15,6 +15,7 @@ void recomp_test_heap_reset(uint32_t cursor, int fail_after);
 #include <wrl/client.h>
 #endif
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -39,9 +40,10 @@ extern "C" void sub_00188210(void) { kernel_return_caller_cleanup(0u); }
 extern "C" void sub_001880D0(void) { kernel_return_caller_cleanup(0u); }
 extern "C" void sub_0018D270(void) { ++originals; kernel_return_caller_cleanup(0u); }
 
-#ifdef _WIN32
 namespace fs = std::filesystem;
+#ifdef _WIN32
 using Microsoft::WRL::ComPtr;
+#endif
 namespace {
 unsigned service_steps;
 std::vector<uint32_t> guest_errors;
@@ -78,7 +80,7 @@ bool last_error(uint32_t expected) { return !guest_errors.empty() && guest_error
 // including when a check throws.
 struct TempRoot {
     fs::path path = fs::temp_directory_path() / ("doaxbv-music-test-" +
-        std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     ~TempRoot()
     {
         recomp_soundtrack_shutdown();
@@ -166,6 +168,7 @@ Bytes wave_48k_mono()
     return bytes;
 }
 
+#ifdef _WIN32
 // Encodes pcm with a Windows encoder. False when this Windows has none for
 // the format; the caller then skips that format and says so.
 bool encode(const fs::path &path, const GUID &subtype, const Bytes &pcm)
@@ -219,6 +222,16 @@ bool encode(const fs::path &path, const GUID &subtype, const Bytes &pcm)
     }
     return SUCCEEDED(hr);
 }
+#else
+// macOS and Linux have no system FLAC or MP3 encoder, so those formats are skipped.
+constexpr int MFAudioFormat_FLAC = 0, MFAudioFormat_MP3 = 0;
+bool encode(const fs::path &path, int, const Bytes &)
+{
+    std::printf("custom music: no %s encoder on this platform; format skipped\n",
+        path.extension().c_str());
+    return false;
+}
+#endif
 
 uint32_t call(uint32_t address, std::initializer_list<uint32_t> args, bool caller_cleanup = false)
 {
@@ -300,7 +313,7 @@ void check_track(uint32_t index, const Bytes *exact_pcm)
     check(call(0x1824df, {1, index, 0x5100, 0x5104, 0x5200, 33}) == 1 &&
         *recomp_memory_u32(0x5100) == track.id &&
         *recomp_memory_u32(0x5104) == track.duration_ms, "song info");
-    check(path.stem().wstring() == reinterpret_cast<const wchar_t *>(recomp_memory(0x5200, 64)),
+    check(path.stem().u16string() == reinterpret_cast<const char16_t *>(recomp_memory(0x5200, 64)),
         "song name is the filename stem");
     const auto file = call(0x182708, {track.id, 1});
     check(file != UINT32_MAX, "selected original file opened");
@@ -364,13 +377,14 @@ void check_track(uint32_t index, const Bytes *exact_pcm)
     std::memcpy(recomp_memory(0x5700, sizeof packet), packet, sizeof packet);
     check(call(0x2194b0, {object, 0, 0x5700}) != 0 && *recomp_memory_u32(0x5600) == 0,
         "released decoder cannot produce packets");
-    std::printf("custom music: %ls duration_ms=%u bytes=%zu\n", path.filename().c_str(),
-        track.duration_ms, song.size());
+    std::printf("custom music: track %u%s duration_ms=%u bytes=%zu\n", index,
+        path.extension().string().c_str(), track.duration_ms, song.size());
 }
 } // namespace
 
 extern "C" int recomp_custom_music_test(void)
 {
+#ifdef _WIN32
     if (!LoadLibraryW(L"mfplat.dll") || !LoadLibraryW(L"mfreadwrite.dll") ||
             FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
         std::printf("custom music: Media Foundation unavailable; skipped\n");
@@ -381,6 +395,7 @@ extern "C" int recomp_custom_music_test(void)
         CoUninitialize();
         return 77;
     }
+#endif
     int result = EXIT_FAILURE;
     try {
         TempRoot root;
@@ -427,14 +442,9 @@ extern "C" int recomp_custom_music_test(void)
     } catch (const std::exception &error) {
         std::fprintf(stderr, "custom music test: %s\n", error.what());
     }
+#ifdef _WIN32
     MFShutdown();
     CoUninitialize();
+#endif
     return result;
 }
-#else
-extern "C" int recomp_custom_music_test(void)
-{
-    std::printf("custom music: Media Foundation unavailable on non-Windows; skipped\n");
-    return 77;
-}
-#endif

@@ -207,8 +207,8 @@ choices without opening it.
 The launcher offers resolution, MSAA, fog, volume, shuffle, unlocked
 swimsuits, shorter demo cuts, the free camera and the title screen idle
 choice. SMAA, VRR pacing, sun shadows, per-pixel lighting, smooth normals,
-RTGI, texture packs and the music folder belong to Direct3D 11 or Media
-Foundation on Windows, so it leaves them out. Their saved values in
+RTGI and texture packs belong to Direct3D 11 on Windows, so it leaves them
+out. Its Audio page opens `private/UserMusic` for custom soundtracks. Their saved values in
 `private/launcher.json` stay untouched. A keyboard, mouse, touch screen or
 controller works: LB and RB (or Tab) switch sections, the d-pad or arrows move
 between options and left or right changes one, A or Enter ticks or presses,
@@ -477,8 +477,8 @@ generated program and user-owned XBE under ignored local directories.
 It creates storage beside the XBE under `.recomp-storage`. See
 [`docs/recomp-save-contract.md`](recomp-save-contract.md) for save behavior.
 The runner also creates the folder named by `RECOMP_USER_MUSIC`, or
-`UserMusic` beside the XBE when it is unset; `RunGame.cmd` sets it to
-`private/UserMusic`. Drop MP3, WAV, and FLAC files there and restart to list
+`UserMusic` beside the XBE when it is unset; `RunGame.cmd` and
+`run_game.sh` set it to `private/UserMusic`. Drop MP3, WAV, and FLAC files there and restart to list
 them in the game's custom soundtrack menu.
 See [`docs/native-audio.md`](native-audio.md#custom-soundtracks) for supported
 formats, limits, and the remaining gameplay acceptance checks.
@@ -519,9 +519,10 @@ changing the light or material values; point attenuation and RGB clamping also
 move to the pixel. Unlit, pretransformed, vertex-color and vertex-program draws
 keep their existing paths. Specular and vertex-color lighting remain unsupported.
 
-Set `RECOMP_SPLIT_RATE=auto`, or to your display's refresh rate such as 120 or
-144, to present smoother motion than the game's 60 Hz while gameplay keeps its
-original timing. Use it with `--vsync`. The picture runs one 60 Hz tick
+Set `RECOMP_SPLIT_RATE=auto`, `unlocked`, or to your display's refresh rate
+such as 120 or 144, to present smoother motion than the game's 60 Hz while
+gameplay keeps its original timing; the launcher's Frame rate choice sets it
+(see [frame rate](frame-rate.md)). Use it with `--vsync`. The picture runs one 60 Hz tick
 behind, and some objects such as water still move at 60 Hz. See
 [the split-rate notes](wayfinder/research/high-frame-rate-split.md#current-state).
 Set `RECOMP_D3D_SMOOTH_NORMALS=1` to rebuild area-weighted normals on lit

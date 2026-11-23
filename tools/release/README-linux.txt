@@ -6,8 +6,9 @@ tools only. You need your own copy of the game as an ISO; the build turns it
 into a playable runner.
 
 Smoke runs of RC1 on a Steam Deck reached the save-select and settings menus
-at 60 fps; Linux has not been play-tested. SMAA and custom soundtracks are
-not available on Linux yet. Point lights, the title sea shimmer, sun
+at 60 fps; Linux has not been play-tested. SMAA is not available on Linux
+yet. Custom soundtracks: put MP3, WAV or FLAC files in private/UserMusic
+(the launcher's Audio page opens it) and pick them at the Radio Station. Point lights, the title sea shimmer, sun
 shadows, per-pixel lighting and RECOMP_GAME_HZ are Windows-only for now
 (issue #105); fog now works on Linux. The free camera, model viewer, title
 screen idle modes and swimsuit unlock work here too. Online play has not
