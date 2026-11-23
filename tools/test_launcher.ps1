@@ -100,7 +100,8 @@ try {
         ("${tag}0.8.0-rc1", '0.7.0', $null), ('https://github.com/NoRain211/doaxvb-re/releases', '0.7.0', $null),
         ('https://evil.example/NoRain211/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null),
         ('http://github.com/NoRain211/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null),
-        ('https://github.com/someone/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null), ("${tag}0.8.0", 'garbage', $null)
+        ('https://github.com/someone/doaxvb-re/releases/tag/v9.0.0', '0.7.0', $null), ("${tag}0.8.0", 'garbage', $null),
+        ("${tag}0.8", '0.7.0', $null), ("${tag}0.8.0.1", '0.7.0', $null), ("${tag}1..2", '0.7.0', $null)
     foreach ($case in $cases) {
         $got = Get-NewerRelease $case[0] $case[1]
         Assert ($got -ceq $case[2]) "Update check for $($case[0]) from $($case[1]): got '$got', expected '$($case[2])'"
