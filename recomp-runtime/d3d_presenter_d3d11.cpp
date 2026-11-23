@@ -606,6 +606,7 @@ struct RecompD3dPresenter {
     uint32_t window_height_request = 0u; // RECOMP_D3D_WINDOW_HEIGHT: windowed client height
     WINDOWPLACEMENT windowed_placement{}; // restored when leaving borderless
     bool resize_pending = false;
+    bool resize_failed = false;  // logged once until a resize succeeds
     UINT swap_flags = 0u;
     // RECOMP_D3D_UPSCALE=fsr: FSR 1.0 EASU upscale and RCAS sharpen into the window.
     bool fsr_requested = false;
@@ -1309,7 +1310,9 @@ bool resizeSwapChain(RecompD3dPresenter *presenter)
     const UINT height = static_cast<UINT>(client.bottom - client.top);
     DXGI_SWAP_CHAIN_DESC current{};
     presenter->swap_chain->GetDesc(&current);
-    if (current.BufferDesc.Width == width && current.BufferDesc.Height == height) {
+    // A failed GetBuffer or view leaves the right size but no view: rebuild it.
+    if (current.BufferDesc.Width == width && current.BufferDesc.Height == height &&
+        presenter->present_target_view != nullptr) {
         presenter->resize_pending = false;
         return true;
     }
@@ -1325,11 +1328,14 @@ bool resizeSwapChain(RecompD3dPresenter *presenter)
         back_buffer, nullptr, &presenter->present_target_view);
     releaseCom(back_buffer);
     if (FAILED(result)) {
-        std::fprintf(stderr, "recomp d3d presenter: resize to %ux%u failed hr=0x%08lX\n",
-            width, height, static_cast<unsigned long>(result));
+        if (!presenter->resize_failed) {
+            std::fprintf(stderr, "recomp d3d presenter: resize to %ux%u failed hr=0x%08lX; retrying\n",
+                width, height, static_cast<unsigned long>(result));
+        }
+        presenter->resize_failed = true;
         return false;  // resize_pending stays set, so the next present retries
     }
-    presenter->resize_pending = false;
+    presenter->resize_pending = presenter->resize_failed = false;
     return true;
 }
 
@@ -4639,10 +4645,10 @@ RecompD3dPresenterError submitPresent(
                 GetLastError());
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         }
-        if (presenter->resize_pending && !resizeSwapChain(presenter)) {
-            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
-        }
     }
+    // A failed resize holds the window's last picture, like a held frame, and
+    // the next present retries; only the guest-visible frame is updated.
+    const bool window_ready = !presenter->resize_pending || resizeSwapChain(presenter);
 
     /* SyncInterval, not the flag, is what paces a present. Passing 0 here
        unconditionally meant the throttled path was never actually throttled:
@@ -4667,10 +4673,10 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     copyFrontBuffer(presenter);
-    if (presenter->vrr_target_view != nullptr) scaleOutput(presenter);
+    if (presenter->vrr_target_view != nullptr && window_ready) scaleOutput(presenter);
     // A held frame updates the front buffer the game reads back, but the
     // window keeps the last picture presented.
-    if (present.hold) return RECOMP_D3D_PRESENTER_OK;
+    if (present.hold || !window_ready) return RECOMP_D3D_PRESENTER_OK;
     {
         if (recomp_screenshot_take_request()) saveScreenshot(presenter);
         // The runtime's overlay text goes on the window's back buffer, after
