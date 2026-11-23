@@ -409,9 +409,13 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             thread.split_clock_frame = frame;
             thread.split_clock_start = start;
             double end = start+tick_ms;
-            // Picked up well after it was published: the game is waiting on presents.
-            // Show this tick once so the queue drains instead of slowing the game.
-            const bool behind = picked-packet->published_ms > tick_ms/4;
+            // The next tick is already queued, so the game is about to wait on
+            // presents. Show this tick once so the queue drains instead of slowing the game.
+            bool behind;
+            {
+                std::lock_guard<std::mutex> lock(thread.mutex);
+                behind = thread.pending > 1;
+            }
             // A slightly late producer must not discard an otherwise due present.
             // Only abandon the clock after a full simulation interval was missed.
             if (thread.split_next+tick_ms < now) thread.split_next = now;

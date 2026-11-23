@@ -21,8 +21,8 @@ shows the newest finished frame at each refresh; the run log says which.
 A tick never takes more presents than fit in it. The worker times a tick's
 first present and its later ones separately and spaces presents evenly by how
 many fit in 80% of a tick, never faster than the chosen rate; it also stops
-early when a present would end past the tick, or when it picked the packet up
-more than a quarter tick after the game published it. Without this, a slow
+early when a present would end past the tick, or when the game has already
+queued the next tick. Without this, a slow
 present delayed the next packet, the game waited on the full queue, and play
 ran in slow motion (45 ticks per second) instead of at fewer frames.
 
