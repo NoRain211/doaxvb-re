@@ -17,6 +17,8 @@ int main(void)
     CHECK(recomp_split_requested("auto") && recomp_split_requested("144") && !recomp_split_requested(NULL));
     CHECK(recomp_split_requested(" auto \r\n"));
     CHECK(!recomp_split_requested("auto junk"));
+    CHECK(recomp_split_requested(" unlocked\r\n") && recomp_split_unlocked("unlocked") && !recomp_split_unlocked("auto"));
+    CHECK(recomp_split_display_rate("unlocked",143.981,true,&note)==1000 && !note);
     CHECK(recomp_split_display_rate(" auto \r\n",143.981,true,&note)==143.981 && !note);
     CHECK(recomp_split_display_rate("auto",143.981,true,&note)==143.981 && !note);
     CHECK(recomp_split_display_rate("auto",0,true,&note)==0 && note);

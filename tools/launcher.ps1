@@ -84,12 +84,16 @@ $renderers = 'd3d11', 'vulkan'
 $volumes = 100, 75, 50, 25, 0
 # What the game does when its title screen is left idle; see docs/title-idle.md.
 $idleValues = 'default', 'no-cutscene', 'cpu-exhibition'
+# Above 60 the game still runs at 60 Hz and extra frames are interpolated (docs/frame-rate.md).
+$frameRateValues = '60', '120', 'auto', 'unlocked'
+$frameRateNames = [string[]]('60 FPS (original)', '120 FPS', 'Match display refresh', 'Unlocked')
 $idleNames = [string[]]('Default', 'No cutscene', 'CPU Exhibition')
 $settings = [pscustomobject]@{
     height = [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height; msaa = 1; smaa = $false; volume = 100; shuffle = $false
     sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true; renderer = 'd3d11'
+    frameRate = '60'
 }
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
@@ -357,7 +361,7 @@ $strength = Add-Row $pages[2] 'RTGI strength' 198 (New-Object Windows.Forms.Nume
 # Vulkan has resolution, MSAA and fog; the other toggles and texture packs are Direct3D 11 features.
 function Update-Renderer {
     $d3d11 = $renderer.SelectedIndex -eq 0
-    foreach ($box in $smaa, $vrr, $sun, $pixelLighting, $smoothNormals, $rtgi, $textures, $browse, $textureDump) { $box.Enabled = $d3d11 }
+    foreach ($box in $smaa, $vrr, $sun, $pixelLighting, $smoothNormals, $rtgi, $textures, $browse, $textureDump, $frameRate) { $box.Enabled = $d3d11 }
     $strength.Enabled = $d3d11 -and $rtgi.Checked; $hitColor.Enabled = $strength.Enabled
 }
 New-Note $pages[2] 'RTGI needs DXR and can slow matches.' 224 20 | Out-Null
@@ -386,6 +390,8 @@ $unlock = New-Toggle $pages[4] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
 $demoCut = New-Toggle $pages[4] 'Shorter demo cuts' 28 $settings.demo_cut_hold
 $freeCamera = New-Toggle $pages[4] 'Free camera (F1)' 56 $settings.free_camera
 $idle = Add-Row $pages[4] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
+$frameRate = Add-Row $pages[4] 'Frame rate' 124 (New-Choice $frameRateNames ([Array]::IndexOf($frameRateValues, [string]$settings.frameRate)))
+New-Note $pages[4] "Gameplay stays at 60 Hz. Unlocked tears;`n120 on a faster screen needs VRR (Graphics)." 156 34 | Out-Null
 
 $textures = New-Toggle $pages[5] 'Use texture pack' 0 $settings.textures
 $textureFolder = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 32; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Text = [string]$settings.textureFolder }
@@ -410,7 +416,7 @@ New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12  
 
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Enabled -and $smaa.Checked) { "$($dot)SMAA" })
-    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" })
+    $render = $(if ($renderer.SelectedIndex) { 'Vulkan' } else { 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Enabled -and $vrr.Checked) { "$($dot)VRR" }) + $(if ($frameRate.Enabled -and $frameRate.SelectedIndex) { "$dot$(@('', '120 FPS', 'Display Hz', 'Unlocked FPS')[$frameRate.SelectedIndex])" })
     $extras = @($(if ($sun.Enabled -and $sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Enabled -and $textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Enabled -and $pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Enabled -and $rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
@@ -567,8 +573,9 @@ $percent = $volumes[$volume.SelectedIndex]
     sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
-    renderer = $renderers[$renderer.SelectedIndex]
+    renderer = $renderers[$renderer.SelectedIndex]; frameRate = $frameRateValues[$frameRate.SelectedIndex]
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
+$env:RECOMP_SPLIT_RATE = if ($frameRate.Enabled -and $frameRate.SelectedIndex) { $frameRateValues[$frameRate.SelectedIndex] } else { $null }
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_MSAA = "$count"
