@@ -436,7 +436,7 @@ A room admits players as doa2u-re's does:
 doa2u-re replaced its rooms with Xbox Live and now drops every room packet,
 so this repo keeps the server: `tools/matchmaker.py` and
 `tools/test_matchmaker.py` are doa2u-re's at `0cf84f4`, with the default
-port changed to 47702.
+port changed to 47703.
 
 Players can also meet over IPv6, as in `0cf84f4`. IPv4 stays primary: each
 room socket opens an IPv6 sibling on the same port and, when the
@@ -452,25 +452,29 @@ peer's IPv6 endpoint when the room reached it there. The new runner binds
 IPv6 on the same port and sends there from its first packet; without that,
 a pair that met only over IPv6 could not start its match.
 
-The runner's default matchmaker is UDP 47702 on the same host as before.
+The runner's default matchmaker is UDP 47703 on the same host as before.
 Version 1 runners (0.7.0 and older) still use 47700 and the version 1
 server there ([The version 1 matchmaker
-server](#the-version-1-matchmaker-server)), so the two run side by side. To run the version 2 server:
+server](#the-version-1-matchmaker-server)), so the two run side by side.
+Port 47702 on that host belongs to a DOA3 matchmaker that speaks the same
+protocol and takes version 2 packets redirected from 47700, so DOAXBV's
+server has its own port. Since 2026-11-22 it runs there as
+`doaxbv-matchmaker-v2.service`. To run the version 2 server:
 
 1. Copy `tools/matchmaker.py` to `/opt/doaxbv-matchmaker-v2/` and
    `tools/matchmaker.service` to
    `/etc/systemd/system/doaxbv-matchmaker-v2.service`, then
    `sudo systemctl enable --now doaxbv-matchmaker-v2`.
-2. Accept UDP 47702 in the host's firewall and in the cloud provider's
+2. Accept UDP 47703 in the host's firewall and in the cloud provider's
    security list.
-3. `python tools/matchmaker.py --probe <server>:47702` must answer.
+3. `python tools/matchmaker.py --probe <server>:47703` must answer.
 4. For the IPv6 path, give the host an IPv6 address and the matchmaker's
-   name an AAAA record, accept UDP 47702 over IPv6 too, and check
-   `python tools/matchmaker.py --probe <server>:47702 --ipv6`. The default
+   name an AAAA record, accept UDP 47703 over IPv6 too, and check
+   `python tools/matchmaker.py --probe <server>:47703 --ipv6`. The default
    name has only an A record today, so every match stays on IPv4 until
    then.
 
-Until the server answers on 47702, a runner with this client cannot list
+Until the server answers on 47703, a runner with this client cannot list
 or find rooms; JOIN ONLINE by address still works.
 
 ## Replays and the network display
@@ -566,9 +570,9 @@ server its first packet reached until it goes quiet for the UDP stream
 timeout, `nf_conntrack_udp_timeout_stream` (120 s on current kernels).
 The `conntrack` command comes from Ubuntu's `conntrack` package.
 
-A runner that speaks version 2 cannot use 47700, since doa2u-re's server
-takes those packets. This client's version 2 server runs on its own port,
-47702 ([The version 2 matchmaker](#the-version-2-matchmaker)), beside
+A runner that speaks version 2 cannot use 47700, since the host's other
+version 2 servers take those packets. This client's version 2 server runs
+on its own port, 47703 ([The version 2 matchmaker](#the-version-2-matchmaker)), beside
 this one while version 1 runners remain.
 
 ## Decisions

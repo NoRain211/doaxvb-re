@@ -195,7 +195,7 @@
   ],
   "byte_literal_exceptions": [
     {
-      "sha256": "888f210ee7b25c934e2f4b09a64805dc2aaaf1f3e120d4f975c0f15715b6b7c1",
+      "sha256": "b30d5ff14aea53697b9d1eaafe49302cb4c22601bed7d26e8a6ef16a9f7f4f7b",
       "reason": "Hand-written: the default netplay matchmaker's host:port, XORed with 0x5a, in netplay_menu.cpp (from doa2u-re). Not game data."
     },
     {
