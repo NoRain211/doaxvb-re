@@ -24,10 +24,12 @@ RCAS into the window. It only upscales: at or above the window size the
 bilinear pass is used, as it is on hardware below feature level 11_0 or when
 the headers are absent at build time.
 
-Forced anisotropic filtering upgrades the samplers of ordinary textured draws
-and their combiner stage. Draws that use the game's four-tap filter, an alpha
-mask or a vertex/pixel program keep their point-mip clamp sampler, which
-those effects depend on, so they are not filtered anisotropically.
+Mip-filtered 3D textures already get 16x anisotropic filtering. The forced
+level applies to the other textured 3D draws and their combiner stage, such as
+textures without mips or with point mip filtering. HUD quads, render targets,
+palettized textures and reflections keep the game's filtering. Draws that use
+the game's four-tap filter, an alpha mask or a vertex/pixel program keep their
+point-mip clamp sampler, which those effects depend on.
 
 DLSS is offered separately, with its own motion vectors and jitter; see
 [DLSS](dlss.md).
