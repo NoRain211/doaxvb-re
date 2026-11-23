@@ -75,6 +75,18 @@ one Windows machine. The language fix was checked in an agent run of a local
 build of this recipe; the new SDL launcher has not run on a Mac. It does not
 expand the play-test coverage below.
 
+0.8.0 Beta (tag `v0.8.0`) keeps the 0.7.0 generation recipe and program
+manifest; only the runtime and setup changed. Online rooms speak matchmaker
+protocol version 2 to a server on UDP 47703 (#219, #227), with a direct
+IPv6 path (#222) and room, session and safety fixes (#195–#206, #220,
+#221, #223, #224). The Direct3D 11 renderer picks the high-performance GPU
+(#216, #217) and binds constants from a ring (#193). Linux setup installs
+its build tools and builds in a distrobox on SteamOS (#225), and the
+launchers note a newer release (#226). The new menu and matchmaker paths
+were checked by the lobby tests and a client-to-server harness, not in a
+running game; no session has run between two machines. It does not expand
+the play-test coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel

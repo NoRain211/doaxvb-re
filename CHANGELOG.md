@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.8.0 Beta — 2026-11-22
+
+0.8.0 moves online Exhibition onto a new matchmaker with many room and
+session fixes, runs the game on the fast GPU of laptops with two, smooths
+Windows frame pacing, sets up Linux and Steam Deck builds by itself, and has
+the launcher say when a newer release is out. The game program and its
+generation recipe are the same as 0.7.0, but the runtime changed, so extract
+the ZIP into a new folder and build again; saves are unchanged, so copy your
+`private` saves over. Online, 0.8.0 players meet only other 0.8.0 players.
+
+### Added
+
+- **A new matchmaker for online rooms** (#219, #227). The client speaks
+  protocol version 2 to its own server on UDP 47703, so 0.7.0 and older
+  keep their server and cannot meet 0.8.0. FIND MATCH shows each room's
+  ping as an estimate (`~45 MS`). An empty room seats a player only after
+  they prove their address, and a host back from a session keeps the seat
+  for its last joiner for 10 seconds.
+- **A direct IPv6 path between matched players** (#222). When both players
+  and the matchmaker have IPv6, the room tries it beside IPv4; IPv4 stays
+  primary and a relay still wins over it. The default matchmaker has no
+  IPv6 address yet, so with it rooms still pair over IPv4 only.
+- **Steam Deck and Linux setup installs its own tools** (#225).
+  `./install_deps.sh` installs the build tools with apt, dnf or pacman, and
+  `./build_game.sh` runs it in a terminal when a tool is missing. On
+  SteamOS, `./build_game.sh` and the launcher's Build page create an Ubuntu
+  24.04 distrobox and build there, so no manual container setup is needed.
+- **The launcher says when a newer release is out** (#226). Release ZIPs
+  ask GitHub once at start and show a note with an Open release page
+  button; they download and change nothing, and stay quiet offline.
+- **Hitch lines in the netplay log** (#206) for slow frames in live rounds
+  and shaders built late.
+
+### Fixed
+
+- **Laptops with two GPUs ran the game on the integrated one** (#216, #217).
+  The Direct3D 11 renderer now picks the high-performance GPU and logs its
+  name (`recomp d3d presenter: gpu ...`); ray-traced GI follows it.
+- **Online rooms** (#195, #205, #220). Pairing, chat and stalled sessions are
+  hardened; the other player hears when a room closes, including when the
+  game is closed in a room; FIND MATCH says when the matchmaker does not
+  answer and keeps its highlight on the same room; a host's room updates at
+  once when it opens, fills or holds; and a relayed joiner joins again after
+  a matchmaker restart.
+- **Online sessions** (#200, #201, #204, #224). Backing out of character
+  select to the main menu ends the session for both players; two players
+  who chose different Digital/Analog settings no longer desync at frame 30;
+  test sessions and SyncTest keep the free camera off; and a save that
+  waits for the other player no longer floods the relay.
+- **Online safety and privacy** (#196, #197, #198, #199, #202, #203). The host
+  serves profiles within bounds and accepts only the files a save folder
+  holds; UPnP leaves alone router forwards the host does not own; a
+  filtered name shows as HIDDEN NAME; the clock, joins, text editors and
+  replay names are checked; and the netplay log leaves out addresses.
+
+### Changed
+
+- **Smoother frame pacing on Windows** (#193). The Direct3D 11 renderer
+  writes each draw's constants into one ring buffer instead of renaming a
+  buffer per draw, which AMD drivers stall on, and the game asks Windows
+  for a 1 ms timer and no power throttling. Ported from DOA2U's GPD Win 5
+  stutter fix; here it was measured only on an NVIDIA GPU, where frame
+  times did not change.
+- **Fewer rollbacks** (#221, #223). Stick and trigger noise that the game
+  reads as zero is sent as zero, so it no longer forces a rollback, and a
+  rollback writes each restored memory page once.
+
 ## 0.7.0 Beta — 2026-11-20
 
 0.7.0 adds experimental online Exhibition with rollback netcode, a Vulkan

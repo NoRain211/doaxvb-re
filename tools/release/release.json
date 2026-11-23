@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0",
+  "version": "0.8.0",
   "channel": "Beta",
-  "runtime_change": "new recipe: musl x87 math (#186) and remembered language (#208); experimental online Exhibition with rollback netcode (#187-#191); Windows Vulkan runner and SDL GPU fog (#192); RTGI in player builds (#181, #182); crash lines for stack overflows and aborts (#209); relative build receipts (#211); SDL launcher on macOS and Linux (#213, #215)"
+  "runtime_change": "program unchanged from 0.7.0; matchmaker protocol v2 on UDP 47703 (#219, #227) with direct IPv6 (#222) and online room, session and safety fixes (#195-#206, #220, #221, #223, #224); high-performance GPU (#217); Windows constant ring and timer (#193); Linux install_deps.sh and SteamOS distrobox build (#225); launcher release notice (#226)"
 }

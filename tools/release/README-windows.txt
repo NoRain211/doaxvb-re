@@ -1,4 +1,4 @@
-DOAXBV 0.7.0 BETA
+DOAXBV 0.8.0 BETA
 Fully playable, with known issues. See CHANGELOG.md for the full history.
 
 QUICK START
@@ -23,11 +23,19 @@ If extract-xiso reports a missing VCRUNTIME140.dll, install the included
 Prerequisites/vc_redist.x86.exe and retry (it is for the 32-bit extractor).
 
 UPGRADING
-The game program changed in 0.7.0. Extract this ZIP into a new folder and
-build again. Saves are unchanged; copy your private saves over from your
-previous install. Saves are not imported automatically.
+The game program is the same as 0.7.0, but the runtime changed. Extract
+this ZIP into a new folder and build again. Saves are unchanged; copy your
+private saves over from your previous install. Saves are not imported
+automatically. Online, 0.8.0 meets only other 0.8.0 players.
 
-WHAT'S NEW IN 0.7.0
+WHAT'S NEW IN 0.8.0
+Online Exhibition uses a new matchmaker (0.7.0 players cannot join) and
+gets many room and session fixes; FIND MATCH shows an estimated ping.
+Laptops with two GPUs now run the game on the fast one. DOA2U's frame
+pacing fix for AMD GPUs is ported (not yet measured on AMD here). The
+launcher tells you when a newer release is out; it downloads nothing.
+
+WHAT CHANGED IN 0.7.0
 Online Exhibition (experimental): press A on EXHIBITION to host or join a
 room, or use FIND MATCH. Both players need the same build. It has been
 tested only with two runners on one PC; see docs/rollback-netcode.md.
