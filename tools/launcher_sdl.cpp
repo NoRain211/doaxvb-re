@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -302,7 +303,7 @@ SDL_Texture *loadArt(SDL_Renderer *renderer, const fs::path &path)
 }
 
 // --- Pages and their controls ----------------------------------------------
-enum Id { RESOLUTION, MSAA, FOG, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, ISO, BROWSE, START_BUILD, PLAY, UPDATE };
+enum Id { RESOLUTION, MSAA, FOG, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, ISO, BROWSE, START_BUILD, PLAY, UPDATE, MUSIC };
 enum class Kind { Choice, Toggle, Button };
 
 struct Control {
@@ -463,6 +464,7 @@ struct Launcher {
         case AUDIO:
             add(VOLUME, Kind::Choice, "Volume", row(0));
             add(SHUFFLE, Kind::Toggle, "Shuffle music", row(1));
+            add(MUSIC, Kind::Button, "Open music folder", {kContentX, kFirstRow + 2 * kRowGap, 150, 22});
             break;
         case GAME:
             add(UNLOCK, Kind::Toggle, "Unlock swimsuits", row(0));
@@ -526,8 +528,25 @@ struct Launcher {
         case BROWSE: browse(); return -1;
         case START_BUILD: startBuild(); return -1;
         case UPDATE: SDL_OpenURL(releaseUrl.c_str()); return -1;
+        case MUSIC: openMusicFolder(); return -1;
         default: change(control.id, step); return -1;
         }
+    }
+
+    // run_game.py passes this folder to the runner as RECOMP_USER_MUSIC.
+    void openMusicFolder() const
+    {
+        // Absolute, because root may be "." and file://./ names a host.
+        std::error_code error;
+        const fs::path folder = fs::absolute(path("private/UserMusic"), error);
+        if (folder.empty()) return;  // a bare file:// would open the filesystem root
+        fs::create_directories(folder, error);
+        std::string url = "file://";
+        for (unsigned char c : folder.string()) {
+            if (std::isalnum(c) || std::strchr("/-._~", c)) url += static_cast<char>(c);
+            else { char hex[4]; std::snprintf(hex, sizeof hex, "%%%02X", c); url += hex; }
+        }
+        SDL_OpenURL(url.c_str());
     }
 
     int quit()
@@ -844,8 +863,9 @@ struct Launcher {
             note(kFirstRow + 3 * kRowGap + 50, "need Direct3D 11 on Windows.", {150, 200, 210});
             break;
         case AUDIO:
-            note(kFirstRow + 2 * kRowGap + 6, "Shuffle plays Radio Station songs in a");
-            note(kFirstRow + 2 * kRowGap + 18, "random order.");
+            note(kFirstRow + 3 * kRowGap + 6, "Shuffle plays Radio Station songs in a");
+            note(kFirstRow + 3 * kRowGap + 18, "random order. MP3, WAV and FLAC files in");
+            note(kFirstRow + 3 * kRowGap + 30, "the music folder play at the Radio Station.");
             break;
         case HELP: {
             const char *const lines[] = {"While playing", "  F1          Fly the camera (when on)", "",

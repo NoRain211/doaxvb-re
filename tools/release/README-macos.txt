@@ -6,8 +6,9 @@ own copy of the game as an ISO; the build turns it into a playable runner.
 
 A contributor's smoke run of RC1 reached the save-select and options menus;
 macOS has not been play-tested. The new launcher in 0.7.0 has been drawn
-only in CI on macOS, not used on a Mac. SMAA and custom soundtracks are not
-available on macOS yet. Point lights, the title sea shimmer, sun shadows,
+only in CI on macOS, not used on a Mac. SMAA is not available on macOS
+yet. Custom soundtracks: put MP3, WAV or FLAC files in private/UserMusic
+(the launcher's Audio page opens it) and pick them at the Radio Station. Point lights, the title sea shimmer, sun shadows,
 per-pixel lighting and RECOMP_GAME_HZ are Windows-only for now (issue #105);
 fog now works on macOS. Online play has not been tested on macOS.
 
