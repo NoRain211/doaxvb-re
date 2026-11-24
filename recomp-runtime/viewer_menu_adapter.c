@@ -12,6 +12,7 @@
 #include "scene_freeze_adapter.h"
 #include "d3d_draw_adapter.h"
 #include "d3d_frame_adapter.h"
+#include "stop_report.h"
 #include "input_host_win32.h"
 #include "overlay_text.h"
 #include "viewer_scene.h"
@@ -67,7 +68,11 @@
    are shown again once the match scene has gone. Quit leads to the title,
    which the viewer moves on to the main menu the way START would: once the
    title step has run STEP_SETTLE_FRAMES (0x4D994C), it sets the step's
-   leaving count at 0x4D994A, as CPU Exhibition does. */
+   leaving count at 0x4D994A, as CPU Exhibition does.
+
+   QUIT: the last item, always shown. The game's update ignores it, and the
+   runner then exits the way closing the window does. With MODEL VIEWER as
+   well the list has four rows, so it starts a row higher to stay on screen. */
 enum {
     MAIN_MENU_SETUP = 0x000F3B30u,
     MAIN_MENU_UPDATE = 0x000F3E40u,
@@ -75,7 +80,6 @@ enum {
     MENU_PHASE_RUNNING = 1,
     MAIN_MENU_CURSOR = 0x009D9E0Cu,
     ITEM_EXHIBITION = 1,
-    ITEM_VIEWER = 2,
     ITEM_TEXTS = 0x005C5860u,
     ITEM_COUNT = 0x005C585Cu,
     ITEM_LIMIT = 10,
@@ -93,6 +97,7 @@ enum {
     LIST_CREATE = 0x0008D800u,
     LIST_X = 0x168u,
     LIST_Y = 0x140u,
+    LIST_ROW = 0x28u,
     LIST_FRAME = 0x005C5800u,
     LIST_STYLE = 0x005C5812u,
     LIST_CURSOR = 0x005C581Au,
@@ -138,12 +143,13 @@ enum {
 };
 
 static const char LABEL[] = "MODEL VIEWER";
+static const char QUIT_LABEL[] = "QUIT";
 
 void sub_000F3B30(void);
 void sub_000F3E40(void);
 
 static int enabled = -1;
-static uint32_t label;
+static uint32_t label, quit_label;
 static bool requested;
 
 static enum {
@@ -300,28 +306,51 @@ static bool call_guest(uint32_t address, uint32_t eax, uint32_t ecx, uint32_t ed
     return called;
 }
 
-/* The setup made a two-row list; make it again with a row for the viewer
-   and fill it the way the setup fills its own. */
-static void add_item(void)
+/* Copies text into a pool block once; 0 when the pool is out. */
+static uint32_t guest_text(uint32_t *slot, const char *text, uint32_t size)
+{
+    if (*slot == 0u) {
+        *slot = recomp_kernel_allocate_pool(size);
+        if (*slot != 0u) recomp_guest_store(*slot, text, size);
+    }
+    return *slot;
+}
+
+/* Rows after the game's two: MODEL VIEWER when enabled, then QUIT. */
+static uint32_t viewer_item(void)
+{
+    return viewer_enabled() ? 2u : UINT32_MAX;
+}
+
+static uint32_t quit_item(void)
+{
+    return viewer_enabled() ? 3u : 2u;
+}
+
+/* The setup made a two-row list; make it again with the extra rows and
+   fill it the way the setup fills its own. */
+static void add_items(void)
 {
     uint32_t count = *recomp_memory_u32(ITEM_COUNT);
     if (count != 2u) return;
-    uint32_t texts[3] = {*recomp_memory_u32(ITEM_TEXTS), *recomp_memory_u32(ITEM_TEXTS + 4u), 0u};
+    uint32_t texts[4] = {*recomp_memory_u32(ITEM_TEXTS), *recomp_memory_u32(ITEM_TEXTS + 4u), 0u, 0u};
     uint32_t cursor = *recomp_memory_u32(MAIN_MENU_CURSOR);
-    if (label == 0u) {
-        label = recomp_kernel_allocate_pool(sizeof LABEL);
-        if (label == 0u) return;
-        recomp_guest_store(label, LABEL, sizeof LABEL);
+    if (viewer_enabled()) {
+        texts[viewer_item()] = guest_text(&label, LABEL, sizeof LABEL);
+        if (texts[viewer_item()] == 0u) return;
     }
-    texts[2] = label;
+    texts[quit_item()] = guest_text(&quit_label, QUIT_LABEL, sizeof QUIT_LABEL);
+    if (texts[quit_item()] == 0u) return;
+    uint32_t rows = quit_item() + 1u;
+    uint32_t y = rows > 3u ? LIST_Y - (rows - 3u) * LIST_ROW : LIST_Y;
 
-    if (!call_guest(LIST_CREATE, LIST_X, 3u, 0u, 3u, LIST_Y, 1u)) return;
+    if (!call_guest(LIST_CREATE, LIST_X, rows, 0u, rows, y, 1u)) return;
     uint32_t frame = *recomp_memory_u32(LIST_FRAME);
     if (frame != 0u) *recomp_memory_u16(frame + 0xAu) = 0x28u;
     *recomp_memory_u16(LIST_STYLE) = 0x280u;
     *recomp_memory(LIST_SHOWN, 1u) = 1u;
-    for (uint32_t i = 0u; i < 3u; ++i) *recomp_memory_u32(ITEM_TEXTS + i * 4u) = texts[i];
-    *recomp_memory_u32(ITEM_COUNT) = 3u;
+    for (uint32_t i = 0u; i < rows; ++i) *recomp_memory_u32(ITEM_TEXTS + i * 4u) = texts[i];
+    *recomp_memory_u32(ITEM_COUNT) = rows;
     *recomp_memory_u16(LIST_SCROLL) = 0u;
     frame = *recomp_memory_u32(LIST_FRAME);
     if (frame != 0u) {
@@ -344,7 +373,7 @@ static void main_menu_setup(void)
         session = VIEWER_IDLE;
     }
     sub_000F3B30();
-    add_item();
+    add_items();
 }
 
 static bool confirm_pressed(void)
@@ -359,8 +388,14 @@ static bool confirm_pressed(void)
 
 static void main_menu_update(void)
 {
-    bool choose = *recomp_memory_u32(MENU_PHASE) == MENU_PHASE_RUNNING &&
-        *recomp_memory_u32(MAIN_MENU_CURSOR) == ITEM_VIEWER && confirm_pressed();
+    bool confirmed = *recomp_memory_u32(MENU_PHASE) == MENU_PHASE_RUNNING && confirm_pressed();
+    uint32_t cursor = *recomp_memory_u32(MAIN_MENU_CURSOR);
+    if (confirmed && cursor == quit_item() && *recomp_memory_u32(ITEM_COUNT) == quit_item() + 1u) {
+        fprintf(stderr, "recomp runner: QUIT chosen from the main menu; exiting normally\n");
+        recomp_d3d_frame_adapter_reset();
+        recomp_stop(0, "main-menu-quit");
+    }
+    bool choose = confirmed && cursor == viewer_item();
     if (choose) *recomp_memory_u32(MAIN_MENU_CURSOR) = ITEM_EXHIBITION;
     sub_000F3E40();
     if (choose) {
@@ -509,7 +544,6 @@ static void choose_time(RecompInputGamepad *gamepad)
 
 RecompFunction recomp_viewer_menu_lookup_manual(uint32_t guest_address)
 {
-    if (!viewer_enabled()) return NULL;
     switch (guest_address) {
     case MAIN_MENU_SETUP: return main_menu_setup;
     case MAIN_MENU_UPDATE: return main_menu_update;
