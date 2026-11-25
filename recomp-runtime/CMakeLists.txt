@@ -36,8 +36,13 @@ if(WIN32)
             https://repo1.maven.org/maven2/org/lwjgl/lwjgl-shaderc/3.4.3/lwjgl-shaderc-3.4.3-natives-windows.jar
             "${_shaderc_jar}"
             EXPECTED_HASH SHA256=E8E631D007B36EDF1440CB4D42654A9B5C03BCB91B9C333C6A81EC6A3911F8BC)
+        # exFAT and FAT drives cannot restore the jar's entry times; SDL3 above
+        # skips them too (CMP0135). TOUCH extracts with the current time instead.
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+            set(_shaderc_touch TOUCH)
+        endif()
         file(ARCHIVE_EXTRACT INPUT "${_shaderc_jar}" DESTINATION "${CMAKE_BINARY_DIR}/_deps/shaderc"
-            PATTERNS windows/x64/org/lwjgl/shaderc/shaderc.dll)
+            PATTERNS windows/x64/org/lwjgl/shaderc/shaderc.dll ${_shaderc_touch})
     endif()
     function(recomp_use_shaderc target)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
