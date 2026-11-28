@@ -428,8 +428,12 @@ struct Launcher {
         const std::string last = json.text("iso");
         if (!last.empty() && fs::exists(last)) {
             const auto it = std::find(isos.begin(), isos.end(), last);
-            if (it == isos.end()) isos.insert(isos.begin(), last);
-            isoIndex = it == isos.end() ? 0 : static_cast<int>(it - isos.begin());
+            // insert() invalidates it, so take the index before inserting.
+            isoIndex = static_cast<int>(it - isos.begin());
+            if (it == isos.end()) {
+                isos.insert(isos.begin(), last);
+                isoIndex = 0;
+            }
         }
         if (isos.empty()) buildState = "No ISO found. Browse, or drop it on this window.";
     }
@@ -437,8 +441,12 @@ struct Launcher {
     void addIso(const std::string &iso)
     {
         const auto it = std::find(isos.begin(), isos.end(), iso);
-        if (it == isos.end()) isos.insert(isos.begin(), iso);
-        isoIndex = it == isos.end() ? 0 : static_cast<int>(it - isos.begin());
+        // insert() invalidates it, so take the index before inserting.
+        isoIndex = static_cast<int>(it - isos.begin());
+        if (it == isos.end()) {
+            isos.insert(isos.begin(), iso);
+            isoIndex = 0;
+        }
         buildState = "Pick your ISO, then build once.";
         buildStateColor = kSoft;
         select(BUILD);
