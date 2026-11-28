@@ -1,4 +1,4 @@
-DOAXBV 0.8.0 BETA - Linux and Steam Deck
+DOAXBV 0.8.1 BETA - Linux and Steam Deck
 
 A native port of Dead or Alive Xtreme Beach Volleyball for x86-64 Linux,
 including SteamOS on the Steam Deck. This package holds source and setup
@@ -15,9 +15,9 @@ screen idle modes and swimsuit unlock work here too. Online play has not
 been tested on Linux.
 
 UPGRADING
-The game program is the same as 0.7.0, but the runtime changed. Extract
+The game program is the same as 0.8.0, but the runtime changed. Extract
 this ZIP into a new folder and build again. Saves are unchanged; copy your
-private saves over. Online, 0.8.0 meets only other 0.8.0 players. The
+private saves over. Online, both players need the same build. The
 launcher now tells you when a newer release is out; it downloads nothing.
 
 SETUP

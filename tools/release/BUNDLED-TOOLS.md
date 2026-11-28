@@ -52,6 +52,6 @@ https://github.com/NoRain211/doaxbv-re/releases/tag/v0.5.3
 CMake source (including bundled library source):
 https://github.com/Kitware/CMake/releases/download/v4.2.1/cmake-4.2.1.tar.gz
 
-DOAXBV source: https://github.com/NoRain211/doaxbv-re/tree/v0.8.0
+DOAXBV source: https://github.com/NoRain211/doaxbv-re/tree/v0.8.1
 The pinned lifter is fetched during setup from NoRain211/xboxrecomp;
 its GPL-3.0 license is included in that checkout.

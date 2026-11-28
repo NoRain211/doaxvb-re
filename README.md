@@ -87,6 +87,7 @@ and morph blend have been rewritten.
 | Launcher that builds the game, works with a controller, and `DOAXBV.exe` | Added in 0.6.0; controller checked with a virtual gamepad only |
 | Vulkan renderer on Windows (launcher choice) and fog on macOS and Linux | Added in 0.7.0; Direct3D 11 stays the default on Windows |
 | Linux and Steam Deck setup that installs its own tools, and a launcher note when a newer release is out | Added in 0.8.0 |
+| Windowed and borderless display, FSR, frame-rate choice and a DLSS bridge (Direct3D 11) | Added in 0.8.1; not play-tested |
 | Portraits, pool water, item previews | Restored |
 | Lighting, camera, full rendering fidelity | Incomplete |
 | Every collection item and activity/time variant | Not individually verified |

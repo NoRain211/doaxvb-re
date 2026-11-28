@@ -1,4 +1,4 @@
-DOAXBV 0.8.0 BETA - macOS
+DOAXBV 0.8.1 BETA - macOS
 
 A native port of Dead or Alive Xtreme Beach Volleyball for Apple Silicon and
 Intel Macs. This package holds source and setup tools only. You need your
@@ -13,9 +13,9 @@ per-pixel lighting and RECOMP_GAME_HZ are Windows-only for now (issue #105);
 fog now works on macOS. Online play has not been tested on macOS.
 
 UPGRADING
-The game program is the same as 0.7.0, but the runtime changed. Extract
+The game program is the same as 0.8.0, but the runtime changed. Extract
 this ZIP into a new folder and build again. Saves are unchanged; copy your
-private saves over. Online, 0.8.0 meets only other 0.8.0 players. The
+private saves over. Online, both players need the same build. The
 launcher now tells you when a newer release is out; it downloads nothing.
 
 SETUP

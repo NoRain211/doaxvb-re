@@ -1,5 +1,5 @@
 {
-  "version": "0.8.0",
+  "version": "0.8.1",
   "channel": "Beta",
-  "runtime_change": "program unchanged from 0.7.0; matchmaker protocol v2 on UDP 47703 (#219, #227) with direct IPv6 (#222) and online room, session and safety fixes (#195-#206, #220, #221, #223, #224); high-performance GPU (#217); Windows constant ring and timer (#193); Linux install_deps.sh and SteamOS distrobox build (#225); launcher release notice (#226)"
+  "runtime_change": "program unchanged from 0.8.0; Direct3D 11 windowed and borderless display, FSR and anisotropy (#184), frame-rate choice (#229), TAA jitter and DLSS bridge (#230), resize fixes; QUIT in the main menu (#231); custom soundtracks on macOS and Linux (#228); launcher and build fixes (#232, #235, #237)"
 }

@@ -87,6 +87,15 @@ were checked by the lobby tests and a client-to-server harness, not in a
 running game; no session has run between two machines. It does not expand
 the play-test coverage below.
 
+0.8.1 Beta (tag `v0.8.1`) keeps the 0.8.0 generation recipe and program
+manifest; only the runtime and launcher changed. The Direct3D 11 renderer
+gains windowed and borderless display, FSR and anisotropic filtering (#184),
+a frame-rate choice (#229), and TAA jitter, motion vectors and a DLSS bridge
+(#230), with resize and device-loss fixes. The main menu gains QUIT (#231),
+and macOS and Linux play `UserMusic` soundtracks (#228). None of the new
+display options has had a play test. It does not expand the play-test
+coverage below.
+
 The local build published as 0.4 Beta (tag `v0.4`, commit `3848a67`,
 generated-program manifest `9558380…`) is fully playable. Long player
 sessions with that generated program covered every stage, the Casino, Hotel

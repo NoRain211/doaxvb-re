@@ -1,4 +1,4 @@
-DOAXBV 0.8.0 BETA
+DOAXBV 0.8.1 BETA
 Fully playable, with known issues. See CHANGELOG.md for the full history.
 
 QUICK START
@@ -23,10 +23,16 @@ If extract-xiso reports a missing VCRUNTIME140.dll, install the included
 Prerequisites/vc_redist.x86.exe and retry (it is for the 32-bit extractor).
 
 UPGRADING
-The game program is the same as 0.7.0, but the runtime changed. Extract
+The game program is the same as 0.8.0, but the runtime changed. Extract
 this ZIP into a new folder and build again. Saves are unchanged; copy your
 private saves over from your previous install. Saves are not imported
-automatically. Online, 0.8.0 meets only other 0.8.0 players.
+automatically. Online, both players need the same build.
+
+WHAT'S NEW IN 0.8.1
+Windowed and borderless display, FSR, anisotropic filtering, a frame-rate
+choice and a DLSS bridge for the Direct3D 11 renderer (none play-tested),
+a QUIT entry in the main menu, custom soundtracks on macOS and Linux, and
+fixes for window resizes, DLSS, frame pacing and the launcher.
 
 WHAT'S NEW IN 0.8.0
 Online Exhibition uses a new matchmaker (0.7.0 players cannot join) and

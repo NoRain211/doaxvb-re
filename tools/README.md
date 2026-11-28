@@ -31,7 +31,7 @@ and verifies each declared submodule's path, URL, and pinned commit.
 tag, with the version, change note and README text in `tools/release/`:
 
 ```powershell
-python tools/package_release.py v0.8.0 private/rel/final --bundled <0.6.0 RC1 Windows ZIP>
+python tools/package_release.py v0.8.1 private/rel/final --bundled <0.6.0 RC1 Windows ZIP>
 ```
 
 The Windows ZIP adds the tools and icon the shipped RC1 Windows ZIP bundles
