@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.8.1 Beta — 2026-11-28
+
+0.8.1 adds display, frame-rate, FSR and DLSS options to the Direct3D 11
+renderer, a QUIT entry in the game's main menu and custom soundtracks on
+macOS and Linux, and fixes several resize and launcher bugs. The game
+program and its generation recipe are the same as 0.8.0, but the runtime
+changed, so extract the ZIP into a new folder and build again; saves are
+unchanged, so copy your `private` saves over.
+
+### Added
+
+- **Windowed and borderless display, FSR and anisotropic filtering** (#184).
+  Thanks to fomoco460.
+- **A frame-rate choice** (#229). The Direct3D 11 renderer paces split
+  presents to the chosen rate.
+- **TAA jitter, motion vectors and a DLSS bridge** (#230).
+- **QUIT in the game's main menu** (#231).
+- **Custom soundtracks on macOS and Linux** (#228). `UserMusic` now plays
+  there too.
+
+### Fixed
+
+- **Window resizes** (#184, #229, #230). A failed resize is retried, the
+  window picture is held while it fails, a device loss during a resize
+  stops cleanly, and 16x filtering is kept.
+- **DLSS** (#230). Frames with no 3D scene are drawn at full size under
+  DLSS, and its jitter is dropped when DLSS cannot start.
+- **Frame pacing** (#229). A backed-up split queue is now detected by its
+  depth.
+- **Custom soundtracks** (#228). The music folder is skipped when its path
+  cannot resolve.
+- **Launcher** (#232, #237). The update check matches the Windows one on
+  macOS and Linux, and the ISO index is taken before the ISO is inserted
+  into the list (#236).
+- **Build** (#235). shaderc file times are skipped on exFAT drives (#234).
+
+### Known issues
+
+- The display, frame-rate, FSR and DLSS options have not had a play test.
+- The 0.8.0 known issues still apply.
+
 ## 0.8.0 Beta — 2026-11-22
 
 0.8.0 moves online Exhibition onto a new matchmaker with many room and
